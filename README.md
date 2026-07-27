@@ -59,6 +59,14 @@ Run the active core tests with:
 pytest -q
 ```
 
+The spectral pressure solver is pinned as a Git submodule at
+`external/bw1000_benchmark`. Clone the repository recursively, or initialize
+the dependency in an existing checkout:
+
+```bash
+git submodule update --init --recursive
+```
+
 Run the true multi-process CPU projection gate with one local CPU device and
 one owned z-slab per process:
 
@@ -66,10 +74,9 @@ one owned z-slab per process:
 python tools/run_distributed_projection_cpu.py --processes 4
 ```
 
-The runner discovers a sibling `../bw1000_benchmark` checkout by default. Set
-`WIRELES_SPECTRAL_FD_SOURCE` when the editable `spectral-fd` source lives
-elsewhere. The complete automated 1/2/4-process gate is opt-in because it binds
-loopback coordinator sockets:
+Set `WIRELES_SPECTRAL_FD_SOURCE` only when overriding the pinned
+`spectral-fd` source with another editable checkout. The complete automated
+1/2/4-process gate is opt-in because it binds loopback coordinator sockets:
 
 ```bash
 WIRELES_RUN_MULTIPROCESS_CPU_TESTS=1 \
