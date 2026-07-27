@@ -1,0 +1,118 @@
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+import pytest
+
+
+from jaxwind.runners.pressure_driven_warmup import ConfigError, load_case
+
+
+ROOT = Path(__file__).resolve().parents[2]
+CASE_DIR = ROOT / "runners" / "pressure_driven_warmup"
+CONFIG = CASE_DIR / "config.toml"
+
+
+def _cli_environment() -> dict[str, str]:
+    environment = os.environ.copy()
+    existing = environment.get("PYTHONPATH")
+    source = str(ROOT / "src")
+    environment["PYTHONPATH"] = (
+        source if not existing else os.pathsep.join((source, existing))
+    )
+    return environment
+
+
+def test_canonical_case_resolves_physical_and_numerical_choices() -> None:
+    case = load_case(CONFIG)
+    assert case.runner == "pressure_driven_warmup"
+    assert (case.domain.nx, case.domain.ny, case.domain.nz) == (128, 64, 256)
+    assert case.domain.lx_m == 2048.0
+    assert case.domain.ly_m == 1024.0
+    assert case.domain.lz_m == 1024.0
+    assert (
+        case.domain.dx_m,
+        case.domain.dy_m,
+        case.domain.dz_m,
+    ) == (16.0, 16.0, 4.0)
+    assert case.flow.friction_velocity_m_s == 0.4
+    assert case.flow.roughness_length_m == 0.001
+    assert case.flow.pressure_acceleration_m_s2 == pytest.approx(1.5625e-4)
+    assert case.sgs.model == "lasd"
+    assert case.time.integrator == "ab2"
+    assert case.time.dt_seconds == 0.1
+    assert case.time.steps == 360_000
+    assert case.sample_start_step == 288_000
+    assert case.output.log_every_steps == 1_000
+    assert case.output.sample_every_steps == 100
+    assert case.output.checkpoint_every_steps == 36_000
+    assert case.estimated_startup_cfl < case.numerics.cfl_abort
+    assert (
+        case.estimated_lasd_trajectory_cfl
+        < case.numerics.lasd_trajectory_cfl_abort
+    )
+
+
+def test_dry_run_prints_the_resolved_plan_without_loading_jax() -> None:
+    assert not (CASE_DIR / "run.py").exists()
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "jaxwind",
+            str(CASE_DIR),
+            "--dry-run",
+        ],
+        cwd=ROOT,
+        env=_cli_environment(),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    resolved = json.loads(completed.stdout)
+    assert resolved["runner"] == "pressure_driven_warmup"
+    assert resolved["time"]["steps"] == 360_000
+    assert resolved["flow"]["pressure_acceleration_m_s2"] == pytest.approx(
+        1.5625e-4
+    )
+    assert "jax" not in completed.stderr.lower()
+
+
+def test_cli_runs_a_declarative_case_directory_without_run_py(
+    tmp_path: Path,
+) -> None:
+    case_dir = tmp_path / "copied_case"
+    case_dir.mkdir()
+    (case_dir / "config.toml").write_text(CONFIG.read_text())
+
+    completed = subprocess.run(
+        [sys.executable, "-m", "jaxwind", str(case_dir), "--dry-run"],
+        cwd=ROOT,
+        env=_cli_environment(),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert not (case_dir / "run.py").exists()
+    assert (
+        json.loads(completed.stdout)["case"]
+        == "pressure_driven_warmup_128x64x256"
+    )
+
+
+def test_config_rejects_a_lasd_trajectory_that_crosses_the_abort_limit(
+    tmp_path: Path,
+) -> None:
+    text = CONFIG.read_text().replace(
+        "update_interval_steps = 4",
+        "update_interval_steps = 20",
+    )
+    invalid = tmp_path / "invalid.toml"
+    invalid.write_text(text)
+    with pytest.raises(ConfigError, match="trajectory CFL"):
+        load_case(invalid)

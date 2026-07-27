@@ -79,6 +79,20 @@ from jaxwind import EqualZSlab, UniformGrid
 
 Project-specific environment variables use the `JAXWIND_` prefix.
 
+## Runner workflows
+
+Case-oriented application shells live under [`runners`](runners/README.md).
+The first workflow is a configurable [pressure-driven neutral
+warmup](runners/pressure_driven_warmup/README.md) with LASD, AB2, checkpointed
+restart, and restart-continuous profile statistics.
+
+Validate its supplied `2048 × 1024 × 1024 m`, `128 × 64 × 256`, 10-hour case
+without allocating a JAX state:
+
+```bash
+jaxwind runners/pressure_driven_warmup --dry-run
+```
+
 ## Verify the installation
 
 Run the core test suite:
