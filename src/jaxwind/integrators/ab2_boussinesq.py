@@ -5,9 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Generic, Protocol, TypeVar
 
-from wireles.domain import AcceptedClock, EvaluationTime
-from wireles.operators import ProjectionResult, project
-from wireles.physics import (
+from jaxwind.domain import AcceptedClock, EvaluationTime
+from jaxwind.operators import ProjectionResult, project
+from jaxwind.physics import (
     BoussinesqFields,
     BoussinesqTendency,
     IdentityClosureEvent,

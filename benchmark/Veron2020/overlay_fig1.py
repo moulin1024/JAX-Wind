@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Overlay the WIRELES single-drop result on Veron (2020), figure 1."""
+"""Overlay the JAXWIND single-drop result on Veron (2020), figure 1."""
 
 from __future__ import annotations
 

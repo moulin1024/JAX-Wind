@@ -9,7 +9,7 @@ import jax
 jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp  # noqa: E402
 
-from wireles.domain import (  # noqa: E402
+from jaxwind.domain import (  # noqa: E402
     Accepted,
     AcceptedClock,
     Cell,
@@ -24,23 +24,23 @@ from wireles.domain import (  # noqa: E402
     YVelocity,
     ZFace,
 )
-from wireles.integrators import (  # noqa: E402
+from jaxwind.integrators import (  # noqa: E402
     AB2Config,
     Evaluation,
     cold_start_boussinesq,
     step_boussinesq,
 )
-from wireles.effects import (  # noqa: E402
+from jaxwind.effects import (  # noqa: E402
     ReferenceCheckpointLayout,
     load_boussinesq_checkpoint,
     save_boussinesq_checkpoint,
 )
-from wireles.interpreters.jax_reference import (  # noqa: E402
+from jaxwind.interpreters.jax_reference import (  # noqa: E402
     JaxReferencePressureSolver,
     JaxReferenceProjection,
 )
-from wireles.operators import VelocityVector  # noqa: E402
-from wireles.physics import (  # noqa: E402
+from jaxwind.operators import VelocityVector  # noqa: E402
+from jaxwind.physics import (  # noqa: E402
     BoussinesqFields,
     BoussinesqModel,
     BoussinesqVectorField,

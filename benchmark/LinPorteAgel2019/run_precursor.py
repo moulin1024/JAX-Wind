@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[2]
 SOURCE = ROOT / "src"
 PRESSURE_SOURCE = Path(
     os.environ.get(
-        "WIRELES_SPECTRAL_FD_SOURCE",
+        "JAXWIND_SPECTRAL_FD_SOURCE",
         ROOT / "external" / "bw1000_benchmark",
     )
 )
@@ -42,7 +42,7 @@ from benchmark.LinPorteAgel2019.run_nonyawed import (  # noqa: E402
     _w_at_cells,
     _write_flow_gif,
 )
-from wireles.domain import (  # noqa: E402
+from jaxwind.domain import (  # noqa: E402
     Accepted,
     AcceptedClock,
     AddressableField,
@@ -56,18 +56,18 @@ from wireles.domain import (  # noqa: E402
     VerticalBoundary,
     PassiveScalarConcentration,
 )
-from wireles.effects import (  # noqa: E402
+from jaxwind.effects import (  # noqa: E402
     ZSlabCheckpointLayout,
     load_boussinesq_checkpoint,
     save_boussinesq_checkpoint,
 )
-from wireles.integrators import (  # noqa: E402
+from jaxwind.integrators import (  # noqa: E402
     AB2Config,
     cold_start_boussinesq,
     step_boussinesq,
 )
-from wireles.interpreters.jax_zslab import build_zslab_interpreter  # noqa: E402
-from wireles.physics import (  # noqa: E402
+from jaxwind.interpreters.jax_zslab import build_zslab_interpreter  # noqa: E402
+from jaxwind.physics import (  # noqa: E402
     BoussinesqFields,
     BoussinesqModel,
     BoussinesqVectorField,
@@ -88,7 +88,7 @@ from wireles.physics import (  # noqa: E402
     StaticSmagorinsky,
     StaticSmagorinskyScalarFlux,
 )
-from wireles.pressure import build_spectral_fd_pressure_adapter  # noqa: E402
+from jaxwind.pressure import build_spectral_fd_pressure_adapter  # noqa: E402
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:

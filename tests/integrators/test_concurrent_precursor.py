@@ -4,7 +4,7 @@ import unittest
 
 import jax.numpy as jnp
 
-from wireles.domain import (
+from jaxwind.domain import (
     AcceptedClock,
     Cell,
     Evaluated,
@@ -21,20 +21,20 @@ from wireles.domain import (
     YVelocityTendency,
     ZFace,
 )
-from wireles.effects import SideBySideStreamLauncher
-from wireles.integrators import (
+from jaxwind.effects import SideBySideStreamLauncher
+from jaxwind.integrators import (
     AB2Config,
     ConcurrentPrecursorState,
     VectorFieldResult,
     cold_start,
     step_concurrent_precursor,
 )
-from wireles.interpreters.jax_reference import (
+from jaxwind.interpreters.jax_reference import (
     JaxReferencePressureSolver,
     JaxReferenceProjection,
 )
-from wireles.operators import VelocityVector
-from wireles.physics import ConcurrentPrecursorEnvironment
+from jaxwind.operators import VelocityVector
+from jaxwind.physics import ConcurrentPrecursorEnvironment
 
 
 class ConcurrentPrecursorTests(unittest.TestCase):

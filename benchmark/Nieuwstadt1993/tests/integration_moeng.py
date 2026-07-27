@@ -186,9 +186,9 @@ def run_integration(output_dir: Path, quick: bool = False, python: str = sys.exe
     env = os.environ.copy()
     env["MPLBACKEND"] = "Agg"
     pressure_source = Path(
-        env.get("WIRELES_SPECTRAL_FD_SOURCE", ROOT / "external" / "bw1000_benchmark")
+        env.get("JAXWIND_SPECTRAL_FD_SOURCE", ROOT / "external" / "bw1000_benchmark")
     )
-    env["WIRELES_SPECTRAL_FD_SOURCE"] = str(pressure_source)
+    env["JAXWIND_SPECTRAL_FD_SOURCE"] = str(pressure_source)
     env["PYTHONPATH"] = os.pathsep.join(
         (str(ROOT / "src"), str(pressure_source), env.get("PYTHONPATH", ""))
     )

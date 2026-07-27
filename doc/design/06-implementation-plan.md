@@ -70,7 +70,7 @@ editable path only in the effect shell; semantic modules cannot import it.
 
 ## 3. Package and dependency skeleton
 
-Create a conventional `src/wireles/` package. The first admitted modules have
+Create a conventional `src/jaxwind/` package. The first admitted modules have
 these responsibilities:
 
 - `domain`: axes, locations, grids, mesh topology, distribution specifications,

@@ -9,8 +9,8 @@ import unittest
 
 
 @unittest.skipUnless(
-    os.environ.get("WIRELES_RUN_MULTIPROCESS_CPU_TESTS") == "1",
-    "set WIRELES_RUN_MULTIPROCESS_CPU_TESTS=1 to enable loopback collectives",
+    os.environ.get("JAXWIND_RUN_MULTIPROCESS_CPU_TESTS") == "1",
+    "set JAXWIND_RUN_MULTIPROCESS_CPU_TESTS=1 to enable loopback collectives",
 )
 class MultiProcessCPUProjectionTests(unittest.TestCase):
     def test_process_and_dtype_projection_gates(self) -> None:

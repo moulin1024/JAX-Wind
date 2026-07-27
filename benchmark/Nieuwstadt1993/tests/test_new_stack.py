@@ -13,7 +13,7 @@ def test_default_benchmark_runner_selects_the_new_semantic_stack() -> None:
     assert "run_new.py" in orchestration
     assert "legacy/jax" not in orchestration
     assert "solve.py" not in orchestration
-    assert "from wireles." in driver
+    assert "from jaxwind." in driver
     assert "from spectral_fd" in driver
     assert "wireles_jax" not in driver
     assert "legacy/jax" not in driver

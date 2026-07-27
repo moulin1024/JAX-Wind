@@ -9,7 +9,7 @@ import jax
 jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp  # noqa: E402
 
-from wireles.domain import (  # noqa: E402
+from jaxwind.domain import (  # noqa: E402
     Cell,
     Evaluated,
     Field,
@@ -20,7 +20,7 @@ from wireles.domain import (  # noqa: E402
     VerticalVelocity,
     ZFace,
 )
-from wireles.interpreters import jax_reference  # noqa: E402
+from jaxwind.interpreters import jax_reference  # noqa: E402
 
 
 class JaxReferenceLawTests(unittest.TestCase):

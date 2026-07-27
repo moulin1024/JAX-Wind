@@ -24,7 +24,7 @@ class SideBySideStreamLauncher:
     def __post_init__(self) -> None:
         self._pool = ThreadPoolExecutor(
             max_workers=2,
-            thread_name_prefix="wireles-side-by-side",
+            thread_name_prefix="jaxwind-side-by-side",
         )
 
     def _submit(self, stream_id: int, operation: Callable[[], Any]) -> Any:

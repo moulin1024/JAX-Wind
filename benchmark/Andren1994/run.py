@@ -22,7 +22,7 @@ from benchmark.NeutralEkman import run as neutral_runner  # noqa: E402
 import jax  # noqa: E402
 import jax.numpy as jnp  # noqa: E402
 
-from wireles.domain import (  # noqa: E402
+from jaxwind.domain import (  # noqa: E402
     AddressableField,
     Candidate,
     Cell,
@@ -31,8 +31,8 @@ from wireles.domain import (  # noqa: E402
     YVelocity,
     ZFace,
 )
-from wireles.interpreters.jax_zslab import ZFaceFieldContext  # noqa: E402
-from wireles.operators import VelocityVector  # noqa: E402
+from jaxwind.interpreters.jax_zslab import ZFaceFieldContext  # noqa: E402
+from jaxwind.operators import VelocityVector  # noqa: E402
 
 
 HERE = Path(__file__).resolve().parent
@@ -270,7 +270,7 @@ def plot_comparison(
     tf = history["time_seconds"] * F_CORIOLIS
     ratios = np.asarray(tuple(reference["ustar_over_ug"].values()))
     figure, axes = plt.subplots(2, 2, figsize=(11, 9), constrained_layout=True)
-    axes[0, 0].plot(tf, history["ustar"] / GEOSTROPHIC_SPEED, label="WIRE-LES")
+    axes[0, 0].plot(tf, history["ustar"] / GEOSTROPHIC_SPEED, label="JAX-Wind")
     axes[0, 0].axhspan(
         ratios.min(), ratios.max(), color="0.7", alpha=0.35, label="1994 code envelope"
     )
@@ -280,7 +280,7 @@ def plot_comparison(
     axes[0, 1].plot(
         tf,
         F_CORIOLIS * history["integrated_resolved_tke_m3_s2"] / statistics_ustar**3,
-        label="WIRE-LES resolved",
+        label="JAX-Wind resolved",
     )
     axes[0, 1].axhline(
         reference["normalized_integrated_total_tke_plateau"],
@@ -357,7 +357,7 @@ def finalize_comparison(args: argparse.Namespace, summary: dict) -> dict:
             if canonical_configuration
             else None
         ),
-        "integrated_tke_comparison": "WIRE-LES resolved only; paper value includes SGS",
+        "integrated_tke_comparison": "JAX-Wind resolved only; paper value includes SGS",
     }
     summary["acceptance"]["canonical_configuration"] = canonical_configuration
     summary["acceptance"]["ustar_over_ug_inside_published_envelope"] = (
@@ -377,7 +377,7 @@ def main(argv: list[str] | None = None) -> int:
     summary = neutral_runner.run_case(
         solver_args,
         initial_velocity_factory=andren_initial_velocity,
-        schema="wireles.andren1994.static-smag.v1",
+        schema="jaxwind.andren1994.static-smag.v1",
         case_metadata={
             "citation": "Andren et al. (1994)",
             "doi": "10.1002/qj.49712052003",

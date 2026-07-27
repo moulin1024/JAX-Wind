@@ -7,7 +7,7 @@ import jax
 jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp  # noqa: E402
 
-from wireles.domain import (  # noqa: E402
+from jaxwind.domain import (  # noqa: E402
     Candidate,
     Cell,
     Field,
@@ -19,11 +19,11 @@ from wireles.domain import (  # noqa: E402
     YVelocity,
     ZFace,
 )
-from wireles.interpreters.jax_reference import (  # noqa: E402
+from jaxwind.interpreters.jax_reference import (  # noqa: E402
     JaxReferencePressureSolver,
     JaxReferenceProjection,
 )
-from wireles.operators import VelocityVector, project  # noqa: E402
+from jaxwind.operators import VelocityVector, project  # noqa: E402
 
 
 class ReferenceProjectionLawTests(unittest.TestCase):

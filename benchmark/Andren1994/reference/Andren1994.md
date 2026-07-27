@@ -15,7 +15,7 @@ extracted from the paper; it does not redistribute the article.
 - impermeable, stress-free rigid upper boundary;
 - neutral momentum dynamics. The paper also transports a passive scalar with a
   prescribed surface flux of `1e-3 kg m-2 s-1` at density `1 kg m-3`; it has no
-  momentum feedback. The WIRE-LES LASD comparison advances it with zero upper
+  momentum feedback. The JAX-Wind LASD comparison advances it with zero upper
   flux;
 - duration: `10/f = 100000 s = 27.7778 h`;
 - statistics: final `3/f`, from `t f = 7` through `t f = 10`.
@@ -27,7 +27,7 @@ plane-normalized to the tabulated TKE before the compatible projection.
 
 ## Present model correspondence
 
-The static WIRE-LES case uses horizontal pseudo-spectral derivatives, vertical
+The static JAX-Wind case uses horizontal pseudo-spectral derivatives, vertical
 second-order differences, AB2, a neutral log wall, and a static Smagorinsky
 coefficient `Cs = 0.17`. This most closely follows the deterministic
 Mason--Brown SGS coefficient while retaining Moeng-like horizontal numerics.
@@ -46,7 +46,7 @@ diagnostic SGS, and total curves remain separate.
 
 The paper reports `u*/Ug` values from `0.0402` to `0.0448` across the seven
 runs, and a normalized vertically integrated **resolved plus SGS** TKE plateau
-near `0.7`. WIRE-LES reports its resolved-only integral separately so the
+near `0.7`. JAX-Wind reports its resolved-only integral separately so the
 different quantities remain explicit. Additional reported spectral peak
 ranges are recorded in `reference_results.json`.
 

@@ -1,4 +1,4 @@
-"""WiRE-LES semantic core and JAX interpretations."""
+"""JAX-Wind semantic core and JAX interpretations."""
 
 from .domain import (
     CELL,

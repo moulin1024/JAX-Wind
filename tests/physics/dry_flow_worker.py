@@ -8,7 +8,7 @@ import jax
 jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp  # noqa: E402
 
-from wireles.domain import (  # noqa: E402
+from jaxwind.domain import (  # noqa: E402
     AddressableField,
     Cell,
     DistributionSpec,
@@ -24,13 +24,13 @@ from wireles.domain import (  # noqa: E402
     YVelocity,
     ZFace,
 )
-from wireles.interpreters.jax_reference import JaxReferenceProjection  # noqa: E402
-from wireles.interpreters.jax_zslab import (  # noqa: E402
+from jaxwind.interpreters.jax_reference import JaxReferenceProjection  # noqa: E402
+from jaxwind.interpreters.jax_zslab import (  # noqa: E402
     ZFaceFieldContext,
     build_zslab_interpreter,
 )
-from wireles.operators import VelocityVector  # noqa: E402
-from wireles.physics import (  # noqa: E402
+from jaxwind.operators import VelocityVector  # noqa: E402
+from jaxwind.physics import (  # noqa: E402
     ConservativeAdvection,
     CoriolisGeostrophic,
     FilteredNeutralLogWall,

@@ -51,7 +51,7 @@ class LagrangianScaleDependentDynamic:
     @property
     def fingerprint(self) -> str:
         return (
-            "wireles.lasd.momentum.v1"
+            "jaxwind.lasd.momentum.v1"
             f"|fgr={self.filter_grid_ratio.hex()}"
             f"|tfr={self.test_filter_ratio.hex()}"
             f"|interval={self.update_interval}"
@@ -101,7 +101,7 @@ class LagrangianScaleDependentScalarFlux:
     @property
     def fingerprint(self) -> str:
         return (
-            "wireles.lasd.scalar.v1"
+            "jaxwind.lasd.scalar.v1"
             f"|initial={self.initial_coefficient.hex()}"
             f"|min={self.minimum_coefficient.hex()}"
             f"|max={self.maximum_coefficient.hex()}"
@@ -133,7 +133,7 @@ class DiagnosticLasdConstants:
     @property
     def fingerprint(self) -> str:
         return (
-            "wireles.lasd.diagnostics.v3"
+            "jaxwind.lasd.diagnostics.v3"
             f"|ce={self.sgs_dissipation_coefficient.hex()}"
             f"|cc={self.scalar_variance_coefficient.hex()}"
             "|production-wall=neutral-log-if-configured"

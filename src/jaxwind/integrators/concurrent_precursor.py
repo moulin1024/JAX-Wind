@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from wireles.physics.wind_tunnel import ConcurrentPrecursorEnvironment
+from jaxwind.physics.wind_tunnel import ConcurrentPrecursorEnvironment
 
 from .ab2 import AB2PersistentState, AB2StepResult, step
 from .ab2_boussinesq import step_boussinesq

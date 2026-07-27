@@ -50,7 +50,7 @@ class NeutralLogWall:
 class FilteredNeutralLogWall:
     """Local neutral log wall evaluated from a 2-D filtered velocity.
 
-    The filter matches the legacy WiRE-LES wall path: the first-level
+    The filter matches the legacy JAX-Wind wall path: the first-level
     horizontal velocity is sharply filtered at the combined grid/test-filter
     scale before the local speed and stress direction are evaluated.
     """

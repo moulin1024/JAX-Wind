@@ -5,7 +5,7 @@ import unittest
 
 import jax.numpy as jnp
 
-from wireles.domain import (
+from jaxwind.domain import (
     AddressableField,
     Cell,
     DistributionSpec,
@@ -17,7 +17,7 @@ from wireles.domain import (
     PressureRhs,
     UniformGrid,
 )
-from wireles.pressure import SpectralFDPressureAdapter
+from jaxwind.pressure import SpectralFDPressureAdapter
 
 
 class FakeSolver:

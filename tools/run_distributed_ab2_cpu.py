@@ -15,7 +15,7 @@ import time
 from run_distributed_projection_cpu import _free_local_port, _source_environment
 
 
-RESULT_PREFIX = "WIRELES_DISTRIBUTED_AB2_RESULT="
+RESULT_PREFIX = "JAXWIND_DISTRIBUTED_AB2_RESULT="
 
 
 def _launch(args: argparse.Namespace) -> int:
@@ -136,7 +136,7 @@ def _worker(args: argparse.Namespace) -> int:
         import jax.numpy as jnp
         from spectral_fd import runtime_from_initialized_jax
 
-        from wireles.domain import (
+        from jaxwind.domain import (
             AcceptedClock,
             AddressableField,
             Cell,
@@ -156,18 +156,18 @@ def _worker(args: argparse.Namespace) -> int:
             YVelocityTendency,
             ZFace,
         )
-        from wireles.effects import (
+        from jaxwind.effects import (
             ZSlabCheckpointLayout,
             load_ab2_checkpoint,
             save_ab2_checkpoint,
         )
-        from wireles.integrators import AB2Config, VectorFieldResult, cold_start, step
-        from wireles.interpreters.jax_zslab import (
+        from jaxwind.integrators import AB2Config, VectorFieldResult, cold_start, step
+        from jaxwind.interpreters.jax_zslab import (
             ZFaceFieldContext,
             build_zslab_interpreter,
         )
-        from wireles.operators import VelocityVector
-        from wireles.physics import (
+        from jaxwind.operators import VelocityVector
+        from jaxwind.physics import (
             ConservativeAdvection,
             DryFlowModel,
             DryFlowVectorField,
@@ -175,7 +175,7 @@ def _worker(args: argparse.Namespace) -> int:
             NeutralLogWall,
             StaticSmagorinsky,
         )
-        from wireles.pressure import build_spectral_fd_pressure_adapter
+        from jaxwind.pressure import build_spectral_fd_pressure_adapter
 
         if (
             jax.process_count() != args.processes

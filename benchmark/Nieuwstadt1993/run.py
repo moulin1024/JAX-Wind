@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the Nieuwstadt1993 benchmark with the new semantic WIRE-LES stack."""
+"""Run the Nieuwstadt1993 benchmark with the new semantic JAX-Wind stack."""
 
 from __future__ import annotations
 
@@ -32,8 +32,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-steps", type=int)
     parser.add_argument("--sample-every", type=int, default=20)
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--run-label", default="WIRE-LES new LASD 40×40×48")
-    parser.add_argument("--legend-label", default="WIRE-LES new LASD 40×40×48 GPU")
+    parser.add_argument("--run-label", default="JAX-Wind new LASD 40×40×48")
+    parser.add_argument("--legend-label", default="JAX-Wind new LASD 40×40×48 GPU")
     parser.add_argument("--nx", type=int, default=40)
     parser.add_argument("--ny", type=int, default=40)
     parser.add_argument("--nz", type=int, default=48)
@@ -64,9 +64,9 @@ def main() -> None:
     env = os.environ.copy()
     env["MPLBACKEND"] = "Agg"
     pressure_source = Path(
-        env.get("WIRELES_SPECTRAL_FD_SOURCE", ROOT / "external" / "bw1000_benchmark")
+        env.get("JAXWIND_SPECTRAL_FD_SOURCE", ROOT / "external" / "bw1000_benchmark")
     ).resolve()
-    env["WIRELES_SPECTRAL_FD_SOURCE"] = str(pressure_source)
+    env["JAXWIND_SPECTRAL_FD_SOURCE"] = str(pressure_source)
     env["PYTHONPATH"] = os.pathsep.join(
         (str(ROOT / "src"), str(pressure_source), env.get("PYTHONPATH", ""))
     )

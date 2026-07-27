@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Overlay WIRE-LES statistics on the original Andrén et al. (1994) figures.
+"""Overlay JAX-Wind statistics on the original Andrén et al. (1994) figures.
 
 The article PDF is deliberately supplied by the caller and is never copied into the
 benchmark tree.  The page/axis registration below targets the institutional scan linked
@@ -76,20 +76,20 @@ FIGURE15_AXES = (
 # remains useful without a separate caption lookup.
 FIGURES = (
     FigureSpec(1, 5, (120, 455, 900, 1370)),
-    FigureSpec(2, 8, (100, 90, 900, 675), "WIRE-LES total TKE"),
+    FigureSpec(2, 8, (100, 90, 900, 675), "JAX-Wind total TKE"),
     FigureSpec(3, 9, (205, 90, 830, 1365)),
-    FigureSpec(4, 10, (250, 90, 820, 1360), "WIRE-LES on panels (a,b)"),
-    FigureSpec(5, 11, (100, 90, 900, 900), "WIRE-LES total variances"),
-    FigureSpec(6, 12, (100, 90, 900, 1335), "WIRE-LES total flux"),
-    FigureSpec(7, 13, (250, 750, 795, 1370), "WIRE-LES scalar variance"),
-    FigureSpec(8, 14, (245, 90, 800, 690), "WIRE-LES scalar flux"),
+    FigureSpec(4, 10, (250, 90, 820, 1360), "JAX-Wind on panels (a,b)"),
+    FigureSpec(5, 11, (100, 90, 900, 900), "JAX-Wind total variances"),
+    FigureSpec(6, 12, (100, 90, 900, 1335), "JAX-Wind total flux"),
+    FigureSpec(7, 13, (250, 750, 795, 1370), "JAX-Wind scalar variance"),
+    FigureSpec(8, 14, (245, 90, 800, 690), "JAX-Wind scalar flux"),
     FigureSpec(9, 15, (215, 90, 815, 700)),
     FigureSpec(10, 15, (215, 730, 815, 1365)),
     FigureSpec(11, 17, (220, 90, 815, 690)),
     FigureSpec(12, 18, (125, 90, 905, 1370)),
-    FigureSpec(13, 19, (115, 90, 905, 985), "WIRE-LES complete scalar-flux budget"),
-    FigureSpec(14, 20, (240, 90, 810, 1350), "WIRE-LES LASD diffusivities"),
-    FigureSpec(15, 21, (105, 450, 905, 1370), "WIRE-LES spectra"),
+    FigureSpec(13, 19, (115, 90, 905, 985), "JAX-Wind complete scalar-flux budget"),
+    FigureSpec(14, 20, (240, 90, 810, 1350), "JAX-Wind LASD diffusivities"),
+    FigureSpec(15, 21, (105, 450, 905, 1370), "JAX-Wind spectra"),
     FigureSpec(16, 23, (195, 90, 815, 1340)),
     FigureSpec(17, 24, (205, 90, 815, 700)),
     FigureSpec(18, 24, (205, 720, 815, 1365)),
@@ -422,7 +422,7 @@ def _make_all_figure_montage(
     draw.text(
         (outer_gap, outer_gap),
         (
-            "Andrén et al. (1994): paper figures + WIRE-LES "
+            "Andrén et al. (1994): paper figures + JAX-Wind "
             + ("LASD" if is_lasd else "static Smagorinsky")
         ),
         font=header_font,
@@ -442,9 +442,9 @@ def _make_all_figure_montage(
     draw.text(
         (outer_gap + 112, legend_y),
         (
-            "WIRE-LES LASD: red = total/resolved; blue = diagnostic SGS contribution"
+            "JAX-Wind LASD: red = total/resolved; blue = diagnostic SGS contribution"
             if is_lasd
-            else "WIRE-LES static Smagorinsky: red = available resolved/total diagnostic"
+            else "JAX-Wind static Smagorinsky: red = available resolved/total diagnostic"
         ),
         font=legend_font,
         fill=(40, 46, 54),
@@ -504,10 +504,10 @@ def main() -> None:
     budget = _budget_data(args.results)
     is_lasd = profile["total_scalar_variance_over_cstar2"] is not None
     active_comparisons = {
-        2: "WIRE-LES total TKE" if is_lasd else "WIRE-LES resolved TKE",
-        4: "WIRE-LES on panels (a,b)" if is_lasd else "WIRE-LES on panel (a)",
-        5: "WIRE-LES total variances" if is_lasd else "WIRE-LES resolved variances",
-        6: "WIRE-LES total flux",
+        2: "JAX-Wind total TKE" if is_lasd else "JAX-Wind resolved TKE",
+        4: "JAX-Wind on panels (a,b)" if is_lasd else "JAX-Wind on panel (a)",
+        5: "JAX-Wind total variances" if is_lasd else "JAX-Wind resolved variances",
+        6: "JAX-Wind total flux",
     }
 
     pages = {spec.page: _render_page(args.paper_pdf, spec.page) for spec in FIGURES}
@@ -522,7 +522,7 @@ def main() -> None:
     _label(
         figure2,
         (510, 505),
-        "WIRE-LES LASD total" if is_lasd else "WIRE-LES resolved",
+        "JAX-Wind LASD total" if is_lasd else "JAX-Wind resolved",
     )
     figure2 = _crop(figure2, (100, 90, 900, 675))
 
@@ -543,7 +543,7 @@ def main() -> None:
     _label(
         figure4,
         (555, 500),
-        "WIRE-LES LASD" if is_lasd else "WIRE-LES static Smag.",
+        "JAX-Wind LASD" if is_lasd else "JAX-Wind static Smag.",
     )
     figure4 = _crop(figure4, (250, 90, 820, 1360))
 
@@ -562,7 +562,7 @@ def main() -> None:
     _label(
         figure5,
         (560, 660),
-        "WIRE-LES total (diagnostic SGS)" if is_lasd else "WIRE-LES resolved",
+        "JAX-Wind total (diagnostic SGS)" if is_lasd else "JAX-Wind resolved",
     )
     figure5 = _crop(figure5, (100, 90, 900, 900))
 
@@ -579,7 +579,7 @@ def main() -> None:
         profile["total_vw"],
         profile["height"],
     )
-    _label(figure6, (390, 690), "WIRE-LES total")
+    _label(figure6, (390, 690), "JAX-Wind total")
     figure6 = _crop(figure6, (100, 90, 900, 1335))
 
     scalar_outputs = []
@@ -601,7 +601,7 @@ def main() -> None:
         _label(figure7, (480, 790), "red total; blue diag. SGS")
         figure7 = _crop(figure7, (250, 750, 795, 1370))
         scalar_outputs.append(
-            ("Figure 7 - scalar variance", "fig07_wireles_overlay.png", figure7)
+            ("Figure 7 - scalar variance", "fig07_jaxwind_overlay.png", figure7)
         )
 
         figure8 = pages[14]
@@ -622,7 +622,7 @@ def main() -> None:
         _label(figure8, (485, 515), "red total; blue diag. SGS")
         figure8 = _crop(figure8, (245, 90, 800, 690))
         scalar_outputs.append(
-            ("Figure 8 - scalar flux", "fig08_wireles_overlay.png", figure8)
+            ("Figure 8 - scalar flux", "fig08_jaxwind_overlay.png", figure8)
         )
 
         figure14 = pages[20]
@@ -638,16 +638,16 @@ def main() -> None:
             profile["scalar_diffusivity_m2_s"],
             profile["height"],
         )
-        _label(figure14, (500, 745), "WIRE-LES LASD")
+        _label(figure14, (500, 745), "JAX-Wind LASD")
         figure14 = _crop(figure14, (240, 90, 810, 1350))
         scalar_outputs.append(
-            ("Figure 14 - SGS diffusivities", "fig14_wireles_overlay.png", figure14)
+            ("Figure 14 - SGS diffusivities", "fig14_jaxwind_overlay.png", figure14)
         )
         active_comparisons.update(
             {
-                7: "WIRE-LES scalar variance",
-                8: "WIRE-LES scalar flux",
-                14: "WIRE-LES LASD diffusivities",
+                7: "JAX-Wind scalar variance",
+                8: "JAX-Wind scalar flux",
+                14: "JAX-Wind LASD diffusivities",
             }
         )
 
@@ -669,11 +669,11 @@ def main() -> None:
         scalar_outputs.append(
             (
                 "Figure 13 - resolved scalar-flux budget",
-                "fig13_wireles_overlay.png",
+                "fig13_jaxwind_overlay.png",
                 figure13,
             )
         )
-        active_comparisons[13] = "WIRE-LES complete scalar-flux budget"
+        active_comparisons[13] = "JAX-Wind complete scalar-flux budget"
 
     if spectra is not None:
         figure15 = pages[21]
@@ -693,27 +693,27 @@ def main() -> None:
                 spectra["k_ustar_over_f"],
                 spectra[name],
             )
-        _label(figure15, (640, 470), "WIRE-LES LASD")
+        _label(figure15, (640, 470), "JAX-Wind LASD")
         figure15 = _crop(figure15, (105, 450, 905, 1370))
         scalar_outputs.append(
-            ("Figure 15 - spectra", "fig15_wireles_overlay.png", figure15)
+            ("Figure 15 - spectra", "fig15_jaxwind_overlay.png", figure15)
         )
-        active_comparisons[15] = "WIRE-LES spectra"
+        active_comparisons[15] = "JAX-Wind spectra"
 
     outputs = (
-        ("Figure 2 - integrated TKE", "fig02_wireles_overlay.png", figure2),
+        ("Figure 2 - integrated TKE", "fig02_jaxwind_overlay.png", figure2),
         (
             "Figure 4 - mean velocity/scalar gradients",
-            "fig04_wireles_overlay.png",
+            "fig04_jaxwind_overlay.png",
             figure4,
         ),
-        ("Figure 5 - velocity variances", "fig05_wireles_overlay.png", figure5),
-        ("Figure 6 - momentum fluxes", "fig06_wireles_overlay.png", figure6),
+        ("Figure 5 - velocity variances", "fig05_jaxwind_overlay.png", figure5),
+        ("Figure 6 - momentum fluxes", "fig06_jaxwind_overlay.png", figure6),
     ) + tuple(scalar_outputs)
     for _, filename, image in outputs:
         image.save(output / filename, dpi=(180, 180))
     montage = _make_montage([(title, image) for title, _, image in outputs])
-    montage.save(output / "andren1994_wireles_paper_overlays.png", dpi=(180, 180))
+    montage.save(output / "andren1994_jaxwind_paper_overlays.png", dpi=(180, 180))
 
     all_figures = [(spec, _crop(pages[spec.page], spec.crop)) for spec in FIGURES]
     all_montage = _make_all_figure_montage(
@@ -721,7 +721,7 @@ def main() -> None:
         is_lasd=is_lasd,
         active_comparisons=active_comparisons,
     )
-    all_output = output / "andren1994_all_figures_wireles_overlay.png"
+    all_output = output / "andren1994_all_figures_jaxwind_overlay.png"
     all_montage.save(all_output, dpi=(180, 180), optimize=True)
     print(all_output)
 

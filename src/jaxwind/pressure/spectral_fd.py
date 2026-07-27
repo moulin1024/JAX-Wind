@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import math
 from typing import Any
 
-from wireles.domain import (
+from jaxwind.domain import (
     AddressableField,
     Cell,
     EqualZSlab,

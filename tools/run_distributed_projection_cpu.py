@@ -14,7 +14,7 @@ import sys
 import time
 
 
-RESULT_PREFIX = "WIRELES_DISTRIBUTED_RESULT="
+RESULT_PREFIX = "JAXWIND_DISTRIBUTED_RESULT="
 
 
 def _free_local_port() -> int:
@@ -27,7 +27,7 @@ def _source_environment(root: Path) -> dict[str, str]:
     environment = dict(os.environ)
     paths = [str(root / "src")]
     dependency = Path(
-        environment.get("WIRELES_SPECTRAL_FD_SOURCE", root.parent / "bw1000_benchmark")
+        environment.get("JAXWIND_SPECTRAL_FD_SOURCE", root.parent / "bw1000_benchmark")
     )
     if dependency.exists():
         paths.append(str(dependency))
@@ -177,7 +177,7 @@ def _worker(args: argparse.Namespace) -> int:
         import jax.numpy as jnp
         from spectral_fd import runtime_from_initialized_jax
 
-        from wireles.domain import (
+        from jaxwind.domain import (
             AddressableField,
             Candidate,
             Cell,
@@ -192,12 +192,12 @@ def _worker(args: argparse.Namespace) -> int:
             YVelocity,
             ZFace,
         )
-        from wireles.interpreters.jax_zslab import (
+        from jaxwind.interpreters.jax_zslab import (
             ZFaceFieldContext,
             build_zslab_interpreter,
         )
-        from wireles.operators import VelocityVector, project
-        from wireles.pressure import build_spectral_fd_pressure_adapter
+        from jaxwind.operators import VelocityVector, project
+        from jaxwind.pressure import build_spectral_fd_pressure_adapter
 
         if jax.process_count() != args.processes:
             raise RuntimeError("JAX process count does not match the launcher")

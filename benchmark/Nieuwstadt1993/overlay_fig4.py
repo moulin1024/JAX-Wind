@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Overlay a WIRE-LES horizontal-variance profile on Nieuwstadt Fig. 4."""
+"""Overlay a JAX-Wind horizontal-variance profile on Nieuwstadt Fig. 4."""
 
 from __future__ import annotations
 

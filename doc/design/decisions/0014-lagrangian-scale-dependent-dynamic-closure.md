@@ -94,7 +94,7 @@ reconstruction for resolved interior information.
 ### Diagnostic SGS energy and scalar variance
 
 LASD does not manufacture an isotropic stress trace or scalar variance.  For
-comparison plots only, WIRE-LES diagnoses SGS energy from the local
+comparison plots only, JAX-Wind diagnoses SGS energy from the local
 production--dissipation balance
 
 \[

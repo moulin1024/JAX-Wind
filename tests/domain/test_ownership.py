@@ -6,7 +6,7 @@ import subprocess
 import sys
 import unittest
 
-from wireles.domain import (
+from jaxwind.domain import (
     Cell,
     DistributionSpec,
     DomainAxis,
@@ -53,7 +53,7 @@ class DomainImportTests(unittest.TestCase):
             [
                 sys.executable,
                 "-c",
-                "import sys; import wireles.domain; "
+                "import sys; import jaxwind.domain; "
                 "assert not any(n == 'jax' or n.startswith('jax.') "
                 "for n in sys.modules)",
             ],

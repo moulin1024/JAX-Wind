@@ -14,12 +14,12 @@ from typing import Any
 import jax
 import jax.numpy as jnp
 
-from wireles.interpreters.jax_actuator_disk import (
+from jaxwind.interpreters.jax_actuator_disk import (
     filtered_disk_velocity_correction,
     gaussian_convolved_annulus,
 )
 
-from wireles.domain import (
+from jaxwind.domain import (
     Accepted,
     Cell,
     Candidate,
@@ -59,8 +59,8 @@ from wireles.domain import (
     YVelocityTendency,
     ZFace,
 )
-from wireles.operators import PressureGradient, VelocityVector
-from wireles.physics.dry_flow import (
+from jaxwind.operators import PressureGradient, VelocityVector
+from jaxwind.physics.dry_flow import (
     ConservativeAdvection,
     CoriolisGeostrophic,
     FilteredNeutralLogWall,
@@ -69,7 +69,7 @@ from wireles.physics.dry_flow import (
     NoRotation,
     StaticSmagorinsky,
 )
-from wireles.physics.boussinesq import (
+from jaxwind.physics.boussinesq import (
     BoussinesqFields,
     ConservativeScalarAdvection,
     LinearBoussinesqBuoyancy,
@@ -79,7 +79,7 @@ from wireles.physics.boussinesq import (
     ScalarFluxBoundary,
     StaticSmagorinskyScalarFlux,
 )
-from wireles.physics.lasd import (
+from jaxwind.physics.lasd import (
     DiagnosticLasdConstants,
     LagrangianScaleDependentDynamic,
     LagrangianScaleDependentScalarFlux,
@@ -89,7 +89,7 @@ from wireles.physics.lasd import (
     MomentumLasdMemory,
     ScalarLasdMemory,
 )
-from wireles.physics.wind_tunnel import (
+from jaxwind.physics.wind_tunnel import (
     ConcurrentPrecursorEnvironment,
     ConcurrentPrecursorFringe,
     NoActuatorDisk,

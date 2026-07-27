@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Overlay new semantic WIRE-LES diagnostics on Nieuwstadt Figs. 1--17."""
+"""Overlay new semantic JAX-Wind diagnostics on Nieuwstadt Figs. 1--17."""
 
 from __future__ import annotations
 
@@ -29,23 +29,23 @@ COMPOSITE_HEADER_HEIGHT = 132
 COMPOSITE_TITLE_HEIGHT = 50
 
 FIGURE_STATUS = {
-    1: "WIRE-LES total energy",
-    2: "WIRE-LES total + SGS heat flux",
-    3: "WIRE-LES total + SGS variance",
-    4: "WIRE-LES total + SGS variance",
-    5: "WIRE-LES total + SGS variance",
-    6: "WIRE-LES pressure RMS",
-    7: "WIRE-LES third moment",
-    8: "WIRE-LES skewness",
-    9: "WIRE-LES dissipation",
-    10: "WIRE-LES velocity transport",
-    11: "WIRE-LES pressure transport",
-    12: "WIRE-LES updraft fraction",
-    13: "WIRE-LES conditional velocity",
-    14: "WIRE-LES temperature excess",
-    15: "WIRE-LES horizontal spectra",
-    16: "WIRE-LES vertical spectra",
-    17: "WIRE-LES temperature spectra",
+    1: "JAX-Wind total energy",
+    2: "JAX-Wind total + SGS heat flux",
+    3: "JAX-Wind total + SGS variance",
+    4: "JAX-Wind total + SGS variance",
+    5: "JAX-Wind total + SGS variance",
+    6: "JAX-Wind pressure RMS",
+    7: "JAX-Wind third moment",
+    8: "JAX-Wind skewness",
+    9: "JAX-Wind dissipation",
+    10: "JAX-Wind velocity transport",
+    11: "JAX-Wind pressure transport",
+    12: "JAX-Wind updraft fraction",
+    13: "JAX-Wind conditional velocity",
+    14: "JAX-Wind temperature excess",
+    15: "JAX-Wind horizontal spectra",
+    16: "JAX-Wind vertical spectra",
+    17: "JAX-Wind temperature spectra",
 }
 
 
@@ -108,7 +108,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument(
         "--legend-label",
-        default="WIRE-LES new LASD 40×40×48 GPU",
+        default="JAX-Wind new LASD 40×40×48 GPU",
         help="Header shown in the added legend.",
     )
     return parser.parse_args()
@@ -342,7 +342,7 @@ def compose_figures(figures: list[Image.Image]) -> Image.Image:
     draw = ImageDraw.Draw(composite)
     draw.text(
         (COMPOSITE_GAP, 10),
-        "Nieuwstadt et al. (1993): paper figures + new semantic WIRE-LES LASD",
+        "Nieuwstadt et al. (1993): paper figures + new semantic JAX-Wind LASD",
         font=composite_font(34),
         fill=(20, 25, 32),
     )

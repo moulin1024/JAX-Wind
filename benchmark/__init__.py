@@ -1,1 +1,1 @@
-"""Versioned validation cases for WIRE-LES."""
+"""Versioned validation cases for JAX-Wind."""

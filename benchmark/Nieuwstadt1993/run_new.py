@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run Nieuwstadt et al. (1993) with the new semantic WIRE-LES stack."""
+"""Run Nieuwstadt et al. (1993) with the new semantic JAX-Wind stack."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[2]
 SOURCE = ROOT / "src"
 PRESSURE_SOURCE = Path(
     os.environ.get(
-        "WIRELES_SPECTRAL_FD_SOURCE",
+        "JAXWIND_SPECTRAL_FD_SOURCE",
         ROOT / "external" / "bw1000_benchmark",
     )
 )
@@ -34,7 +34,7 @@ jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp  # noqa: E402
 from spectral_fd import runtime_from_initialized_jax  # noqa: E402
 
-from wireles.domain import (  # noqa: E402
+from jaxwind.domain import (  # noqa: E402
     Accepted,
     AcceptedClock,
     AddressableField,
@@ -54,13 +54,13 @@ from wireles.domain import (  # noqa: E402
     YVelocity,
     ZFace,
 )
-from wireles.integrators import AB2Config, cold_start_boussinesq, step_boussinesq  # noqa: E402
-from wireles.interpreters.jax_zslab import (  # noqa: E402
+from jaxwind.integrators import AB2Config, cold_start_boussinesq, step_boussinesq  # noqa: E402
+from jaxwind.interpreters.jax_zslab import (  # noqa: E402
     ZFaceFieldContext,
     build_zslab_interpreter,
 )
-from wireles.operators import VelocityVector, project  # noqa: E402
-from wireles.physics import (  # noqa: E402
+from jaxwind.operators import VelocityVector, project  # noqa: E402
+from jaxwind.physics import (  # noqa: E402
     BoussinesqFields,
     BoussinesqModel,
     BoussinesqVectorField,
@@ -78,7 +78,7 @@ from wireles.physics import (  # noqa: E402
     NoRotation,
     ScalarFluxBoundary,
 )
-from wireles.pressure import build_spectral_fd_pressure_adapter  # noqa: E402
+from jaxwind.pressure import build_spectral_fd_pressure_adapter  # noqa: E402
 
 
 HERE = Path(__file__).resolve().parent
@@ -736,7 +736,7 @@ def save_outputs(
             vars(args)
             | {
                 "output_dir": str(args.output_dir),
-                "implementation": "new semantic src/wireles",
+                "implementation": "new semantic src/jaxwind",
                 "pressure_api": "external spectral_fd runtime API",
                 "integrator": "AB2",
                 "jax_backend": jax.default_backend(),

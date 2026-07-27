@@ -9,7 +9,7 @@ import jax
 jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp  # noqa: E402
 
-from wireles.domain import (  # noqa: E402
+from jaxwind.domain import (  # noqa: E402
     AcceptedClock,
     Cell,
     Evaluated,
@@ -26,12 +26,12 @@ from wireles.domain import (  # noqa: E402
     YVelocityTendency,
     ZFace,
 )
-from wireles.effects import (  # noqa: E402
+from jaxwind.effects import (  # noqa: E402
     ReferenceCheckpointLayout,
     load_ab2_checkpoint,
     save_ab2_checkpoint,
 )
-from wireles.integrators import (  # noqa: E402
+from jaxwind.integrators import (  # noqa: E402
     AB2Config,
     ColdStart,
     PreviousTendency,
@@ -39,11 +39,11 @@ from wireles.integrators import (  # noqa: E402
     cold_start,
     step,
 )
-from wireles.interpreters.jax_reference import (  # noqa: E402
+from jaxwind.interpreters.jax_reference import (  # noqa: E402
     JaxReferencePressureSolver,
     JaxReferenceProjection,
 )
-from wireles.operators import VelocityVector  # noqa: E402
+from jaxwind.operators import VelocityVector  # noqa: E402
 
 
 class ReferenceAB2Tests(unittest.TestCase):

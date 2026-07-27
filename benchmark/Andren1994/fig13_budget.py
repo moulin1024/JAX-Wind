@@ -14,8 +14,8 @@ import jax.numpy as jnp
 import numpy as np
 
 from benchmark.Andren1994 import run as andren
-from wireles.integrators import Evaluation
-from wireles.physics import DiagnosticLasdConstants
+from jaxwind.integrators import Evaluation
+from jaxwind.physics import DiagnosticLasdConstants
 
 
 TERMS = ("production", "subgrid", "transport", "pressure", "coriolis")

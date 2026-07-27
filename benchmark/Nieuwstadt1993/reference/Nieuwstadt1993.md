@@ -57,7 +57,7 @@ published values.
 ## Mapping to the current JAX benchmark
 
 `run_new.py` keeps the paper's physical domain, grid, forcing, initial
-condition, and averaging interval while using the new semantic WIRE-LES
+condition, and averaging interval while using the new semantic JAX-Wind
 implementation:
 
 - JAX/CUDA execution in FP32;

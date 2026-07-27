@@ -65,7 +65,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--no-nyquist-filter",
         action="store_true",
-        help="keep Nyquist modes instead of zeroing them (WIRELES default filters)",
+        help="keep Nyquist modes instead of zeroing them (JAXWIND default filters)",
     )
     parser.add_argument(
         "--tridiag",
@@ -243,7 +243,7 @@ def main() -> int:
     mapped = partial(jax.pmap, axis_name=axis_name)
 
     # Horizontal wavenumbers, Fortran spectral layout (kx halved axis), with
-    # Nyquist wavenumbers zeroed exactly as in WIRELES.
+    # Nyquist wavenumbers zeroed exactly as in JAXWIND.
     np_real = np.float32 if args.dtype == "float32" else np.float64
     kx_np = (2.0 * np.pi * np.fft.rfftfreq(nx, d=args.lx / nx)).astype(np_real)
     ky_np = (2.0 * np.pi * np.fft.fftfreq(ny, d=args.ly / ny)).astype(np_real)

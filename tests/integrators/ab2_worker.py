@@ -11,7 +11,7 @@ jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp  # noqa: E402
 from spectral_fd import runtime_from_initialized_jax  # noqa: E402
 
-from wireles.domain import (  # noqa: E402
+from jaxwind.domain import (  # noqa: E402
     AcceptedClock,
     AddressableField,
     Cell,
@@ -33,27 +33,27 @@ from wireles.domain import (  # noqa: E402
     YVelocityTendency,
     ZFace,
 )
-from wireles.effects import (  # noqa: E402
+from jaxwind.effects import (  # noqa: E402
     ZSlabCheckpointLayout,
     load_ab2_checkpoint,
     save_ab2_checkpoint,
 )
-from wireles.integrators import (  # noqa: E402
+from jaxwind.integrators import (  # noqa: E402
     AB2Config,
     VectorFieldResult,
     cold_start,
     step,
 )
-from wireles.interpreters.jax_reference import (  # noqa: E402
+from jaxwind.interpreters.jax_reference import (  # noqa: E402
     JaxReferencePressureSolver,
     JaxReferenceProjection,
 )
-from wireles.interpreters.jax_zslab import (  # noqa: E402
+from jaxwind.interpreters.jax_zslab import (  # noqa: E402
     ZFaceFieldContext,
     build_zslab_interpreter,
 )
-from wireles.operators import VelocityVector  # noqa: E402
-from wireles.pressure import build_spectral_fd_pressure_adapter  # noqa: E402
+from jaxwind.operators import VelocityVector  # noqa: E402
+from jaxwind.pressure import build_spectral_fd_pressure_adapter  # noqa: E402
 
 
 def main() -> int:

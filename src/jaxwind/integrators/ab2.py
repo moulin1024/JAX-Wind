@@ -6,8 +6,8 @@ from dataclasses import dataclass
 import math
 from typing import Any, Generic, Protocol, TypeAlias, TypeVar
 
-from wireles.domain import AcceptedClock, EvaluationTime
-from wireles.operators import ProjectionResult, project
+from jaxwind.domain import AcceptedClock, EvaluationTime
+from jaxwind.operators import ProjectionResult, project
 
 
 V = TypeVar("V")
@@ -30,7 +30,7 @@ class AB2Config:
     @property
     def fingerprint(self) -> str:
         return (
-            "wireles.ab2.fixed.v1"
+            "jaxwind.ab2.fixed.v1"
             f"|dt={float(self.dt).hex()}"
             "|evaluation=t_n"
             "|projection=terminal-compatible-v1"

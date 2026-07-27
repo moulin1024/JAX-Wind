@@ -10,7 +10,7 @@ from typing import Any, Callable
 
 import numpy as np
 
-from wireles.domain import (
+from jaxwind.domain import (
     Accepted,
     AcceptedClock,
     AddressableField,
@@ -46,15 +46,15 @@ from wireles.domain import (
     YVelocityTendency,
     ZFace,
 )
-from wireles.integrators import (
+from jaxwind.integrators import (
     AB2BoussinesqState,
     AB2Config,
     AB2PersistentState,
     ColdStart,
     PreviousTendency,
 )
-from wireles.operators import VelocityVector
-from wireles.physics import (
+from jaxwind.operators import VelocityVector
+from jaxwind.physics import (
     BoussinesqFields,
     BoussinesqTendency,
     LasdClosureMemory,
@@ -64,9 +64,9 @@ from wireles.physics import (
 )
 
 
-SCHEMA = "wireles.ab2.accepted-checkpoint.v1"
-BOUSSINESQ_SCHEMA_V1 = "wireles.ab2.boussinesq-accepted-checkpoint.v1"
-BOUSSINESQ_SCHEMA = "wireles.ab2.boussinesq-accepted-checkpoint.v2"
+SCHEMA = "jaxwind.ab2.accepted-checkpoint.v1"
+BOUSSINESQ_SCHEMA_V1 = "jaxwind.ab2.boussinesq-accepted-checkpoint.v1"
+BOUSSINESQ_SCHEMA = "jaxwind.ab2.boussinesq-accepted-checkpoint.v2"
 
 
 _CLOSURE_FIELDS = (
@@ -269,7 +269,7 @@ def _reference_velocity(
 def _zslab_velocity(
     archive, prefix: str, layout: ZSlabCheckpointLayout, *, tendency: bool
 ):
-    from wireles.interpreters.jax_zslab import ZFaceFieldContext
+    from jaxwind.interpreters.jax_zslab import ZFaceFieldContext
 
     decomposition = layout.decomposition
     cells = decomposition.regions(Cell)

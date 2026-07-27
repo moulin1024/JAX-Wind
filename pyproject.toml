@@ -3,7 +3,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "wireles"
+name = "jaxwind"
 version = "0.0.0"
 description = "Document-first JAX large-eddy simulation core"
 requires-python = ">=3.11"

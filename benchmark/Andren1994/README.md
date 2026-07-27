@@ -65,7 +65,7 @@ Outputs are written below `benchmark/Andren1994/results/`:
 - `normalized_profiles.csv` uses the paper's `zf/u*` and variance/flux scaling;
 - `ekman_diagnostics.png` shows dimensional solver diagnostics;
 - `andren1994_comparison.png` compares `u*/Ug` with the published multi-code
-  envelope and explicitly distinguishes resolved-only WIRE-LES TKE from the
+  envelope and explicitly distinguishes resolved-only JAX-Wind TKE from the
   paper's resolved-plus-SGS quantity.
 
 The LASD run additionally writes all 13 closure-memory fields, the scalar
@@ -115,10 +115,10 @@ python benchmark/Andren1994/overlay_paper_figures.py \
   --results benchmark/Andren1994/results/lasd_40x40x40
 ```
 
-This produces one sheet, `andren1994_all_figures_wireles_overlay.png`, containing
+This produces one sheet, `andren1994_all_figures_jaxwind_overlay.png`, containing
 all 19 numbered paper figures in order. For LASD, curves are registered on
 Figs. 2, 4(a,b), 5, 6, 7, 8, 13(a-d), 14(a,b), and 15(a-d) when the corresponding
-diagnostics exist. Fig. 13 overlays the same six colored WIRE-LES budget terms
+diagnostics exist. Fig. 13 overlays the same six colored JAX-Wind budget terms
 on all four original code panels; other plots use red for a resolved/total
-WIRE-LES curve and blue for a diagnostic SGS contribution. Paper-only tiles
+JAX-Wind curve and blue for a diagnostic SGS contribution. Paper-only tiles
 remain explicit rather than receiving a misleading substitute quantity.

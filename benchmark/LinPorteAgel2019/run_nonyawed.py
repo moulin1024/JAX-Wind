@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the zero-yaw WiRE-01 case with a concurrent precursor on ``src/wireles``."""
+"""Run the zero-yaw WiRE-01 case with a concurrent precursor on ``src/jaxwind``."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[2]
 SOURCE = ROOT / "src"
 PRESSURE_SOURCE = Path(
     os.environ.get(
-        "WIRELES_SPECTRAL_FD_SOURCE",
+        "JAXWIND_SPECTRAL_FD_SOURCE",
         ROOT / "external" / "bw1000_benchmark",
     )
 )
@@ -37,7 +37,7 @@ from benchmark.LinPorteAgel2019.case import (  # noqa: E402
     PAPER_CASE,
     local_thrust_coefficient,
 )
-from wireles.domain import (  # noqa: E402
+from jaxwind.domain import (  # noqa: E402
     Accepted,
     AcceptedClock,
     AddressableField,
@@ -56,12 +56,12 @@ from wireles.domain import (  # noqa: E402
     YVelocity,
     ZFace,
 )
-from wireles.effects import (  # noqa: E402
+from jaxwind.effects import (  # noqa: E402
     SideBySideStreamLauncher,
     ZSlabCheckpointLayout,
     load_boussinesq_checkpoint,
 )
-from wireles.integrators import (  # noqa: E402
+from jaxwind.integrators import (  # noqa: E402
     AB2Config,
     ConcurrentPrecursorState,
     cold_start_boussinesq,
@@ -69,12 +69,12 @@ from wireles.integrators import (  # noqa: E402
     step_boussinesq,
     step_concurrent_boussinesq_precursor,
 )
-from wireles.interpreters.jax_zslab import (  # noqa: E402
+from jaxwind.interpreters.jax_zslab import (  # noqa: E402
     ZFaceFieldContext,
     build_zslab_interpreter,
 )
-from wireles.operators import VelocityVector, project  # noqa: E402
-from wireles.physics import (  # noqa: E402
+from jaxwind.operators import VelocityVector, project  # noqa: E402
+from jaxwind.physics import (  # noqa: E402
     BoussinesqFields,
     BoussinesqModel,
     BoussinesqVectorField,
@@ -98,7 +98,7 @@ from wireles.physics import (  # noqa: E402
     WindTunnelBoussinesqVectorField,
     WindTunnelModel,
 )
-from wireles.pressure import build_spectral_fd_pressure_adapter  # noqa: E402
+from jaxwind.pressure import build_spectral_fd_pressure_adapter  # noqa: E402
 
 
 HERE = Path(__file__).resolve().parent

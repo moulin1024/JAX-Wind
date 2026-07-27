@@ -18,7 +18,7 @@ class ScaleSystem:
 
     length: float
     velocity: float
-    version: str = "wireles.mechanical-scales.v1"
+    version: str = "jaxwind.mechanical-scales.v1"
 
     def __post_init__(self) -> None:
         if not math.isfinite(self.length) or self.length <= 0.0:
@@ -102,7 +102,7 @@ class BoussinesqScaleSystem:
 
     mechanical: ScaleSystem
     potential_temperature_difference: float
-    version: str = "wireles.boussinesq-scales.v1"
+    version: str = "jaxwind.boussinesq-scales.v1"
 
     def __post_init__(self) -> None:
         if (
@@ -170,7 +170,7 @@ class PassiveScalarScaleSystem:
 
     mechanical: ScaleSystem
     concentration: float
-    version: str = "wireles.passive-scalar-scales.v1"
+    version: str = "jaxwind.passive-scalar-scales.v1"
 
     def __post_init__(self) -> None:
         if not math.isfinite(self.concentration) or self.concentration <= 0.0:

@@ -1,96 +1,106 @@
-# WiRE-LES reconstruction
+# JAX-Wind
 
-WiRE-LES is a document-first reconstruction with an active, law-tested core
-under `src/wireles`. New solver code is admitted only after its semantic
-objects, morphisms, laws, effects, and acceptance tests are specified under
-[`doc/design/`](doc/design/README.md).
+JAX-Wind is a research large-eddy simulation (LES) code for atmospheric
+boundary layers and wind-energy flows. It combines a pure, compositional
+numerical model with JAX implementations for local and distributed execution.
 
-The previous JAX implementation is frozen under
-[`legacy/jax/`](legacy/jax/README.md). The C++ and Fortran/CUDA implementations
-remain under `legacy/` as implementation evidence and regression references;
-they are not normative specifications for the reconstruction.
+The project is built around an explicit separation between physical meaning and
+array representation. Fields carry their quantity, grid location, ownership,
+and integration phase; JAX arrays are one interpretation of those semantic
+objects rather than the public model itself. This makes conservation laws,
+restart behavior, and agreement between reference and distributed
+implementations directly testable.
 
-The design starts from three commitments:
+> [!NOTE]
+> JAX-Wind is under active development (`0.0.0`) and is intended for solver
+> research and reproducible benchmark work. APIs and checkpoint formats may
+> change. Validate a configuration before using its results for scientific or
+> engineering decisions.
 
-1. The pure mathematical model is independent of JAX, storage layout, and
-   process topology.
-2. Composition and law preservation are the primary API criteria; categorical
-   language is used only where it yields a concrete interface or executable
-   law.
-3. I/O, configuration, randomness, logging, checkpointing, and distributed
-   communication are explicit effects or interpretations around a pure core.
+## Capabilities
 
-Read the design documents in order. Open decisions are deliberately recorded
-instead of being hidden in placeholder code.
+- incompressible flow on uniform three-dimensional grids;
+- cell-centered horizontal velocity and face-centered vertical velocity;
+- compatible gradient, divergence, and pressure-projection operators;
+- independent JAX reference, local, and equal-z-slab interpretations;
+- JAX-native packed halo exchange for distributed z slabs;
+- transpose, exact SPIKE, and adaptive SPIKE pressure solves through
+  [`spectral-fd`](external/bw1000_benchmark/README.md);
+- fixed-step AB2 integration with explicit startup, accepted-time diagnostics,
+  and restart-complete tendency history;
+- conservative dry-flow and scalar transport with horizontal two-thirds
+  truncation;
+- neutral log-law walls, pressure-gradient forcing, Coriolis forcing, static
+  Smagorinsky, and Lagrangian scale-dependent dynamic (LASD) closures;
+- Boussinesq buoyancy, prescribed scalar fluxes, and optional upper-level
+  Rayleigh damping;
+- actuator-disk forcing and concurrent-precursor fringe coupling; and
+- reference and per-rank checkpoints for dry and velocity-scalar states.
 
-The first implemented vertical slice contains:
+The first production decomposition is an equal z slab. General meshes, uneven
+slabs, and a stable high-level simulation API are not currently provided.
 
-- array-independent grid, location, mesh, ownership, and field types;
-- the accepted equal z-slab `Cell` and `ZFace` ownership mapping;
-- an independent bounded JAX reference interpretation;
-- local and JAX-native z-slab interpretations of the compatible three-dimensional
-  gradient/divergence complex;
-- transient packed `ppermute` halo contexts with one/two/four-device commuting
-  tests;
-- one higher-order projection program shared by the reference and production
-  interpretations;
-- an owned-cell adapter for `spectral-fd` transpose, exact SPIKE, and adaptive
-  SPIKE pressure solves;
-- a fixed-step AB2 higher-order integrator with explicit Euler startup,
-  accepted-time diagnostics, one terminal projection, and persistent tendency
-  history;
-- accepted-boundary reference and per-rank z-slab checkpoints with exact
-  continuation tests, including AB2 tendency history and complete LASD
-  coefficient/contraction/trajectory memory;
-- the first real dry-flow vector field: conservative two-thirds-truncated advection,
-  constant kinematic pressure-gradient driving, a local neutral log-law wall,
-  static Smagorinsky SGS stress divergence, and tagged
-  Coriolis--geostrophic rotation with optional non-traditional horizontal
-  Coriolis component;
-- a shared velocity/gradient bundle, packed velocity and stress halos, and
-  term-by-term reference versus one/two/four-slab commuting tests;
-- momentum and passive-scalar Lagrangian scale-dependent dynamic closures,
-  prescribed conservative scalar wall flux, and separately labeled diagnostic
-  SGS energy/scalar variance.
+## Installation
 
-Run the active core tests with:
+JAX-Wind requires Python 3.11 or newer. Clone the pressure-solver submodule with
+the repository:
 
 ```bash
-pytest -q
+git clone --recurse-submodules https://github.com/moulin1024/JAX-Wind.git
+cd JAX-Wind
 ```
 
-The spectral pressure solver is pinned as a Git submodule at
-`external/bw1000_benchmark`. Clone the repository recursively, or initialize
-the dependency in an existing checkout:
+For an existing clone, initialize the submodule with:
 
 ```bash
 git submodule update --init --recursive
 ```
 
-Run the true multi-process CPU projection gate with one local CPU device and
-one owned z-slab per process:
+Create an isolated environment and install both projects in editable mode:
 
 ```bash
-python tools/run_distributed_projection_cpu.py --processes 4
+python3.11 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e external/bw1000_benchmark
+python -m pip install -e .
+python -m pip install pytest
 ```
 
-Set `WIRELES_SPECTRAL_FD_SOURCE` only when overriding the pinned
-`spectral-fd` source with another editable checkout. The complete automated
-1/2/4-process gate is opt-in because it binds loopback coordinator sockets:
+The default JAX installation is suitable for CPU development. For GPU
+execution, install the JAX build that matches the accelerator and CUDA runtime
+on the target system.
+
+The Python distribution and import package are named `jaxwind`:
+
+```python
+from jaxwind import EqualZSlab, UniformGrid
+```
+
+Project-specific environment variables use the `JAXWIND_` prefix.
+
+## Verify the installation
+
+Run the core test suite:
 
 ```bash
-WIRELES_RUN_MULTIPROCESS_CPU_TESTS=1 \
-  pytest -q tests/interpreters/test_projection_multiprocess_cpu.py
+python -m pytest -q
 ```
 
-Run six complete AB2 steps, including a per-rank checkpoint/restart comparison:
+The default suite covers semantic ownership, reference and z-slab operators,
+projection, dry and Boussinesq physics, LASD, checkpoints, and integrators.
+Tests that open local coordinator sockets are opt-in.
+
+To exercise a true two-process CPU projection:
 
 ```bash
-python tools/run_distributed_ab2_cpu.py \
-  --processes 4 --dtype float32 --method spike --steps 6
+export JAXWIND_SPECTRAL_FD_SOURCE="$PWD/external/bw1000_benchmark"
+python tools/run_distributed_projection_cpu.py \
+  --processes 2 --dtype float32 --methods transpose,spike,spike-adaptive
 ```
 
-Use the real dry-flow vector field instead of the manufactured AB2 forcing:
+To advance the real dry-flow vector field through AB2 and verify per-rank
+checkpoint continuation:
 
 ```bash
 python tools/run_distributed_ab2_cpu.py \
@@ -98,45 +108,94 @@ python tools/run_distributed_ab2_cpu.py \
   --vector-field dry
 ```
 
-Run the first SI-configured, nondimensional-float32 static-Smagorinsky neutral
-Ekman development benchmark:
+Run the complete one-, two-, and four-process CPU gates with:
 
 ```bash
-python benchmark/NeutralEkman/run.py \
-  --nx 16 --ny 16 --nz 32 --dt 1.0 --hours 1.0 \
-  --dtype float32 \
-  --output benchmark/NeutralEkman/results/static_smag_16x16x32_1h
+JAXWIND_RUN_MULTIPROCESS_CPU_TESTS=1 \
+  python -m pytest -q \
+  tests/interpreters/test_projection_multiprocess_cpu.py \
+  tests/integrators/test_ab2_multiprocess_cpu.py
 ```
 
-The case writes averaged profiles, an Ekman hodograph, history, summary, and an
-accepted-boundary checkpoint. See
-[`benchmark/NeutralEkman/README.md`](benchmark/NeutralEkman/README.md) for the
-canonical 64³ command and the distinction between development and stationary
-validation runs.
+These commands bind loopback coordinator sockets and require the local
+environment to permit subprocess networking.
 
-Run the paper-matched Andrén et al. (1994) neutral Ekman intercomparison case:
+## Architecture
 
-```bash
-python benchmark/Andren1994/run.py
+JAX-Wind keeps dependencies flowing from effectful applications toward a pure
+semantic core:
+
+| Path | Responsibility |
+| --- | --- |
+| [`src/jaxwind/domain`](src/jaxwind/domain) | Grids, locations, quantities, ownership, phases, and scale systems |
+| [`src/jaxwind/operators`](src/jaxwind/operators) | Backend-independent projection program and operator contracts |
+| [`src/jaxwind/physics`](src/jaxwind/physics) | Pure dry-flow, Boussinesq, SGS, actuator-disk, and fringe models |
+| [`src/jaxwind/integrators`](src/jaxwind/integrators) | AB2 and concurrent-precursor state transitions |
+| [`src/jaxwind/interpreters`](src/jaxwind/interpreters) | Reference, local JAX, and distributed z-slab implementations |
+| [`src/jaxwind/pressure`](src/jaxwind/pressure) | Semantic adapter around the external pressure solver |
+| [`src/jaxwind/effects`](src/jaxwind/effects) | Checkpoint and execution-side adapters |
+| [`tests`](tests) | Algebraic, physical, interpretation, restart, and distribution tests |
+| [`benchmark`](benchmark) | Reproducible physical cases and comparison tooling |
+
+The governing dependency direction is:
+
+```text
+benchmarks and effects
+        ↓
+JAX interpreters
+        ↓
+integrators
+        ↓
+physics and operators
+        ↓
+semantic domain types
 ```
 
-It uses the published `40³`, `4000 × 2000 × 1500 m`, 45°N configuration and
-Table A.1 initial profiles, then writes paper-normalized profiles and a
-multi-code-envelope comparison. See
-[`benchmark/Andren1994/README.md`](benchmark/Andren1994/README.md); use
-`--quick` for an eight-step smoke run.
+The domain and physics layers do not discover devices, read files, or choose a
+process topology. Runtime concerns remain in interpreters and application
+shells.
 
-Run momentum/scalar LASD as an external fifth SGS closure family, including
-the passive scalar and restart-continuous diagnostic history:
+## Benchmarks
 
-```bash
-python benchmark/Andren1994/run_lasd.py
-python benchmark/Andren1994/overlay_paper_figures.py \
-  --paper-pdf tmp/pdfs/andren1994.pdf
-```
+The repository includes research workflows for:
 
-The production pressure adapter is available through the optional `pressure`
-dependency extra. True multi-process CPU execution, deterministic AB2, and the
-first dry-flow vector field are validated; GPU execution and physical ABL
-stationarity/grid-convergence benchmarks remain later implementation
-milestones. Archived runners are not silently reused as active solver code.
+- the [Andrén et al. (1994) neutral Ekman
+  intercomparison](benchmark/Andren1994/README.md);
+- the [Nieuwstadt et al. (1993) dry convective boundary-layer
+  comparison](benchmark/Nieuwstadt1993/reference/Nieuwstadt1993.md); and
+- the [Lin & Porté-Agel (2019) wind-turbine wake
+  case](benchmark/LinPorteAgel2019/README.md), including precursor,
+  actuator-disk, and fringe-coupling studies.
+
+Benchmark scripts are case-specific research workflows rather than a stable
+command-line interface. Read the corresponding case documentation before
+running them; canonical cases can require long integrations, accelerator
+hardware, plotting dependencies, and developed restart files.
+
+## Design and development
+
+The active solver is documentation-first. Public concepts are specified under
+[`doc/design`](doc/design/README.md), and accepted choices are recorded as
+[architecture decision records](doc/design/decisions/README.md). A change to a
+public abstraction should identify:
+
+1. its semantic inputs, outputs, and phase changes;
+2. the conservation, composition, or restart laws it promises;
+3. its reference and production interpretations;
+4. its ownership and communication behavior; and
+5. a test that fails for a plausible incorrect implementation.
+
+The reference implementation is intentionally independent of optimized
+distributed kernels. New production code should agree with the reference on
+small problems before performance work begins.
+
+## Legacy implementations
+
+Earlier JAX, C++, and Fortran/CUDA implementations are preserved under
+[`legacy`](legacy). They provide historical evidence and regression material,
+but they do not define the architecture or semantics of the active
+`src/jaxwind` package.
+
+## License
+
+JAX-Wind is released under the [MIT License](LICENSE).

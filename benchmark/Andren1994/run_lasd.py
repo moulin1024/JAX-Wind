@@ -19,7 +19,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE = ROOT / "src"
 PRESSURE_SOURCE = Path(
-    os.environ.get("WIRELES_SPECTRAL_FD_SOURCE", ROOT.parent / "bw1000_benchmark")
+    os.environ.get("JAXWIND_SPECTRAL_FD_SOURCE", ROOT.parent / "bw1000_benchmark")
 )
 for source in (ROOT, SOURCE, PRESSURE_SOURCE):
     if source.exists() and str(source) not in sys.path:
@@ -35,7 +35,7 @@ jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp  # noqa: E402
 from spectral_fd import runtime_from_initialized_jax  # noqa: E402
 
-from wireles.domain import (  # noqa: E402
+from jaxwind.domain import (  # noqa: E402
     Accepted,
     AcceptedClock,
     AddressableField,
@@ -50,19 +50,19 @@ from wireles.domain import (  # noqa: E402
     UniformGrid,
     VerticalBoundary,
 )
-from wireles.effects import (  # noqa: E402
+from jaxwind.effects import (  # noqa: E402
     ZSlabCheckpointLayout,
     load_boussinesq_checkpoint,
     save_boussinesq_checkpoint,
 )
-from wireles.integrators import (  # noqa: E402
+from jaxwind.integrators import (  # noqa: E402
     AB2Config,
     cold_start_boussinesq,
     step_boussinesq,
 )
-from wireles.interpreters.jax_zslab import build_zslab_interpreter  # noqa: E402
-from wireles.operators import project  # noqa: E402
-from wireles.physics import (  # noqa: E402
+from jaxwind.interpreters.jax_zslab import build_zslab_interpreter  # noqa: E402
+from jaxwind.operators import project  # noqa: E402
+from jaxwind.physics import (  # noqa: E402
     BoussinesqFields,
     BoussinesqModel,
     BoussinesqVectorField,
@@ -80,7 +80,7 @@ from wireles.physics import (  # noqa: E402
     NoRayleighDamping,
     ScalarFluxBoundary,
 )
-from wireles.pressure import build_spectral_fd_pressure_adapter  # noqa: E402
+from jaxwind.pressure import build_spectral_fd_pressure_adapter  # noqa: E402
 
 
 HERE = Path(__file__).resolve().parent
@@ -770,7 +770,7 @@ def run(args: argparse.Namespace) -> dict:
         / statistics_ustar**3
     )
     summary = {
-        "schema": "wireles.andren1994.lasd-passive-scalar.v1",
+        "schema": "jaxwind.andren1994.lasd-passive-scalar.v1",
         "case": {
             "citation": "Andren et al. (1994)",
             "comparison_role": "external fifth SGS closure family",
@@ -829,7 +829,7 @@ def run(args: argparse.Namespace) -> dict:
                 np.max(normalized_sgs_scalar_variance)
             ),
             "model_count_interpretation": (
-                "four paper SGS/code families plus WIRE-LES LASD; "
+                "four paper SGS/code families plus JAX-Wind LASD; "
                 "the paper plots two Mason variants"
             ),
         },

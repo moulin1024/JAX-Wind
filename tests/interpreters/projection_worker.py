@@ -9,7 +9,7 @@ jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp  # noqa: E402
 from spectral_fd import runtime_from_initialized_jax  # noqa: E402
 
-from wireles.domain import (  # noqa: E402
+from jaxwind.domain import (  # noqa: E402
     AddressableField,
     Candidate,
     Cell,
@@ -26,16 +26,16 @@ from wireles.domain import (  # noqa: E402
     YVelocity,
     ZFace,
 )
-from wireles.interpreters.jax_reference import (  # noqa: E402
+from jaxwind.interpreters.jax_reference import (  # noqa: E402
     JaxReferencePressureSolver,
     JaxReferenceProjection,
 )
-from wireles.interpreters.jax_zslab import (  # noqa: E402
+from jaxwind.interpreters.jax_zslab import (  # noqa: E402
     ZFaceFieldContext,
     build_zslab_interpreter,
 )
-from wireles.operators import VelocityVector, project  # noqa: E402
-from wireles.pressure import build_spectral_fd_pressure_adapter  # noqa: E402
+from jaxwind.operators import VelocityVector, project  # noqa: E402
+from jaxwind.pressure import build_spectral_fd_pressure_adapter  # noqa: E402
 
 
 def main() -> int:

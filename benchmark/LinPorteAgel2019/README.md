@@ -32,7 +32,7 @@ small-filter approximation.
 
 ## Zero-yaw main-solver milestone
 
-`run_nonyawed.py` exercises the new `src/wireles` implementation at zero yaw.
+`run_nonyawed.py` exercises the new `src/jaxwind` implementation at zero yaw.
 The paper itself reports 10°, 20°, and 30° cases, so zero yaw is an intentional
 bring-up extension rather than a paper validation point. It uses `C_T=0.78`
 and `C_T'=1.445727`, the first standard-ADM operating coefficient in the case
@@ -51,7 +51,7 @@ Run the production zero-yaw case:
 ```bash
 env PYTHONPATH=src JAX_PLATFORMS=cuda JAX_ENABLE_X64=1 \
   XLA_PYTHON_CLIENT_PREALLOCATE=false \
-  WIRELES_SPECTRAL_FD_SOURCE="$PWD/external/bw1000_benchmark" \
+  JAXWIND_SPECTRAL_FD_SOURCE="$PWD/external/bw1000_benchmark" \
   python benchmark/LinPorteAgel2019/run_nonyawed.py \
   --execution cuda-streams
 ```
@@ -139,7 +139,7 @@ visualisation spans paired times 2.250--3.488 s at 12 frames/s.
 `run_precursor.py` isolates the periodic, pressure-driven neutral boundary
 layer: it contains no turbine, actuator force, or fringe. The paper's
 Lagrangian scale-dependent dynamic SGS closure is retained by advancing a
-passive neutral scalar product state. The lower wall uses the legacy WiRE-LES
+passive neutral scalar product state. The lower wall uses the legacy JAX-Wind
 sharp two-dimensional filter (`fgr=1.5`, `tfr=2`) before evaluating the local
 log-law stress, together with the Porté-Agel first-interior-face shear
 correction. Correlated startup perturbations replace grid-cell white noise.
@@ -149,7 +149,7 @@ Run a cold precursor and capture its developed final interval:
 ```bash
 env PYTHONPATH=src JAX_PLATFORMS=cuda JAX_ENABLE_X64=1 \
   XLA_PYTHON_CLIENT_PREALLOCATE=false \
-  WIRELES_SPECTRAL_FD_SOURCE="$PWD/external/bw1000_benchmark" \
+  JAXWIND_SPECTRAL_FD_SOURCE="$PWD/external/bw1000_benchmark" \
   python benchmark/LinPorteAgel2019/run_precursor.py --flow-gif \
   --output-dir benchmark_results/LinPorteAgel2019_precursor
 ```
