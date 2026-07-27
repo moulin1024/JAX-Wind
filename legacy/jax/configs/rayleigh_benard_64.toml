@@ -1,0 +1,78 @@
+# Free-slip Rayleigh-Benard convection case for jax/run_single.py.
+# Domain lengths are physical lengths. The solver normalizes internally by z_i.
+# This is an unsaturated dry Boussinesq setup with fixed bottom/top potential
+# temperature and molecular viscosity/diffusivity derived from Ra and Pr.
+
+[grid]
+nx = 64
+ny = 64
+nz = 64
+lx = 2.0
+ly = 2.0
+lz = 1.0
+z_i = 1.0
+
+[time]
+scheme = "ab2"
+steps = 2000
+log_every = 100
+dt = 1.0e-3
+
+[physics]
+u_fric = 0.0
+zo = 1.0e-4
+bl_height = 1.0
+vonk = 0.4
+pressure_force = 0.0
+momentum_wall_model = "free_slip"
+initial_velocity_noise = 1.0e-5
+rayleigh_number = 1.0e6
+rayleigh_prandtl = 1.0
+
+[wall_filter]
+fgr = 1.5
+tfr = 2.0
+
+[sgs]
+model = "smagorinsky"
+precision = "float32"
+cs_count = 10
+smag_cs = 0.0
+
+[numerics]
+projection_mode = "stage"
+horizontal_dealias = true
+pressure_filter_nyquist = false
+
+[thermo]
+enabled = true
+moisture_enabled = false
+theta0 = 300.0
+g = 9.81
+theta_bc = "dirichlet"
+theta_bottom = 300.5
+theta_top = 299.5
+theta_perturbation_amplitude = 1.0e-3
+surface_theta_flux = 0.0
+qv0 = 0.0
+qv_initial_gradient = 0.0
+surface_qv_flux = 0.0
+qv_floor = 0.0
+scalar_sgs_model = "fixed_prandtl"
+prandtl_t = 1.0
+schmidt_t = 1.0
+
+[runtime]
+precision = "float64"
+sgs_precision = "float32"
+use_jit = true
+
+[profiling]
+enabled = false
+warmup = 20
+
+[postprocess]
+dump_fields = true
+field_dump_start_step = 0
+field_output_dir = "rayleigh_benard_fields"
+field_output_prefix = "fields"

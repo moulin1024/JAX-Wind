@@ -1,0 +1,72 @@
+# Neutral Ekman / geostrophic-wind driven boundary-layer case.
+# Surface stress is computed dynamically from the first off-wall velocity and
+# neutral log law; u_fric is not used as a prescribed stress magnitude here.
+
+[grid]
+nx = 256
+ny = 256
+nz = 256
+lx = 4000.0
+ly = 4000.0
+lz = 1000.0
+z_i = 1000.0
+
+[time]
+scheme = "ab2"
+steps = 20000
+log_every = 100
+dt = 0.1
+
+[physics]
+u_fric = 0.0
+zo = 0.1
+bl_height = 1000.0
+vonk = 0.4
+pressure_force = 0.0
+coriolis_f = 1.0e-4
+geostrophic_u = 8.0
+geostrophic_v = 0.0
+momentum_wall_model = "abl"
+wall_stress_model = "dynamic_neutral"
+initial_condition = "geostrophic"
+initial_velocity_noise = 0.05
+
+[wall_filter]
+fgr = 1.5
+tfr = 2.0
+
+[sgs]
+model = "lasd"
+precision = "float32"
+cs_count = 10
+smag_cs = 0.16
+
+[numerics]
+projection_mode = "final"
+horizontal_dealias = true
+pressure_filter_nyquist = false
+
+[thermo]
+enabled = false
+moisture_enabled = false
+theta0 = 300.0
+g = 9.81
+surface_theta_flux = 0.0
+scalar_sgs_model = "lasd"
+prandtl_t = 0.74
+schmidt_t = 0.74
+
+[runtime]
+precision = "float64"
+sgs_precision = "float32"
+use_jit = true
+
+[profiling]
+enabled = false
+warmup = 100
+
+[postprocess]
+dump_fields = false
+field_dump_start_step = 0
+field_output_dir = "neutral_ekman_fields"
+field_output_prefix = "fields"

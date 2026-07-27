@@ -1,0 +1,29 @@
+#!/bin/bash
+
+##################################################
+# SBATCH
+##################################################
+
+#SBATCH --chdir ./job/${case_name}
+#SBATCH --ntasks ${job_np}
+#SBATCH --cpus-per-task 1
+#SBATCH --time ${job_time}
+#SBATCH --account wire
+
+##################################################
+# MODULE
+##################################################
+
+module purge
+module load intel
+module load intel-mpi
+module load fftw
+
+ulimit -s unlimited
+ulimit -c unlimited
+
+##################################################
+# JOB
+##################################################
+# RUN
+cp input/config log && cd src && make -j${job_np} && srun ./wireles_src >> ../log

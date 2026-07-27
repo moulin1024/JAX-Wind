@@ -1,0 +1,78 @@
+module rhs
+use precision
+use dimen
+contains
+    attributes(global) subroutine rhs_assemble(rhs,c,divt)
+
+    !---------------------------------------------------------------------------
+    ! declaration
+    !---------------------------------------------------------------------------
+
+    implicit none
+
+    real(fp), dimension(nx,ny,nz2), intent(out) :: rhs
+    real(fp), dimension(nx,ny,nz2), intent(in) :: c,divt
+
+    integer :: i,j,k
+
+    i = (blockIdx%x - 1) * blockDim%x + threadIdx%x
+    j = (blockIdx%y - 1) * blockDim%y + threadIdx%y
+    k = (blockIdx%z - 1) * blockDim%z + threadIdx%z
+    !---------------------------------------------------------------------------
+    ! main code
+    !---------------------------------------------------------------------------
+    ! do k=2,nzb+1
+    if (k>1 .and. k<nz2)    rhs(i,j,k)=-c(i,j,k)-divt(i,j,k)
+    ! end do
+
+    end subroutine rhs_assemble
+
+    attributes(global) subroutine const_pres_grad(rhs,device_id)
+
+    !---------------------------------------------------------------------------
+    ! declaration
+    !---------------------------------------------------------------------------
+
+    implicit none
+
+    real(fp), dimension(nx,ny,nz2), intent(inout) :: rhs
+    integer,value,intent(in) :: device_id
+    integer :: i,j,k
+    real(fp) global_height
+
+    i = (blockIdx%x - 1) * blockDim%x + threadIdx%x
+    j = (blockIdx%y - 1) * blockDim%y + threadIdx%y
+    k = (blockIdx%z - 1) * blockDim%z + threadIdx%z
+
+    global_height = (device_id*nzb+k-1.5d0)*dz
+    !---------------------------------------------------------------------------
+    ! main code
+    !---------------------------------------------------------------------------
+    if( global_height <= bl_height/z_i ) then
+        rhs(i,j,k)=rhs(i,j,k)+pres_force
+    end if
+
+    end subroutine const_pres_grad
+
+    attributes(global) subroutine turbine_force_rhs(rhs,turb_f)
+
+    !---------------------------------------------------------------------------
+    ! declaration
+    !---------------------------------------------------------------------------
+
+    implicit none
+
+    real(fp), dimension(nx,ny,nz2), intent(inout) :: rhs
+    real(fp), dimension(nx,ny,nz2), intent(in) :: turb_f
+    integer :: i,j,k
+
+    i = (blockIdx%x - 1) * blockDim%x + threadIdx%x
+    j = (blockIdx%y - 1) * blockDim%y + threadIdx%y
+    k = (blockIdx%z - 1) * blockDim%z + threadIdx%z
+    !---------------------------------------------------------------------------
+    ! main code
+    !---------------------------------------------------------------------------
+     rhs(i,j,k)=rhs(i,j,k) - turb_f(i,j,k)
+
+    end subroutine turbine_force_rhs
+end module rhs

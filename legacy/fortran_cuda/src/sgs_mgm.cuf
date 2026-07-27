@@ -1,0 +1,202 @@
+module sgs_mgm
+use precision
+use dimen
+! For mgm model
+real(fp),parameter :: ryx2 = (dy/dx)**2
+real(fp),parameter :: rzx2 = (dz/(dx*(fgr)))**2
+real(fp),parameter :: eps = 1e-6
+real(fp),parameter :: Ce_const = 3._fp*sqrt(dz/(dx*(fgr)))!1.0
+contains
+
+attributes(global) subroutine mgm(txx,txy,txz,&
+                                    tyy,tyz,tzz,&
+                                    dudx,dudy,dudz,&
+                                    dvdx,dvdy,dvdz,&
+                                    dwdx,dwdy,dwdz,&
+                                    device_id)
+!---------------------------------------------------------------------------
+! This subroutine compute the stress in the turbulent flow
+!---------------------------------------------------------------------------
+!---------------------------------------------------------------------------
+! declaration
+! dudx - filtered velocity gradient
+! txx  - sub-grid stress
+! s11  - strain rate
+! g11  - gradient tensor
+! ux_  - temp variable for (de)staggering on u,v node and w node
+!---------------------------------------------------------------------------
+    implicit none    
+    real(fp),dimension(nx,ny,nz2),intent(in) :: dudx,dudy,dudz,&
+                                                dvdx,dvdy,dvdz,&
+                                                dwdx,dwdy,dwdz
+    real(fp),dimension(nx,ny,nz2),intent(inout) :: txx,tyy,tzz,&
+                                                    txy,txz,tyz
+    integer,value,intent(in) :: device_id
+    real(fp) s11,s12,s13,s22,s23,s33
+    real(fp) G11,G12,G13,G23,G33,G22
+    real(fp) Gkk,GijSij,ksgs,factor,S
+    real(fp) ux_,uy_,uz_,vx_,vy_,vz_,wx_,wy_,wz_
+    integer :: i, j, k, kstart
+
+    i = (blockIdx%x - 1)* blockDim%x + threadIdx%x;
+    j = (blockIdx%y - 1)* blockDim%y + threadIdx%y;
+    k = (blockIdx%z - 1)* blockDim%z + threadIdx%z;
+    
+    ! u, v node
+    if (k>1 .and. k<nz2) then
+        if (k == 2 .and. device_id == 0) then
+            ux_ = dudx(i,j,k)
+            uy_ = dudy(i,j,k)
+            uz_ = dudz(i,j,k)
+            vx_ = dvdx(i,j,k)
+            vy_ = dvdy(i,j,k)
+            vz_ = dvdz(i,j,k)
+            wx_ = 0.5_fp*(dwdx(i,j,k)+dwdx(i,j,k+1))
+            wy_ = 0.5_fp*(dwdy(i,j,k)+dwdy(i,j,k+1))
+            wz_ = -(dudx(i,j,k)+dvdy(i,j,k))
+        else
+            ux_ = dudx(i,j,k)
+            uy_ = dudy(i,j,k)
+            uz_ = 0.5_fp*(dudz(i,j,k)+dudz(i,j,k+1))
+            vx_ = dvdx(i,j,k)
+            vy_ = dvdy(i,j,k)
+            vz_ = 0.5_fp*(dvdz(i,j,k)+dvdz(i,j,k+1))
+            wx_ = 0.5_fp*(dwdx(i,j,k)+dwdx(i,j,k+1))
+            wy_ = 0.5_fp*(dwdy(i,j,k)+dwdy(i,j,k+1))
+            wz_ = -(dudx(i,j,k)+dvdy(i,j,k))
+        end if
+        
+        s11 = ux_
+        s22 = vy_
+        s33 = wz_
+        s12 = 0.5_fp*(uy_+vx_)
+        s13 = 0.5_fp*(uz_+wx_)
+        s23 = 0.5_fp*(vz_+wy_)
+
+        G11 = ux_**2+ryx2*uy_**2+rzx2*uz_**2
+        G22 = vx_**2+ryx2*vy_**2+rzx2*vz_**2
+        G33 = wx_**2+ryx2*wy_**2+rzx2*wz_**2          
+        G12 = ux_*vx_+ryx2*uy_*vy_+rzx2*uz_*vz_
+        G13 = ux_*wx_+ryx2*uy_*wy_+rzx2*uz_*wz_
+        G23 = vx_*wx_+ryx2*vy_*wy_+rzx2*vz_*wz_
+
+        Gkk = G11 + G22 + G33
+        ! Tensor G_ij S_ij
+        if (abs(Gkk) > 1e-6) then
+            GijSij = G11*S11+G22*S22+G33*S33&
+                + 2._fp*(G12*S12+G13*S13+G23*S23)
+            ! Clip the energy backscatter
+            GijSij = min(GijSij,0._fp)
+            ! Eq. 3
+            Ksgs = (2._fp*delta/Ce_const)**2*(GijSij/Gkk)**2
+            
+            factor = 2._fp*Ksgs/Gkk
+            ! Eq. 1
+            txx(i,j,k) = factor*G11 - 2._fp*iRe/(u_scale*z_i)*S11
+            tyy(i,j,k) = factor*G22 - 2._fp*iRe/(u_scale*z_i)*S22
+            tzz(i,j,k) = factor*G33 - 2._fp*iRe/(u_scale*z_i)*S33
+            txy(i,j,k) = factor*G12 - 2._fp*iRe/(u_scale*z_i)*S12
+        else ! Switch back to Smagorinky if Gkk is ill-conditioned	 
+            s = s11**2 + s22**2 + s33**2+ &
+                (s12**2 + s13**2 + s23**2)*2._fp
+            s = sqrt(2._fp*s)
+            factor = -2._fp*co**2*delta**2*s-2._fp*iRe/(u_scale*z_i)
+            txx(i,j,k) = factor*s11
+            tyy(i,j,k) = factor*s22
+            tzz(i,j,k) = factor*s33
+            txy(i,j,k) = factor*s12
+        end if
+    end if
+    ! w node
+    if (device_id == 0) then
+        kstart = 3  ! At the bottom the stress is pre-determined
+    else 
+        kstart = 2
+    end if 
+
+    if (k>=kstart .and. k<nz2) then
+        ux_ = 0.5_fp*(dudx(i,j,k-1)+dudx(i,j,k))
+        uy_ = 0.5_fp*(dudy(i,j,k-1)+dudy(i,j,k))
+        uz_ = dudz(i,j,k)
+        vx_ = 0.5_fp*(dvdx(i,j,k-1)+dvdx(i,j,k))
+        vy_ = 0.5_fp*(dvdy(i,j,k-1)+dvdy(i,j,k))
+        vz_ = dvdz(i,j,k)
+        wx_ = dwdx(i,j,k)
+        wy_ = dwdy(i,j,k)
+        wz_ = 0.5_fp*(dwdz(i,j,k-1)+dwdz(i,j,k))
+
+        s11 = ux_
+        s22 = vy_
+        s33 = wz_
+        s12 = 0.5_fp*(uy_+vx_)
+        s13 = 0.5_fp*(uz_+wx_)
+        s23 = 0.5_fp*(vz_+wy_)
+
+        G11 = ux_**2+ryx2*uy_**2+rzx2*uz_**2
+        G22 = vx_**2+ryx2*vy_**2+rzx2*vz_**2
+        G33 = wx_**2+ryx2*wy_**2+rzx2*wz_**2          
+        G12 = ux_*vx_+ryx2*uy_*vy_+rzx2*uz_*vz_
+        G23 = vx_*wx_+ryx2*vy_*wy_+rzx2*vz_*wz_
+        G13 = ux_*wx_+ryx2*uy_*wy_+rzx2*uz_*wz_
+
+        Gkk = G11 + G22 + G33
+        if (abs(Gkk) > 1e-6) then          
+            ! Tensor G_ij S_ij
+            GijSij = G11*S11+G22*S22+G33*S33&
+                + 2._fp*(G12*S12+G13*S13+G23*S23)
+            ! Clip the energy backscatter
+            GijSij = min(GijSij,0._fp)
+            ! Eq. 3
+            Ksgs = (2._fp*delta/Ce_const)**2*(GijSij/Gkk)**2
+            factor = 2._fp*Ksgs/Gkk
+            ! Eq. 1
+            txz(i,j,k) = factor*G13-2._fp*iRe/(u_scale*z_i)*S13
+            tyz(i,j,k) = factor*G23-2._fp*iRe/(u_scale*z_i)*S23
+        else	 
+            s = s11**2 + s22**2 + s33**2+ &
+                (s12**2 + s13**2 + s23**2)*2._fp
+            s = sqrt(2._fp*s)
+            factor = -2._fp*co**2*delta**2*s-2._fp*iRe/(u_scale*z_i)
+            txz(i,j,k) = factor*S13
+            tyz(i,j,k) = factor*s23
+        end if
+    end if
+    if (device_id == nprocs-1) then
+        txz(i,j,nzb+1)=0._fp
+        tyz(i,j,nzb+1)=0._fp
+    end if
+end subroutine mgm
+
+subroutine sgs_stag(txx,txy,txz,tyy,tyz,tzz,&
+                    dudx,dudy,dudz,dvdx,dvdy,dvdz,dwdx,dwdy,dwdz,device_id)
+!---------------------------------------------------------------------------
+! This subroutine compute the stress in the turbulent flow
+!---------------------------------------------------------------------------
+!---------------------------------------------------------------------------
+! declaration
+! dudx - filtered velocity gradient
+! txx  - sub-grid stress
+! s11  - strain rate
+! g11  - gradient tensor
+! ux_  - temp variable for (de)staggering on u,v node and w node
+!---------------------------------------------------------------------------
+    use cudafor   
+    real(fp),dimension(nx,ny,nz2),intent(in),device :: dudx,dudy,dudz,&
+                                                        dvdx,dvdy,dvdz,&
+                                                        dwdx,dwdy,dwdz
+    real(fp),dimension(nx,ny,nz2),intent(inout),device :: txx,tyy,tzz,&
+                                                            txy,txz,tyz
+    integer,intent(in) :: device_id
+
+    ! Cuda variable
+    type(dim3) :: grid, tBlock
+    tBlock = dim3(16,16,2)
+    grid = dim3(nx/16,ny/16,nz2/2)
+
+    call mgm<<<grid, tBlock>>>(txx,txy,txz,tyy,tyz,tzz,&
+                                dudx,dudy,dudz,dvdx,dvdy,dvdz,dwdx,dwdy,dwdz,&
+                                device_id)
+end subroutine sgs_stag
+
+
+end module sgs_mgm

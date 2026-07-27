@@ -1,0 +1,35 @@
+#!/bin/bash
+
+##################################################
+# SBATCH
+##################################################
+
+#SBATCH --chdir ./job/${case_name}
+#SBATCH --ntasks ${job_np}
+#SBATCH --time ${job_time}
+#SBATCH --account wire
+#SBATCH --partition gpu
+#SBATCH --qos gpu
+#SBATCH --gres gpu:${job_np}
+
+##################################################
+# MODULE
+##################################################
+
+ulimit -s unlimited
+ulimit -c unlimited
+
+##################################################
+# JOB
+##################################################
+# RUN
+module load nvhpc/20.9-mpi
+
+export OPAL_PREFIX=/ssoft/spack/arvine/v1/opt/spack/linux-rhel7-haswell/gcc-4.8.5/nvhpc-20.9-x3xajoqwspk3y354uglkfryqnu2icmu5/Linux_x86_64/2020/comm_libs/mpi/
+export OMPI_MCA_use_eager_rdma=1 
+export OMPI_MCA_mtu=4096 
+export OMPI_MCA_max_inline_data=256
+export OMPI_MCA_btl_openib_warn_no_device_params_found=0
+
+cp input/config log && cd src && make -j8 && mpirun -np ${job_np} ./wireles_src >> ../log
+

@@ -1,0 +1,782 @@
+module sgs
+    use precision
+    use dimen
+    use cudafor
+    use iso_c_binding
+    use cufft_m
+    use filter
+    use update_m
+
+    real(fp), parameter :: const = 2._fp*(delta**2)
+    real(fp), parameter :: tf1=tfr
+    real(fp), parameter :: tf2=tfr*tfr
+    real(fp), parameter :: tf1_2=tf1**2
+    real(fp), parameter :: tf2_2=tf2**2
+    real(fp), parameter :: beta_min = 1._fp/(tf1*tf2)
+    ! real(fp), parameter :: beta_max = 100
+    real(fp), parameter :: cs2_min = 0.001_fp*0.001_fp
+    real(fp), parameter :: cs2_max = 0.9_fp*0.9_fp
+
+    contains
+    subroutine subgrid_stress(txx,txy,txz,tyy,tyz,tzz,&
+                              u,v,w,&
+                              dudx,dudy,dudz,&
+                              dvdx,dvdy,dvdz,&
+                              dwdx,dwdy,dwdz, &
+                              LM_old,MM_old,QN_old,NN_old,cs2,&
+                              t,rank,nall)
+
+        !---------------------------------------------------------------------------
+        ! declaration
+        !---------------------------------------------------------------------------
+
+        implicit none
+        integer*4 i,j,k,kstart,stagger_flag,istat
+        real(fp),dimension(nx,ny,nz2),intent(out),device   :: txx,txy,txz,tyy,tyz,tzz
+        real(fp),dimension(nx,ny,nz2),intent(in),device    :: u,v,w,&
+                                                              dudx,dudy,dudz,&
+                                                              dvdx,dvdy,dvdz,&
+                                                              dwdx,dwdy,dwdz
+        real(fp),dimension(nx,ny,nz2),intent(inout),device :: LM_old,MM_old,QN_old,NN_old,cs2
+        integer,intent(in) :: t,rank,nall
+        ! internal variable
+        real(fp),dimension(:,:,:,:),allocatable,device :: Sij                                                         
+        real(fp),dimension(:,:,:),allocatable,device :: u_lag,v_lag,w_lag
+        real(fp),dimension(:,:),allocatable,device :: txzp,tyzp
+        real(fp),dimension(nx,ny,nz2) :: debug
+        ! Cuda variable
+        type(c_ptr) :: plan_vector(2),plan_tensor(2)
+        type(dim3) :: grid, tBlock
+        tBlock = dim3(16,16,2)
+        grid = dim3(nx/16,ny/16,nzb/2)
+        integer :: stat_flag = 1
+        save u_lag,v_lag,w_lag,Sij,u_lag,v_lag,w_lag,txzp,tyzp,stat_flag,plan_vector,plan_tensor
+
+        !---------------------------------------------------------------------------
+        ! 0. prepare (at uvp nodes)
+        !---------------------------------------------------------------------------
+        if (stat_flag /= 0) then
+            allocate(Sij(nx,ny,nz2,6),STAT=stat_flag)
+            allocate(u_lag(nx,ny,nz2),STAT=stat_flag)
+            allocate(v_lag(nx,ny,nz2),STAT=stat_flag)
+            allocate(w_lag(nx,ny,nz2),STAT=stat_flag)
+            allocate(txzp(nx,ny),STAT=stat_flag)
+            allocate(tyzp(nx,ny),STAT=stat_flag)
+            ! Create batch fft plan for 4d arrays
+            call get_4Dbatchfft_plan(plan_vector,3)
+            call get_4Dbatchfft_plan(plan_tensor,6)
+        end if
+        ! stress boundary condition at bottom has been given,
+        ! thus, it needs to be saved and restored. here is for saving bc
+
+        if (rank == 0) then
+            !$cuf kernel do <<<*,*>>>
+            do j=1,ny
+                do i=1,nx
+                    txzp(i,j)=txz(i,j,2)
+                    tyzp(i,j)=tyz(i,j,2)
+                end do
+            end do
+        end if
+        
+        call get_strain<<<grid,tblock>>>(Sij,&
+                                         dudx,dudy,dudz,&
+                                         dvdx,dvdy,dvdz,&
+                                         dwdx,dwdy,dwdz,&
+                                         rank,0)
+
+        !---------------------------------------------------------------------------
+        ! 1. get cs2 (at uvp nodes)
+        !---------------------------------------------------------------------------
+        !---------------------------------------------------------------------------
+        !   lasd
+        ! Initialize cs with Smagorinsky coefficient and lagarangian velocity with 0
+        if (t.eq.1) then
+            cs2 = co**2   ! Move it to 
+            u_lag = 0.
+            v_lag = 0.
+            w_lag = 0.
+            call update_uv(cs2,rank,nall)
+        end if
+        ! Compute lagarangian velocity with 0
+        call get_u_lag<<<grid,tblock>>>(u_lag,v_lag,w_lag,u,v,w)
+
+        if (mod(t-1,cs_count) == 0 .and. t /= 1 ) then
+
+            call optim_sd(Cs2,&
+                          u,v,w,u_lag,v_lag,w_lag,Sij,&
+                          LM_old,MM_old,QN_old,NN_old,&
+                          plan_vector,plan_tensor,&
+                          t,rank,nall)
+
+            u_lag = 0._fp
+            v_lag = 0._fp
+            w_lag = 0._fp
+
+            call update_uv(cs2,rank,nall)
+        end if
+
+        ! ---------------------------------------------------------------------------
+        ! 2. get Tau
+        ! ---------------------------------------------------------------------------
+        ! ---------------------------------------------------------------------------
+        ! 2.1 u, v layer
+        call get_stress_uv<<<grid,tblock>>>(txx,txy,tyy,tzz,&
+                                            cs2,Sij,rank)
+
+        ! debug = cs2
+        ! print *,'gpu',debug(10,10,nzb+1)
+        ! debug_field = txx!(:,:,:,1)
+        ! print *,debug_field(10,10,10)
+        !---------------------------------------------------------------------------
+        ! 2.2 w layer
+        call get_strain<<<grid,tblock>>>(Sij,&
+                                         dudx,dudy,dudz,&
+                                         dvdx,dvdy,dvdz,&
+                                         dwdx,dwdy,dwdz,&
+                                         rank,1)
+
+        call get_stress_w<<<grid,tblock>>>(txz,tyz,cs2,&
+                                           Sij,rank)
+
+        !---------------------------------------------------------------------------
+        ! 3. finalke
+        !---------------------------------------------------------------------------
+        ! enforce b.c. of Tau
+        if (rank==0) then
+            !$cuf kernel do <<<*,*>>>
+            do j=1,ny
+                do i=1,nx
+                    txz(i,j,2)=txzp(i,j)
+                    tyz(i,j,2)=tyzp(i,j)
+                end do
+            end do
+        end if
+
+        if (rank==nprocs-1) then
+            !$cuf kernel do <<<*,*>>>
+            do j=1,ny
+                do i=1,nx
+                    txz(i,j,nzb+1)=0.0d0
+                    tyz(i,j,nzb+1)=0.0d0
+                end do
+            end do
+        end if
+
+    end subroutine subgrid_stress
+
+    subroutine optim_sd(Cs2,&
+                        u,v,w,u_lag,v_lag,w_lag,Sij,&
+                        LM_old,MM_old,QN_old,NN_old,&
+                        plan_vector,plan_tensor,&
+                        t,rank,nall)
+        !---------------------------------------------------------------------------
+        ! declaration
+        !---------------------------------------------------------------------------
+        implicit none
+        integer*4 i,j,k,ii,kend,kk,istat,flag
+        real(fp),dimension(nx,ny,nz2),intent(inout),device :: cs2
+        real(fp),dimension(nx,ny,nz2),intent(in),device    :: u,v,w,u_lag,v_lag,w_lag
+
+        real(fp),dimension(nx,ny,nz2) :: debug
+        ! Strain tensor: 11,12,13,22,23,33
+        real(fp),dimension(nx,ny,nz2,6),intent(in),device  :: Sij
+        ! LM,MM,QN,NN
+        real(fp),dimension(nx,ny,nz2),intent(inout),device :: LM_old,MM_old,QN_old,NN_old
+        type(c_ptr),intent(in) :: plan_vector(2),plan_tensor(2)
+        integer,intent(in) :: t,rank,nall
+        ! Internal variables
+        real(fp),dimension(:,:,:),allocatable,device :: LM,MM,QN,NN
+        real(fp),dimension(:,:,:,:),allocatable,device :: Sij_hat,SSij_hat,uu_hat,u_hat
+        ! Cuda variable
+        type(dim3) :: grid, tBlock
+        tBlock = dim3(16,16,2)
+        grid = dim3(nx/16,ny/16,nzb/2)
+        integer :: stat_flag = 1
+
+        save LM,MM,QN,NN,Sij_hat,SSij_hat,uu_hat,u_hat
+
+        !---------------------------------------------------------------------------
+        ! main code
+        !---------------------------------------------------------------------------
+        if(stat_flag /= 0) then
+            allocate(LM(nx,ny,nz2),STAT=stat_flag)
+            allocate(MM(nx,ny,nz2),STAT=stat_flag)
+            allocate(QN(nx,ny,nz2),STAT=stat_flag)
+            allocate(NN(nx,ny,nz2),STAT=stat_flag)
+
+            allocate(Sij_hat (nx,ny,nz2,6),STAT=stat_flag)
+            allocate(SSij_hat(nx,ny,nz2,6),STAT=stat_flag)
+            allocate(uu_hat  (nx,ny,nz2,6),STAT=stat_flag)
+            allocate(u_hat   (nx,ny,nz2,3),STAT=stat_flag)
+        end if
+
+        call get_uu<<<grid,tBlock>>>(uu_hat,u_hat,u,v,w)
+        call get_SSij<<<grid,tBlock>>>(SSij_hat,Sij_hat,Sij)       
+
+        call get_LMQN(LM,MM,u_hat,uu_hat,Sij_hat,SSij_hat,tf1,plan_vector,plan_tensor)
+        call get_LMQN(QN,NN,u_hat,uu_hat,Sij_hat,SSij_hat,tf2,plan_vector,plan_tensor)
+        
+        if (t-1.eq.(cs_count) .and. resub_flag == 0 .and. sim_flag < 2) then
+            call load_LMQN_old<<<grid,tBlock>>>(LM,MM,LM_old,MM_old,0)
+            call load_LMQN_old<<<grid,tBlock>>>(QN,NN,QN_old,NN_old,0)
+        end if
+        
+        ! must be updated top and bot for intep3d
+        call update(LM_old,rank,nall)
+        call update(MM_old,rank,nall)
+        call update(QN_old,rank,nall)
+        call update(NN_old,rank,nall)
+ 
+        if (rank==0) then
+            !$cuf kernel do(2) <<<*,*>>>
+            do j=1,ny
+                do i=1,nx
+                    LM_old(i,j,1) = LM_old(i,j,2)
+                    MM_old(i,j,1) = MM_old(i,j,2)
+                    QN_old(i,j,1) = QN_old(i,j,2)
+                    NN_old(i,j,1) = NN_old(i,j,2)
+                end do
+            end do
+        end if
+
+        if (rank==nprocs-1) then
+            !$cuf kernel do(2) <<<*,*>>>
+            do j=1,ny
+                do i=1,nx
+                    LM_old(i,j,nzb+1) = LM_old(i,j,nzb)
+                    MM_old(i,j,nzb+1) = MM_old(i,j,nzb)
+                    QN_old(i,j,nzb+1) = QN_old(i,j,nzb)
+                    NN_old(i,j,nzb+1) = NN_old(i,j,nzb)
+                end do
+            end do
+        end if
+        
+        call get_cs2(cs2,&
+                     LM,MM,QN,NN,&
+                     LM_old,MM_old,QN_old,NN_old,&
+                     u_lag,v_lag,w_lag,t,rank)
+  
+        if (rank==0) then
+            !$cuf kernel do(2) <<<*,*>>>
+            do j=1,ny
+                do i=1,nx
+                    Cs2(i,j,1)=Cs2(i,j,2)
+                end do
+            end do
+        end if
+
+        ! ! warning This needs to be checked !!!
+        ! if (rank==nprocs-1) then
+        !     !$cuf kernel do(2) <<<*,*>>>
+        !     do j=1,ny
+        !         do i=1,nx
+        !             Cs2(i,j,nzb+1)=Cs2(i,j,nzb)
+        !         end do
+        !     end do
+        ! end if
+
+        call load_LMQN_old<<<grid,tBlock>>>(LM,MM,LM_old,MM_old,1)
+        call load_LMQN_old<<<grid,tBlock>>>(QN,NN,QN_old,NN_old,1)
+
+    end subroutine optim_sd
+
+    attributes(global) subroutine get_uu(uu_hat,u_hat,u,v,w)
+        implicit none 
+        real(fp),dimension(nx,ny,nz2),intent(in) :: u,v,w
+        real(fp),dimension(nx,ny,nz2,6),intent(out) :: uu_hat
+        real(fp),dimension(nx,ny,nz2,3),intent(out) :: u_hat
+        integer i,j,k,ii,jj,kk
+        i = (blockIdx%x - 1)* blockDim%x + threadIdx%x;
+        j = (blockIdx%y - 1)* blockDim%y + threadIdx%y;
+        k = (blockIdx%z - 1)* blockDim%z + threadIdx%z;
+
+        k = k + 1   ! k = 2,nzb+1
+
+        u_hat(i,j,k,1) = u(i,j,k)
+        u_hat(i,j,k,2) = v(i,j,k)
+        u_hat(i,j,k,3) = (w(i,j,k)+w(i,j,k+1))/2._fp
+
+        ! loop through upper triangle
+        kk = 1
+        do ii = 1,3
+            do jj = ii,3
+                uu_hat(i,j,k,kk) = u_hat(i,j,k,ii)*u_hat(i,j,k,jj)
+                kk = kk + 1
+            end do
+        end do
+    end subroutine get_uu
+
+    attributes(global) subroutine get_SSij(SSij_hat,Sij_hat,Sij)
+        implicit none
+        real(fp),dimension(nx,ny,nz2,6),intent(in) :: Sij
+        real(fp),dimension(nx,ny,nz2,6),intent(out) :: SSij_hat,Sij_hat
+        real(fp),dimension(6) :: a
+        real(fp) :: S
+        integer i,j,k,ii
+        i = (blockIdx%x - 1)* blockDim%x + threadIdx%x;
+        j = (blockIdx%y - 1)* blockDim%y + threadIdx%y;
+        k = (blockIdx%z - 1)* blockDim%z + threadIdx%z;
+        k = k + 1   ! k = 2,nzb+1
+        a = Sij(i,j,k,:)
+        call symm_dot_prod(S,a,a)
+
+        S = sqrt(2._fp*S)
+        do ii = 1,6 
+            Sij_hat(i,j,k,ii) = Sij(i,j,k,ii)
+            SSij_hat(i,j,k,ii) = S*Sij(i,j,k,ii)
+        end do
+    end subroutine get_SSij
+
+    attributes(global) subroutine LMQN_kernel(LM,MM,uu_hat,u_hat,SSij_hat,Sij_hat,tf)
+        implicit none
+        real(fp),dimension(nx,ny,nz2),intent(out):: LM,MM
+        real(fp),dimension(nx,ny,nz2,6),intent(in) :: uu_hat,SSij_hat,Sij_hat
+        real(fp),dimension(nx,ny,nz2,3),intent(in) :: u_hat
+        real(fp),intent(in),value :: tf
+        real(fp) :: S_hat,a(6),Lij(6),Mij(6)
+        integer i,j,k,ii,jj,kk
+        
+        i = (blockIdx%x - 1)* blockDim%x + threadIdx%x;
+        j = (blockIdx%y - 1)* blockDim%y + threadIdx%y;
+        k = (blockIdx%z - 1)* blockDim%z + threadIdx%z;
+        k = k + 1   ! k = 2,nzb+1
+        
+        ! Compute the average strain
+        a = Sij_hat(i,j,k,:)
+        call symm_dot_prod(S_hat,a,a)
+        S_hat = sqrt(2._fp*S_hat)
+
+        ! Leonard stress
+        kk = 1
+        do ii = 1,3
+            do jj = ii,3
+                Lij(kk) = uu_hat(i,j,k,kk) - u_hat(i,j,k,ii)*u_hat(i,j,k,jj)
+                Mij(kk) = const*(SSij_hat(i,j,k,kk)-tf**2*S_hat*Sij_hat(i,j,k,kk))
+                kk = kk + 1
+            end do
+        end do
+
+        call symm_dot_prod(LM(i,j,k),Lij,Mij) ! LM & QN
+        call symm_dot_prod(MM(i,j,k),Mij,Mij) ! MM & NN
+    end subroutine LMQN_kernel
+
+    attributes(global) subroutine load_LMQN_old(LM,MM,LM_old,MM_old,flag)
+        implicit none
+        real(fp),dimension(nx,ny,nz2),intent(inout) :: LM,MM
+        real(fp),dimension(nx,ny,nz2),intent(inout) :: LM_old,MM_old
+        integer,value,intent(in) :: flag
+
+        integer i,j,k,kk
+        i = (blockIdx%x - 1)* blockDim%x + threadIdx%x;
+        j = (blockIdx%y - 1)* blockDim%y + threadIdx%y;
+        k = (blockIdx%z - 1)* blockDim%z + threadIdx%z;
+        k = k + 1   ! k = 2,nzb+1
+        if (flag == 0) then
+            LM_old(i,j,k) = 0.03d0*MM(i,j,k)
+            MM_old(i,j,k) = MM(i,j,k)
+        else
+            LM_old(i,j,k) = LM(i,j,k)
+            MM_old(i,j,k) = MM(i,j,k) 
+        end if
+
+    end subroutine load_LMQN_old
+
+    subroutine get_cs2(cs2,LM,MM,QN,NN,LM_old,MM_old,QN_old,NN_old,u_lag,v_lag,w_lag,t,rank)
+        implicit none
+        real(fp),dimension(nx,ny,nz2),intent(out),  device :: cs2
+        real(fp),dimension(nx,ny,nz2),intent(inout),device :: LM,MM,QN,NN
+        real(fp),dimension(nx,ny,nz2),intent(inout),device :: LM_old,MM_old,QN_old,NN_old
+        real(fp),dimension(nx,ny,nz2),intent(in),   device :: u_lag,v_lag,w_lag
+
+        real(fp),dimension(nx,ny,nz2) :: debug
+        integer,value,intent(in) :: t,rank
+
+        ! Cuda variable
+        type(dim3) :: grid, tBlock
+        tBlock = dim3(16,16,2)
+        grid = dim3(nx/16,ny/16,nzb/2)
+
+        call lagrng_sd<<<grid,tBlock>>>(LM,MM,LM_old,MM_old,u_lag,v_lag,w_lag,t,rank)
+        call lagrng_sd<<<grid,tBlock>>>(QN,NN,QN_old,NN_old,u_lag,v_lag,w_lag,t,rank)
+
+        call cs2_kernel<<<grid,tBlock>>>(cs2,LM,MM,QN,NN,t,rank)
+
+    end subroutine get_cs2
+
+    subroutine get_LMQN(LM,MM,u_hat,uu_hat,Sij_hat,SSij_hat,tf,plan_vector,plan_tensor)
+        implicit none
+        real(fp),dimension(nx,ny,nz2),intent(out),device:: LM,MM
+        real(fp),dimension(nx,ny,nz2,6),intent(inout),device :: uu_hat,SSij_hat,Sij_hat
+        real(fp),dimension(nx,ny,nz2,3),intent(inout),device :: u_hat
+        real(fp),intent(in) :: tf
+        type(c_ptr),intent(in) :: plan_vector(2),plan_tensor(2)
+
+        real(fp),dimension(nx,ny,nz2) :: debug
+        type(dim3) :: grid, tBlock
+        tBlock = dim3(16,16,2)
+        grid = dim3(nx/16,ny/16,nzb/2)
+
+        call filter_4d_vector(u_hat   ,fgr*tf,plan_vector)
+        call filter_4d_tensor(uu_hat  ,fgr*tf,plan_tensor)
+        call filter_4d_tensor(Sij_hat ,fgr*tf,plan_tensor)
+        call filter_4d_tensor(SSij_hat,fgr*tf,plan_tensor)
+
+        ! Compute LM,MM or QN,NN
+        call LMQN_kernel<<<grid,tBlock>>>(LM,MM,uu_hat,u_hat,SSij_hat,Sij_hat,tf)
+
+    end subroutine get_LMQN
+
+    attributes(global) subroutine lagrng_sd(a,b,a_old,b_old,u_lag,v_lag,w_lag,t,rank)
+
+        !---------------------------------------------------------------------------
+        ! declaration
+        !---------------------------------------------------------------------------
+        implicit none
+        real(fp), dimension(nx,ny,nz2),intent(inout) :: a,b
+        real(fp), dimension(nx,ny,nz2),intent(in) :: a_old,b_old
+        real(fp),dimension(nx,ny,nz2),intent(in) :: u_lag,v_lag,w_lag
+        integer,value,intent(in) :: t,rank    
+        real(fp) eps,Tn,TLM,TMM,a_interp,b_interp,interp_pt(3),xint,yint,zint
+        integer*4 i,j,k,kend
+
+        !---------------------------------------------------------------------------
+        ! main code
+        !---------------------------------------------------------------------------
+        i = (blockIdx%x - 1)* blockDim%x + threadIdx%x;
+        j = (blockIdx%y - 1)* blockDim%y + threadIdx%y;
+        k = (blockIdx%z - 1)* blockDim%z + threadIdx%z + 1;
+        
+        kend=nzb+1
+        
+        if (k<=kend) then
+            xint = - u_lag(i,j,k)*dtl
+            yint = - v_lag(i,j,k)*dtl
+            zint = - w_lag(i,j,k)*dtl
+
+            TLM=a_old(i,j,k)
+            TMM=b_old(i,j,k)
+
+            if (TLM.le.0.0_fp.or.TMM.lt.(0.0_fp)) then
+                eps=0.0_fp
+            else
+                Tn=1.5_fp*delta*(TLM*TMM)**(-1._fp/8._fp)
+                Tn=max(0.0_fp,Tn)
+                eps=(dtl/Tn)/(1.+dtl/Tn)
+            end if
+
+            call interp3d(xint,yint,zint,i,j,k,a_old,a_interp,rank,t)
+            call interp3d(xint,yint,zint,i,j,k,b_old,b_interp,rank,t)
+
+            a(i,j,k) = eps*a(i,j,k)+(1._fp-eps)*a_interp
+            b(i,j,k) = eps*b(i,j,k)+(1._fp-eps)*b_interp
+        end if
+
+    end subroutine lagrng_sd
+
+    attributes(global) subroutine cs2_kernel(cs2,LM,MM,QN,NN,t,rank)
+
+        !---------------------------------------------------------------------------
+        ! declaration
+        !---------------------------------------------------------------------------
+        implicit none
+        
+        
+        real(fp),dimension(nx,ny,nz2),intent(out)  :: cs2
+        real(fp),dimension(nx,ny,nz2),intent(inout) :: LM,MM,QN,NN
+        integer,value,intent(in) :: t,rank  
+        real(fp)  Cs2_2d,Cs2_4d,beta
+        integer*4 i,j,k,kend
+
+        !---------------------------------------------------------------------------
+        ! main code
+        !---------------------------------------------------------------------------
+        i = (blockIdx%x - 1)* blockDim%x + threadIdx%x;
+        j = (blockIdx%y - 1)* blockDim%y + threadIdx%y;
+        k = (blockIdx%z - 1)* blockDim%z + threadIdx%z;
+        k = k + 1   ! k = 2,nzb+1
+        
+        ! if (rank==nprocs-1) then
+        ! kend=nzb
+        ! else
+        kend=nzb+1
+        ! end if
+
+        if (k<=kend) then
+            Cs2_2d = LM(i,j,k)/MM(i,j,k)    ! LM/MM
+            Cs2_2d = max(0.0_fp,Cs2_2d)
+
+            Cs2_4d = QN(i,j,k)/NN(i,j,k)    ! QN/NN
+            Cs2_4d = max(0.0_fp,Cs2_4d)
+
+            Beta = (Cs2_4d/Cs2_2d)**(log(tf1)/(log(tf2)-log(tf1)))
+            Beta = max(Beta,beta_min)
+            ! Beta = min(Beta,beta_max)
+
+            Cs2(i,j,k)=Cs2_2d/Beta
+            Cs2(i,j,k)=max(Cs2(i,j,k),cs2_min)
+            Cs2(i,j,k)=min(Cs2(i,j,k),cs2_max)
+
+        end if
+
+    end subroutine cs2_kernel
+
+    attributes(device) subroutine interp3d(xi,yi,zi,i,j,k,U,ui,rank,t)
+
+        !---------------------------------------------------------------------------
+        ! declaration
+        !---------------------------------------------------------------------------
+
+        implicit none
+        
+
+        real(fp) xi,yi,zi,ui,U(Nx,Ny,Nz2),iw,jw,kw,ui_hgh,ui_low
+        integer*4 i,j,k,ii,jj,kk,iplus,jplus,t,rank
+
+        !---------------------------------------------------------------------------
+        ! main code
+        !---------------------------------------------------------------------------
+
+        !---------------------------------------------------------------------------
+        ! x-comp
+
+        if (xi.lt.0.0) then
+            iw=(dx-abs(xi))/dx
+            if (i.eq.1) then
+                ii=nx
+            else
+                ii=i-1
+            endif
+        else
+            iw=(xi)/dx
+            ii=i
+        endif
+
+        !---------------------------------------------------------------------------
+        ! y-comp
+
+        if (yi.lt.0.0) then
+            jw=(dy-abs(yi))/dy
+            if (j.eq.1) then
+                jj=ny
+            else
+                jj=j-1
+            endif
+        else
+            jw=(yi)/dy
+            jj=j
+        endif
+
+        !---------------------------------------------------------------------------
+        ! z-comp
+
+        if (zi.lt.0.0) then
+            kw=(dz-abs(zi))/dz
+            kk=k-1
+        else
+            kw=(zi)/dz
+            kk=k
+        endif
+
+        !---------------------------------------------------------------------------
+        ! compute
+
+        if (ii.eq.nx) then
+            iplus=-(nx-1)
+        else
+            iplus=1
+        endif
+
+        if (jj.eq.ny) then
+            jplus=-(ny-1)
+        else
+            jplus=1
+        endif
+
+        if (kw.eq.0.0) then
+            ui = U(ii,jj,kk)*(1._fp-iw)*(1._fp-jw)+ &
+                U(ii+iplus,jj,kk)*iw*(1._fp-jw)+ &
+                U(ii+iplus,jj+jplus,kk)*iw*jw+ &
+                U(ii,jj+jplus,kk)*(1._fp-iw)*jw
+        else
+            ui_low = U(ii,jj,kk)*(1._fp-iw)*(1._fp-jw)+ &
+                U(ii+iplus,jj,kk)*iw*(1._fp-jw)+ &
+                U(ii+iplus,jj+jplus,kk)*iw*jw+ &
+                U(ii,jj+jplus,kk)*(1._fp-iw)*jw
+
+            ui_hgh = U(ii,jj,kk+1)*(1._fp-iw)*(1._fp-jw)+ &
+                U(ii+iplus,jj,kk+1)*iw*(1._fp-jw)+ &
+                U(ii+iplus,jj+jplus,kk+1)*iw*jw+ &
+                U(ii,jj+jplus,kk+1)*(1._fp-iw)*jw
+
+            ui = ui_low*(1._fp-kw)+ui_hgh*kw
+        endif
+
+    end subroutine interp3d
+
+    attributes(device) subroutine symm_dot_prod(c,a,b)
+        ! Dot product of two flattened sysmetric 3 x 3 matrix (only contains upper tri)
+        ! c = a11*b11+...+ 2*(a12*b12+.....)
+        implicit none
+        real(fp),dimension(6),intent(in) :: a,b
+        real(fp),intent(out) :: c
+        real(fp) alpha
+        integer i,j,k,ii,jj,kk
+        ! loop through upper triagnle
+        c = 0._fp
+        kk = 1
+
+        C = 1._fp*a(1)*b(1) + 2._fp*a(2)*b(2) + 2._fp*a(3)*b(3) &
+                        + 1._fp*a(4)*b(4) + 2._fp*a(5)*b(5) &
+                                            + 1._fp*a(6)*b(6) 
+        
+    end subroutine symm_dot_prod
+
+    attributes(global) subroutine get_strain(Sij,dudx,dudy,dudz,&
+                                                dvdx,dvdy,dvdz,&
+                                                dwdx,dwdy,dwdz,rank,stagger_flag)
+        implicit none
+        !---------------------------------------------------------------------------
+        ! declaration
+        !---------------------------------------------------------------------------
+
+        real(fp),dimension(nx,ny,nz2,6) :: Sij
+        real(fp),dimension(nx,ny,nz2),intent(in) :: dudx,dudy,dudz,&
+                                                dvdx,dvdy,dvdz,&
+                                                dwdx,dwdy,dwdz
+        integer,value,intent(in) :: rank,stagger_flag
+        real(fp) ux_,uy_,uz_,vx_,vy_,vz_,wx_,wy_,wz_
+        integer :: i, j, k
+
+        i = (blockIdx%x - 1)* blockDim%x + threadIdx%x;
+        j = (blockIdx%y - 1)* blockDim%y + threadIdx%y;
+        k = (blockIdx%z - 1)* blockDim%z + threadIdx%z + 1;
+        ! the only reason doing that is: only at bottom(me=0,k=2),
+        ! dudz and dvdz are computed at u layer
+        
+        if (stagger_flag == 0) then
+            if (k == 2 .and. rank == 0) then
+                ux_ = dudx(i,j,k)
+                uy_ = dudy(i,j,k)
+                uz_ = dudz(i,j,k)
+                vx_ = dvdx(i,j,k)
+                vy_ = dvdy(i,j,k)
+                vz_ = dvdz(i,j,k)
+                wx_ = 0.5d0*(dwdx(i,j,k)+dwdx(i,j,k+1))
+                wy_ = 0.5d0*(dwdy(i,j,k)+dwdy(i,j,k+1))
+                wz_ = dwdz(i,j,k)
+            else
+                ux_ = dudx(i,j,k)
+                uy_ = dudy(i,j,k)
+                uz_ = 0.5d0*(dudz(i,j,k)+dudz(i,j,k+1))
+                vx_ = dvdx(i,j,k)
+                vy_ = dvdy(i,j,k)
+                vz_ = 0.5d0*(dvdz(i,j,k)+dvdz(i,j,k+1))
+                wx_ = 0.5d0*(dwdx(i,j,k)+dwdx(i,j,k+1))
+                wy_ = 0.5d0*(dwdy(i,j,k)+dwdy(i,j,k+1))
+                wz_ = dwdz(i,j,k)
+            end if
+        else if (stagger_flag == 1) then
+            ux_ = 0.5d0*(dudx(i,j,k-1)+dudx(i,j,k))
+            uy_ = 0.5d0*(dudy(i,j,k-1)+dudy(i,j,k))
+            uz_ = dudz(i,j,k)
+            vx_ = 0.5d0*(dvdx(i,j,k-1)+dvdx(i,j,k))
+            vy_ = 0.5d0*(dvdy(i,j,k-1)+dvdy(i,j,k))
+            vz_ = dvdz(i,j,k)
+            wx_ = dwdx(i,j,k)
+            wy_ = dwdy(i,j,k)
+            wz_ = 0.5d0*(dwdz(i,j,k-1)+dwdz(i,j,k))
+        end if
+
+        Sij(i,j,k,1) = ux_              ! S11
+        Sij(i,j,k,4) = vy_              ! S22
+        Sij(i,j,k,6) = wz_              ! S33
+        Sij(i,j,k,2) = 0.5d0*(uy_+vx_)  ! S12
+        Sij(i,j,k,3) = 0.5d0*(uz_+wx_)  ! S13
+        Sij(i,j,k,5) = 0.5d0*(vz_+wy_)  ! S23
+    end subroutine get_strain
+
+    attributes(global) subroutine get_stress_uv(txx,txy,tyy,tzz,cs2,Sij,rank)
+        implicit none  
+        real(fp),dimension(nx,ny,nz2),intent(out) :: txx,txy,tyy,tzz
+        real(fp),dimension(nx,ny,nz2,6),intent(in) :: Sij
+        real(fp),dimension(nx,ny,nz2),intent(in) :: cs2
+        real(fp) a(6),factor,S
+        integer,value,intent(in) :: rank
+        integer :: i, j, k,kk, kstart
+
+        i = (blockIdx%x - 1)* blockDim%x + threadIdx%x;
+        j = (blockIdx%y - 1)* blockDim%y + threadIdx%y;
+        k = (blockIdx%z - 1)* blockDim%z + threadIdx%z;
+        k = k + 1
+
+        do kk = 1,6 
+            a(kk) = Sij(i,j,k,kk)
+        end do
+        call symm_dot_prod(S,a,a)
+        S = sqrt(2._fp*S)
+
+        factor = -2._fp*cs2(i,j,k)*delta**2*s
+        ! factor = factor-2._fp*iRe/(u_scale*z_i)
+        Txx(i,j,k) = factor*Sij(i,j,k,1)
+        Txy(i,j,k) = factor*Sij(i,j,k,2)
+        Tyy(i,j,k) = factor*Sij(i,j,k,4)
+        Tzz(i,j,k) = factor*Sij(i,j,k,6)
+
+    end subroutine get_stress_uv
+
+    attributes(global) subroutine get_stress_w(txz,tyz,cs2,Sij,rank)
+        implicit none
+        real(fp),dimension(nx,ny,nz2),intent(out) :: txz,tyz
+        real(fp),dimension(nx,ny,nz2,6),intent(in) :: Sij
+        real(fp),dimension(nx,ny,nz2),intent(in) :: cs2
+        real(fp) a(6),factor,S
+        integer,value,intent(in) :: rank
+        integer :: i, j, k,kk, kstart
+
+        i = (blockIdx%x - 1)* blockDim%x + threadIdx%x;
+        j = (blockIdx%y - 1)* blockDim%y + threadIdx%y;
+        k = (blockIdx%z - 1)* blockDim%z + threadIdx%z;
+        k = k + 1
+
+        do kk = 1,6 
+            a(kk) = Sij(i,j,k,kk)
+        end do
+        call symm_dot_prod(S,a,a)
+        S = sqrt(2._fp*S)
+
+        if (rank == 0) then
+            kstart = 3
+        else
+            kstart = 2
+        end if
+
+        if (k >= kstart) then
+            factor = -(cs2(i,j,k)+cs2(i,j,k-1))*delta**2*S
+            ! factor = factor-2*iRe/(u_scale*z_i)
+            txz(i,j,k) = factor*Sij(i,j,k,3)    ! Txz
+            tyz(i,j,k) = factor*Sij(i,j,k,5)    ! Tyz
+        end if
+
+    end subroutine get_stress_w
+
+    attributes(global) subroutine get_u_lag(u_lag,v_lag,w_lag,u,v,w)
+        implicit none
+        real(fp),dimension(nx,ny,nz2),intent(in) :: u,v,w
+        real(fp),dimension(nx,ny,nz2),intent(inout) :: u_lag,v_lag,w_lag
+        
+        integer i,j,k,ii,jj,kk
+        i = (blockIdx%x - 1)* blockDim%x + threadIdx%x;
+        j = (blockIdx%y - 1)* blockDim%y + threadIdx%y;
+        k = (blockIdx%z - 1)* blockDim%z + threadIdx%z;
+
+        k = k + 1   ! k = 2,nzb+1
+
+        u_lag(i,j,k)=u_lag(i,j,k)+u(i,j,k)/cs_count
+        v_lag(i,j,k)=v_lag(i,j,k)+v(i,j,k)/cs_count
+        w_lag(i,j,k)=w_lag(i,j,k)+0.5*(w(i,j,k)+w(i,j,k+1))/cs_count
+
+    end subroutine get_u_lag
+
+
+end module sgs

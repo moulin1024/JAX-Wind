@@ -1,0 +1,20 @@
+{
+  "source": {
+    "citation": "Andren et al. (1994), Q.J.R. Meteorol. Soc. 120, 1457-1484",
+    "doi": "10.1002/qj.49712052003",
+    "url": "https://elib.dlr.de/31898/1/qj-1457-1994.pdf"
+  },
+  "ustar_over_ug": {
+    "andren_moeng": 0.0425,
+    "mason_brown_backscatter": 0.0448,
+    "mason_brown_no_backscatter": 0.0402,
+    "nieuwstadt": 0.0402,
+    "schumann_graf": 0.0425
+  },
+  "normalized_integrated_total_tke_plateau": 0.7,
+  "normalized_top_height_approximate": 0.35,
+  "spectrum_peak_k_ustar_over_f": {
+    "andren_moeng_and_nieuwstadt": 20,
+    "mason_brown_and_schumann_graf": [30, 40]
+  }
+}

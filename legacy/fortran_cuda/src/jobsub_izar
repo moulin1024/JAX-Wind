@@ -1,0 +1,24 @@
+#!/bin/bash
+
+##################################################
+# SBATCH
+##################################################
+
+#SBATCH --chdir ./job/${case_name}
+#SBATCH --ntasks ${job_np}
+#SBATCH --time ${job_time}
+#SBATCH --mem 30000
+#SBATCH --account wire
+
+##################################################
+# MODULE
+##################################################
+
+ulimit -s unlimited
+ulimit -c unlimited
+
+##################################################
+# JOB
+##################################################
+# RUN
+cp input/config log && cd src && make -j${job_np} && srun ./wireles_src >> ../log

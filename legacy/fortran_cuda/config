@@ -1,0 +1,125 @@
+# @author: trevaz (tristan.revaz@epfl.ch)
+########################################################################################################################
+# init
+########################################################################################################################
+sim_flag	= 0		# 0 = warmup, 1 = warmup with interp, 2 = prec, 3 = main, 4 = main with trick
+resub_flag	= 0		# 0 = not a resub, >0 = a resub
+double_flag = 0     # 0 = single precision, 1 = double precision
+
+# interp
+interp_case	= case_interp	# interp case name
+
+# warmup
+warmup_case	= warmup-fine	# warmup case name
+
+# prec
+prec_case	= pre-fine	# prec case name
+
+########################################################################################################################
+# space (lx/z_i=2*pi, lx=2*pi*z_i, lx/ly=l_r, ly=2*pi*z_i/l_r)
+########################################################################################################################
+dom_flag	= 1		# 0 = native, 1 = custom
+
+# native
+l_z		= 1000.0	# physical height of dom
+z_i		= 1000.0	# normalization height
+l_r		= 1		# ratio of streamwise to spanwise dimensions
+
+# custom
+lx		= 1024		# length of dom in the streamwise dir
+ly		= 1024		# length of dom in the spanwise dir
+lz		= 510	# length of dom in the wall-normal dir
+bl_height = 510         # sqrt wall shear = sqrt(tau_0)
+
+nx		= 256		# number of grid points in the streamwise dir
+ny		= 256		# number of grid points in the spanwise dir
+nz		= 256		# number of grid points in the wall-normal dir
+
+########################################################################################################################
+# time (dt=dtr*u_star/z_i, dtr=dt*z_i/u_star)
+########################################################################################################################
+time_flag	= 1		# 0 = native, 1 = custom
+
+# native
+dt		= 0.001		# non-dim timestep (dt=dtr*u_star/z_i)
+
+# custom
+dtr		= 0.01		# dim. timestep (dt=dtr*u_star/z_i)
+
+nsteps		= 1001		# number of timesteps
+
+########################################################################################################################
+# bc
+########################################################################################################################
+zo              = 0.005       # rougness length
+u_fric          = 0.35         # sqrt wall shear = sqrt(tau_0)
+
+########################################################################################################################
+# sgs
+########################################################################################################################
+model		= 4		# 1 = smag, 2 = la-dyn, 3 = lasd
+fgr		    = 1.5		# ratio of filter to grid
+tfr		    = 2.0		# ratio of test filter to grid filter
+cs_count	= 10		# frequency of sgs coefficients update
+
+########################################################################################################################
+# turbine
+########################################################################################################################
+turb_flag	    = 0		# 0 = without turbine, 1 = with turbine
+turb_nb         = 1             # turbine number
+turb_i          = 129        # turbine i loc
+turb_j          = 65        # turbine j loc
+turb_r          = 63         # turbine radius
+turb_x          = 1.92        # turbine i loc
+turb_y          = 0.48        # turbine j loc
+turb_z          = 0.125         # turbine hub height
+turb_w          = 12.1        # turbine rotational speed
+tow_r           = 2        # tower radius
+tow_c           = 1.0           # tower drag coeff
+nac_r           = 2        #  nacelle radius
+nac_c           = 1.0          # nacelle drag coeff
+yaw_angle       = 0.0       # yaw_angle
+turb_count	    = 2		        # frequency of turbine force update
+
+########################################################################################################################
+# precursor
+########################################################################################################################
+inflow_istart	= 10		# i start of inflow zone
+inflow_iend	    = 20		# i end of inflow zone
+inflow_count	= 10		# frequency of sgs coefficients update
+
+########################################################################################################################
+# output
+########################################################################################################################
+c_count		= 10		# frequency of ta/ts_output sampling
+p_count		= 1000		# frequency of ta_output and averaging period (must be multiple of c_count)
+
+# log_output (1d each time step, global quantity)
+log_flag	= 1		# 0 = no log_output, 1= log_output
+
+
+# ta_output (3d each p_count, time averaged)
+ta_flag		= 0		# 0 = no ta_output, 1= ta_output no1, etc
+ta_mask		= 0		# 0 = no ts_mask, 1= ts_mask
+ta_istart	= 1		# i start of ts_output if ta_mask
+ta_iend		= 32		# i end of ts_output if ta_mask
+ta_jstart	= 1		# j start of ts_output if ta_mask
+ta_jend		= 32		# j end of ts_output if ta_mask
+ta_kend		= 32		# k end of ts_output if ta_mask
+ta_tstart	= 4001		# t start of ta_output (ta_tstart-1 must be multiple of p_count)
+
+# ts output (3d each c_count, time sampled)
+ts_flag		= 1		# 0 = no ts_output, 1= ts_output no1, etc
+ts_mask		= 0		# 0 = no ta_mask, 1= ts_mask
+ts_istart	= 1		# i start of ta_output if ts_mask
+ts_iend		= 32		# i end of ta_output if ts_mask
+ts_jstart	= 1		# j start of ta_output if ts_mask
+ts_jend		= 32		# j end of ta_output if ts_mask
+ts_kend		= 32		# k end of ta_output if ts_mask
+ts_tstart	= 1		# t start of ts_output (ts_tstart-1 must be multiple of c_count)
+
+########################################################################################################################
+# exec
+########################################################################################################################
+job_np		= 1		# numer of processors (<= nz/2!, nz2=nz/nprocs+2)
+job_time	= 01:00:00	# duration of job

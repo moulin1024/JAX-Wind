@@ -1,0 +1,75 @@
+# Minimal pressure-driven neutral ABL initialized from a log-law profile.
+# Run with:
+#   python legacy/jax/run_pressure_driven_neutral_abl.py
+#
+# The omitted pressure_force is diagnosed as u_fric^2 / bl_height. Here
+# u_fric only sets that pressure-gradient scale: the wall u_* is diagnosed
+# every step from the filtered first-level velocity, as in the C++ wall model.
+# The log-law initial velocity is capped at U(H) above the 1000 m driven layer,
+# so the 1000--1500 m buffer starts horizontally and vertically uniform.
+
+[grid]
+nx = 64
+ny = 64
+nz = 64
+lx = 6283.185307179586
+ly = 6283.185307179586
+lz = 1500.0
+z_i = 1000.0
+
+[time]
+scheme = "ab2"
+steps = 32000
+log_every = 800
+dt = 0.625
+
+[physics]
+u_fric = 0.4
+zo = 0.1
+bl_height = 1000.0
+vonk = 0.4
+momentum_wall_model = "abl"
+wall_stress_model = "dynamic_neutral"
+initial_condition = "log_law"
+initial_velocity_noise = 0.1
+
+[wall_filter]
+fgr = 1.5
+tfr = 2.0
+
+[sgs]
+model = "lasd"
+precision = "float32"
+cs_count = 10
+smag_cs = 0.16
+
+[numerics]
+projection_mode = "stage"
+horizontal_dealias = true
+pressure_filter_nyquist = true
+
+[sponge]
+enabled = true
+# Absorb only in the uppermost 100 m of the 1500 m domain.  Preserve each
+# horizontal u/v mean so the sponge removes perturbations without imposing a
+# geostrophic wind; relax w toward zero with the C++ quadratic 90 s ramp.
+start_height = 1400.0
+timescale = 90.0
+power = 2.0
+target = "plane_mean"
+
+[thermo]
+enabled = false
+moisture_enabled = false
+theta0 = 300.0
+surface_theta_flux = 0.0
+
+[runtime]
+precision = "float64"
+sgs_precision = "float32"
+use_jit = true
+
+[postprocess]
+dump_fields = false
+field_output_dir = "outputs/pressure_driven_neutral_abl_lasd"
+field_output_prefix = "fields"

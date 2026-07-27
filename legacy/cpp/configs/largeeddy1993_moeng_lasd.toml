@@ -1,0 +1,79 @@
+# Nieuwstadt, Mason, Moeng & Schumann (1993) dry CBL setup using dynamic LASD.
+# This is an experimental modern dynamic-closure path, not the fixed
+# Smagorinsky surrogate used by largeeddy1993_moeng.toml.
+
+[grid]
+nx = 40
+ny = 40
+nz = 48
+lx = 6400.0
+ly = 6400.0
+lz = 2400.0
+z_i = 1600.0
+
+[time]
+scheme = "ab2"
+steps = 4019
+log_every = 40
+dt = 3.0
+
+[physics]
+u_fric = 0.0
+zo = 0.16
+vonk = 0.4
+molecular_viscosity = 0.0
+initial_condition = "largeeddy1993"
+momentum_wall_model = "abl"
+wall_stress_model = "dynamic_neutral"
+
+[wall_filter]
+fgr = 1.5
+tfr = 2.0
+
+[sgs]
+model = "lasd"
+cs_count = 10
+smag_cs = 0.18
+sgs_delta_scale = 1.0
+
+[numerics]
+horizontal_dealias = true
+
+[thermo]
+enabled = true
+theta0 = 300.0
+g = 9.81
+theta_initial_gradient = 0.003
+theta_top_gradient = 0.003
+surface_theta_flux = 0.06
+largeeddy_initial_zi1_fraction = 0.844
+molecular_diffusivity = 0.0
+scalar_sgs_model = "lasd"
+prandtl_t = 0.33
+scalar_lasd_min = 0.0
+scalar_lasd_max = 1.0
+# Limit scalar diffusivity in the stable inversion layer. Without this, dynamic
+# scalar LASD produces a Schumann-like excessive SGS entrainment flux on this
+# coarse CBL benchmark.
+scalar_stability_correction = true
+scalar_stability_beta = 1.0
+scalar_stability_power = 2.0
+
+[runtime]
+random_seed = 0
+
+[benchmark]
+enabled = true
+sample_every = 5
+average_start_tstar = 10.0
+average_end_tstar = 11.0
+output_dir = "outputs/largeeddy1993_lasd_diagnostics"
+
+[postprocess]
+dump_frames = true
+frame_every = 20
+frame_start_step = 3200
+frame_end_step = 4019
+frame_output_dir = "outputs/largeeddy1993_lasd_frames"
+frame_component = "w"
+frame_y_index = -1

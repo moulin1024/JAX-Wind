@@ -1,0 +1,1093 @@
+module io
+!###############################################################################
+! wire-les: i/o subroutines
+!###############################################################################
+! author trevaz (tristan.revaz@epfl.ch)
+    use precision
+    use dimen
+contains
+!===============================================================================
+! print
+!===============================================================================
+
+subroutine print_start(me)
+
+    !---------------------------------------------------------------------------
+    ! declaration
+    !---------------------------------------------------------------------------
+
+    implicit none
+    integer me,nall
+
+    !---------------------------------------------------------------------------
+    ! main code
+    !---------------------------------------------------------------------------
+
+    if (me==0) then
+        print '(a100)', '!-----------------------------------------------------&
+        -----------------------------------------------'
+        print '(a15)', '! wire-les: src'
+        print '(a100)', '!-----------------------------------------------------&
+        -----------------------------------------------'
+        print '(4a10, 2a15, 3a10)', 't', 'rest s','total sec','ustar','ke','div',&
+        'cflx','cfly','cflz'
+    end if
+
+end subroutine print_start
+
+subroutine print_log(log_ustar,log_umax,u,v,w,ustar,t01,t,me,nall)
+
+    !---------------------------------------------------------------------------
+    ! declaration
+    !---------------------------------------------------------------------------
+
+    implicit none
+    integer me,nall
+    integer*4, intent(in) :: t
+    real(fp), dimension(nx,ny,nz2), intent(in) :: u,v,w
+    real(fp), dimension(nx,ny), intent(in) :: ustar
+    real(fp), intent(in) :: t01
+    integer*4 :: i,j,k,kend
+    real(fp) :: log_umax,log_ustar,ke,div,cflx,cfly,cflz,ke_,umax_,div_,cflx_,cfly_,cflz_,t02
+
+    !---------------------------------------------------------------------------
+    ! main code
+    !---------------------------------------------------------------------------
+
+    !---------------------------------------------------------------------------
+    ! init
+
+    log_ustar = 0._fp
+    log_umax = 0._fp
+    ke = 0._fp
+    div = 0._fp
+    cflx = 0._fp
+    cfly = 0._fp
+    cflz = 0._fp
+
+    !---------------------------------------------------------------------------
+    ! compute and print
+
+    if (me==nprocs-1) then
+        kend=nzb
+    else
+        kend=nzb+1
+    end if
+    do k = 2, kend
+        do j = 1, ny
+            do i = 1, nx
+                log_umax = max(log_umax, u(i,j,k))
+                ke = max(ke, (u(i,j,k)**2 + v(i,j,k)**2 +(0.5_fp*(w(i,j,k)+w(i,j,k+1)))**2) )
+                ! div = max(div, abs(dudx(i,j,k) + dvdy(i,j,k) + dwdz(i,j,k)))
+                cflx = max(cflx, (abs(u(i,j,k))*dt/dx) )
+                cfly = max(cfly, (abs(v(i,j,k))*dt/dy) )
+                cflz = max(cflz, (abs(w(i,j,k))*dt/dz) )
+            end do
+        end do
+    end do
+
+    if (me>0) then
+
+        if (fp==singlePrecision) then 
+            call mpi_send(log_umax,1, mpi_real,0,me,nall,ierr )
+            call mpi_send(ke,1, mpi_real,0,me,nall,ierr )
+            call mpi_send(div,1, mpi_real,0,me,nall,ierr )
+            call mpi_send(cflx,1, mpi_real,0,me,nall,ierr )
+            call mpi_send(cfly,1, mpi_real,0,me,nall,ierr )
+            call mpi_send(cflz,1, mpi_real,0,me,nall,ierr )
+        else
+            call mpi_send(log_umax,1, mpi_double_precision,0,me,nall,ierr )
+            call mpi_send(ke,1,     mpi_double_precision,0,me,nall,ierr )
+            call mpi_send(div,1,    mpi_double_precision,0,me,nall,ierr )
+            call mpi_send(cflx,1,   mpi_double_precision,0,me,nall,ierr )
+            call mpi_send(cfly,1,   mpi_double_precision,0,me,nall,ierr )
+            call mpi_send(cflz,1,   mpi_double_precision,0,me,nall,ierr )
+        end if 
+    else
+
+        log_ustar = sum(ustar)*inxny
+        if (nprocs > 1)then
+            
+            if (fp==singlePrecision) then 
+                do i=1,nprocs-1
+                    call mpi_recv(umax_,1, mpi_real,i,i,nall,status2,ierr )
+                    call mpi_recv(ke_,1, mpi_real,i,i,nall,status2,ierr )
+                    call mpi_recv(div_,1, mpi_real,i,i,nall,status2,ierr )
+                    call mpi_recv(cflx_,1, mpi_real,i,i,nall,status2,ierr )
+                    call mpi_recv(cfly_,1, mpi_real,i,i,nall,status2,ierr )
+                    call mpi_recv(cflz_,1, mpi_real,i,i,nall,status2,ierr )
+                    log_umax = max(log_umax,umax_)
+                    ke = max(ke,ke_)
+                    div=max(div,div_)
+                    cflx=max(cflx,cflx_)
+                    cfly=max(cfly,cfly_)
+                    cflz=max(cflz,cflz_)
+                end do
+            else
+                do i=1,nprocs-1
+                    call mpi_recv(umax_,1,mpi_double_precision,i,i,nall,status2,ierr )
+                    call mpi_recv(ke_,1,  mpi_double_precision,i,i,nall,status2,ierr )
+                    call mpi_recv(div_,1, mpi_double_precision,i,i,nall,status2,ierr )
+                    call mpi_recv(cflx_,1,mpi_double_precision,i,i,nall,status2,ierr )
+                    call mpi_recv(cfly_,1,mpi_double_precision,i,i,nall,status2,ierr )
+                    call mpi_recv(cflz_,1,mpi_double_precision,i,i,nall,status2,ierr )
+                    log_umax = max(log_umax,umax_)
+                    ke = max(ke,ke_)
+                    div=max(div,div_)
+                    cflx=max(cflx,cflx_)
+                    cfly=max(cfly,cfly_)
+                    cflz=max(cflz,cflz_)
+                end do
+            end if
+        endif
+        t02=mpi_wtime()
+        print "(i10, f10.1, f10.1, f10.4, e15.4, e15.4, f10.4, f10.4, f10.4)", &
+        t, (t02-t01)*real(nsteps-t)/real(t), (t02-t01)*real(nsteps)/real(t),&
+        log_ustar,ke,div,cflx,cfly,cflz
+
+    endif
+
+end subroutine print_log
+
+subroutine print_end(t01,me)
+
+    !---------------------------------------------------------------------------
+    ! declaration
+    !---------------------------------------------------------------------------
+
+    implicit none
+    integer me,nall
+    real(fp), intent(in) :: t01
+
+    !---------------------------------------------------------------------------
+    ! main code
+    !---------------------------------------------------------------------------
+
+    if (me==0) then
+        print "(a10,a3,f10.1)",'wall_time', ' = ', mpi_wtime() -t01
+        print "(a100)", '!-----------------------------------------------------&
+        -----------------------------------------------'
+    end if
+
+end subroutine print_end
+
+!===============================================================================
+! variable
+!===============================================================================
+
+!-------------------------------------------------------------------------------
+! load variable
+!-------------------------------------------------------------------------------
+
+subroutine load_variable(m,filename,me,nall)
+
+    !---------------------------------------------------------------------------
+    ! declaration
+    !---------------------------------------------------------------------------
+
+    implicit none
+    integer me,nall
+    real(fp), dimension(nx,ny,nz2), intent(out) :: m
+    character(*), intent(in) :: filename
+    real(fp), allocatable:: q(:,:,:)
+    integer :: ix, iy, iz, ii
+
+    !---------------------------------------------------------------------------
+    ! main code
+    !---------------------------------------------------------------------------
+
+    if (me == 0) then
+
+        allocate(q(nx,ny,nz))
+        open (unit=99,file=filename,status='old',form='unformatted', access='stream')
+        read (99) q
+        close(99)
+
+        do iz = 1, nzb
+            do iy = 1, ny
+                do ix = 1, nx
+                    m(ix,iy,iz+1) = q(ix,iy,iz)
+                end do
+            end do
+        end do
+        do ii=1,nprocs-1
+            if (fp==singlePrecision) then 
+                call mpi_send(q(1,1,nzb*ii+1),(nzb)*nx*ny,mpi_real,ii,79+ii,nall,ierr)
+            else
+                call mpi_send(q(1,1,nzb*ii+1),(nzb)*nx*ny,mpi_double_precision,ii,79+ii,nall,ierr)
+            end if
+        end do
+        deallocate(q)
+
+    else
+        if (fp==singlePrecision) then 
+            call mpi_recv(m(1,1,2),(nzb)*nx*ny,mpi_real,0,79+me,nall,status2,ierr)
+        else
+            call mpi_recv(m(1,1,2),(nzb)*nx*ny,mpi_double_precision,0,79+me,nall,status2,ierr)
+        end if
+
+    end if
+
+end subroutine load_variable
+
+subroutine save_variable(m,filename,me,nall)
+
+    !---------------------------------------------------------------------------
+    ! declaration
+    !---------------------------------------------------------------------------
+
+    implicit none
+    integer me,nall
+    real(fp), dimension(nx,ny,nz2), intent(in) :: m
+    character(*), intent(in) :: filename
+    real(fp), allocatable:: q(:,:,:)
+    integer :: ix, iy, iz, ii
+
+    !---------------------------------------------------------------------------
+    ! declaration
+    !---------------------------------------------------------------------------
+
+    if (me == 0) then
+
+        allocate(q(nx,ny,nz))
+        do iz = 1, nzb
+            do iy = 1, ny
+                do ix = 1, nx
+                    q(ix,iy,iz) = m(ix,iy,iz+1)
+                end do
+            end do
+        end do
+        do ii=1,nprocs-1
+            if (fp==singlePrecision) then 
+                call mpi_recv(q(1,1,nzb*ii+1),(nzb)*nx*ny,mpi_real,ii,79+ii,nall,status2,ierr)
+            else
+                call mpi_recv(q(1,1,nzb*ii+1),(nzb)*nx*ny,mpi_double_precision,ii,79+ii,nall,status2,ierr)
+            end if
+        end do
+        open (unit=99,file=filename,status='unknown', form='unformatted', access='stream')
+        write (99) q
+        close(99)
+        deallocate(q)
+
+    else
+        if (fp==singlePrecision) then 
+            call mpi_send(m(1,1,2),(nzb)*nx*ny,mpi_real,0,79+me,nall,ierr )
+        else
+            call mpi_send(m(1,1,2),(nzb)*nx*ny,mpi_double_precision,0,79+me,nall,ierr )
+        end if
+
+    end if
+
+end subroutine save_variable
+
+!===============================================================================
+! surface
+!===============================================================================
+
+subroutine load_surface(m,filename)
+
+    !---------------------------------------------------------------------------
+    ! declaration
+    !---------------------------------------------------------------------------
+
+    implicit none
+    integer me,nall
+    real(fp), intent(out) :: m(nx,ny)
+    character(*), intent(in) :: filename
+
+    !---------------------------------------------------------------------------
+    ! main code
+    !---------------------------------------------------------------------------
+
+    open (unit=99,file=filename,status='old',form='unformatted', access='stream')
+    read (99) m
+    close(99)
+
+end subroutine load_surface
+
+
+!===============================================================================
+! output
+!===============================================================================
+
+!-------------------------------------------------------------------------------
+! initialize output
+!-------------------------------------------------------------------------------
+
+subroutine initialize_ta1(ta_u, ta_v, ta_w,&
+                          ta_u2,ta_v2,ta_w2,&
+                          ta_uv)
+
+    !---------------------------------------------------------------------------
+    ! declaration
+    !---------------------------------------------------------------------------
+
+    implicit none
+    integer me,nall
+
+    real(fp), dimension(ta_nx,ta_ny,nzb), intent (inout),device:: ta_u,ta_v,ta_w,&
+                                                          ta_u2,ta_v2,ta_w2,ta_uv
+
+    !---------------------------------------------------------------------------
+    ! main
+    !---------------------------------------------------------------------------
+
+    ! if (me <= ta_kend/nzb -1 ) then
+        ta_u = 0._fp
+        ta_v = 0._fp
+        ta_w = 0._fp
+        ta_u2 = 0._fp
+        ta_v2 = 0._fp
+        ta_w2 = 0._fp
+        ta_uv = 0._fp
+    ! end if
+
+end subroutine initialize_ta1
+
+! subroutine initialize_ta2(ta_u,ta_v,ta_w,ta_u2,ta_v2,ta_w2,ta_uw,ta_txz,ta_dudz)
+
+!     !---------------------------------------------------------------------------
+!     ! declaration
+!     !---------------------------------------------------------------------------
+
+!     implicit none
+!     include 'dimen.h'
+
+!     real(fp), dimension(ta_nx,ta_ny,nzb), intent(out) :: ta_u,ta_v,ta_w,ta_u2,ta_v2,ta_w2,ta_uw,ta_txz,ta_dudz
+
+!     if (me <= ta_kend/nzb -1 ) then
+!         ta_u = 0._fp
+!         ta_v = 0._fp
+!         ta_w = 0._fp
+!         ta_u2 = 0._fp
+!         ta_v2 = 0._fp
+!         ta_w2 = 0._fp
+!         ta_uw = 0._fp
+!         ta_txz = 0._fp
+!         ta_dudz = 0._fp
+!     end if
+
+! end subroutine initialize_ta2
+
+!-------------------------------------------------------------------------------
+! open output
+!-------------------------------------------------------------------------------
+
+subroutine open_ta1(me)
+
+    implicit none
+    integer me,nall
+    character(3) :: fme
+
+    if (me <= ta_kend/nzb -1 ) then
+        write(fme,'(i3.3)'), me
+        open (unit=(11000+me),file=('output/p'//trim(fme)//'_'//'ta_u.bin'), status='unknown', form='unformatted', access='stream')
+        open (unit=(12000+me),file=('output/p'//trim(fme)//'_'//'ta_v.bin'), status='unknown', form='unformatted', access='stream')
+        open (unit=(13000+me),file=('output/p'//trim(fme)//'_'//'ta_w.bin'), status='unknown', form='unformatted', access='stream')
+        open (unit=(14000+me),file=('output/p'//trim(fme)//'_'//'ta_u2.bin'), status='unknown', form='unformatted', access='stream')
+        open (unit=(15000+me),file=('output/p'//trim(fme)//'_'//'ta_v2.bin'), status='unknown', form='unformatted', access='stream')
+        open (unit=(16000+me),file=('output/p'//trim(fme)//'_'//'ta_w2.bin'), status='unknown', form='unformatted', access='stream')
+        open (unit=(17000+me),file=('output/p'//trim(fme)//'_'//'ta_uv.bin'), status='unknown', form='unformatted', access='stream')
+    end if
+
+end subroutine open_ta1
+
+subroutine open_ta2(me)
+
+    implicit none
+    integer me,nall
+    character(3) :: fme
+
+    if (me <= ta_kend/nzb -1 ) then
+        write(fme,'(i3.3)'), me
+        open (unit=(11000+me),file=('output/p'//trim(fme)//'_'//'ta_u.bin'), &
+            status='unknown', form='unformatted', access='stream')
+        open (unit=(12000+me),file=('output/p'//trim(fme)//'_'//'ta_v.bin'), &
+            status='unknown', form='unformatted', access='stream')
+        open (unit=(13000+me),file=('output/p'//trim(fme)//'_'//'ta_w.bin'), &
+            status='unknown', form='unformatted', access='stream')
+        open (unit=(14000+me),file=('output/p'//trim(fme)//'_'//'ta_u2.bin'), &
+            status='unknown', form='unformatted', access='stream')
+        open (unit=(15000+me),file=('output/p'//trim(fme)//'_'//'ta_v2.bin'), &
+            status='unknown', form='unformatted', access='stream')
+        open (unit=(16000+me),file=('output/p'//trim(fme)//'_'//'ta_w2.bin'), &
+            status='unknown', form='unformatted', access='stream')
+        open (unit=(17000+me),file=('output/p'//trim(fme)//'_'//'ta_uw.bin'), &
+            status='unknown', form='unformatted', access='stream')
+        open (unit=(18000+me),file=('output/p'//trim(fme)//'_'//'ta_txz.bin'), &
+            status='unknown', form='unformatted', access='stream')
+        open (unit=(19000+me),file=('output/p'//trim(fme)//'_'//'ta_dudz.bin'), &
+            status='unknown', form='unformatted', access='stream')
+    end if
+
+end subroutine open_ta2
+
+subroutine open_ts1(me)
+
+    implicit none
+    integer me,nall
+    character(3) :: fme
+
+    if (me <= ts_kend/nzb -1 ) then
+        write(fme,'(i3.3)'), me
+        open (unit=(51000+me),file=('output/p'//trim(fme)//'_'//'ts_u.bin'), &
+            status='unknown', form='unformatted', access='stream')
+        open (unit=(52000+me),file=('output/p'//trim(fme)//'_'//'ts_v.bin'), &
+            status='unknown', form='unformatted', access='stream')
+        open (unit=(53000+me),file=('output/p'//trim(fme)//'_'//'ts_w.bin'), &
+            status='unknown', form='unformatted', access='stream')
+        ! open (unit=(53001+me),file=('output/p'//trim(fme)//'_'//'ts_q.bin'), &
+        !     status='unknown', form='unformatted', access='stream')
+    end if
+
+end subroutine open_ts1
+
+subroutine open_ts2(me)
+
+    implicit none
+    integer me,nall
+    character(3) :: fme
+
+    if (me <= ts_kend/nzb -1 ) then
+        write(fme,'(i3.3)'), me
+        open (unit=(54000+me),file=('output/p'//trim(fme)//'_'//'ts_fx.bin'), &
+            status='unknown', form='unformatted', access='stream')
+        open (unit=(55000+me),file=('output/p'//trim(fme)//'_'//'ts_fy.bin'), &
+            status='unknown', form='unformatted', access='stream')
+        open (unit=(56000+me),file=('output/p'//trim(fme)//'_'//'ts_fz.bin'), &
+            status='unknown', form='unformatted', access='stream')
+    end if
+
+end subroutine open_ts2
+
+subroutine open_log(me)
+
+    implicit none
+    integer me,nall
+
+    if (me == 0 ) then
+        open (unit=(61000),file=('output/log_ustar.bin'), status='unknown', &
+            form='unformatted', access='stream')
+        open (unit=(62000),file=('output/log_umax.bin'), status='unknown', &
+            form='unformatted', access='stream')
+    end if
+
+end subroutine open_log
+
+subroutine open_turb(me)
+
+    implicit none
+    integer me,nall
+
+    if (me == 0 ) then
+        open (unit=(73000),file=('output/turb_fx.bin'), status='unknown', &
+            form='unformatted', access='stream')
+        open (unit=(74000),file=('output/turb_ft.bin'), status='unknown', &
+            form='unformatted', access='stream')
+        open (unit=(75000),file=('output/blade_displacement_flap.bin'), status='unknown', &
+            form='unformatted', access='stream')
+        open (unit=(76000),file=('output/blade_moment_flap.bin'), status='unknown', &
+            form='unformatted', access='stream')
+        open (unit=(77000),file=('output/blade_displacement_edge.bin'), status='unknown', &
+            form='unformatted', access='stream')
+        open (unit=(78000),file=('output/blade_moment_edge.bin'), status='unknown', &
+            form='unformatted', access='stream')
+        open (unit=(79000),file=('output/blade_velocity_flap.bin'), status='unknown', &
+            form='unformatted', access='stream')
+        open (unit=(80000),file=('output/blade_velocity_edge.bin'), status='unknown', &
+            form='unformatted', access='stream')
+        open (unit=(82000),file=('output/phase_angle.bin'), status='unknown',&
+            form='unformatted', access='stream')
+        open (unit=(90000), FILE="output/ta_power.dat")  
+    end if
+
+end subroutine open_turb
+
+!-------------------------------------------------------------------------------
+! compute output
+!-------------------------------------------------------------------------------
+
+attributes(global) subroutine compute_ta1(u,v,w,&
+                                          ta_u,ta_v,ta_w,&
+                                          ta_u2,ta_v2,ta_w2,ta_uv)
+    implicit none
+    integer me,nall
+
+    real(fp), dimension(nx,ny,nz2), intent (in):: u,v,w
+    real(fp), dimension(nx,ny,nzb), intent (inout):: ta_u,ta_v,ta_w,&
+                                                          ta_u2,ta_v2,ta_w2,ta_uv
+    integer :: i,j,k
+    ! TODO: Replace with cublas routine?
+    i = (blockIdx%x - 1)* blockDim%x + threadIdx%x
+    j = (blockIdx%y - 1)* blockDim%y + threadIdx%y
+    k = (blockIdx%z - 1)* blockDim%z + threadIdx%z
+
+
+    ta_u(i,j,k) = ta_u(i,j,k) + u(i,j,k+1)
+    ta_v(i,j,k) = ta_v(i,j,k) + v(i,j,k+1)
+    ta_w(i,j,k) = ta_w(i,j,k) + w(i,j,k+1)
+    ta_u2(i,j,k) = ta_u2(i,j,k) + u(i,j,k+1)**2
+    ta_v2(i,j,k) = ta_v2(i,j,k) + v(i,j,k+1)**2
+    ta_w2(i,j,k) = ta_w2(i,j,k) + w(i,j,k+1)**2
+    ta_uv(i,j,k) = ta_uv(i,j,k) + u(i,j,k+1)*v(i,j,k+1)
+
+end subroutine compute_ta1
+
+
+! subroutine compute_ta2(u,v,w,txz,dudz,ta_u,ta_v,ta_w,ta_u2,ta_v2,ta_w2,ta_uw,ta_txz,ta_dudz,me)
+
+!     !---------------------------------------------------------------------------
+!     ! declaration
+!     implicit none
+!     include 'dimen.h'
+
+!     real(fp), dimension(nx,ny,nz2), intent(in):: u,v,w,txz,dudz
+!     real(fp), dimension(ta_nx,ta_ny,nzb), intent(inout):: ta_u,ta_v,ta_w,ta_u2,ta_v2,ta_w2,ta_uw,ta_txz,ta_dudz
+
+!     !---------------------------------------------------------------------------
+!     ! warning: ta_ is just the sum for now
+!     ta_u = ta_u + u(ta_istart:ta_iend,ta_jstart:ta_jend,2:nzb+1)
+!     ta_v = ta_v + v(ta_istart:ta_iend,ta_jstart:ta_jend,2:nzb+1)
+!     ta_w = ta_w + w(ta_istart:ta_iend,ta_jstart:ta_jend,2:nzb+1)
+
+!     ta_u2 = ta_u2 + u(ta_istart:ta_iend,ta_jstart:ta_jend,2:nzb+1)**2
+!     ta_v2 = ta_v2 + v(ta_istart:ta_iend,ta_jstart:ta_jend,2:nzb+1)**2
+!     ta_w2 = ta_w2 + w(ta_istart:ta_iend,ta_jstart:ta_jend,2:nzb+1)**2
+
+
+!     ta_uw=ta_uw+w(ta_istart:ta_iend,ta_jstart:ta_jend,2:nzb+1)*&
+!     0.5_fp*(u(ta_istart:ta_iend,ta_jstart:ta_jend,2:nzb+1)+&
+!     u(ta_istart:ta_iend,ta_jstart:ta_jend,1:nzb))
+
+!     ta_txz = ta_txz + txz(ta_istart:ta_iend,ta_jstart:ta_jend,2:nzb+1)
+!     ta_dudz = ta_dudz + dudz(ta_istart:ta_iend,ta_jstart:ta_jend,2:nzb+1)
+
+! end subroutine compute_ta2
+
+!-------------------------------------------------------------------------------
+! write output
+!-------------------------------------------------------------------------------
+
+subroutine write_ta1(ta_u_host,ta_v_host,ta_w_host,&
+                    ta_u2_host,ta_v2_host,ta_w2_host,ta_uv_host,me)
+
+    implicit none
+    integer me,nall
+    real(fp), dimension(ta_nx,ta_ny,nzb), intent(in) :: ta_u_host,ta_v_host,ta_w_host,&
+                                                        ta_u2_host,ta_v2_host,ta_w2_host,ta_uv_host
+    real(fp) :: ta_fr != real(c_count)/ real(p_count)
+
+    if (me <= ta_kend/nzb -1 ) then
+        ta_fr = dble(c_count)/dble(p_count)
+
+        write (11000+me) ta_fr*ta_u_host
+        write (12000+me) ta_fr*ta_v_host
+        write (13000+me) ta_fr*ta_w_host
+        write (14000+me) ta_fr*ta_u2_host
+        write (15000+me) ta_fr*ta_v2_host
+        write (16000+me) ta_fr*ta_w2_host
+        write (17000+me) ta_fr*ta_uv_host
+    end if
+
+end subroutine write_ta1
+
+subroutine write_ta2(ta_u,ta_v,ta_w,ta_u2,ta_v2,ta_w2,ta_uw,ta_txz,ta_dudz,me)
+
+    implicit none
+    integer me,nall
+    real(fp), dimension(ta_nx,ta_ny,nzb), intent(in) :: ta_u,ta_v,ta_w,ta_u2,ta_v2,ta_w2,ta_uw,ta_txz,ta_dudz
+    real(fp), parameter :: ta_fr = real(c_count)/ real(p_count)
+
+    ! if (me <= ta_kend/nzb -1 ) then
+        write (11000+me) ta_fr*ta_u
+        write (12000+me) ta_fr*ta_v
+        write (13000+me) ta_fr*ta_w
+        write (14000+me) ta_fr*ta_u2
+        write (15000+me) ta_fr*ta_v2
+        write (16000+me) ta_fr*ta_w2
+        write (17000+me) ta_fr*ta_uw
+        write (18000+me) ta_fr*ta_txz
+        write (19000+me) ta_fr*ta_dudz
+    ! end if
+
+end subroutine write_ta2
+
+subroutine write_ts1(u,v,w,me)
+
+    implicit none
+    integer me,nall
+    real(fp), dimension(nx,ny,nz2), intent(in) :: u,v,w
+
+    if (me <= ts_kend/nzb -1 ) then
+        write (51000+me) u(ts_istart:ts_iend,ts_jstart:ts_jend,2:nzb+1)
+        write (52000+me) v(ts_istart:ts_iend,ts_jstart:ts_jend,2:nzb+1)
+        write (53000+me) w(ts_istart:ts_iend,ts_jstart:ts_jend,2:nzb+1)
+        ! write (53001+me) qcrit(ts_istart:ts_iend,ts_jstart:ts_jend,2:nzb+1)
+    end if
+
+end subroutine write_ts1
+
+subroutine write_log(log_ustar,log_umax,me)
+
+    implicit none
+    integer me,nall
+    real(fp), intent(in) :: log_ustar,log_umax
+
+    if (me == 0) then
+        write (61000) log_ustar
+        write (62000) log_umax
+    end if
+
+end subroutine write_log
+
+subroutine write_turb(CTF,displacement_host,moment_host,velocity_host,me)
+
+    implicit none
+    integer me,nall
+    real(fp), dimension(3,n_r,n_turb,2) , intent(in):: CTF,displacement_host,moment_host,velocity_host
+    
+    if (me == 0) then
+        ! print *,CTF(1,50,1,1)*dx*dy*dz*z_i**2
+        write (73000) CTF(:,:,:,1)*dx*dy*dz*z_i**2
+        write (74000) CTF(:,:,:,2)*dx*dy*dz*z_i**2
+        write (75000) displacement_host(:,:,:,1)
+        write (76000) moment_host(:,:,:,1)
+        write (77000) displacement_host(:,:,:,2)
+        write (78000) moment_host(:,:,:,2)
+        write (79000) velocity_host(:,:,:,1)
+        write (80000) velocity_host(:,:,:,2)
+    end if
+
+end subroutine write_turb
+
+
+!-------------------------------------------------------------------------------
+! close output
+!-------------------------------------------------------------------------------
+
+subroutine close_ta1(me)
+
+    implicit none
+    integer me,nall
+
+    if (me <= ta_kend/nzb -1 ) then
+        close (unit=(11000+me))
+        close (unit=(12000+me))
+        close (unit=(13000+me))
+        close (unit=(14000+me))
+        close (unit=(15000+me))
+        close (unit=(16000+me))
+        close (unit=(17000+me))
+    end if
+
+end subroutine close_ta1
+
+subroutine close_ta2(me)
+
+    implicit none
+    integer me,nall
+
+    if (me <= ta_kend/nzb -1 ) then
+        close (unit=(11000+me))
+        close (unit=(12000+me))
+        close (unit=(13000+me))
+        close (unit=(14000+me))
+        close (unit=(15000+me))
+        close (unit=(16000+me))
+        close (unit=(17000+me))
+        close (unit=(18000+me))
+        close (unit=(19000+me))
+    end if
+
+end subroutine close_ta2
+
+subroutine close_ts1(me)
+
+    implicit none
+    integer me,nall
+
+    if (me <= ts_kend/nzb -1 ) then
+        close (unit=(51000+me))
+        close (unit=(52000+me))
+        close (unit=(53000+me))
+        ! close (unit=(53001+me))
+    end if
+
+end subroutine close_ts1
+
+subroutine close_ts2(me)
+
+    implicit none
+    integer me,nall
+
+    if (me <= ts_kend/nzb -1 ) then
+        close (unit=(54000+me))
+        close (unit=(55000+me))
+        close (unit=(56000+me))
+    end if
+
+end subroutine close_ts2
+
+subroutine close_log(me)
+
+    implicit none
+    integer me,nall
+
+    if (me == 0) then
+        close (unit=(61000))
+        close (unit=(62000))
+    end if
+
+end subroutine close_log
+
+subroutine close_turb(me)
+
+    implicit none
+    integer me,nall
+
+    if (me == 0) then
+        close (unit=(71000))
+        close (unit=(72000))
+        close (unit=(73000))
+        close (unit=(74000))
+        close (unit=(75000))
+        close (unit=(76000))
+        close (unit=(77000))
+        close (unit=(78000))
+        close (unit=(79000))
+        close (unit=(80000))
+    end if
+
+end subroutine close_turb
+
+
+!-------------------------------------------------------------------------------
+! recompose output
+!-------------------------------------------------------------------------------
+
+subroutine recompose_ta1(me)
+
+    implicit none
+    integer me,nall
+
+    call recompose_ta('ta_u.bin', me)
+    call recompose_ta('ta_v.bin', me)
+    call recompose_ta('ta_w.bin', me)
+    call recompose_ta('ta_u2.bin', me)
+    call recompose_ta('ta_v2.bin', me)
+    call recompose_ta('ta_w2.bin', me)
+    call recompose_ta('ta_uv.bin', me)
+
+end subroutine recompose_ta1
+
+subroutine recompose_ta2(me)
+
+    implicit none
+    integer me,nall
+
+    call recompose_ta('ta_u.bin', me)
+    call recompose_ta('ta_v.bin', me)
+    call recompose_ta('ta_w.bin', me)
+    call recompose_ta('ta_u2.bin', me)
+    call recompose_ta('ta_v2.bin', me)
+    call recompose_ta('ta_w2.bin', me)
+    call recompose_ta('ta_uw.bin', me)
+    call recompose_ta('ta_txz.bin', me)
+    call recompose_ta('ta_dudz.bin', me)
+
+end subroutine recompose_ta2
+
+subroutine recompose_ts1(me)
+
+    implicit none
+    integer me,nall
+
+    call recompose_ts('ts_u.bin', me)
+    call recompose_ts('ts_v.bin', me)
+    call recompose_ts('ts_w.bin', me)
+    ! call recompose_ts('ts_q.bin', me)
+
+    ! call recompose_ts('ts_fx.bin', me)
+    ! call recompose_ts('ts_fy.bin', me)
+    ! call recompose_ts('ts_fz.bin', me)
+
+end subroutine recompose_ts1
+
+subroutine recompose_ta(fname, me)
+
+    !---------------------------------------------------------------------------
+    ! declaration
+    implicit none
+    integer me,nall
+    character(*), intent(in) :: fname
+    integer :: p
+    character(3) :: f
+    real(fp), allocatable :: s(:,:,:,:),q(:,:,:,:)
+
+    !---------------------------------------------------------------------------
+    ! main code
+
+    if (me == 0) then
+
+        allocate(s(ta_nx,ta_ny,nzb,ta_ns))
+        allocate(q(ta_nx,ta_ny,ta_kend,ta_ns))
+        ! loop over processor files
+        do p = 0,(ta_kend/nzb -1)
+            write(f,'(i3.3)'), p
+            open (unit=(99),file=('output/p'//trim(f)//'_'//fname), status='old', form='unformatted', access='stream')
+            read (99) s
+            close((99), status ='delete')
+            q(:,:,(nzb*p+1):(nzb*(p+1)),:) = s
+        end do
+
+        ! save new file
+        open (unit=99,file=('output/'//fname), status='unknown', form='unformatted', access='stream')
+        write (99) q
+        close(99)
+
+        deallocate(q)
+        deallocate(s)
+
+    end if
+
+end subroutine recompose_ta
+
+subroutine recompose_ts(fname, me)
+
+    !---------------------------------------------------------------------------
+    ! declaration
+    implicit none
+    integer me,nall
+    character(*), intent(in) :: fname
+    integer :: p
+    character(3) :: f
+    real(fp), allocatable :: q(:,:,:,:)
+
+    !---------------------------------------------------------------------------
+    ! main code
+
+    if (me == 0) then
+        
+        allocate(q(ts_nx,ts_ny,ts_kend,ts_ns))
+        ! loop over processor files
+        do p = 0,(ts_kend/nzb -1)
+            write(f,'(i3.3)'), p
+            open (unit=(99),file=('output/p'//trim(f)//'_'//fname), status='old', form='unformatted', access='stream')
+            read (99) q(:,:,(nzb*p+1):(nzb*(p+1)),:)
+            close((99), status ='delete')
+        end do
+
+        ! save new file
+        open (unit=99,file=('output/'//fname), status='unknown', form='unformatted', access='stream')
+        write (99) q
+        close(99)
+
+        deallocate(q)
+
+    end if
+
+end subroutine recompose_ts
+
+!===============================================================================
+! prec
+!===============================================================================
+
+!-------------------------------------------------------------------------------
+! open prec
+!-------------------------------------------------------------------------------
+
+subroutine open_inflow_m(me)
+
+    implicit none
+    integer me,nall
+    character(3) :: fme
+
+    write(fme,'(i3.3)'), me
+    open(unit=(91000+me),file=('../inflow_data/p'//trim(fme)//'_'//'inflow_u.bin'), &
+        status='unknown', form='unformatted', access='stream')
+    open(unit=(92000+me),file=('../inflow_data/p'//trim(fme)//'_'//'inflow_v.bin'), &
+        status='unknown', form='unformatted', access='stream')
+    open(unit=(93000+me),file=('../inflow_data/p'//trim(fme)//'_'//'inflow_w.bin'), &
+        status='unknown', form='unformatted', access='stream')
+
+end subroutine open_inflow_m
+
+!-------------------------------------------------------------------------------
+! write prec
+!-------------------------------------------------------------------------------
+
+subroutine write_inflow(u,v,w,t,me)
+    implicit none
+    integer me,nall
+    real(fp),dimension(nx,ny,nz2),intent(in),device :: u,v,w
+    real(fp),dimension(:,:,:,:),allocatable,device :: u_batch,v_batch,w_batch
+    real(fp),dimension(:,:,:,:),allocatable,pinned :: u_out,v_out,w_out
+    integer :: i,j,k,i_batch,t
+    save  u_out,v_out,w_out,u_batch,v_batch,w_batch
+
+    if (t == 1) then
+        allocate(u_out(inflow_nx,ny,nzb,batch_size))
+        allocate(v_out(inflow_nx,ny,nzb,batch_size))
+        allocate(w_out(inflow_nx,ny,nzb,batch_size))
+
+        allocate(u_batch(inflow_nx,ny,nzb,batch_size)) 
+        allocate(v_batch(inflow_nx,ny,nzb,batch_size)) 
+        allocate(w_batch(inflow_nx,ny,nzb,batch_size)) 
+    end if
+
+    ! On gpu, copy inflow data to a data batch for every sampling steps
+    if (mod(t-1,inflow_count)==0) then
+        i_batch = mod((t-1)/inflow_count,batch_size) + 1
+        u_batch(:,:,:,i_batch) = u(inflow_istart:inflow_iend,:,2:nzb+1)
+        v_batch(:,:,:,i_batch) = v(inflow_istart:inflow_iend,:,2:nzb+1)
+        w_batch(:,:,:,i_batch) = w(inflow_istart:inflow_iend,:,2:nzb+1)
+    end if
+
+    ! On copy, transfer the inflow data to memeory for every c_count steps
+    if (mod(t-1,c_count) == c_count - 1) then
+        u_out = u_batch
+        v_out = v_batch
+        w_out = w_batch
+
+        write(91000+me) u_out
+        write(92000+me) v_out
+        write(93000+me) w_out
+    end if
+
+    ! If needed, add one more layer of writting
+    ! But right now we just write it once at the end
+    ! if (mod(t-1,p_count)== p_count - 1) then
+
+    ! end if
+
+end subroutine write_inflow
+
+
+attributes(global) subroutine compute_q_criterion(qcrit,dudx,dudy,dudz,dvdx,dvdy,dvdz,dwdx,dwdy,dwdz)
+    implicit none
+    integer me,nall
+
+    real(fp),dimension(nx,ny,nz2),intent(out) :: qcrit
+    real(fp),dimension(nx,ny,nz2),intent(in) :: dudx,dudy,dudz,dvdx,dvdy,dvdz,dwdx,dwdy,dwdz
+    integer :: i,j,k
+    ! Watch out for the inversion of axis sequence
+    i = (blockIdx%x - 1)* blockDim%x + threadIdx%x
+    j = (blockIdx%y - 1)* blockDim%y + threadIdx%y
+    k = (blockIdx%z - 1)* blockDim%z + threadIdx%z
+
+    if (k>1 .and. k<nz2) then
+        qcrit(i,j,k)=(dudx(i,j,k)*dvdy(i,j,k)+dvdy(i,j,k)*dwdz(i,j,k)+dwdz(i,j,k)*dudx(i,j,k)-&
+                     dudy(i,j,k)*dvdx(i,j,k)-dvdz(i,j,k)*dwdy(i,j,k)-dwdx(i,j,k)*dudz(i,j,k))/z_i     
+    end if
+
+end subroutine
+
+!-------------------------------------------------------------------------------
+! write prec
+!-------------------------------------------------------------------------------
+attributes(global) subroutine force_inflow(u,v,w,prec_u,prec_v,prec_w)
+    implicit none
+    integer me,nall
+
+    real(fp),dimension(nx,ny,nz2),intent(inout) :: u,v,w
+    real(fp),dimension(inflow_nx,ny,nzb),intent(in) :: prec_u,prec_v,prec_w
+    real(fp),dimension(inflow_nx,ny,nzb) :: cycle_inlet,cycle_inlet_2
+    real(fp), dimension(inflow_istart-1), parameter :: prec_fr = &
+    [( 0.5_fp*(1.00-cos(pi*real(i-1)/real(inflow_istart-1))) ,i=1,inflow_istart-1)]
+    real(fp), dimension(inflow_istart-1) :: buffer
+    integer,value :: t
+    integer :: i,j,k
+    ! Watch out for the inversion of axis sequence
+    k = (blockIdx%x - 1)* blockDim%x + threadIdx%x
+    j = (blockIdx%y - 1)* blockDim%y + threadIdx%y
+
+    buffer = u(1,j,k+1) + prec_fr*(prec_u(1,j,k) - u(1,j,k+1))
+    u(1:inflow_istart-1,j,k) = buffer
+    
+    buffer = v(1,j,k+1) + prec_fr*(prec_v(1,j,k) - v(1,j,k+1))
+    v(1:inflow_istart-1,j,k) = buffer
+
+    buffer = w(1,j,k+1) + prec_fr*(prec_w(1,j,k) - w(1,j,k+1))
+    w(1:inflow_istart-1,j,k) = buffer
+    
+    u(inflow_istart:inflow_iend,j,k+1) = prec_u(:,j,k)
+    v(inflow_istart:inflow_iend,j,k+1) = prec_v(:,j,k)
+    w(inflow_istart:inflow_iend,j,k+1) = prec_w(:,j,k)
+
+end subroutine force_inflow
+
+subroutine read_inflow(u,v,w,t,me)
+    use cudafor
+    implicit none
+    integer me,nall
+    real(fp),dimension(nx,ny,nz2),intent(inout),device :: u,v,w
+    real(fp),dimension(:,:,:,:),allocatable,device :: u_batch,v_batch,w_batch
+    real(fp),dimension(:,:,:,:),allocatable,pinned :: u_in,v_in,w_in
+    real(fp),dimension(:,:,:),allocatable,device :: prec_u,prec_v,prec_w
+    integer :: i,j,k,i_batch,t,counter,cyc_pt
+    type(dim3) :: grid, tBlock
+    tBlock = dim3(2,16,1)
+    grid = dim3(nzb/2,ny/16,1)
+
+    save u_in,v_in,w_in,u_batch,v_batch,w_batch,prec_u,prec_v,prec_w
+
+    if (t == 1) then
+        allocate(u_in(inflow_nx,ny,nzb,batch_size))
+        allocate(v_in(inflow_nx,ny,nzb,batch_size))
+        allocate(w_in(inflow_nx,ny,nzb,batch_size))
+
+        allocate(u_batch(inflow_nx,ny,nzb,batch_size)) 
+        allocate(v_batch(inflow_nx,ny,nzb,batch_size)) 
+        allocate(w_batch(inflow_nx,ny,nzb,batch_size))  
+        
+        allocate(prec_u(inflow_nx,ny,nzb))
+        allocate(prec_v(inflow_nx,ny,nzb))
+        allocate(prec_w(inflow_nx,ny,nzb))
+
+    end if
+
+
+    if (mod(t-1,c_count) == 0) then
+        read(91000+me) u_in
+        read(92000+me) v_in
+        read(93000+me) w_in
+
+        u_batch = u_in
+        v_batch = v_in
+        w_batch = w_in
+    end if
+
+    if (mod(t-1,inflow_count)==0) then
+        i_batch = mod((t-1)/(inflow_count),batch_size) + 1
+        ! Cycling inflow section: 10 times per p_count
+        cyc_pt = mod((t-1)/(inflow_count*4),ny)+1
+        ! cyc_pt = ny
+        prec_u(:,1:cyc_pt,:)    = u_batch(:,(ny-cyc_pt+1):ny,:,i_batch)
+        prec_v(:,1:cyc_pt,:)    = v_batch(:,(ny-cyc_pt+1):ny,:,i_batch)
+        prec_w(:,1:cyc_pt,:)    = w_batch(:,(ny-cyc_pt+1):ny,:,i_batch)
+        if (cyc_pt < ny) then
+            prec_u(:,cyc_pt+1:ny,:) = u_batch(:,1:(ny-cyc_pt),:,i_batch)
+            prec_v(:,cyc_pt+1:ny,:) = v_batch(:,1:(ny-cyc_pt),:,i_batch)
+            prec_w(:,cyc_pt+1:ny,:) = w_batch(:,1:(ny-cyc_pt),:,i_batch)
+        end if
+        call force_inflow<<<grid,tblock>>>(u,v,w,prec_u,prec_v,prec_w)
+    end if
+
+
+end subroutine read_inflow
+
+!-------------------------------------------------------------------------------
+! close prec
+!-------------------------------------------------------------------------------
+
+subroutine close_inflow_m(me)
+
+    implicit none
+    integer me,nall
+
+    close(unit=(91000+me))
+    close(unit=(92000+me))
+    close(unit=(93000+me))
+
+end subroutine close_inflow_m
+end module io

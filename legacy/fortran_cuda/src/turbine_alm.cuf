@@ -1,0 +1,878 @@
+module turbine
+    !===============================================================================
+    ! compute turbine
+    !===============================================================================
+    ! warning: 
+    !   -   chord and twist are hardcoded for wire01 
+    !   -   wind turbine force is completed immersed within 1 GPU
+    !       thus only used in device_id = 0
+    ! ---------------------------------------------------------------------------
+    ! Left-hand coordinate system ():
+    ! Top-down view:          Front-back view:
+    !                              Z
+    !         | /                 -|-
+    !         |/               /   | / \
+    !         Z_ _ _ _ X      |    X--  |--Y, 
+    !        /|                \   |   /
+    !       / |                   -|- 
+    !         |                    |           
+    !         Y
+    ! counter-clockwise for positive gamma and phi angle from y axis
+    ! ---------------------------------------------------------------------------
+    ! Staggering grid:        
+    !    --w-----w-- --w--          
+    !   |  u  |  u  |  u  |         
+    !   |--w- |--w--|--w--|  
+    !   |  u  |  u  |  u  |  
+    !    --w-----w-- --w--        
+    !   |  u  |  u  |  u  |  
+    !    --w-----w-- --w-- 
+    ! ---------------------------------------------------------------------------
+    ! Projection kernel: anisotropic gaussian, oriented along the grid (to be replaced by disk normal kernel)
+    use precision
+    use dimen
+    use control
+    use cudafor
+
+    integer, parameter :: blade_num = 3      ! Don't change it! (because of cuda kernel)
+
+    real(fp), parameter :: dang = 2.0_fp*pi/real(n_phi)
+    real(fp), dimension(n_turb), parameter :: dr = [(turb_r(idx1)/real(n_r), idx1=1,n_turb)]
+    real(fp), dimension(n_r,n_turb), parameter :: r  = reshape([((real(idx2-0.5_fp)*dr(idx1), idx2=1,n_r), idx1=1,n_turb)],(/n_r,n_turb/))
+    real(fp), dimension(n_r,n_turb), parameter :: dA = reshape([((r(idx2,idx1)*dang*dr(idx1), idx2=1,n_r), idx1=1,n_turb)],(/n_r,n_turb/))
+
+    integer, parameter :: mask_x = 32
+    integer, parameter :: mask_y = 64
+    integer, parameter :: mask_z = 32
+
+    integer, parameter :: ker_d_x = 16
+    integer, parameter :: ker_d_y = 16
+    integer, parameter :: ker_d_z = 16
+    
+    real(fp), dimension(n_turb), parameter :: dA_tower = [(2.d0*tow_r(i_turb)*dz,i_turb = 1,n_turb)]
+    real(fp), dimension(n_turb), parameter :: dA_nacell = [(pi*nac_r(i_turb)**2.d0, i_turb=1,n_turb)]
+
+    real(fp), dimension(n_turb), parameter :: turb_i = ((/0.8,2.35,2.8/)/z_i)/dx
+    ! real(fp), dimension(n_turb), parameter :: turb_j = ((/0.8,0.8,0.8/)/z_i)/dy
+    real(fp), dimension(n_turb), parameter :: turb_j = ((/0.8,0.85,0.9/)/z_i)/dy
+
+    real(fp),parameter :: hub_tower_gap = turb_r(1)*0 ! The gap between the tower and the hub (2 cm for WiRE-01)
+    contains
+    
+    Subroutine turbine_force(Fx,Fy,Fz,CTF,power,u,v,w,turb_loc,t)
+    !---------------------------------------------------------------------------
+    ! declaration
+    !---------------------------------------------------------------------------    
+        implicit none
+        real(fp),dimension(nx,ny,nz2),intent(out),device :: fx,fy,fz
+        real(fp),dimension(blade_num,n_r,n_turb,2),intent(out),device  :: CTF    
+        real(fp),dimension(nx,ny,nz2) :: fx_host,fy_host,fz_host
+        real(fp),dimension(n_turb),intent(out),device    :: power
+        real(fp),dimension(nx,ny,nz2),intent(in),device :: u,v,w
+        real(fp),dimension(n_turb,5),intent(in),device :: turb_loc
+        real(fp),dimension(n_turb,5) :: turb_loc_host
+        real(fp), dimension(:),allocatable,device :: CTUin,turb_rpm  
+        real(fp),dimension(n_turb) :: CTUin_host
+        integer :: i,j,k,t,counter
+    
+        save CTUin,turb_rpm,counter
+    !---------------------------------------------------------------------------
+    ! code
+    !---------------------------------------------------------------------------
+        if (t == 1) then
+            allocate(CTUin(n_turb))
+            allocate(turb_rpm(n_turb))
+        end if
+        fx = 0._fp
+        fy = 0._fp
+        fz = 0._fp
+        power = 0._fp
+        !---------------------------------------------------------------------------
+        ! compute models
+        if(turbine_model == 1)then
+            ! call tower(fx,fy,fz,u,v,w,turb_loc,t) ! Somehow it do more harms than good for power prediction!
+            ! call nacelle(fx,fy,fz,CTUin,u,v,w,turb_loc,t)
+            call controller_fix(turb_rpm,CTUin,u,turb_loc,t)
+            call almyaw(fx,fy,fz,CTF,power,u,v,w,turb_loc,turb_rpm,t,me,nall)
+        end if
+        
+    end Subroutine turbine_force
+
+    Subroutine tower(Fx,Fy,Fz,u,v,w,turb_loc,t)
+        !---------------------------------------------------------------------------
+        ! declaration
+        !---------------------------------------------------------------------------
+            implicit none
+            ! Interface variables
+            real(fp),dimension(nx,ny,nz2),intent(inout),device :: fx,fy,fz
+            real(fp),dimension(nx,ny,nz2),intent(in),device    :: u,v,w
+            real(fp),dimension(n_turb,5),intent(in),device   :: turb_loc
+            integer*4,intent(in) :: t
+            ! Internal variables
+            real(fp),dimension(:,:,:),allocatable,device:: ker
+            real(fp),dimension(:),allocatable,device :: sum_ker
+            type(dim3) :: grid_2d,tBlock_2d,grid_3d,tBlock_3d
+            
+            tBlock_2d   = dim3(ker_d_x,ker_d_y,1)
+            grid_2d     = dim3(n_turb,1,1)
+    
+            tBlock_3d   = dim3(ker_d_x,ker_d_y,1)
+            grid_3d     = dim3(n_turb,nzb,1)
+        
+            save ker,sum_ker
+        
+        !---------------------------------------------------------------------------
+        ! code
+        !---------------------------------------------------------------------------
+            ! Preprocesing
+            if (t == 1) then
+                allocate(ker(ker_d_x,ker_d_y,n_turb))
+                allocate(sum_ker(n_turb))
+    
+                ! compute projection kernel
+                ker = 0.d0
+                sum_ker = 0.d0
+                call tower_projection_pre<<<grid_2d,tBlock_2d>>>(ker,sum_ker,turb_loc)
+            end if
+    
+            ! compute force (and vel)
+            call tower_projection<<<grid_3d,tBlock_3d>>>(fx,ker,sum_ker,u,turb_loc)
+        end Subroutine tower
+        
+
+        attributes(global) subroutine tower_projection_pre(ker,sum_ker,turb_loc)
+        !----------------------------------------------------------------------------
+        ! Declaration
+        !----------------------------------------------------------------------------
+            implicit none
+            ! Interface variables
+            real(fp),dimension(ker_d_x,ker_d_y,n_turb),intent(inout) :: ker       
+            real(fp),dimension(n_turb),intent(inout)                 :: sum_ker
+            real(fp),dimension(n_turb,5),intent(in)                  :: turb_loc    
+            ! Internal variables
+            integer :: i,j,i_turb                 !< Index from cuda kernel
+            integer :: i_global,j_global          !< Global index in the nacelle masking area
+            real(fp) :: coord_x,coord_y     !< Coordinates of grid in the hub-center reference frame
+            
+            real(fp) :: tmp3
+            integer istat
+            real(fp),parameter :: sigma_x  = 2._fp*tow_r(1)
+            real(fp),parameter :: sigma_y  = 2._fp*tow_r(1)
+            real(fp),parameter :: tmp1  = 1._fp/(sigma_x*sigma_y*pi)
+            integer,parameter :: i0 = 0!nint(2.0*turb_r(1)/dx)
+            integer,parameter :: i1 = nint(1/6*turb_r(1)/dx)
+        !----------------------------------------------------------------------------
+        ! code
+        !----------------------------------------------------------------------------    
+            i      = threadIdx%x
+            j      = threadIdx%y
+            i_turb = blockIdx%x
+    
+            i_global = int(turb_i(i_turb)) + i - ker_d_x/2
+            j_global = int(turb_j(i_turb)) + j - ker_d_y/2 
+    
+            coord_x = i_global*dx-(turb_i(i_turb)*dx)
+            coord_y = j_global*dy-(turb_j(i_turb)*dy)
+    
+            ! Formulate the gaussian kernel
+            tmp3 = -0.5_fp*((coord_x/sigma_x)**2 +(coord_y/sigma_y)**2)
+            ker(i,j,i_turb) = tmp1*exp(tmp3)
+            
+            ! Compute the sum of the kernel (for normalizing)
+            istat = atomicAdd(sum_ker(i_turb),ker(i,j,i_turb))
+        
+        end subroutine tower_projection_pre
+    
+        attributes(global) subroutine tower_projection(fx,ker,sum_ker,u,turb_loc)
+        !----------------------------------------------------------------------------
+        ! Declaration
+        !----------------------------------------------------------------------------
+            implicit none
+            ! Interface variables
+            real(fp),dimension(nx,ny,nz2),intent(inout)           :: fx         
+            real(fp),dimension(ker_d_x,ker_d_y,n_turb),intent(in) :: ker        
+            real(fp),dimension(n_turb),intent(in)                 :: sum_ker    
+            real(fp),dimension(nx,ny,nz2),intent(in)              :: u          
+            real(fp),dimension(n_turb,5),intent(in)               :: turb_loc   
+            ! Internal variables
+            real(fp) :: CTFx,CTU,kk
+    
+            integer  :: i,j,k,i_turb,i_global,j_global,k_global,istat
+            integer,parameter :: i0 = 0!nint(2.0*turb_r(1)/dx)
+            integer,parameter :: i1 = nint(2*turb_r(1)/dx)
+        !----------------------------------------------------------------------------
+        ! code
+        !----------------------------------------------------------------------------
+            ! Index from cuda kernel
+            i = threadIdx%x
+            j = threadIdx%y
+            i_turb = blockIdx%x
+            k = blockIdx%y
+    
+            kk = dble(k-1.5d0)*dz
+            if( kk < (turb_loc(i_turb,3)) ) then    
+                i_global = int(turb_i(i_turb)) + i - ker_d_x/2
+                j_global = int(turb_j(i_turb)) + j - ker_d_y/2 
+                k_global = k + 1  
+                CTU = u(nint(turb_i(i_turb))-i0,nint(turb_j(i_turb)),k_global)
+                ! Drag force of the nacelle
+                CTFx = 0.5d0*(CTU**2.d0)*tow_c(i_turb)*dA_tower(i_turb)/(dx*dy*dz)
+                ! Apply 
+                istat = atomicAdd(Fx(i_global,j_global,k_global),CTFx*ker(i,j,i_turb)/sum_ker(i_turb))
+            end if
+        end subroutine tower_projection
+        
+
+    Subroutine nacelle(Fx,Fy,Fz,CTUin,u,v,w,turb_loc,t)
+        !---------------------------------------------------------------------------
+        ! declaration
+        !---------------------------------------------------------------------------
+            use cudafor
+            implicit none
+            ! Interface variables
+            real(fp),dimension(nx,ny,nz2),intent(inout),device :: fx,fy,fz
+            real(fp), dimension(n_turb),intent(out),device     :: CTUin   
+            real(fp), dimension(n_turb)    :: CTUin_host   
+            real(fp),dimension(nx,ny,nz2),intent(in),device    :: u,v,w 
+            real(fp),dimension(n_turb,5),intent(in),device   :: turb_loc 
+            integer,intent(in) :: t   
+            ! Internal variables
+            real(fp), dimension(:,:,:,:),allocatable,device :: ker
+            real(fp), dimension(:),allocatable,device :: sum_ker
+            ! Cuda variables
+            type(dim3) :: grid,tBlock
+            tBlock   = dim3(ker_d_x,ker_d_y,1)
+            grid     = dim3(n_turb,nzb,1)
+    
+            save ker,sum_ker
+        !---------------------------------------------------------------------------
+        ! code
+        !---------------------------------------------------------------------------
+            ! Preprocesing
+            if (t == 1) then
+                allocate(sum_ker(n_turb))
+                allocate(ker(ker_d_x,ker_d_y,nzb,n_turb))
+    
+                ! compute projection kernel
+                ker = 0.d0
+                sum_ker = 0.d0
+                call nacelle_projection_pre<<<grid,tBlock>>>(ker,sum_ker,turb_loc)
+    
+                ! ! Communciation
+                ! call mpi_allreduce(mpi_in_place, sum_ker(1),&
+                !     n_turb,mpi_double_precision,&
+                !     mpi_sum,nall,ierr)
+            end if
+    
+            ! compute force (and vel)
+            call nacelle_projection<<<grid,tBlock>>>(fx,CTUin,ker,sum_ker,u,turb_loc)
+    
+        end Subroutine nacelle
+
+
+    attributes(global) subroutine nacelle_projection_pre(ker,sum_ker,turb_loc)
+    !----------------------------------------------------------------------------
+    ! Declaration
+    !----------------------------------------------------------------------------
+        implicit none
+        ! Interface variables
+        real(fp),dimension(ker_d_x,ker_d_y,nzb,n_turb),intent(inout) :: ker       
+        real(fp),dimension(n_turb),intent(inout)                     :: sum_ker
+        real(fp),dimension(n_turb,5),intent(in)                      :: turb_loc    
+        ! Internal variables
+        integer :: i,j,k,i_turb                 !< Index from cuda kernel
+        integer :: i_global,j_global,k_global   !< Global index in the nacelle masking area
+        real(fp) :: coord_x,coord_y,coord_z     !< Coordinates of grid in the hub-center reference frame
+        
+        real(fp) :: tmp3
+        integer istat
+        real(fp),parameter :: sigma_x  = 1*nac_r(1)
+        real(fp),parameter :: sigma_yz = 1*nac_r(1)
+        real(fp),parameter :: tmp1  = 1.d0/(sigma_yz**2*sigma_x*dsqrt(pi)**3)
+        integer,parameter :: i1 = nint(2.0*turb_r(1)/dx)
+    !----------------------------------------------------------------------------
+    ! code
+    !----------------------------------------------------------------------------    
+        i      = threadIdx%x
+        j      = threadIdx%y
+        i_turb = blockIdx%x
+        k = blockIdx%y
+
+        i_global = int(turb_i(i_turb)) + i - ker_d_x/2
+        j_global = int(turb_j(i_turb)) + j - ker_d_y/2 
+        k_global = k + 1  
+
+        coord_x = i_global*dx-(turb_i(i_turb)*dx-hub_tower_gap*cos(turb_loc(i_turb,4)))
+        coord_y = j_global*dy-(turb_j(i_turb)*dy-hub_tower_gap*sin(turb_loc(i_turb,4)))
+        coord_z = (k_global-1.5)*dz-turb_z(i_turb)
+
+        ! Formulate the gaussian kernel
+        tmp3 = -0.5_fp*((coord_x/sigma_x)**2 +(coord_y/sigma_yz)**2 +(coord_z/sigma_yz)**2)
+        ker(i,j,k,i_turb) = tmp1*exp(tmp3)
+        
+        ! Compute the sum of the kernel (for normalizing)
+        istat = atomicAdd(sum_ker(i_turb),ker(i,j,k,i_turb))
+    
+    end subroutine nacelle_projection_pre
+
+    attributes(global) subroutine nacelle_projection(fx,CTUin,ker,sum_ker,u,turb_loc)
+    !----------------------------------------------------------------------------
+    ! Declaration
+    !----------------------------------------------------------------------------
+        implicit none
+        ! Interface variables
+        real(fp),dimension(nx,ny,nz2),intent(inout)               :: fx         
+        real(fp),dimension(n_turb),intent(inout)                  :: CTUin      
+        real(fp),dimension(ker_d_x,ker_d_y,nzb,n_turb),intent(in) :: ker        
+        real(fp),dimension(n_turb),intent(in)                     :: sum_ker    
+        real(fp),dimension(nx,ny,nz2),intent(in)                  :: u          
+        real(fp),dimension(n_turb,5),intent(in)                   :: turb_loc   
+        ! Internal variables
+        real(fp) :: CTFx,CTU
+        real(fp) :: hub_kk
+        integer  :: hub_k(n_turb)
+        real(fp) :: lz1(n_turb),lz2(n_turb)
+        integer  :: i,j,k,i_turb,i_global,j_global,k_global,istat
+        integer,parameter :: i0 = 0!nint(2.0*turb_r(1)/dx)
+        integer,parameter :: i1 = nint(2.0*turb_r(1)/dx)
+    !----------------------------------------------------------------------------
+    ! code
+    !----------------------------------------------------------------------------
+        ! Index from cuda kernel
+        i = threadIdx%x
+        j = threadIdx%y
+        i_turb = blockIdx%x
+        k = blockIdx%y
+
+        hub_kk= dble(turb_z(i_turb)/dz)+1.5d0 ! global uv node index of hub
+        hub_k(i_turb) = int(hub_kk)
+        lz1(i_turb) = dble(hub_kk-hub_k(i_turb))
+        lz2(i_turb) = (1.d0-lz1(i_turb))
+        ! Streamwise velocity at the nacelle
+        CTU = u(nint((turb_i(i_turb)*dx-hub_tower_gap*cos(turb_loc(i_turb,4)))/dx),nint((turb_j(i_turb)*dy-hub_tower_gap*sin(turb_loc(i_turb,4)))/dy),hub_k(i_turb))*lz1(i_turb) + &
+              u(nint((turb_i(i_turb)*dx-hub_tower_gap*cos(turb_loc(i_turb,4)))/dx),nint((turb_j(i_turb)*dy-hub_tower_gap*sin(turb_loc(i_turb,4)))/dy),hub_k(i_turb)+1)*lz2(i_turb)
+
+        ! Streamwise velocity i0 grid in front of the nacelle
+        ! CTUin(i_turb) = u(nint(nint(turb_loc(i_turb,1)/dx)*dx/dx)-i0,nint(nint(turb_loc(i_turb,2)/dy)*dy/dy),hub_k(i_turb))*lz1(i_turb) + &
+        ! u(nint(nint(turb_loc(i_turb,1)/dx)*dx/dx)-i0,nint(nint(turb_loc(i_turb,2)/dy)*dy/dy),hub_k(i_turb)+1)*lz2(i_turb)
+
+        ! Drag force of the nacelle
+        CTFx = 0.5_fp*(CTU**2)*nac_c(i_turb)*dA_nacell(i_turb)/(dx*dy*dz)
+        
+        ! Global index 
+        i_global = int(turb_i(i_turb)) + i - ker_d_x/2
+        j_global = int(turb_j(i_turb)) + j - ker_d_y/2 
+        k_global = k + 1  
+
+        ! Apply 
+        istat = atomicAdd(Fx(i_global,j_global,k_global),CTFx*ker(i,j,k,i_turb)/sum_ker(i_turb))
+
+    end subroutine nacelle_projection
+    
+
+    !===============================================================================
+    ! compute ADMR for yaw turbine
+    !===============================================================================
+    
+    Subroutine almyaw(fx,fy,fz,CTF,power,u,v,w,turb_loc,turb_rpm,t,me,nall)
+        !----------------------------------------------------------------------------
+        ! Declaration
+        !----------------------------------------------------------------------------
+            use cudafor
+            implicit none
+            ! Interface variables
+            real(fp),dimension(nx,ny,nz2),intent(inout),device :: fx,fy,fz 
+            real(fp),dimension(blade_num,n_r,n_turb,2),intent(out),device  :: CTF         !< Force on the blade element (CTFx,CTFt)
+            real(fp),dimension(n_turb),intent(out),device      :: power
+            real(fp),dimension(nx,ny,nz2),intent(in),device    :: u,v,w     
+            real(fp),dimension(n_turb,5),intent(in),device     :: turb_loc 
+            real(fp),dimension(n_turb),intent(inout),device    :: turb_rpm
+            integer,intent(in)                                 :: t,me,nall
+            ! Internal variables
+            real(fp),dimension(:,:,:,:),allocatable,device     :: sum_ker     !< Normalization for the smearing kernel 
+            real(fp),dimension(blade_num,n_r,n_turb,2)         :: CTF_test         !< Force on the blade element (CTFx,CTFt)
+            
+            real(fp),dimension(:,:),allocatable,device         :: twist_angle,chord_length
+            real(fp),dimension(:,:),allocatable,device         :: turb_aerodyn,turb_geo
+            real(fp), dimension(:),allocatable,device          :: radius_dat,twist_dat,chord_dat
+            real(fp),dimension(:,:),allocatable,device         :: phase_angle
+            real(fp),dimension(n_r,n_turb)                     :: chord_length_test
+            real(fp),dimension(:),allocatable,device           :: turb_rpm_new,torque
+            real(fp),dimension(n_turb) :: turb_rpm_host
+            real(fp),dimension(:,:),allocatable                :: turb_aerodyn_host,turb_geo_host
+            integer :: i,j,k,me_k,index,i_global,hub_node,nlines,io,iter,i_turb,i_r,blade
+            ! Cuda variables
+            type(dim3) :: grid_be,tBlock_be,grid_full,tBlock_full,tBlock_alm,grid_alm,tBlock_alm1,grid_alm1
+            ! kernel config for force computing on blade element
+            tBlock_alm   = dim3(blade_num,n_r,1)
+            grid_alm     = dim3(n_turb,1,1)
+            ! kernel config for force computing on blade element
+            tBlock_alm1   = dim3(n_r,1,1)
+            grid_alm1     = dim3(n_turb,1,1)
+            ! kernel config for force prejection on cartesian grid
+            ! tBlock_full = dim3(blade_num,n_r,n_turb)
+            ! grid_full   = dim3(mask_x,mask_y,mask_z)   
+
+            tBlock_full = dim3(blade_num,n_r,1)
+            grid_full   = dim3(mask_x,mask_y,nzb)
+
+            save twist_angle,chord_length,sum_ker,turb_aerodyn,turb_geo,turb_rpm_new,torque,phase_angle
+        !----------------------------------------------------------------------------
+        ! code
+        !----------------------------------------------------------------------------
+        if (t == 1) then
+            ! load turbine geometry files
+            open(unit=100,file='input/turb_geo.dat')
+                nlines = 0
+                DO
+                    READ(100,*,iostat=io)
+                    IF (io/=0) EXIT
+                    nlines = nlines + 1
+                END DO
+            close(100)
+
+            allocate(turb_geo_host(3,nlines))
+            allocate(turb_geo(3,nlines))
+            allocate(turb_aerodyn_host(3,181))
+            allocate(turb_aerodyn(3,181))
+            ! Reading twice, any better idea?
+            open(unit=101,file='input/turb_geo.dat')
+                DO k=1,nlines
+                    READ(101,*,iostat=io) turb_geo_host(1:3,k)
+                    IF (io/=0) EXIT
+                END DO
+            close(101)
+            turb_geo = turb_geo_host    ! Copy to device
+
+            allocate(radius_dat(nlines))
+            allocate(twist_dat(nlines))
+            allocate(chord_dat(nlines))
+
+            radius_dat = turb_geo(1,:)
+            twist_dat  = turb_geo(2,:)
+            chord_dat  = turb_geo(3,:)
+
+            ! load turbine aerodynamic files (lift and drag)
+            if(turb_flag > 0)then
+                open(unit=99,file='input/turb_aerodyn.dat')
+                do k=1,181
+                    read(99,*)turb_aerodyn_host(1:3,k)
+                end do
+                close(99)
+            endif
+            turb_aerodyn = turb_aerodyn_host ! Copy to device
+            ! device array allocation
+            allocate(sum_ker(blade_num,n_r,n_turb,2))
+            allocate(twist_angle(n_r,n_turb))
+            allocate(chord_length(n_r,n_turb))
+            allocate(phase_angle(blade_num,n_turb))
+
+            call force_compute_pre_alm<<<grid_alm1,tBlock_alm1>>>(twist_angle,chord_length,&
+                                                                  turb_loc,radius_dat,twist_dat,chord_dat)
+        end if
+
+        !$cuf kernel do(1) <<<*,*>>>
+        do i_turb = 1,n_turb
+            ! Warning: update sequence matter! Update phase_angle(1,i_turb) at the end is a must.
+            phase_angle(2,i_turb) = mod(phase_angle(1,i_turb) - turb_rpm(i_turb)/60*2*pi*dt*z_i*turb_count,2*pi) - 2*pi/3
+            phase_angle(3,i_turb) = mod(phase_angle(1,i_turb) - turb_rpm(i_turb)/60*2*pi*dt*z_i*turb_count,2*pi) - 4*pi/3
+            phase_angle(1,i_turb) = mod(phase_angle(1,i_turb) - turb_rpm(i_turb)/60*2*pi*dt*z_i*turb_count,2*pi) 
+        end do
+
+        call force_compute_alm<<<grid_alm,tBlock_alm>>>(CTF,power,&
+                                                        u,v,w,&
+                                                        twist_angle,chord_length,&
+                                                        turb_rpm,turb_loc,turb_aerodyn,phase_angle)
+        
+        !$cuf kernel do(3) <<<*,*>>>
+        ! (blade_num,n_r,n_turb,2)
+        do i_turb = 1,n_turb
+            do i_r = 1,n_r
+                do blade = 1,blade_num
+                    sum_ker(blade,i_r,i_turb,1) = 0
+                    sum_ker(blade,i_r,i_turb,2) = 0
+                end do
+            end do
+        end do
+
+        call force_projection_pre<<<grid_full,tBlock_full>>>(sum_ker,turb_loc,phase_angle,twist_angle,chord_length)
+        call force_projection<<<grid_full,tBlock_full>>>(fx,fy,fz,CTF,sum_ker,turb_loc,phase_angle,twist_angle,chord_length)
+    end Subroutine almyaw
+
+
+    attributes(global) subroutine force_compute_pre_alm(twist_angle,chord_length,&
+                                                    turb_loc,radius_dat,twist_dat,chord_dat)
+        !----------------------------------------------------------------------------
+        ! Declaration
+        !----------------------------------------------------------------------------
+        implicit none
+        ! Interface variables
+        real(fp),dimension(n_r,n_turb),intent(out)            :: twist_angle,chord_length
+        real(fp),dimension(n_turb,5),intent(in)               :: turb_loc
+        real(fp),dimension(:),intent(in)                      :: radius_dat,twist_dat,chord_dat
+        ! Internal variables
+        real(fp) :: tmp3
+        integer  :: i,j,k,i_turb,blade,i_r,me_k,nlines
+        !----------------------------------------------------------------------------
+        ! code
+        !----------------------------------------------------------------------------
+        ! Index from cuda kernel
+        i_r    = threadIdx%x
+        i_turb = blockIdx%x
+
+        ! Interpolate Chord length
+        call itp1D(radius_dat,chord_dat,size(radius_dat),r(i_r,i_turb)*z_i,chord_length(i_r,i_turb))
+        chord_length(i_r,i_turb) = chord_length(i_r,i_turb)/z_i
+        ! Interpolate twist angle
+        call itp1D(radius_dat,twist_dat,size(radius_dat),r(i_r,i_turb)*z_i,twist_angle(i_r,i_turb) )
+
+    end subroutine force_compute_pre_alm
+
+
+    attributes(global) subroutine force_compute_alm(CTF,power,&
+                                                    u,v,w,&
+                                                    twist_angle,chord_length,&
+                                                    turb_rpm,turb_loc,turb_aerodyn,phase_angle)
+        !----------------------------------------------------------------------------
+        ! Declaration
+        !----------------------------------------------------------------------------
+        implicit none 
+        ! Interface variables
+        real(fp),dimension(blade_num,n_r,n_turb,2),intent(out) :: CTF
+        real(fp),dimension(n_turb),intent(out)             :: power
+        real(fp),dimension(nx,ny,nz2),intent(in)           :: u,v,w
+        real(fp),dimension(n_turb),intent(in)              :: turb_rpm
+        real(fp),dimension(n_turb,5),intent(in)            :: turb_loc
+        real(fp),dimension(3,181),intent(in)               :: turb_aerodyn
+        real(fp),dimension(blade_num,n_turb),intent(in)    :: phase_angle
+        real(fp),dimension(n_r,n_turb),intent(in)          :: twist_angle,chord_length
+
+        !     ! Internal variables
+        real(fp) :: c_w_1d(8),c_uv_1d(8)
+        real(fp) :: blade_ii,blade_jj,blade_kk_uv,blade_kk_w  
+        real(fp) :: CTphi,sin_CTphi,cos_CTphi
+        real(fp) :: CTU,CTV,CTW,CTUrel,AoA
+        real(fp) :: CTCL,CTCD,CTU_origin,CTV_origin,CTW_origin
+        real(fp) :: f1_tip,f2_tip,f1_hub,f2_hub,g
+        !     real(fp) :: cos_Tang
+        integer :: i_turb,blade,i_r,istat,blade_ijk(4)
+        !----------------------------------------------------------------------------
+        ! code
+        !----------------------------------------------------------------------------
+        ! Index from cuda kernel
+        blade     = threadIdx%x
+        i_r       = threadIdx%y
+        i_turb    = blockIdx%x
+    
+        if (i_r >= n_r_s) then
+            
+            blade_ii    = turb_i(i_turb)-(hub_tower_gap*cos(turb_loc(i_turb,4)))/dx - r(i_r,i_turb)*cos(phase_angle(blade,i_turb))/dx*sin(turb_loc(i_turb,4))
+            blade_jj    = turb_j(i_turb)-(hub_tower_gap*sin(turb_loc(i_turb,4)))/dy + r(i_r,i_turb)*cos(phase_angle(blade,i_turb))/dy*cos(turb_loc(i_turb,4))
+            blade_kk_w  = turb_loc(i_turb,3)/dz + r(i_r,i_turb)*sin(phase_angle(blade,i_turb))/dz + 2._fp
+            blade_kk_uv = blade_kk_w - 0.5_fp
+
+            ! Global index of the left_lower grid to a blade element centre
+            blade_ijk(1) = int(blade_ii)
+            blade_ijk(2) = int(blade_jj)
+            blade_ijk(3) = int(blade_kk_uv)
+            blade_ijk(4) = int(blade_kk_w)   
+            ! Trilinear interpolation coefficients 
+            ! NOTICE: Interpolation at o for w node needs to be treated differently
+            call get_interp_coeff(c_uv_1d,blade_ii,blade_jj,blade_kk_uv) 
+            call get_interp_coeff(c_w_1d,blade_ii,blade_jj,blade_kk_w)
+            
+            ! Interpolate the velocity at the blade element
+            call compute_vel_3D(CTU_origin,u,blade_ijk(1),blade_ijk(2),blade_ijk(3),c_uv_1d)
+            call compute_vel_3D(CTV_origin,v,blade_ijk(1),blade_ijk(2),blade_ijk(3),c_uv_1d)
+            call compute_vel_3D(CTW_origin,w,blade_ijk(1),blade_ijk(2),blade_ijk(4),c_w_1d)
+            
+            ! Project from the original grid-align reference to the disk normal reference 
+            CTU = CTU_origin*cos(turb_loc(i_turb,4))+CTV_origin*sin(turb_loc(i_turb,4))
+            CTV = CTV_origin*cos(turb_loc(i_turb,4))-CTU_origin*sin(turb_loc(i_turb,4))
+            CTW = CTW_origin
+            ! Compute the tangential velocity relative to the rotating blade                   
+            CTV = CTW*cos(phase_angle(blade,i_turb))-CTV*sin(phase_angle(blade,i_turb)) + turb_rpm(i_turb)/60*2*pi*(r(i_r,i_turb)*z_i)
+
+            ! Find the attack angle and relative inflow velocity for the blade element
+            CTphi     = atan(CTU/CTV)
+            sin_CTphi = sin(CTphi)
+            cos_CTphi = cos(CTphi)
+            ! Convert to degree
+            AoA = CTphi*rad2deg-twist_angle(i_r,i_turb)
+            CTUrel  = CTU/sin_CTphi
+            
+            ! compute cl/cd from AoA (assume one Re)
+            if (AoA < -90._fp) then
+                AoA = -90._fp
+            elseif (AoA > 90._fp) then
+                AoA = 90._fp
+            endif
+            call compute_cl_cd(CTCL,CTCD,AOA,turb_aerodyn)
+            
+    !         ! Tip loss factor correction
+            f1_tip = 3._fp*(turb_r(i_turb)-r(i_r,i_turb))/(2.0*r(i_r,i_turb)*sin_CTphi)
+            g = 1.0!exp(-0.1*(3*tsp-10))
+            f2_tip = 2._fp/pi*acos(exp(-g*f1_tip))
+            ! Hub loss factor correction
+            f1_hub = 3._fp*(r(i_r,i_turb)-nac_r(i_turb))/(2.0*r(i_r,i_turb)*sin_CTphi)
+            f2_hub = 2._fp/pi*acos(exp(-g*f1_hub))
+    !         ! Impose a stronger restriction: necessary for yawed turbine
+            ! Basically igore the case with weird AoA
+            if (AoA > -10 .and. AoA < 50) then 
+                ! Normal force
+                CTF(blade,i_r,i_turb,1) = 0.5_fp*(CTUrel**2)*chord_length(i_r,i_turb)*dr(i_turb)/(dx*dy*dz)*(CTCL*cos_CTphi+CTCD*sin_CTphi)*f2_tip*f2_hub
+                ! Tangential force
+                CTF(blade,i_r,i_turb,2) = 0.5_fp*(CTUrel**2)*chord_length(i_r,i_turb)*dr(i_turb)/(dx*dy*dz)*(CTCL*sin_CTphi-CTCD*cos_CTphi)*f2_tip*f2_hub
+            end if
+
+            istat = atomicadd(power(i_turb),CTF(blade,i_r,i_turb,2)*r(i_r,i_turb)*turb_rpm(i_turb)/60*2*pi*(dx*dy*dz)*z_i**3)
+            call syncthreads() 
+        end if
+    end subroutine force_compute_alm
+      
+    attributes(global) subroutine force_projection_pre(sum_ker,turb_loc,phase_angle,twist_angle,chord_length)
+        !----------------------------------------------------------------------------
+        ! Declaration
+        !----------------------------------------------------------------------------
+        implicit none
+        ! Interface variables
+        real(fp),dimension(blade_num,n_r,n_turb,2),intent(inout) :: sum_ker
+        real(fp),dimension(n_turb,5),intent(in)  :: turb_loc
+        real(fp),dimension(blade_num,n_turb),intent(in)    :: phase_angle
+        real(fp),dimension(n_r,n_turb),intent(in)          :: twist_angle,chord_length
+        ! Internal variables
+        real(fp) :: sigma_x,sigma_yz,sigma,tmp1,tmp2,tmp3,ker_u,ker_w    
+        real(fp) :: mu_x,mu_y,mu_z
+        real(fp) :: coord_x,coord_y,coord_z_u,coord_z_w
+        integer :: i,j,k,i_turb,blade,i_r,istat, i_global, j_global, k_global
+        !----------------------------------------------------------------------------
+        ! code
+        !----------------------------------------------------------------------------
+        ! Index from cuda kernel
+        i = blockIdx%x 
+        j = blockIdx%y 
+        k = blockIdx%z + 1
+        blade   = threadIdx%x 
+        i_r     = threadIdx%y
+        ! Loop through turbine
+        ! TODO: replace by loop through x masking grid?
+        do i_turb = 1,n_turb
+
+            if (i_r >= n_r_s) then
+                ! Blade element relative coordinates to the hub
+                mu_x = - r(i_r,i_turb)*cos(phase_angle(blade,i_turb))*sin(turb_loc(i_turb,4)) 
+                mu_y =   r(i_r,i_turb)*cos(phase_angle(blade,i_turb))*cos(turb_loc(i_turb,4))
+                mu_z =   r(i_r,i_turb)*sin(phase_angle(blade,i_turb))                      ! Why +1: z = 2 to nzb+1
+                
+                ! global index for kernel
+                i_global = int(turb_i(i_turb)-(hub_tower_gap*cos(turb_loc(i_turb,4)))/dx) + i - mask_x/2
+                j_global = int(turb_j(i_turb)-(hub_tower_gap*sin(turb_loc(i_turb,4)))/dy) + j - mask_y/2
+                k_global = k 
+
+                ! Grid coordinates in the hub-centered reference frame
+                coord_x = i_global*dx-(turb_i(i_turb)*dx-hub_tower_gap*cos(turb_loc(i_turb,4)))
+                coord_y = j_global*dy-(turb_j(i_turb)*dy-hub_tower_gap*sin(turb_loc(i_turb,4)))
+                coord_z_u = (k_global-1.5)*dz-turb_loc(i_turb,3)
+                coord_z_w = coord_z_u - 0.5*dz
+
+                ! Apply gaussian smoothing kernel
+                
+                sigma_x  = 0.5*chord_length(i_r,i_turb)!sqrt((chord_length(i_r,i_turb))**2+dr(i_turb)**2)
+                sigma_yz = 0.5*chord_length(i_r,i_turb)!sqrt((chord_length(i_r,i_turb))**2+dr(i_turb)**2)
+
+                tmp1   = 1._fp/(sigma_yz**2*sigma_x*sqrt(pi)**3)
+                tmp2   = -1._fp
+                tmp3   = ((coord_x-mu_x)/sigma_x)**2+((coord_y-mu_y)/sigma_yz)**2+((coord_z_u-mu_z)/sigma_yz)**2
+                ker_u  = tmp1*exp(tmp2*tmp3)
+                tmp3   = ((coord_x-mu_x)/sigma_x)**2+((coord_y-mu_y)/sigma_yz)**2+((coord_z_w-mu_z)/sigma_yz)**2
+                ker_w  = tmp1*exp(tmp2*tmp3)
+
+                ! Loop through all kernel grid points to sum the smearing coeff.
+                istat = atomicAdd(sum_ker(blade,i_r,i_turb,1),ker_u)
+                istat = atomicAdd(sum_ker(blade,i_r,i_turb,2),ker_w)
+            end if
+            call syncthreads() 
+        end do
+    end subroutine force_projection_pre
+
+
+    attributes(global) subroutine force_projection(fx,fy,fz,CTF,sum_ker,turb_loc,phase_angle,twist_angle,chord_length)
+    !----------------------------------------------------------------------------
+    ! Declaration
+    !----------------------------------------------------------------------------
+        implicit none
+        ! Interface variables
+        real(fp),dimension(nx,ny,nz2),intent(inout)       :: Fx,Fy,Fz
+        real(fp),dimension(blade_num,n_r,n_turb,2),intent(in) :: CTF,sum_ker
+        real(fp),dimension(n_turb,5),intent(in)           :: turb_loc
+        real(fp),dimension(blade_num,n_turb),intent(in)    :: phase_angle
+        real(fp),dimension(n_r,n_turb),intent(in)          :: twist_angle,chord_length
+        ! Internal variables
+        real(fp) :: sin_CTangx,cos_CTangz  
+        real(fp) :: sigma,sigma_x,sigma_yz,tmp1,tmp2,tmp3
+        real(fp) :: ker_u,ker_w
+        real(fp) :: coord_x,coord_y,coord_z_u,coord_z_w,r_u,r_w
+        real(fp) :: angle_uv,angle_z
+        real(fp) :: mu_x,mu_y,mu_z
+        real(fp) :: CTFy,CTFx_origin,CTFy_origin,CTFz_origin
+        real(fp) :: CTx,CTy,CTzu,CTzw
+        integer :: i,j,k,i_turb,blade,i_r,i_global,j_global,k_global,istat
+    !----------------------------------------------------------------------------
+    ! code
+    !----------------------------------------------------------------------------
+        ! Index from cuda kernel
+        i = blockIdx%x 
+        j = blockIdx%y 
+        k = blockIdx%z + 1  ! why +1: z = 2 to nzb+1
+        blade   = threadIdx%x 
+        i_r     = threadIdx%y
+
+        do i_turb = 1,n_turb
+            if (i_r >= n_r_s) then
+                mu_x = - r(i_r,i_turb)*cos(phase_angle(blade,i_turb))*sin(turb_loc(i_turb,4)) 
+                mu_y =   r(i_r,i_turb)*cos(phase_angle(blade,i_turb))*cos(turb_loc(i_turb,4))
+                mu_z =   r(i_r,i_turb)*sin(phase_angle(blade,i_turb))       
+
+                 ! global index for kernel
+                i_global = int(turb_i(i_turb)-(hub_tower_gap*cos(turb_loc(i_turb,4)))/dx) + i - mask_x/2
+                j_global = int(turb_j(i_turb)-(hub_tower_gap*sin(turb_loc(i_turb,4)))/dy) + j - mask_y/2
+                k_global = k 
+
+                ! Grid coordinates in the hub-centered reference frame
+                coord_x = i_global*dx-(turb_i(i_turb)*dx-hub_tower_gap*cos(turb_loc(i_turb,4)))
+                coord_y = j_global*dy-(turb_j(i_turb)*dy-hub_tower_gap*sin(turb_loc(i_turb,4)))
+                coord_z_u = (k_global-1.5)*dz-turb_loc(i_turb,3)
+                coord_z_w = coord_z_u - 0.5*dz
+
+                ! Distance to the hub
+                ! r_u  = sqrt(((coord_y+coord_x*tan(turb_loc(i_turb,4)))*cos(turb_loc(i_turb,4)))**2 + coord_z_u**2)
+                ! r_w  = sqrt(((coord_y+coord_x*tan(turb_loc(i_turb,4)))*cos(turb_loc(i_turb,4)))**2 + coord_z_w**2)
+
+                r_u  = sqrt((coord_y/cos(turb_loc(i_turb,4)))**2 + coord_z_u**2)
+                r_w  = sqrt((coord_y/cos(turb_loc(i_turb,4)))**2 + coord_z_w**2)
+                ! Phase angle of the grid point
+                sin_CTangx = coord_z_u/(r_u+1e-16)
+                ! cos_CTangz = ((coord_y+coord_x*tan(turb_loc(i_turb,4)))*cos(turb_loc(i_turb,4)))/(r_w+1e-16)
+                cos_CTangz = ((coord_y)/cos(turb_loc(i_turb,4)))/(r_w+1e-16)
+                ! Apply gaussian smoothing kernel
+                sigma_x  = 0.5*chord_length(i_r,i_turb)!sqrt((chord_length(i_r,i_turb))**2+dr(i_turb)**2)
+                sigma_yz = 0.5*chord_length(i_r,i_turb)!sqrt((chord_length(i_r,i_turb))**2+dr(i_turb)**2)
+
+                tmp1   = 1._fp/(sigma_yz**2*sigma_x*sqrt(pi)**3)
+                tmp2   = -1._fp
+
+                tmp3   = ((coord_x-mu_x)/sigma_x)**2+((coord_y-mu_y)/sigma_yz)**2+((coord_z_u-mu_z)/sigma_yz)**2
+                ker_u  = tmp1*exp(tmp2*tmp3)/sum_ker(blade,i_r,i_turb,1)
+                tmp3   = ((coord_x-mu_x)/sigma_x)**2+((coord_y-mu_y)/sigma_yz)**2+((coord_z_u-mu_z-0.5*dz)/sigma_yz)**2
+                ker_w  = tmp1*exp(tmp2*tmp3)/sum_ker(blade,i_r,i_turb,2)
+
+                ! Rotate the force from the disk-normal reference to the original reference
+                CTFy        = CTF(blade,i_r,i_turb,2)*sin_CTangx
+                CTFx_origin = CTF(blade,i_r,i_turb,1)*cos(turb_loc(i_turb,4))-CTFy*sin(turb_loc(i_turb,4))
+                CTFy_origin = CTF(blade,i_r,i_turb,1)*sin(turb_loc(i_turb,4))+CTFy*cos(turb_loc(i_turb,4))
+                CTFz_origin = - CTF(blade,i_r,i_turb,2)*cos_CTangz
+                ! print *,CTF(blade,i_r,i_turb,1)
+
+                ! print *,ker_u
+                ! Project the force
+                istat = atomicAdd(Fx(i_global,j_global,k_global),CTFx_origin*ker_u)
+                istat = atomicAdd(Fy(i_global,j_global,k_global),CTFy_origin*ker_u)
+                istat = atomicAdd(Fz(i_global,j_global,k_global),CTFz_origin*ker_w)
+            end if
+            ! call syncthreads() 
+        end do
+    
+    end subroutine force_projection
+
+    attributes(device) subroutine get_interp_coeff(c,blade_ii,blade_jj,blade_kk)
+        implicit none
+        real(fp),dimension(8),intent(out) :: c
+        real(fp),intent(in) :: blade_ii,blade_jj,blade_kk
+        real(fp),dimension(3) :: blade_point
+        integer :: i,j,k,counter
+        real(fp),dimension(3,2) :: l
+    
+        blade_point = (/blade_ii,blade_jj,blade_kk/)
+        ! Get the location in the cube 
+        do i = 1,3
+            l(i,1) = 1._fp-(dble(blade_point(i)-int(blade_point(i))))
+            l(i,2) = dble(blade_point(i)-int(blade_point(i)))
+            ! if (i == 1) print *,i,l(i,1),l(i,2)
+        end do
+        
+            ! Get the coefficient
+        counter = 1
+        do i = 1,2
+            do j = 1,2
+                do k = 1,2
+                    c(counter) = l(1,i)*l(2,j)*l(3,k)
+                    counter = counter + 1                 
+                end do
+            end do
+        end do 
+    
+    end subroutine get_interp_coeff
+    
+    attributes(device) subroutine compute_vel_3D(u_interp,u,blade_i,blade_j,blade_k,c)
+        implicit none
+    
+        real(fp),intent(out) :: u_interp
+        real(fp),dimension(nx,ny,nz2),intent(in) :: u
+        integer,intent(in) :: blade_i,blade_j,blade_k
+        integer :: i,j,k,counter
+        real(fp),dimension(8),intent(in) :: c
+    
+        ! To be rewritten using dot_product
+        counter = 1
+        u_interp = 0
+        do i = 0,1
+            do j = 0,1
+                do k = 0,1
+                    u_interp = u_interp + c(counter) * u(blade_i+i,blade_j+j,blade_k+k)   
+                    counter = counter + 1             
+                end do
+            end do
+        end do 
+    
+    end subroutine compute_vel_3D
+    
+    attributes(device) subroutine compute_cl_cd(CTCL,CTCD,x,turb_aerodyn)
+        implicit none
+        real(fp) x,compute_cl,CTCL,CTCD
+        real(fp),dimension(3,181) :: turb_aerodyn
+        integer  i,j
+    
+        i=floor(x)+91
+        j=ceiling(x)+91
+        CTCL = dble(x-floor(x))*turb_aerodyn(2,j)+dble(ceiling(x)-x)*turb_aerodyn(2,i)
+        CTCD = dble(x-floor(x))*turb_aerodyn(3,j)+dble(ceiling(x)-x)*turb_aerodyn(3,i)
+    end subroutine compute_cl_cd
+    
+    attributes(device) subroutine itp1D(xData,yData,array_size,xVal,yVal)
+        implicit none
+        integer,value,intent(in) :: array_size
+        real(fp),intent(in) :: xData(array_size),yData(array_size)
+        real(fp),value,intent(in) :: xVal
+        real(fp),intent(out) :: yVal
+        integer ::  dataIndex
+        real(fp) :: minXdata,maxXdata,xRange,weight
+    
+        minXData = xData(1)
+        maxXData = xData(size(xData))
+    
+        if (xVal<minXData .or. xVal>maxXData) then
+            print *,"Error in interpolation"
+            stop
+        else
+            do dataIndex = 1,array_size-1
+                if (xVal>xData(dataIndex) .and. xVal<xData(dataIndex+1)) then
+                    weight = (xVal-xData(dataIndex))/(xData(dataIndex+1)-xData(dataIndex))
+                    yVal = (1._fp-weight)*yData(dataIndex) + weight*yData(dataIndex+1)
+                    exit
+                end if
+            end do
+        end if
+    
+    end subroutine itp1D
+    
+end module turbine

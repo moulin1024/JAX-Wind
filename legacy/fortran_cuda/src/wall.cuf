@@ -1,0 +1,73 @@
+module wall
+    use cudafor
+    use precision
+    use dimen
+    use filter
+contains
+    attributes(global) subroutine log_law(txz,tyz,dudz,dvdz,ustar,m,u_hat,v_hat,zo)
+        implicit none
+        real(fp),dimension(nx,ny,nz2),intent(out) :: txz,tyz,dudz,dvdz
+        real(fp),dimension(nx,ny),intent(out) :: ustar,m
+        real(fp), dimension(nx,ny),intent(in) :: u_hat,v_hat   ! filtered velocity
+        real(fp),dimension(nx,ny),intent(in) :: zo  ! Roughness
+        real(fp), parameter :: eps = tiny(1._fp)
+        real(fp) :: tau,denom
+        integer :: i,j
+
+        i = (blockIdx%x - 1) * blockDim%x + threadIdx%x
+        j = (blockIdx%y - 1) * blockDim%y + threadIdx%y
+        ! Horizontal velocity
+        m(i,j) = sqrt(u_hat(i,j)**2+v_hat(i,j)**2)
+        denom = log(0.5_fp*dz*z_i/zo(i,j))
+        if (m(i,j) > eps .and. abs(denom) > eps) then
+            ustar(i,j) = m(i,j) * vonk / denom
+            ! Wall stress
+            tau = - ustar(i,j)**2
+            ! txz(i,j,2) and tyz(i,j,2)
+            txz(i,j,2)= tau*u_hat(i,j)/m(i,j)
+            tyz(i,j,2)= tau*v_hat(i,j)/m(i,j)
+
+            ! dudz(i,j,2) and dvdz(i,j,2)
+            dudz(i,j,2)=u_hat(i,j)*ustar(i,j)/(m(i,j)*vonk*0.5_fp*dz)
+            dvdz(i,j,2)=v_hat(i,j)*ustar(i,j)/(m(i,j)*vonk*0.5_fp*dz)
+        else
+            m(i,j) = 0._fp
+            ustar(i,j) = 0._fp
+            txz(i,j,2) = 0._fp
+            tyz(i,j,2) = 0._fp
+            dudz(i,j,2) = 0._fp
+            dvdz(i,j,2) = 0._fp
+        end if
+
+    end subroutine log_law
+
+    subroutine wall_stress(txz,tyz,dudz,dvdz,ustar,m,u,v,zo,t,plan_2d)
+        implicit none
+
+        INTEGER, INTENT(IN) :: t
+        type(c_ptr) plan_2d(2)
+        real(fp),dimension(nx,ny,nz2),intent(in),device :: u,v
+        real(fp),dimension(nx,ny),intent(in),device :: zo
+
+        real(fp),dimension(nx,ny,nz2),intent(out),device :: txz,tyz,dudz,dvdz
+        real(fp),dimension(nx,ny),intent(out),device :: ustar,m
+        real(fp), dimension(:,:),allocatable,device :: u_filtered,v_filtered
+
+        type(dim3) :: grid, tBlock
+        grid= dim3(nx/16,ny/16,1)
+        tBlock= dim3(16,16,1)
+
+        save u_filtered,v_filtered
+        if (t == 1) then
+            allocate(u_filtered(nx,ny))
+            allocate(v_filtered(nx,ny))
+        end if
+        ! Check
+        call filter_2dsl(u_filtered,u(:,:,2),t,plan_2d)
+        call filter_2dsl(v_filtered,v(:,:,2),t,plan_2d)
+        ! stop
+        call log_law<<<grid, tBlock>>>(txz,tyz,dudz,dvdz,ustar,m,u_filtered,v_filtered,zo)
+
+    end subroutine wall_stress
+
+end module wall

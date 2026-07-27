@@ -1,0 +1,54 @@
+# Short single-process neutral ABL case for jax/run_single.py.
+# Same grid and physics as neutral_abl_128.toml, with short-run logging.
+# Domain lengths are physical lengths in meters, and dt is physical seconds.
+# The runner normalizes lengths and time internally by z_i; if z_i is omitted,
+# z_i defaults to lz.
+
+[grid]
+nx = 128
+ny = 128
+nz = 128
+lx = 6283.185307179586
+ly = 6283.185307179586
+lz = 1000.0
+
+[time]
+scheme = "ab2"
+steps = 10
+log_every = 1
+dt = 1.0
+
+[physics]
+u_fric = 0.4
+zo = 5.0e-3
+bl_height = 1000.0
+vonk = 0.4
+
+[wall_filter]
+fgr = 1.5
+tfr = 2.0
+
+[sgs]
+model = "lasd"
+precision = "float32"
+cs_count = 10
+smag_cs = 0.16
+
+[numerics]
+projection_mode = "stage"  # used only when [time].scheme = "rk4"
+horizontal_dealias = true
+pressure_filter_nyquist = false
+
+[runtime]
+precision = "float64"
+use_jit = true
+
+[profiling]
+enabled = false
+warmup = 0
+
+[postprocess]
+dump_fields = false
+field_dump_start_step = 0
+field_output_dir = "jax_fields"
+field_output_prefix = "fields"

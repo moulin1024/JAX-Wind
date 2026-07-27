@@ -1,0 +1,159 @@
+module derivative
+    use precision
+    use dimen
+    contains
+    !---------------------------------------------------------------------------
+    ! This module compute the derivative of the flow field
+    !---------------------------------------------------------------------------
+    ! contains subroutine:
+    ! - ddxy
+    !---------------------------------------------------------------------------
+
+    subroutine ddxy(dfdi,f,axis,plan)
+        !---------------------------------------------------------------------------
+        ! declaration
+        !---------------------------------------------------------------------------
+        use cufft_m 
+        use cudafor
+        implicit none
+        ! Input: velocity field
+        real(fp), dimension(nx,ny,nz2),intent(out),device :: dfdi
+        real(fp), dimension(nx,ny,nz2),intent(in),device :: f
+        integer,intent(in) :: axis
+        type(c_ptr),intent(in)  :: plan(2)
+        complex(fp), dimension(:,:,:),allocatable,device :: f_hat,dfdi_hat
+        ! fft plan
+        integer :: istat,k
+        ! Cuda variable
+        type(dim3) :: grid, tBlock
+        grid = dim3(int((nx/2+1)/32)+1,ny,nzb)
+        tBlock = dim3(32,1,1)
+        integer :: stat_flag = 1
+        save f_hat,dfdi_hat,stat_flag
+        !---------------------------------------------------------------------------
+        ! main code
+        !---------------------------------------------------------------------------
+        !---------------------------------------------------------------------------
+        ! init
+        if (stat_flag /= 0) then
+            allocate(f_hat(nx/2+1,ny,nzb),STAT=stat_flag)
+            allocate(dfdi_hat(nx/2+1,ny,nzb),STAT=stat_flag)
+        endif
+
+        !---------------------------------------------------------------------------
+        ! Forward fft
+        call cufftExec(plan(1),f(:,:,2:nzb+1),f_hat)
+
+        !---------------------------------------------------------------------------
+        ! Computing x derivatives or y derivative
+        call spec_deriv_xy<<<grid, tBlock>>>(f_hat,dfdi_hat,axis)
+        
+        !---------------------------------------------------------------------------
+        ! Backward fft
+        call  cufftExec(plan(2),dfdi_hat,dfdi(:,:,2:nzb+1))
+    end subroutine ddxy
+
+    attributes(global) subroutine spec_deriv_xy(f_hat,dfdi_hat,axis)
+        implicit none
+        complex(fp), dimension(nx/2+1,ny,nzb),intent(inout) :: f_hat,dfdi_hat
+        integer,value :: axis
+        integer :: i,j,k,ii,jj
+        i = (blockIdx%x - 1) * blockDim%x + threadIdx%x;
+        j = (blockIdx%y - 1) * blockDim%y + threadIdx%y;
+        k = (blockIdx%z - 1) * blockDim%z + threadIdx%z;
+
+        if (i <= nx/2+1) then
+            f_hat(i,j,k) = f_hat(i,j,k)*inxny
+            ! Shift wave number
+            ii = i - 1
+            jj = j - 1
+            if(jj.gt.nint(ny/2.)) jj=jj-ny
+            jj = jj*l_r
+            
+            !---------------------------------------------------------------------------
+            ! Compute spectral derivative
+            if (axis == 1) then         ! dfdx
+                dfdi_hat(i,j,k) = dcmplx(aimag(-f_hat(i,j,k)),dble(f_hat(i,j,k)))*ii
+            else if (axis == 2) then    ! dfdy
+                dfdi_hat(i,j,k) = dcmplx(aimag(-f_hat(i,j,k)),dble(f_hat(i,j,k)))*jj
+            end if
+
+            ! !---------------------------------------------------------------------------
+            ! ! Cut nyquist frequency (do we need it?)
+            if (j == ny/2+1 .or. i == nx/2+1)then
+                dfdi_hat(i,j,k) = dcmplx(0._fp)
+            end if
+            
+        end if
+            
+    end subroutine spec_deriv_xy
+
+    attributes(global) subroutine ddz (dfdz,f,stagger_flag)
+        !---------------------------------------------------------------------------
+        ! declaration
+        !---------------------------------------------------------------------------
+        implicit none
+        real(fp), dimension(nx,ny,nz2), intent(out) :: dfdz
+        real(fp), dimension(nx,ny,nz2), intent(in) :: f
+        integer,value,intent(in) :: stagger_flag
+        integer :: i,j,k
+
+        i = (blockIdx%x - 1) * blockDim%x + threadIdx%x
+        j = (blockIdx%y - 1) * blockDim%y + threadIdx%y
+        k = (blockIdx%z - 1) * blockDim%z + threadIdx%z;
+        !---------------------------------------------------------------------------
+        ! main code
+        !---------------------------------------------------------------------------
+        if (k>1 .and. k<nz2) then
+            if (stagger_flag == 0) then ! uv node
+                dfdz(i,j,k)=(f(i,j,k)-f(i,j,k-1))*idz
+            else if (stagger_flag == 1) then ! w node
+                dfdz(i,j,k)=(f(i,j,k+1)-f(i,j,k))*idz
+            end if
+        end if
+    end subroutine ddz
+
+    attributes(global) subroutine plane_average (d_avg,dfdz)
+            !---------------------------------------------------------------------------
+            ! declaration
+            !---------------------------------------------------------------------------
+            implicit none
+            real(fp),device,intent(out) :: d_avg
+            real(fp), dimension(nx,ny,nz2), intent(in):: dfdz
+            integer :: i,j,istat
+        
+            !---------------------------------------------------------------------------
+            ! main code
+            !---------------------------------------------------------------------------
+        
+            i = (blockIdx%x - 1) * blockDim%x + threadIdx%x
+            j = (blockIdx%y - 1) * blockDim%y + threadIdx%y
+            
+            istat = atomicAdd(d_avg,dfdz(i,j,3))
+    end subroutine plane_average
+
+    attributes(global) subroutine ddz_uv_corr (dfdz,d_avg,k_corr)
+            !---------------------------------------------------------------------------
+            ! declaration
+            !---------------------------------------------------------------------------
+            implicit none
+            real(fp), dimension(nx,ny,nz2), intent(inout):: dfdz
+            real(fp), parameter :: fr1 = 1._fp/log(3._fp)-1._fp
+            real(fp),device,intent(inout) :: d_avg
+            integer,value, intent(in) :: k_corr
+            integer :: i,j
+        
+            !---------------------------------------------------------------------------
+            ! main code
+            !---------------------------------------------------------------------------
+        
+            i = (blockIdx%x - 1) * blockDim%x + threadIdx%x
+            j = (blockIdx%y - 1) * blockDim%y + threadIdx%y
+            
+            dfdz(i,j,k_corr)= dfdz(i,j,k_corr) + fr1*d_avg*inxny
+            d_avg = 0._fp
+    end subroutine ddz_uv_corr
+
+end module derivative
+
+    

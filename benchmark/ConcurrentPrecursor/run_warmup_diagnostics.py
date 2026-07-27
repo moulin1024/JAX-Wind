@@ -1,0 +1,601 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import os
+import shutil
+import sys
+import time
+from dataclasses import replace
+from pathlib import Path
+
+import numpy as np
+
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "legacy" / "jax"))
+
+from run_single import RUN_DEFAULTS, load_config_file, params_from_settings  # noqa: E402
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Resume a distributed warm-up checkpoint and create ABL profile diagnostics."
+    )
+    parser.add_argument("--config", type=Path, required=True)
+    parser.add_argument("--checkpoint", type=Path, required=True)
+    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--duration-seconds", type=float, default=10.0)
+    parser.add_argument("--frames", type=int, default=100)
+    parser.add_argument("--flow-height", type=float, default=1.5)
+    parser.add_argument("--coordinator-address", default="127.0.0.1:12680")
+    parser.add_argument("--num-processes", type=int)
+    parser.add_argument("--process-id", type=int)
+    parser.add_argument("--local-device-id", type=int, default=0)
+    parser.add_argument("--copy-to", type=Path)
+    return parser.parse_args()
+
+
+def rank_and_size(args: argparse.Namespace) -> tuple[int, int]:
+    rank = args.process_id
+    size = args.num_processes
+    if rank is None:
+        rank = int(os.environ.get("OMPI_COMM_WORLD_RANK", "0"))
+    if size is None:
+        size = int(os.environ.get("OMPI_COMM_WORLD_SIZE", "1"))
+    return rank, size
+
+
+def write_profile_csv(
+    path: Path,
+    z_center: np.ndarray,
+    z_face: np.ndarray,
+    averaged: np.ndarray,
+    names: tuple[str, ...],
+) -> None:
+    columns = np.column_stack((z_center, z_face, averaged.T))
+    np.savetxt(
+        path,
+        columns,
+        delimiter=",",
+        header=",".join(("z_center_m", "z_upper_face_m", *names)),
+        comments="",
+    )
+
+
+def make_diagnostic_figure(
+    path: Path,
+    profiles: np.ndarray,
+    names: tuple[str, ...],
+    ustar_samples: np.ndarray,
+    params,
+    duration_seconds: float,
+) -> None:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    index = {name: i for i, name in enumerate(names)}
+    mean = profiles.mean(axis=0)
+    z = (np.arange(params.nz) + 0.5) * params.dz * params.z_i
+    z_face = (np.arange(params.nz) + 1.0) * params.dz * params.z_i
+    height = params.lz * params.z_i
+    zh = z / height
+    zfh = z_face / height
+    ustar = params.pressure_ustar
+    ulog = (ustar / params.vonk) * np.log(np.maximum(z, params.zo * 1.01) / params.zo)
+    sponge = params.sponge_start_height / height if params.sponge_enabled else None
+
+    fig, axes = plt.subplots(2, 3, figsize=(14.5, 8.6), constrained_layout=True)
+    ax = axes[0, 0]
+    ax.plot(mean[index["mean_u"]], zh, lw=2.2, label="LES 10 s mean")
+    ax.plot(ulog, zh, "--", lw=1.8, label="target log law")
+    ax.set(xlabel=r"$\langle u\rangle$ [m s$^{-1}$]", ylabel=r"$z/H$")
+    ax.legend()
+
+    ax = axes[0, 1]
+    ax.semilogy(mean[index["mean_u"]] / ustar, z / params.zo, lw=2.2, label="LES")
+    ax.semilogy(ulog / ustar, z / params.zo, "--", lw=1.8, label=r"$\kappa^{-1}\ln(z/z_0)$")
+    ax.set(xlabel=r"$U^+$", ylabel=r"$z/z_0$")
+    ax.legend()
+
+    ax = axes[0, 2]
+    scale = ustar * ustar
+    ax.plot(mean[index["var_u"]] / scale, zh, label=r"$\langle u'^2\rangle$")
+    ax.plot(mean[index["var_v"]] / scale, zh, label=r"$\langle v'^2\rangle$")
+    ax.plot(mean[index["var_w"]] / scale, zh, label=r"$\langle w'^2\rangle$")
+    ax.set(xlabel=r"variance $/u_*^2$", ylabel=r"$z/H$")
+    ax.legend()
+
+    ax = axes[1, 0]
+    resolved = -mean[index["resolved_uw_face"]] / scale
+    sgs = -mean[index["sgs_txz_face"]] / scale
+    total = resolved + sgs
+    expected = np.maximum(1.0 - zfh, 0.0)
+    ax.plot(resolved, zfh, label="resolved")
+    ax.plot(sgs, zfh, label="SGS")
+    ax.plot(total, zfh, lw=2.2, label="total")
+    ax.plot(expected, zfh, "--", lw=1.5, label="pressure balance")
+    ax.set(xlabel=r"$-\langle u'w'+\tau_{xz}\rangle/u_*^2$", ylabel=r"$z/H$")
+    ax.legend()
+
+    ax = axes[1, 1]
+    tke = 0.5 * (
+        mean[index["var_u"]]
+        + mean[index["var_v"]]
+        + mean[index["var_w"]]
+    ) / scale
+    ax.plot(tke, zh, lw=2.2)
+    ax.set(xlabel=r"resolved $k/u_*^2$", ylabel=r"$z/H$")
+
+    ax = axes[1, 2]
+    ax.plot(mean[index["mean_cs"]], zh, lw=2.2)
+    ax.set(xlabel=r"$\langle C_s\rangle$", ylabel=r"$z/H$")
+    ax.text(
+        0.98,
+        0.03,
+        rf"$\overline{{u_*}}={ustar_samples.mean():.3f}$ m s$^{{-1}}$",
+        transform=ax.transAxes,
+        ha="right",
+        va="bottom",
+    )
+
+    for panel in axes.flat:
+        panel.grid(True, alpha=0.28, lw=0.6)
+    for panel in axes.flat:
+        if panel is axes[0, 1]:
+            continue
+        panel.set_ylim(0.0, 1.0)
+        if sponge is not None:
+            panel.axhspan(sponge, 1.0, color="0.5", alpha=0.08)
+            panel.axhline(sponge, color="0.45", lw=0.8, ls=":")
+    if sponge is not None:
+        sponge_inner = params.sponge_start_height / params.zo
+        axes[0, 1].axhspan(
+            sponge_inner,
+            z[-1] / params.zo,
+            color="0.5",
+            alpha=0.08,
+        )
+        axes[0, 1].axhline(
+            sponge_inner, color="0.45", lw=0.8, ls=":"
+        )
+    fig.suptitle(
+        f"Pressure-driven neutral ABL: {profiles.shape[0]} samples over "
+        f"{duration_seconds:g} s",
+        fontsize=14,
+    )
+    fig.savefig(path, dpi=180)
+    plt.close(fig)
+
+
+def make_profile_gif(
+    path: Path,
+    profiles: np.ndarray,
+    names: tuple[str, ...],
+    elapsed_times: np.ndarray,
+    params,
+) -> None:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.animation import FuncAnimation, PillowWriter
+
+    index = {name: i for i, name in enumerate(names)}
+    z = (np.arange(params.nz) + 0.5) * params.dz * params.z_i
+    zh = z / (params.lz * params.z_i)
+    ustar = params.pressure_ustar
+    ulog = (ustar / params.vonk) * np.log(np.maximum(z, params.zo * 1.01) / params.zo)
+    u_frames = profiles[:, index["mean_u"], :]
+    running = np.cumsum(u_frames, axis=0) / np.arange(1, len(u_frames) + 1)[:, None]
+    xmin = min(float(u_frames.min()), float(ulog.min())) - 0.15
+    xmax = max(float(u_frames.max()), float(ulog.max())) + 0.15
+
+    fig, ax = plt.subplots(figsize=(6.2, 6.2), constrained_layout=True)
+    ax.plot(ulog, zh, "--", lw=1.7, color="0.25", label="target log law")
+    instantaneous, = ax.plot(u_frames[0], zh, lw=1.6, label="instantaneous plane mean")
+    averaged, = ax.plot(running[0], zh, lw=2.4, label="running time mean")
+    time_text = ax.text(0.03, 0.97, "", transform=ax.transAxes, va="top")
+    if params.sponge_enabled:
+        sponge = params.sponge_start_height / (params.lz * params.z_i)
+        ax.axhspan(sponge, 1.0, color="0.5", alpha=0.08)
+    ax.set(
+        xlim=(xmin, xmax),
+        ylim=(0.0, 1.0),
+        xlabel=r"$\langle u\rangle_{xy}$ [m s$^{-1}$]",
+        ylabel=r"$z/H$",
+    )
+    ax.grid(True, alpha=0.28, lw=0.6)
+    ax.legend(loc="lower right")
+
+    def update(frame: int):
+        instantaneous.set_xdata(u_frames[frame])
+        averaged.set_xdata(running[frame])
+        time_text.set_text(f"restart + {elapsed_times[frame]:.1f} s")
+        return instantaneous, averaged, time_text
+
+    animation = FuncAnimation(
+        fig, update, frames=len(u_frames), interval=100, blit=True
+    )
+    animation.save(path, writer=PillowWriter(fps=10), dpi=120)
+    plt.close(fig)
+
+
+def make_flow_slices_gif(
+    path: Path,
+    xy_frames: np.ndarray,
+    xz_frames: np.ndarray,
+    yz_frames: np.ndarray,
+    elapsed_times: np.ndarray,
+    params,
+    horizontal_height: float,
+) -> None:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.animation import FuncAnimation, PillowWriter
+
+    values = np.concatenate(
+        (xy_frames.ravel(), xz_frames.ravel(), yz_frames.ravel())
+    )
+    vmin = float(values.min())
+    vmax = float(values.max())
+    x_length = params.lx * params.z_i
+    y_length = params.ly * params.z_i
+    z_length = params.lz * params.z_i
+    x_mid = 0.5 * x_length
+    y_mid = 0.5 * y_length
+
+    fig = plt.figure(figsize=(10.0, 6.0))
+    grid = fig.add_gridspec(2, 2, width_ratios=(2.0, 1.0))
+    axes = (
+        fig.add_subplot(grid[0, 0]),
+        fig.add_subplot(grid[1, 0]),
+        fig.add_subplot(grid[:, 1]),
+    )
+    fig.subplots_adjust(
+        left=0.07,
+        right=0.89,
+        bottom=0.09,
+        top=0.88,
+        wspace=0.24,
+        hspace=0.38,
+    )
+    images = (
+        axes[0].imshow(
+            xy_frames[0].T,
+            origin="lower",
+            extent=(0.0, x_length, 0.0, y_length),
+            vmin=vmin,
+            vmax=vmax,
+            cmap="viridis",
+            interpolation="bilinear",
+            aspect="equal",
+        ),
+        axes[1].imshow(
+            xz_frames[0].T,
+            origin="lower",
+            extent=(0.0, x_length, 0.0, z_length),
+            vmin=vmin,
+            vmax=vmax,
+            cmap="viridis",
+            interpolation="bilinear",
+            aspect="equal",
+        ),
+        axes[2].imshow(
+            yz_frames[0].T,
+            origin="lower",
+            extent=(0.0, y_length, 0.0, z_length),
+            vmin=vmin,
+            vmax=vmax,
+            cmap="viridis",
+            interpolation="bilinear",
+            aspect="equal",
+        ),
+    )
+    axes[0].set(
+        xlabel="x [m]",
+        ylabel="y [m]",
+        title=rf"$u(x,y)$ at $z={horizontal_height:g}$ m",
+    )
+    axes[1].set(
+        xlabel="x [m]",
+        ylabel="z [m]",
+        title=rf"$u(x,z)$ at $y={y_mid:g}$ m",
+    )
+    axes[2].set(
+        xlabel="y [m]",
+        ylabel="z [m]",
+        title=rf"$u(y,z)$ at $x={x_mid:g}$ m",
+    )
+    if params.sponge_enabled:
+        for ax in axes[1:]:
+            ax.axhline(
+                params.sponge_start_height,
+                color="white",
+                lw=1.0,
+                ls=":",
+                alpha=0.9,
+            )
+    colorbar = fig.colorbar(images[0], ax=axes, shrink=0.82, pad=0.02)
+    colorbar.set_label(r"streamwise velocity $u$ [m s$^{-1}$]")
+    title = fig.suptitle("")
+
+    def update(frame: int):
+        images[0].set_data(xy_frames[frame].T)
+        images[1].set_data(xz_frames[frame].T)
+        images[2].set_data(yz_frames[frame].T)
+        title.set_text(f"ABL flow field: restart + {elapsed_times[frame]:.1f} s")
+        return (*images, title)
+
+    animation = FuncAnimation(
+        fig, update, frames=len(elapsed_times), interval=100, blit=False
+    )
+    # Pillow retains encoded frames until finalization.  Keep the raster compact
+    # enough for 100-frame runs without sacrificing the 64x32 slice resolution.
+    animation.save(path, writer=PillowWriter(fps=10), dpi=80)
+    plt.close(fig)
+
+
+def main() -> None:
+    args = parse_args()
+    rank, size = rank_and_size(args)
+    if size <= 0:
+        raise SystemExit("num-processes must be positive")
+    if args.duration_seconds <= 0.0 or args.frames <= 0:
+        raise SystemExit("duration and frame count must be positive")
+
+    settings = dict(RUN_DEFAULTS)
+    settings.update(load_config_file(args.config))
+    if settings["precision"] == "float64" or settings["sgs_precision"] == "float64":
+        from jax import config as jax_config
+
+        jax_config.update("jax_enable_x64", True)
+
+    import jax
+
+    jax.distributed.initialize(
+        coordinator_address=args.coordinator_address,
+        num_processes=size,
+        process_id=rank,
+        local_device_ids=[args.local_device_id],
+    )
+    import jax.numpy as jnp
+    from jax.experimental import multihost_utils
+
+    from wireles_jax.checkpoint_sharded import (
+        load_sharded_checkpoint,
+        save_sharded_checkpoint,
+    )
+    from wireles_jax.sharding import make_distributed_mesh
+    from wireles_jax.timestep_sharded import (
+        ABL_PROFILE_NAMES,
+        make_abl_profiles_sharded,
+        make_diagnostics_sharded,
+        make_flow_slices_sharded,
+        make_sharded_operators,
+        make_step_ab2_sharded,
+    )
+
+    configured = params_from_settings(settings, jnp)
+    total_steps = int(round(args.duration_seconds / configured.dt_physical))
+    if not math.isclose(
+        total_steps * configured.dt_physical,
+        args.duration_seconds,
+        rel_tol=0.0,
+        abs_tol=1.0e-10,
+    ):
+        raise SystemExit("duration must be an integer multiple of the physical dt")
+    if total_steps % args.frames:
+        raise SystemExit(
+            f"{total_steps} steps cannot be divided into exactly {args.frames} frames"
+        )
+    sample_every = total_steps // args.frames
+    params = replace(
+        configured,
+        nsteps=total_steps,
+        actuator_disk_enabled=False,
+        cold_source_enabled=False,
+        fringe_enabled=False,
+        horizontal_homogeneous=True,
+        buoyancy_reference="plane_mean",
+        sharded_pressure_solver="transpose",
+    )
+    mesh = make_distributed_mesh(size)
+    state = load_sharded_checkpoint(
+        args.checkpoint, params, mesh, rank=rank
+    )
+    start_step = int(jax.device_get(state.step))
+    ops = make_sharded_operators(params, mesh)
+    step_fn = make_step_ab2_sharded(params, ops, mesh)
+    profile_fn = make_abl_profiles_sharded(params, ops.horizontal, mesh)
+    slice_fn = make_flow_slices_sharded(
+        params, mesh, horizontal_height=args.flow_height
+    )
+    diag_fn = make_diagnostics_sharded(params, ops.horizontal, mesh)
+
+    if rank == 0:
+        print(
+            f"[restart] step={start_step}; advancing {total_steps} steps "
+            f"({args.duration_seconds:g}s), sampling every {sample_every} steps",
+            flush=True,
+        )
+    lowered = jax.jit(step_fn).lower(state, ops.pressure, ops.pressure_spike)
+    step_fn = lowered.compile()
+    profile_fn = jax.jit(profile_fn)
+    slice_fn = jax.jit(slice_fn)
+    diag_fn = jax.jit(diag_fn)
+
+    sampled_profiles: list[np.ndarray] = []
+    sampled_ustar: list[float] = []
+    sampled_divergence: list[float] = []
+    sampled_cfl: list[float] = []
+    elapsed_times: list[float] = []
+    sampled_xy: list[np.ndarray] = []
+    sampled_xz: list[np.ndarray] = []
+    sampled_yz: list[np.ndarray] = []
+    wall_start = time.perf_counter()
+    for local_step in range(1, total_steps + 1):
+        state = step_fn(state, ops.pressure, ops.pressure_spike)
+        if local_step % sample_every:
+            continue
+        profile = jax.block_until_ready(
+            profile_fn(state.u, state.v, state.w, state.cs2)
+        )
+        diag = jax.block_until_ready(
+            diag_fn(
+                state.u,
+                state.v,
+                state.w,
+                state.theta,
+                state.qv,
+                state.step,
+            )
+        )
+        xy_slice, xz_slice, yz_slice = jax.block_until_ready(
+            slice_fn(state.u)
+        )
+        if rank == 0:
+            sampled_profiles.append(np.asarray(profile))
+            sampled_ustar.append(float(diag.ustar))
+            sampled_divergence.append(float(diag.div_max))
+            sampled_cfl.append(float(diag.cfl_x + diag.cfl_y + diag.cfl_z))
+            elapsed_times.append(local_step * params.dt_physical)
+            sampled_xy.append(np.asarray(xy_slice))
+            sampled_xz.append(np.asarray(xz_slice))
+            sampled_yz.append(np.asarray(yz_slice))
+            frame = len(sampled_profiles)
+            if frame % 10 == 0 or frame == args.frames:
+                print(
+                    f"[sample] frame={frame}/{args.frames}, "
+                    f"t+={elapsed_times[-1]:.1f}s, ustar={sampled_ustar[-1]:.4f}, "
+                    f"CFL={sampled_cfl[-1]:.4f}",
+                    flush=True,
+                )
+
+    state = jax.block_until_ready(state)
+    final_checkpoint = args.output_dir / "final_checkpoint"
+    save_sharded_checkpoint(final_checkpoint, state, params, mesh, rank=rank)
+    multihost_utils.sync_global_devices("abl-diagnostics-checkpoint-written")
+    restored = load_sharded_checkpoint(
+        final_checkpoint, params, mesh, rank=rank
+    )
+    local_exact = True
+    for name in state._fields:
+        current = getattr(state, name)
+        reloaded = getattr(restored, name)
+        if name == "step":
+            local_exact &= int(jax.device_get(current)) == int(jax.device_get(reloaded))
+        else:
+            local_exact &= np.array_equal(
+                np.asarray(current.addressable_shards[0].data),
+                np.asarray(reloaded.addressable_shards[0].data),
+            )
+    exact_count = int(
+        multihost_utils.process_allgather(np.asarray(int(local_exact))).sum()
+    )
+    multihost_utils.sync_global_devices("abl-diagnostics-checkpoint-validated")
+    jax.distributed.shutdown()
+
+    if rank != 0:
+        return
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    profile_array = np.stack(sampled_profiles)
+    ustar_array = np.asarray(sampled_ustar)
+    divergence_array = np.asarray(sampled_divergence)
+    cfl_array = np.asarray(sampled_cfl)
+    elapsed_array = np.asarray(elapsed_times)
+    xy_array = np.stack(sampled_xy)
+    xz_array = np.stack(sampled_xz)
+    yz_array = np.stack(sampled_yz)
+    np.savez_compressed(
+        args.output_dir / "abl_profile_samples.npz",
+        profiles=profile_array,
+        profile_names=np.asarray(ABL_PROFILE_NAMES),
+        elapsed_seconds=elapsed_array,
+        ustar=ustar_array,
+        div_max=divergence_array,
+        cfl_total=cfl_array,
+    )
+    np.savez_compressed(
+        args.output_dir / "abl_flow_slices_100frames.npz",
+        u_xy=xy_array,
+        u_xz=xz_array,
+        u_yz=yz_array,
+        elapsed_seconds=elapsed_array,
+        horizontal_height_m=np.asarray(args.flow_height),
+        x_midpoint_m=np.asarray(0.5 * params.lx * params.z_i),
+        y_midpoint_m=np.asarray(0.5 * params.ly * params.z_i),
+    )
+    z_center = (np.arange(params.nz) + 0.5) * params.dz * params.z_i
+    z_face = (np.arange(params.nz) + 1.0) * params.dz * params.z_i
+    write_profile_csv(
+        args.output_dir / "abl_profile_time_mean.csv",
+        z_center,
+        z_face,
+        profile_array.mean(axis=0),
+        ABL_PROFILE_NAMES,
+    )
+    figure = args.output_dir / "abl_standard_profile_diagnostics.png"
+    gif = args.output_dir / "abl_loglaw_profile_100frames.gif"
+    flow_gif = args.output_dir / "abl_flow_three_slices_100frames.gif"
+    make_diagnostic_figure(
+        figure,
+        profile_array,
+        ABL_PROFILE_NAMES,
+        ustar_array,
+        params,
+        args.duration_seconds,
+    )
+    make_profile_gif(
+        gif, profile_array, ABL_PROFILE_NAMES, elapsed_array, params
+    )
+    make_flow_slices_gif(
+        flow_gif,
+        xy_array,
+        xz_array,
+        yz_array,
+        elapsed_array,
+        params,
+        args.flow_height,
+    )
+    metadata = {
+        "source_checkpoint": str(args.checkpoint.resolve()),
+        "start_step": start_step,
+        "final_step": int(start_step + total_steps),
+        "dt_seconds": params.dt_physical,
+        "duration_seconds": args.duration_seconds,
+        "frames": args.frames,
+        "sample_every_steps": sample_every,
+        "time_mean_samples": args.frames,
+        "mean_ustar": float(ustar_array.mean()),
+        "max_divergence": float(divergence_array.max()),
+        "max_total_cfl": float(cfl_array.max()),
+        "restart_roundtrip_exact_ranks": exact_count,
+        "restart_roundtrip_total_ranks": size,
+        "wall_seconds": time.perf_counter() - wall_start,
+    }
+    (args.output_dir / "run_metadata.json").write_text(
+        json.dumps(metadata, indent=2) + "\n"
+    )
+    if args.copy_to is not None:
+        args.copy_to.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(figure, args.copy_to / figure.name)
+        shutil.copy2(gif, args.copy_to / gif.name)
+        shutil.copy2(flow_gif, args.copy_to / flow_gif.name)
+    print(f"[done] diagnostics: {figure}", flush=True)
+    print(f"[done] animation: {gif}", flush=True)
+    print(f"[done] flow animation: {flow_gif}", flush=True)
+    print(
+        f"[done] restart round-trip exact on {exact_count}/{size} ranks",
+        flush=True,
+    )
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,196 @@
+<div id="pressure-abl-profile">
+  <svg class="profile-chart" viewBox="0 0 736 520" role="img" aria-labelledby="pressure-profile-title pressure-profile-desc">
+    <title id="pressure-profile-title">Pressure-driven neutral atmospheric boundary-layer velocity profile</title>
+    <desc id="pressure-profile-desc">The initially uniform velocity profile develops toward the neutral logarithmic law. The LES mean closely follows the log law between z over H of 0.05 and 0.30.</desc>
+  </svg>
+</div>
+
+<style>
+  #pressure-abl-profile {
+    width: 100%;
+    color: var(--foreground);
+  }
+
+  #pressure-abl-profile .profile-chart {
+    display: block;
+    width: 100%;
+    height: auto;
+    overflow: visible;
+  }
+
+  #pressure-abl-profile .axis,
+  #pressure-abl-profile .grid-line {
+    vector-effect: non-scaling-stroke;
+  }
+
+  #pressure-abl-profile .axis {
+    stroke: var(--foreground);
+    stroke-width: 1.2;
+  }
+
+  #pressure-abl-profile .grid-line {
+    stroke: var(--border);
+    stroke-width: 1;
+  }
+
+  #pressure-abl-profile text {
+    fill: var(--foreground);
+    font-family: inherit;
+    font-size: calc(var(--font-size-base) * 0.82);
+    font-weight: 400;
+  }
+
+  #pressure-abl-profile .axis-label {
+    font-size: var(--font-size-base);
+    font-weight: 500;
+  }
+
+  #pressure-abl-profile .annotation {
+    fill: var(--muted-foreground);
+  }
+
+  #pressure-abl-profile .series-path,
+  #pressure-abl-profile .legend-line {
+    fill: none;
+    vector-effect: non-scaling-stroke;
+  }
+
+  @media (max-width: 480px) {
+    #pressure-abl-profile text {
+      font-size: calc(var(--font-size-base) * 0.72);
+    }
+  }
+</style>
+
+<script>
+(() => {
+  const root = document.getElementById("pressure-abl-profile");
+  const svg = root.querySelector(".profile-chart");
+  const ns = "http://www.w3.org/2000/svg";
+  const z = [
+    0.01613, 0.04839, 0.08065, 0.11290, 0.14516, 0.17742, 0.20968, 0.24194,
+    0.27419, 0.30645, 0.33871, 0.37097, 0.40323, 0.43548, 0.46774, 0.50000,
+    0.53226, 0.56452, 0.59677, 0.62903, 0.66129, 0.69355, 0.72581, 0.75806,
+    0.79032, 0.82258, 0.85484, 0.88710, 0.91935, 0.95161, 0.98387
+  ];
+  const initial = [
+    5.9211, 5.9191, 5.9224, 5.9178, 5.9189, 5.9189, 5.9189, 5.9189,
+    5.9189, 5.9189, 5.9189, 5.9189, 5.9189, 5.9189, 5.9189, 5.9189,
+    5.9189, 5.9189, 5.9189, 5.9189, 5.9189, 5.9189, 5.9189, 5.9189,
+    5.9189, 5.9189, 5.9189, 5.9189, 5.9189, 5.9189, 5.9189
+  ];
+  const mean = [
+    2.5837, 3.6779, 4.1911, 4.5659, 4.8251, 5.0845, 5.3016, 5.4939,
+    5.6663, 5.8237, 5.9696, 6.0937, 6.2163, 6.3247, 6.4329, 6.5373,
+    6.6326, 6.7283, 6.8367, 6.9193, 7.0073, 7.0873, 7.1677, 7.2441,
+    7.3252, 7.4000, 7.4290, 7.4645, 7.5167, 7.5088, 7.5796
+  ];
+  const logLaw = [
+    2.7806, 3.8792, 4.3901, 4.7265, 4.9778, 5.1785, 5.3456, 5.4887,
+    5.6138, 5.7251, 5.8251, 5.9161, 5.9995, 6.0765, 6.1479, 6.2146,
+    6.2771, 6.3360, 6.3915, 6.4442, 6.4942, 6.5418, 6.5873, 6.6308,
+    6.6724, 6.7124, 6.7509, 6.7880, 6.8237, 6.8582, 6.8915
+  ];
+
+  const plot = { left: 72, right: 710, top: 78, bottom: 456 };
+  const xMin = 2.0;
+  const xMax = 8.0;
+  const yMin = 0.0;
+  const yMax = 1.0;
+  const sx = value => plot.left + (value - xMin) / (xMax - xMin) * (plot.right - plot.left);
+  const sy = value => plot.bottom - (value - yMin) / (yMax - yMin) * (plot.bottom - plot.top);
+
+  const make = (name, attrs = {}) => {
+    const element = document.createElementNS(ns, name);
+    Object.entries(attrs).forEach(([key, value]) => element.setAttribute(key, String(value)));
+    return element;
+  };
+
+  const addText = (x, y, value, attrs = {}) => {
+    const element = make("text", { x, y, ...attrs });
+    element.textContent = value;
+    svg.appendChild(element);
+    return element;
+  };
+
+  const band = make("rect", {
+    x: plot.left,
+    y: sy(0.30),
+    width: plot.right - plot.left,
+    height: sy(0.05) - sy(0.30),
+    fill: "var(--viz-series-3)",
+    "fill-opacity": 0.12
+  });
+  svg.appendChild(band);
+
+  for (let value = 2; value <= 8; value += 1) {
+    const x = sx(value);
+    svg.appendChild(make("line", { x1: x, y1: plot.top, x2: x, y2: plot.bottom, class: "grid-line" }));
+    addText(x, plot.bottom + 25, value.toFixed(0), { "text-anchor": "middle" });
+  }
+  for (let value = 0; value <= 1.0001; value += 0.2) {
+    const y = sy(value);
+    svg.appendChild(make("line", { x1: plot.left, y1: y, x2: plot.right, y2: y, class: "grid-line" }));
+    addText(plot.left - 13, y + 4, value.toFixed(1), { "text-anchor": "end" });
+  }
+
+  svg.appendChild(make("line", { x1: plot.left, y1: plot.bottom, x2: plot.right, y2: plot.bottom, class: "axis" }));
+  svg.appendChild(make("line", { x1: plot.left, y1: plot.top, x2: plot.left, y2: plot.bottom, class: "axis" }));
+  addText((plot.left + plot.right) / 2, 505, "⟨u⟩ (m s⁻¹)", { "text-anchor": "middle", class: "axis-label" });
+  const yLabel = addText(21, (plot.top + plot.bottom) / 2, "z/H", { "text-anchor": "middle", class: "axis-label" });
+  yLabel.setAttribute("transform", `rotate(-90 21 ${(plot.top + plot.bottom) / 2})`);
+
+  const pathFor = values => values.map((value, index) => `${index === 0 ? "M" : "L"}${sx(value).toFixed(2)},${sy(z[index]).toFixed(2)}`).join(" ");
+  const series = [
+    { values: initial, color: "var(--muted-foreground)", width: 2, dash: "3 6" },
+    { values: mean, color: "var(--viz-series-1)", width: 3, dash: "" },
+    { values: logLaw, color: "var(--viz-series-2)", width: 2.2, dash: "9 6" }
+  ];
+  series.forEach(item => {
+    svg.appendChild(make("path", {
+      d: pathFor(item.values),
+      class: "series-path",
+      stroke: item.color,
+      "stroke-width": item.width,
+      "stroke-dasharray": item.dash,
+      "stroke-linejoin": "round",
+      "stroke-linecap": "round"
+    }));
+  });
+
+  z.forEach((value, index) => {
+    if (value >= 0.05 && value <= 0.30) {
+      svg.appendChild(make("circle", {
+        cx: sx(mean[index]),
+        cy: sy(value),
+        r: 4.3,
+        fill: "var(--viz-series-3)",
+        stroke: "var(--background)",
+        "stroke-width": 1.3
+      }));
+    }
+  });
+
+  const legendItems = [
+    { x: 86, label: "初始均匀剖面", color: "var(--muted-foreground)", dash: "3 6", width: 2 },
+    { x: 285, label: "LES 时间平均", color: "var(--viz-series-1)", dash: "", width: 3 },
+    { x: 473, label: "中性 log-law", color: "var(--viz-series-2)", dash: "9 6", width: 2.2 }
+  ];
+  legendItems.forEach(item => {
+    svg.appendChild(make("line", {
+      x1: item.x,
+      y1: 38,
+      x2: item.x + 33,
+      y2: 38,
+      class: "legend-line",
+      stroke: item.color,
+      "stroke-width": item.width,
+      "stroke-dasharray": item.dash
+    }));
+    addText(item.x + 42, 43, item.label);
+  });
+
+  addText(91, sy(0.17), "0.05 ≤ z/H ≤ 0.30", { class: "annotation" });
+  addText(91, sy(0.17) + 19, "相对 RMSE 2.37%", { class: "annotation" });
+})();
+</script>

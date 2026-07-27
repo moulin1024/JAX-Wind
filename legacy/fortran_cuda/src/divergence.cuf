@@ -1,0 +1,98 @@
+module divergence
+use precision
+use dimen
+contains
+
+subroutine divstress(divt,tx,ty,tz,stagger_flag,plan)
+
+    !---------------------------------------------------------------------------
+    ! declaration
+    !---------------------------------------------------------------------------
+    use cudafor
+    use derivative
+    implicit none
+    integer :: i,j,k,stagger_flag
+    real(fp),dimension(nx,ny,nz2),intent(inout),device:: divt
+    real(fp),dimension(nx,ny,nz2),intent(inout),device:: tx,ty,tz
+    real(fp),dimension(:,:,:),allocatable,device:: tdx,tdy,tdz
+    
+    real(fp),dimension(nx,ny,nz2):: tdx_host,tdy_host,tdz_host
+    type(c_ptr),intent(in) :: plan(2)
+    ! Cuda variable
+    type(dim3) :: grid, tBlock
+    grid = dim3(nx/16,ny/16,nz2)
+    tBlock = dim3(16,16,1)
+    integer :: stat_flag = 1
+    save tdx,tdy,tdz,stat_flag
+    !---------------------------------------------------------------------------
+    ! main code
+    !---------------------------------------------------------------------------
+    if (stat_flag /= 0) then
+        allocate(tdx(nx,ny,nz2),STAT=stat_flag)
+        allocate(tdy(nx,ny,nz2),STAT=stat_flag)
+        allocate(tdz(nx,ny,nz2),STAT=stat_flag)
+    end if
+    !---------------------------------------------------------------------------
+    ! stress gradients
+    call ddxy(tdx,tx,1,plan)
+    call ddxy(tdy,ty,2,plan)
+    call ddz<<<grid, tBlock>>>(tdz,tz,stagger_flag)
+    ! !---------------------------------------------------------------------------
+    ! ! stress divergence
+    call div_sum<<<grid, tBlock>>>(divt,tdx,tdy,tdz)
+    ! ! stop
+end subroutine divstress
+
+attributes(global) subroutine div_sum(divt,tdx,tdy,tdz)
+
+    !---------------------------------------------------------------------------
+    ! declaration
+    !---------------------------------------------------------------------------
+
+    implicit none
+
+    real(fp), dimension(nx,ny,nz2), intent(out) :: divt
+    real(fp), dimension(nx,ny,nz2), intent(in) :: tdx,tdy,tdz
+
+    integer :: i,j,k
+
+    i = (blockIdx%x - 1) * blockDim%x + threadIdx%x
+    j = (blockIdx%y - 1) * blockDim%y + threadIdx%y
+    k = (blockIdx%z - 1) * blockDim%z + threadIdx%z
+    ! print *,i
+    !---------------------------------------------------------------------------
+    ! main code
+    !---------------------------------------------------------------------------
+    ! do k=2,nzb+1
+    if (k>1 .and. k<nz2) divt(i,j,k)=tdx(i,j,k)+tdy(i,j,k)+tdz(i,j,k)
+    ! end do
+
+end subroutine div_sum
+
+attributes(global) subroutine div_p(rhs_p,dudx,dvdy,dwdz)
+
+    !---------------------------------------------------------------------------
+    ! declaration
+    !---------------------------------------------------------------------------
+
+    implicit none
+
+    real(fp), dimension(nx,ny,nz2), intent(out) :: rhs_p
+    real(fp), dimension(nx,ny,nz2), intent(in) :: dudx,dvdy,dwdz
+
+    integer :: i,j,k
+
+    i = (blockIdx%x - 1) * blockDim%x + threadIdx%x
+    j = (blockIdx%y - 1) * blockDim%y + threadIdx%y
+    k = (blockIdx%z - 1) * blockDim%z + threadIdx%z
+    ! print *,i
+    !---------------------------------------------------------------------------
+    ! main code
+    !---------------------------------------------------------------------------
+    ! do k=2,nzb+1
+    if (k>1 .and. k<nz2) rhs_p(i,j,k)=(dudx(i,j,k)+dvdy(i,j,k)+dwdz(i,j,k))/dt
+    ! end do
+
+end subroutine div_p
+
+end module divergence

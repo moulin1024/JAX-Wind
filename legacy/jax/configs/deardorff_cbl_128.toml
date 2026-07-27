@@ -1,0 +1,81 @@
+# Deardorff-style dry convective boundary layer for jax/run_single.py.
+# Domain lengths are physical meters, and dt is physical seconds.
+# The runner normalizes lengths and time internally by z_i.
+
+[grid]
+nx = 128
+ny = 128
+nz = 128
+lx = 6400.0
+ly = 6400.0
+lz = 1500.0
+z_i = 1000.0
+
+[time]
+scheme = "ab2"
+steps = 20000
+log_every = 100
+dt = 0.2
+
+[physics]
+u_fric = 0.0
+zo = 0.1
+bl_height = 1000.0
+vonk = 0.4
+pressure_force = 0.0
+momentum_wall_model = "abl"
+initial_velocity_noise = 0.02
+
+[wall_filter]
+fgr = 1.5
+tfr = 2.0
+
+[sgs]
+model = "lasd"
+precision = "float32"
+cs_count = 10
+smag_cs = 0.16
+
+[numerics]
+projection_mode = "final"
+horizontal_dealias = true
+pressure_filter_nyquist = false
+
+[thermo]
+enabled = true
+moisture_enabled = false
+theta0 = 300.0
+g = 9.81
+theta_bc = "flux"
+theta_profile = "deardorff_cbl"
+surface_theta_flux = 0.05
+theta_perturbation_amplitude = 0.05
+theta_perturbation_height = 200.0
+cbl_mixed_layer_height = 1000.0
+cbl_inversion_strength = 8.0
+cbl_inversion_thickness = 100.0
+cbl_free_atmosphere_gradient = 0.003
+qv0 = 0.0
+qv_initial_gradient = 0.0
+surface_qv_flux = 0.0
+qv_floor = 0.0
+scalar_sgs_model = "lasd"
+prandtl_t = 0.74
+schmidt_t = 0.74
+scalar_lasd_min = 0.0
+scalar_lasd_max = 1.0
+
+[runtime]
+precision = "float64"
+sgs_precision = "float32"
+use_jit = true
+
+[profiling]
+enabled = false
+warmup = 100
+
+[postprocess]
+dump_fields = true
+field_dump_start_step = 1000
+field_output_dir = "deardorff_cbl_fields"
+field_output_prefix = "fields"

@@ -1,0 +1,30 @@
+module time
+use precision
+use dimen
+contains
+attributes(global) subroutine timestepping(s, rhs, rhs_f, init_flag)
+
+    !---------------------------------------------------------------------------
+    ! declaration
+    implicit none
+
+    real(fp), dimension(nx,ny,nz2), intent(inout):: s
+    real(fp), dimension(nx,ny,nz2), intent(in):: rhs,rhs_f
+    integer,value,intent(in) :: init_flag
+    integer :: i,j,k
+
+    i = (blockIdx%x - 1) * blockDim%x + threadIdx%x
+    j = (blockIdx%y - 1) * blockDim%y + threadIdx%y
+    k = (blockIdx%z - 1) * blockDim%z + threadIdx%z
+    !---------------------------------------------------------------------------
+    ! main code
+    ! TODO: implicit scheme?
+    if (k>1 .and. k<nz2) then
+        if (init_flag == 1) then  ! Initialize with Euler
+            s(i,j,k)= s(i,j,k)+dt*(rhs(i,j,k))
+        else                      ! Adam-bash
+            s(i,j,k)= s(i,j,k)+dt*(1.5_fp*rhs(i,j,k)-0.5_fp*rhs_f(i,j,k))
+        end if
+    end if
+end subroutine timestepping
+end module time

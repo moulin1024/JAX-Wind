@@ -1,0 +1,170 @@
+module rotation
+    use dimen
+    use precision
+    use cudafor
+
+    contains
+
+    attributes(device) subroutine elementCoordinate(mu,alpha,beta,gamma,phi,tau,deltaR,radius)
+        implicit none
+        real(fp),intent(out) :: mu(3)
+        real(fp),intent(in) :: alpha,beta,gamma,tau,phi,deltaR,radius
+        ! Rigid transformation
+        mu(1) = - radius*Cos(phi)*Sin(gamma) + radius*Cos(gamma)*Sin(phi)*Sin(tau)
+        mu(2) =   radius*Cos(phi)*Cos(gamma) + radius*Sin(gamma)*Sin(phi)*Sin(tau)
+        mu(3) =   radius*Sin(phi)*Cos(tau)
+        
+        ! ! Flexible defmormation
+        ! mu(1) = mu(1) + deltaR*Tan(alpha)*Cos(gamma)*Cos(tau)
+        ! mu(2) = mu(2) + deltaR*Tan(alpha)*Cos(tau)*Sin(gamma)
+        ! mu(3) = mu(3) - deltaR*Tan(alpha)*Sin(tau)
+    end subroutine elementCoordinate
+
+    attributes(device) subroutine relativeVelocity(CTU_relative_flex,CTU_relative_rigid,&
+                                                   ctu,ctv,ctw,alpha,beta,gamma,phi,tau,deltaR,radius)
+        implicit none
+        real(fp),intent(out) :: CTU_relative_flex(3),CTU_relative_rigid(3)
+        real(fp),intent(in) :: ctu,ctv,ctw,alpha,beta,gamma,tau,phi,deltaR,radius
+        real(fp),dimension(3,3) :: deformMatInv
+
+        ! Relative velocity on the rigid blade
+        ! CTU_relative_rigid(1) = Cos(tau)*(ctu*Cos(gamma) + ctv*Sin(gamma)) - ctw*Sin(tau)
+        ! CTU_relative_rigid(2) = Cos(phi)*(ctv*Cos(gamma) - ctu*Sin(gamma)) + Sin(phi)*(ctw*Cos(tau) + &
+        !                         (ctu*Cos(gamma) + ctv*Sin(gamma))*Sin(tau))  
+        ! CTU_relative_rigid(3) = -((ctv*Cos(gamma) - ctu*Sin(gamma))*Sin(phi)) + Cos(phi)*(ctw*Cos(tau) + &
+        !                         (ctu*Cos(gamma) + ctv*Sin(gamma))*Sin(tau))
+
+        CTU_relative_rigid(1) = ctu*Cos(gamma) + ctv*Sin(gamma)!Cos(tau)*(ctu*Cos(gamma) + ctv*Sin(gamma)) - ctw*Sin(tau)
+        CTU_relative_rigid(2) = Cos(phi)*(ctv*Cos(gamma) - ctu*Sin(gamma)) + ctw*Sin(phi)!Cos(phi)*(ctv*Cos(gamma) - ctu*Sin(gamma)) + Sin(phi)*(ctw*Cos(tau) + &
+                                !(ctu*Cos(gamma) + ctv*Sin(gamma))*Sin(tau))  
+        CTU_relative_rigid(3) = ctw*Cos(phi) - (ctv*Cos(gamma) - ctu*Sin(gamma))*Sin(phi)!-((ctv*Cos(gamma) - ctu*Sin(gamma))*Sin(phi)) + Cos(phi)*(ctw*Cos(tau) + &
+                                !(ctu*Cos(gamma) + ctv*Sin(gamma))*Sin(tau))
+
+        ! call deformationMatrix(deformMatInv,alpha,beta,deltaR)
+
+        ! CTU_relative_flex(1) = CTU_relative_rigid(1)*Cos(alpha) + CTU_relative_rigid(2)*Sin(alpha)!dot_product(deformMatInv(1,:),CTU_relative_rigid)
+        ! CTU_relative_flex(2) = CTU_relative_rigid(2)*Cos(alpha) - CTU_relative_rigid(1)*Sin(alpha)!dot_product(deformMatInv(2,:),CTU_relative_rigid)
+        ! CTU_relative_flex(3) = CTU_relative_rigid(3)!dot_product(deformMatInv(3,:),CTU_relative_rigid)
+
+        CTU_relative_flex(1) = CTU_relative_rigid(1)!dot_product(deformMatInv(1,:),CTU_relative_rigid)
+        CTU_relative_flex(2) = CTU_relative_rigid(2)!dot_product(deformMatInv(2,:),CTU_relative_rigid)
+        CTU_relative_flex(3) = CTU_relative_rigid(3)!dot_product(deformMatInv(3,:),CTU_relative_rigid)
+
+    end subroutine relativeVelocity
+
+    attributes(device) subroutine forceRotation(CTF_origin, CTFin_flap,CTFin_edge,alpha,beta,gamma,phi,tau,deltaR,radius)
+        implicit none
+        real(fp),dimension(3),intent(out) :: CTF_origin
+        real(fp),intent(in) :: CTFin_flap,CTFin_edge
+        real(fp),intent(in) :: alpha,beta,gamma,tau,phi,deltaR,radius
+        real(fp),dimension(3,3) :: deformMatInv
+        real(fp) :: CTFn,CTFs,CTFt,CTF_onBlade(3)
+
+        ! CTF_onBlade(1) =  CTFin_flap
+        ! CTF_onBlade(2) = 0.0
+        ! CTF_onBlade(3) =  CTFin_edge
+
+        ! call deformationMatrix(deformMatInv,alpha,beta,deltaR)
+
+        ! CTFn = CTFin_flap*Cos(alpha)!dot_product(deformMatInv(1,:),CTF_onBlade)
+        ! CTFs = -CTFin_flap*Sin(alpha)!dot_product(deformMatInv(2,:),CTF_onBlade)
+        ! CTFt = CTFin_edge!dot_product(deformMatInv(3,:),CTF_onBlade)
+
+        ! CTFn = dot_product(deformMatInv(1,:),CTF_onBlade)
+        ! CTFs = dot_product(deformMatInv(2,:),CTF_onBlade)
+        ! CTFt = dot_product(deformMatInv(3,:),CTF_onBlade)
+
+        CTFn = CTFin_flap
+        CTFs = 0
+        CTFt = clockwise*CTFin_edge
+
+        CTF_origin(1) = CTFn*Cos(gamma) + CTFt*Sin(gamma)*Sin(phi)
+        CTF_origin(2) = CTFn*Sin(gamma) - CTFt*Cos(gamma)*Sin(phi)
+        CTF_origin(3) = CTFt*Cos(phi)
+
+        ! CTF_origin(1) = -(Sin(gamma)*(CTFs*Cos(phi) + CTFt*Sin(phi))) + Cos(gamma)*(CTFn*Cos(tau) + (-(CTFt*Cos(phi)) + CTFs*Sin(phi))*Sin(tau))
+        ! CTF_origin(2) =  (Cos(gamma)*(CTFs*Cos(phi) + CTFt*Sin(phi))) + Sin(gamma)*(CTFn*Cos(tau) + (-(CTFt*Cos(phi)) + CTFs*Sin(phi))*Sin(tau))
+        ! CTF_origin(3) = Cos(tau)*(-(CTFt*Cos(phi)) + CTFs*Sin(phi)) - CTFn*Sin(tau)
+
+    end subroutine
+
+    attributes(device) subroutine deformationMatrix(deformMatInv,alpha_in,beta,deltaR)
+        implicit none
+        real(fp),dimension(3,3),intent(out) :: deformMatInv
+        real(fp),intent(in) :: alpha_in,beta,deltaR
+        real(fp),dimension(3,3) :: deformMat
+        real(fp) :: rotatedX(3),rotatedY(3),rotatedZ(3),alpha
+        real(fp),PARAMETER :: eps = 1e-10
+        alpha = alpha_in + eps
+        ! if (abs(alpha>1e-10)) then
+            rotatedX(1) = Tan(alpha)*deltaR**3
+            rotatedX(2) = -((Tan(alpha)**3*(deltaR**3))/Abs(Tan(alpha)))-(Tan(alpha)*Tan(beta)**2*(deltaR**3))/Abs(Tan(alpha))!-deltaR**3*(Tan(alpha)**2+Tan(beta)**2)!
+            rotatedX(3) = (Tan(alpha)*Tan(beta)*(deltaR**3))/Abs(Tan(alpha))!Tan(beta)*deltaR**3!
+            deformMat(1,:) = rotatedX/sqrt(rotatedX(1)**2+rotatedX(2)**2+rotatedX(3)**2)
+
+            rotatedY(1) = deltaR*Tan(alpha)
+            rotatedY(2) = deltaR
+            rotatedY(3) = deltaR*Tan(beta)
+
+            deformMat(2,:) = rotatedY/(sqrt(rotatedY(1)**2+rotatedY(2)**2+rotatedY(3)**2)+EPS)
+
+            rotatedZ(1) = -Tan(beta)*deltaR**2
+            rotatedZ(2) = 0._fp
+            rotatedZ(3) = deltaR**2*Tan(alpha)
+
+            deformMat(3,:) = rotatedZ/sqrt(rotatedZ(1)**2+rotatedZ(2)**2+rotatedZ(3)**2)
+            ! print *,deformMat(3,1),deformMat(3,2),deformMat(3,3)
+        ! end if
+
+        call M33INV(deformMat,deformMatInv) 
+    end subroutine deformationMatrix
+
+
+!***********************************************************************************************************************************
+!  M33INV  -  Compute the inverse of a 3x3 matrix.
+!
+!  A       = input 3x3 matrix to be inverted
+!  AINV    = output 3x3 inverse of matrix A
+!  OK_FLAG = (output) .TRUE. if the input matrix could be inverted, and .FALSE. if the input matrix is singular.
+!***********************************************************************************************************************************
+
+      attributes(device) SUBROUTINE M33INV (A, AINV)
+
+      IMPLICIT NONE
+
+      real(fp), DIMENSION(3,3), INTENT(IN)  :: A
+      real(fp), DIMENSION(3,3), INTENT(OUT) :: AINV
+
+      real(fp), PARAMETER :: EPS = 1.0D-10
+      real(fp) :: DET
+      real(fp), DIMENSION(3,3) :: COFACTOR
+
+
+      DET =   A(1,1)*A(2,2)*A(3,3)  &
+            - A(1,1)*A(2,3)*A(3,2)  &
+            - A(1,2)*A(2,1)*A(3,3)  &
+            + A(1,2)*A(2,3)*A(3,1)  &
+            + A(1,3)*A(2,1)*A(3,2)  &
+            - A(1,3)*A(2,2)*A(3,1)
+
+      COFACTOR(1,1) = +(A(2,2)*A(3,3)-A(2,3)*A(3,2))
+      COFACTOR(1,2) = -(A(2,1)*A(3,3)-A(2,3)*A(3,1))
+      COFACTOR(1,3) = +(A(2,1)*A(3,2)-A(2,2)*A(3,1))
+      COFACTOR(2,1) = -(A(1,2)*A(3,3)-A(1,3)*A(3,2))
+      COFACTOR(2,2) = +(A(1,1)*A(3,3)-A(1,3)*A(3,1))
+      COFACTOR(2,3) = -(A(1,1)*A(3,2)-A(1,2)*A(3,1))
+      COFACTOR(3,1) = +(A(1,2)*A(2,3)-A(1,3)*A(2,2))
+      COFACTOR(3,2) = -(A(1,1)*A(2,3)-A(1,3)*A(2,1))
+      COFACTOR(3,3) = +(A(1,1)*A(2,2)-A(1,2)*A(2,1))
+
+      if (DET > EPS) then
+        AINV = TRANSPOSE(COFACTOR) / DET
+      else
+        print *,'Error in deformation matrix'
+        stop    
+        end if
+      RETURN
+
+      END SUBROUTINE M33INV
+
+end module rotation

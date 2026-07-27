@@ -1,0 +1,680 @@
+program main
+!===========================================================================
+! module
+!===========================================================================
+    use iso_c_binding
+    use cudafor
+    use cufft_m
+    use mpi
+    use update_m
+    use precision
+    use dimen
+    use io
+    use pressure
+    use divergence
+    use filter
+    use derivative
+    use wall
+    use rhs
+    use turbine
+    use convection
+    use sgs
+    use sgs_mgm
+    use time
+    #ifdef USE_NVTX
+        use nvtx 
+    #endif
+!===========================================================================
+! definition
+!===========================================================================
+    implicit none
+    !---------------------------------------------------------------------------
+    ! iterator
+    !---------------------------------------------------------------------------
+    integer*4 t
+    integer i,j,k,REQUEST
+    !---------------------------------------------------------------------------
+    ! flow
+    !---------------------------------------------------------------------------
+    real(fp),dimension(nx,ny):: zo_host,ustar_host,m_host
+    real(fp),dimension(nx,ny,nz2) :: u_host,v_host,w_host,&
+                                    rhsx_host,rhsy_host,rhsz_host
+    real(fp), dimension(nx,ny,nz2) :: lm_old_host,mm_old_host,qn_old_host,nn_old_host
+    real(fp),dimension(nx,ny),device :: zo,ustar,m 
+    real(fp),dimension(:,:,:),allocatable,device  :: u,v,w,&             ! Velocity   
+                                                     cx,cy,cz,&          ! Convection term      
+                                                     txx,txy,txz,tyy,tyz,tzz,& ! Stress       
+                                                     divtx,divty,divtz,& ! Divergence term
+                                                     rhsx,rhsy,rhsz,&    ! RHS term        
+                                                     rhsx_f,rhsy_f,rhsz_f,&
+                                                     dudx,dudy,dudz,dvdx,dvdy,dvdz,dwdx,dwdy,dwdz,&              ! Velocity gradient
+                                                     p,dpdx,dpdy,dpdz,rhs_p,& ! pressure term
+                                                     lm_old,mm_old,qn_old,nn_old,cs2
+    !---------------------------------------------------------------------------
+    ! turbine
+    !---------------------------------------------------------------------------
+    real(fp), dimension(:,:,:),allocatable,device :: fx,fy,fz 
+    real(fp),dimension(:),allocatable,device    :: power,thrust,CTU_local
+    real(fp),dimension(n_turb)     :: power_host,mean_power,sum_power,CTU_local_host
+    real(fp),dimension(:,:,:,:),allocatable,device :: CTF,CTF_alm  !< Force on the blade element (CTFx,CTFt)    
+    real(fp),dimension(n_phi,n_r,n_turb,2)         :: CTF_host !< Force on the blade element (CTFx,CTFt)
+    real(fp),dimension(3,n_r,n_turb,2)             :: CTF_alm_host     !< Force on the blade element (CTFx,CTFt)
+    real(fp),dimension(blade_num,n_r,n_turb,2) :: displacement_host,moment_host,velocity_host   
+    real(fp), dimension(n_turb,5) :: turb_loc_host
+    real(fp), dimension(n_turb,5),device :: turb_loc
+    !---------------------------------------------------------------------------
+    ! io
+    real(fp) :: t01
+    real(fp) :: log_ustar, log_kemax, log_umax
+    real(fp), dimension(nx,ny,nzb) :: ta_u_host,ta_v_host,ta_w_host,&
+                                      ta_u2_host,ta_v2_host,ta_w2_host,&
+                                      ta_uv_host,q_crit_host!,&
+                                            ! ta_uw_host,ta_txz_host,ta_dudz_host
+    real(fp), dimension(n_turb),device :: ta_power
+    real(fp), dimension(n_turb) :: ta_power_host
+    real(fp), dimension(:,:,:),allocatable,device ::  ta_u,ta_v,ta_w,&
+                                                      ta_u2,ta_v2,ta_w2,ta_uv,q_crit
+    real(fp), device :: d_avg1,d_avg2
+    !---------------------------------------------------------------------------
+    ! fft plan
+    !---------------------------------------------------------------------------
+    type(c_ptr) plan_batch(2),plan_2d(2)
+    integer istat
+    integer :: count
+    !---------------------------------------------------------------------------
+    ! cuda variable
+    !---------------------------------------------------------------------------
+    REAL(fp), POINTER, DIMENSION(:) :: null_ptr => NULL ()
+    type(dim3) :: grid, tBlock, grid1,tBlock1,grid_2d,tBlock_2d
+    grid = dim3(nx/16,ny/16,nz2/2)
+    tBlock = dim3(16,16,2)
+    ! Notice the difference of nzb vs nz2
+    grid1 = dim3(nx/16,ny/16,nzb/2)
+    tBlock1 = dim3(16,16,2)
+    grid_2d = dim3(nx/16,ny/16,1)
+    tBlock_2d = dim3(16,16,1)
+    integer :: device_id,counter=1
+    integer :: localRank
+    character(len=10) :: rankStr
+
+!===========================================================================
+! init
+!===========================================================================
+    #ifdef USE_NVTX
+        call nvtxStartRange("init")
+    #endif
+    !---------------------------------------------------------------------------
+    ! init mpi
+    !---------------------------------------------------------------------------
+    me = 0
+    nall = 0
+
+    call GET_ENVIRONMENT_VARIABLE ('OMPI_COMM_WORLD_LOCAL_RANK',rankStr)
+    read (rankStr,'(i10)') localRank
+    istat = cudaSetDevice (localRank)
+
+    call mpi_init( ierr )
+    call mpi_comm_rank( mpi_comm_world, me, ierr )
+    call mpi_comm_size( mpi_comm_world, job_np, ierr )
+    nall=mpi_comm_world
+
+    if(me == 0) t01=mpi_wtime()
+
+    if (job_np /= nprocs) then
+        print *, 'error: job_np /= nprocs'
+        call exit()
+    endif
+
+    !---------------------------------------------------------------------------
+    ! print start (important for debug)
+    !---------------------------------------------------------------------------
+    call print_start(me)
+    ! Allocate flow related variables
+    allocate(u(nx,ny,nz2),v(nx,ny,nz2),w(nx,ny,nz2),p(nx,ny,nz2),&   
+             cx(nx,ny,nz2),cy(nx,ny,nz2),cz(nx,ny,nz2),&      
+             txx(nx,ny,nz2),txy(nx,ny,nz2),txz(nx,ny,nz2),&       
+             tyy(nx,ny,nz2),tyz(nx,ny,nz2),tzz(nx,ny,nz2),&       
+             divtx(nx,ny,nz2),divty(nx,ny,nz2),divtz(nx,ny,nz2),& ! Divergence term
+             rhsx(nx,ny,nz2),rhsy(nx,ny,nz2),rhsz(nx,ny,nz2),&    ! right hand side term        
+             rhsx_f(nx,ny,nz2),rhsy_f(nx,ny,nz2),rhsz_f(nx,ny,nz2),&
+             dudx(nx,ny,nz2),dudy(nx,ny,nz2),dudz(nx,ny,nz2),&    ! Velocity gradient
+             dvdx(nx,ny,nz2),dvdy(nx,ny,nz2),dvdz(nx,ny,nz2),&
+             dwdx(nx,ny,nz2),dwdy(nx,ny,nz2),dwdz(nx,ny,nz2),&    
+             dpdx(nx,ny,nz2),dpdy(nx,ny,nz2),dpdz(nx,ny,nz2),&    ! Pressure gradient
+             rhs_p(nx,ny,nz2))               ! Poisson eq rhs         
+    ! Allocate turbine related variables
+    if (turb_flag == 1) then         
+        allocate(fx(nx,ny,nz2),fy(nx,ny,nz2),fz(nx,ny,nz2),&
+                 power(n_turb),thrust(n_turb),CTU_local(n_turb),&
+                 CTF_alm(3,n_r,n_turb,2),CTF(n_phi,n_r,n_turb,2))
+    end if
+    ! Allocate average field related variables
+    if (ta_flag == 1) then
+        allocate(ta_u(nx,ny,nzb),ta_v(nx,ny,nzb),ta_w(nx,ny,nzb),&
+                 ta_u2(nx,ny,nzb),ta_v2(nx,ny,nzb),ta_w2(nx,ny,nzb),&
+                 ta_uv(nx,ny,nzb))
+    end if
+    ! Allocate instant field term
+    if (ts_flag == 1) then
+        allocate(q_crit(nx,ny,nzb))
+    end if
+    ! Allocate LASD model related variables
+    if (model == 3) then
+        allocate(lm_old(nx,ny,nz2),mm_old(nx,ny,nz2),&
+        qn_old(nx,ny,nz2),nn_old(nx,ny,nz2),cs2(nx,ny,nz2))
+    end if
+    !---------------------------------------------------------------------------
+    ! load variables
+    !---------------------------------------------------------------------------
+    call load_variable(u_host,'input/u.bin',me,nall)
+    call load_variable(v_host,'input/v.bin',me,nall)
+    call load_variable(w_host,'input/w.bin',me,nall)
+
+    ! Non-penetration boundary treatment for w
+    if (me==0)        w_host(:,:,2)=0._fp
+    if (me==nprocs-1) w_host(:,:,nzb+1)=0._fp
+
+    call update_uv_cpu(u_host,me,nall)
+    call update_uv_cpu(v_host,me,nall)
+    call update_w_cpu (w_host,me,nall)
+
+    ! Slipless wall treatment for u,v
+    if (me==nprocs-1) then
+        u_host(:,:,nzb+1)=u_host(:,:,nzb)
+        v_host(:,:,nzb+1)=v_host(:,:,nzb)
+    endif
+
+    ! Copy to device
+    u  = u_host
+    v  = v_host
+    w  = w_host
+
+    if (resub_flag > 0 .or. sim_flag > 1) then
+        call load_variable(rhsx_host,'input/rhsx.bin',me,nall)
+        call load_variable(rhsy_host,'input/rhsy.bin',me,nall)
+        call load_variable(rhsz_host,'input/rhsz.bin',me,nall)
+        
+        ! Copy to device
+        rhsx  = rhsx_host
+        rhsy  = rhsy_host
+        rhsz  = rhsz_host
+
+        if (model == 3) then
+            call load_variable(lm_old_host,'input/lm_old.bin',me,nall)
+            call load_variable(mm_old_host,'input/mm_old.bin',me,nall)
+            call load_variable(qn_old_host,'input/qn_old.bin',me,nall)
+            call load_variable(nn_old_host,'input/nn_old.bin',me,nall)
+
+            lm_old = lm_old_host
+            mm_old = mm_old_host
+            qn_old = qn_old_host
+            nn_old = nn_old_host
+        end if
+    endif
+
+    call load_surface(zo_host,'input/zo.bin')
+    zo  = zo_host
+
+    !---------------------------------------------------------------------------
+    ! load turbine aero data
+    !---------------------------------------------------------------------------
+    if (turb_flag > 0) then
+        open(unit=199,file='input/turb_loc.dat')
+        read(199,*)
+        do k=1,n_turb
+            read(199,*) turb_loc_host(k,1:5)
+        end do
+        close(199)
+
+        do i_turb=1,n_turb
+            turb_loc_host(i_turb,1) = turb_loc_host(i_turb,1)/z_i       ! x
+            turb_loc_host(i_turb,2) = turb_loc_host(i_turb,2)/z_i       ! y
+            turb_loc_host(i_turb,3) = turb_loc_host(i_turb,3)/z_i       ! z
+            turb_loc_host(i_turb,4) = turb_loc_host(i_turb,4)/180*pi    ! yaw
+            turb_loc_host(i_turb,5) = turb_loc_host(i_turb,5)/180*pi    ! tilt
+        end do
+        ! Copy to device
+        turb_loc = turb_loc_host
+    end if
+    !---------------------------------------------------------------------------
+    ! init io
+    !---------------------------------------------------------------------------
+    ! init log
+    if(log_flag > 0) call open_log(me)
+    ! init ta outputs
+    if (ta_flag > 0) then
+        if (ta_flag == 1) then
+            call initialize_ta1(ta_u,ta_v,ta_w,&
+                                ta_u2,ta_v2,ta_w2,ta_uv)
+            call open_ta1(me)
+        end if
+    end if
+    ! init ts outputs
+    if (ts_flag > 0) then
+        if (ts_flag == 1) then
+            call open_ts1(me)
+        end if
+    end if
+    ! init inflow
+    if (sim_flag > 1) call open_inflow_m(me)
+    ! init turb
+    if(turb_flag > 0) call open_turb(me)
+    ! init fft. Watch out for the difference of row-first and column first indexing between fftw and cufft (the reason of ny,nx here instead of nx,ny in fftw call)
+    if (fp==singlePrecision) then
+        call cufftPlanMany(plan_batch(1),2,(/ny,nx/),null_ptr,0,0,null_ptr,0,0,cufft_R2C,nzb) 
+        call cufftPlanMany(plan_batch(2),2,(/ny,nx/),null_ptr,0,0,null_ptr,0,0,cufft_C2R,nzb)
+        call cufftPlan2d(plan_2d(1),ny,nx,CUFFT_R2C)
+        call cufftPlan2d(plan_2d(2),ny,nx,CUFFT_C2R)
+    else 
+        call cufftPlanMany(plan_batch(1),2,(/ny,nx/),null_ptr,0,0,null_ptr,0,0,cufft_D2Z,nzb) 
+        call cufftPlanMany(plan_batch(2),2,(/ny,nx/),null_ptr,0,0,null_ptr,0,0,cufft_Z2D,nzb)
+        call cufftPlan2d(plan_2d(1),ny,nx,CUFFT_D2Z)
+        call cufftPlan2d(plan_2d(2),ny,nx,CUFFT_Z2D)
+    end if
+    device_id = me
+
+    #ifdef USE_NVTX    
+        call nvtxEndRange
+    #endif
+!===========================================================================
+! solve
+!===========================================================================
+    #ifdef USE_NVTX
+        call nvtxStartRange("start time loop")
+    #endif
+    do t=1,nsteps
+    !-----------------------------------------------------------------------
+    ! save previous time's right-hand-sides for adams-bashforth
+    !-----------------------------------------------------------------------
+        #ifdef USE_NVTX
+        call nvtxStartRange("save prv time",1)
+        #endif
+        rhsx_f  = rhsx 
+        rhsy_f  = rhsy 
+        rhsz_f  = rhsz
+
+        #ifdef USE_NVTX    
+        call nvtxEndRange
+        #endif
+    !-----------------------------------------------------------------------
+    ! derivatives
+    !-----------------------------------------------------------------------
+        #ifdef USE_NVTX
+            call nvtxStartRange("deriv and filter",1)
+        #endif
+        ! spectral deriv (and filter)
+        call ddxy_filter(u,dudx,dudy,plan_batch)
+
+        call update_uv_async(u,request,me,nall)
+        call update_uv_async(dudx,request,me,nall)
+        call update_uv_async(dudy,request,me,nall)
+
+        call ddxy_filter(v,dvdx,dvdy,plan_batch)
+
+        call update_uv_async(v,request,me,nall)
+        call update_uv_async(dvdx,request,me,nall)
+        call update_uv_async(dvdy,request,me,nall)
+
+        call ddxy_filter(w,dwdx,dwdy,plan_batch)
+
+        call update_w_async(w,request,me,nall)
+        call update_w_async(dwdx,request,me,nall)
+        call update_w_async(dwdy,request,me,nall)
+
+        ! bc top uv
+        if (me==nprocs-1) then
+            !$cuf kernel do(2) <<<(nx/16,ny/16),(16,16)>>>
+            do j=1,ny
+                do i=1,nx
+                    u(i,j,nzb+1)=u(i,j,nzb)
+                    v(i,j,nzb+1)=v(i,j,nzb)
+                end do
+            end do
+        endif
+
+        if (nprocs >= 2) call mpi_wait(REQUEST,STATUS2,IERR)
+        ! -----------------------------------------------------------------------
+        ! spatial deriv
+        call ddz<<<grid, tBlock>>>(dudz,u,0)    ! cell centre
+        call update_w_async(dudz,request,me,nall)
+
+        call ddz<<<grid, tBlock>>>(dvdz,v,0)    ! cell centre
+        call update_w_async(dvdz,request,me,nall)
+        
+        call ddz<<<grid, tBlock>>>(dwdz,w,1)    ! staggered
+        call update_uv_async(dwdz,request,me,nall)
+        
+        #ifdef USE_NVTX
+        call nvtxEndRange
+        call nvtxStartRange("wall",3)
+        #endif
+    !-----------------------------------------------------------------------
+    ! instant field output
+    !-----------------------------------------------------------------------
+        if (mod(t,c_count*10)==0) then
+            u_host = u
+            v_host = v 
+            w_host = w 
+            ustar_host = ustar 
+            call print_log(log_ustar,log_umax,u_host,v_host,w_host,ustar_host,t01,t,me,nall)
+            if (ts_flag > 0 .and. t >= ts_tstart .and. mod(t-ts_tstart+1,c_count*10) == 0) then 
+                print *,'Write instant field:'
+                ! call compute_q_criterion<<<grid, tBlock>>>(q_crit,dudx,dudy,dudz,dvdx,dvdy,dvdz,dwdx,dwdy,dwdz)
+                ! q_crit_host = q_crit
+                call write_ts1(u_host,v_host,w_host,me)
+            end if
+        end if
+    !-----------------------------------------------------------------------
+    ! wall stress
+    !-----------------------------------------------------------------------
+        ! we need to hide this wall modif to the other processor because dudz, dvdz change location (from w node to uv nodes) --> no update
+        if (nprocs >= 2) call mpi_wait(REQUEST,STATUS2,IERR)
+        if (me==0) then
+            ! Porte-agel 2000 JFM correction
+            ! Compute the plane average of the horizontal velocity gradient
+            call plane_average<<<grid_2d, tBlock_2d>>>(d_avg1,dudz)
+            call plane_average<<<grid_2d, tBlock_2d>>>(d_avg2,dvdz)
+            ! Apply P-A correction
+            call ddz_uv_corr<<<grid_2d, tBlock_2d>>>(dudz,d_avg1,3)
+            call ddz_uv_corr<<<grid_2d, tBlock_2d>>>(dvdz,d_avg2,3)
+            ! Compute wall stress
+            call wall_stress(txz,tyz,dudz,dvdz,ustar,m,u,v,zo,t,plan_2d)
+        end if
+    !-----------------------------------------------------------------------
+    ! convection
+    !-----------------------------------------------------------------------
+        #ifdef USE_NVTX
+            call nvtxEndRange
+            call nvtxStartRange("Convection",3)
+        #endif
+        call convec<<<grid,tBlock>>>(cx,cy,cz,&
+                                     u,v,w,dudy,dudz,dvdx,dvdz,dwdx,dwdy )
+
+    !-----------------------------------------------------------------------
+    ! sub-grid stress
+    !-----------------------------------------------------------------------
+        #ifdef USE_NVTX
+            call nvtxEndRange
+            call nvtxStartRange("SGS",3)
+        #endif
+        if (model == 3) then
+            call subgrid_stress(txx,txy,txz,tyy,tyz,tzz,&
+                                u,v,w,&
+                                dudx,dudy,dudz,&
+                                dvdx,dvdy,dvdz,&
+                                dwdx,dwdy,dwdz, &
+                                LM_old,MM_old,QN_old,NN_old,cs2,&
+                                t,me,nall)
+        else if (model == 4) then
+            call sgs_stag(txx,txy,txz,tyy,tyz,tzz,&
+                          dudx,dudy,dudz,&
+                          dvdx,dvdy,dvdz,&
+                          dwdx,dwdy,dwdz,me)
+        end if
+        call update_w(txz,me,nall)
+        call update_w(tyz,me,nall)
+        call update_uv(tzz,me,nall)
+        ! top bc
+        if (me==nprocs-1) then
+            !$cuf kernel do <<<*,*>>>
+            do j=1,ny
+                do i=1,nx
+                    tzz (i,j,nzb+1)=tzz (i,j,nzb)
+                end do
+            end do
+        end if
+        #ifdef USE_NVTX
+            call nvtxEndRange
+            call nvtxStartRange("Divergence",4)
+        #endif       
+    !-----------------------------------------------------------------------
+    ! divergence
+    !-----------------------------------------------------------------------
+        call divstress(divtx,txx,txy,txz,1,plan_batch)    ! w node
+        call divstress(divty,txy,tyy,tyz,1,plan_batch)    ! w node
+        call divstress(divtz,txz,tyz,tzz,0,plan_batch)    ! uv node
+
+        #ifdef USE_NVTX
+            call nvtxEndRange
+            call nvtxStartRange("RHS and timestepping",4)
+        #endif       
+    !-----------------------------------------------------------------------
+    ! rhs
+    !-----------------------------------------------------------------------
+        call rhs_assemble<<<grid, tBlock>>>(rhsx,cx,divtx )
+        call rhs_assemble<<<grid, tBlock>>>(rhsy,cy,divty )
+        call rhs_assemble<<<grid, tBlock>>>(rhsz,cz,divtz )
+        ! applying external pressure gradient forcing (not needed for enforced inflow)
+        if (sim_flag < 3) then   
+            call const_pres_grad<<<grid, tBlock>>>(rhsx,device_id)
+        end if
+        ! Apply turbine forcing
+        if (turb_flag == 1) then 
+            if (device_id == 0 ) then
+                ! if (mod(t-1,turb_count)==0) then
+                !     call turbine_force(Fx,Fy,Fz,CTF,power,u,v,w,turb_loc,t)
+                ! end if
+
+                if (mod(t-1,turb_count)==0) then
+                    ! call turbine_force(Fx,Fy,Fz,CTF,power,u,v,w,turb_loc,t)
+                    call turbine_force(Fx,Fy,Fz,CTF_alm,power,displacement_host,moment_host,velocity_host,u,v,w,turb_loc,t)
+                    CTF_alm_host = CTF_alm
+                    call write_turb(CTF_alm_host,displacement_host,moment_host,velocity_host,me)
+                end if
+
+                call turbine_force_rhs<<<grid, tBlock>>>(rhsx,fx)
+                call turbine_force_rhs<<<grid, tBlock>>>(rhsy,fy)
+                call turbine_force_rhs<<<grid, tBlock>>>(rhsz,fz)
+            end if
+        end if
+    !-----------------------------------------------------------------------
+    ! Time stepping
+    !-----------------------------------------------------------------------        
+        if (t == 1 .and. sim_flag < 2) then
+            call timestepping<<<grid,tBlock>>>(u,rhsx,rhsx_f,1)
+            call timestepping<<<grid,tBlock>>>(v,rhsy,rhsy_f,1)
+            call timestepping<<<grid,tBlock>>>(w,rhsz,rhsz_f,1)
+        else
+            call timestepping<<<grid,tBlock>>>(u,rhsx,rhsx_f,0)
+            call timestepping<<<grid,tBlock>>>(v,rhsy,rhsy_f,0)
+            call timestepping<<<grid,tBlock>>>(w,rhsz,rhsz_f,0)
+        end if
+        ! bc bot w
+        if (me==0) then
+         !$cuf kernel do <<<*,*>>>
+            do j=1,ny
+                do i=1,nx
+                    w (i,j,2)=0._fp
+                end do
+            end do
+        end if
+        ! bc top w
+        if (me==nprocs-1) then
+         !$cuf kernel do <<<*,*>>>
+            do j=1,ny
+                do i=1,nx
+                    w (i,j,nzb+1)=0._fp
+                end do
+            end do
+        end if
+        call update_w(w,me,nall)
+        #ifdef USE_NVTX
+            call nvtxEndRange
+            call nvtxStartRange("pressure correction",5)
+        #endif
+    !-----------------------------------------------------------------------
+    ! pressure velocity correction
+    !-----------------------------------------------------------------------
+        ! get div
+        call ddxy(dudx,u,1,plan_batch)
+        call ddxy(dvdy,v,2,plan_batch)
+        call ddz<<<grid, tBlock>>>(dwdz,w,1)
+        call div_p<<<grid, tBlock>>>(rhs_p,dudx,dvdy,dwdz)
+        ! solve pressure poisson equation
+        call pressure_poisson(p,rhs_p,dpdx,dpdy,me,nall,t,plan_batch)
+        call update_uv(p,me,nall)
+        call ddz<<<grid, tBlock>>>(dpdz,p,0)
+        ! bc bot dpdz
+        if (me==0) then
+        !$cuf kernel do <<<*,*>>>
+            do j=1,ny
+                do i=1,nx
+                    dpdz (i,j,2) = 0.0_fp
+                end do
+            end do
+        end if
+        ! bc top dpdz
+        if (me==nprocs-1) then
+        !$cuf kernel do <<<*,*>>>
+            do j=1,ny
+                do i=1,nx
+                    dpdz (i,j,nzb+1) = 0.0_fp
+                end do
+            end do
+        end if
+        ! correct velocity
+        call velo_corr<<<grid, tBlock>>>(u,dpdx )
+        call velo_corr<<<grid, tBlock>>>(v,dpdy )
+        call velo_corr<<<grid, tBlock>>>(w,dpdz )
+        #ifdef USE_NVTX
+            call nvtxEndRange
+        #endif
+    !-----------------------------------------------------------------------
+    ! io
+    !-----------------------------------------------------------------------
+        ! write inflow
+        if (sim_flag == 2) then
+            call write_inflow(u,v,w,t,me)
+        end if
+        ! read (and force) inflow
+        if (sim_flag == 3) then
+            call read_inflow(u,v,w,t,me)
+        end if
+        ! compute time average outputs (just the sum at this stage)
+        if (ta_flag > 0 .and. t >= ta_tstart .and. mod(t,c_count) == 0) then
+            if (ta_flag==1) then
+                call compute_ta1<<<grid1,tBlock1>>>(u,v,w,&
+                                                    ta_u,ta_v,ta_w,&
+                                                    ta_u2,ta_v2,ta_w2,ta_uv )
+            end if
+        end if
+        !  write and re-initalize ta_ (from the sum)
+        if (ta_flag > 0 .and. t >= ta_tstart .and. mod(t-ta_tstart+1,p_count) == 0) then
+            print *,'Write average field:'
+            if (ta_flag==1) then
+                ta_u_host  = ta_u  
+                ta_v_host  = ta_v  
+                ta_w_host  = ta_w  
+                ta_u2_host = ta_u2 
+                ta_v2_host = ta_v2 
+                ta_w2_host = ta_w2 
+                ta_uv_host = ta_uv            
+                call write_ta1(ta_u_host,ta_v_host,ta_w_host,&
+                               ta_u2_host,ta_v2_host,ta_w2_host,ta_uv_host,me)
+                call initialize_ta1(ta_u,ta_v,ta_w,&
+                                    ta_u2,ta_v2,ta_w2,ta_uv )
+            end if
+        end if
+
+        if (t >= ta_tstart .and. turb_flag > 0 .and. me == 0) then
+
+            !$cuf kernel do(1) <<<*,*>>>
+            do i_turb = 1,n_turb
+                ta_power(i_turb) = ta_power(i_turb) + power(i_turb)/(p_count)
+            end do
+            if (mod(t-ta_tstart+1,p_count) == 0) then
+                ta_power_host = ta_power
+                print *, 'ta_power: ', ta_power_host
+                ta_power = 0._fp
+                do i_turb = 1,n_turb
+                    write (90000,*)  ta_power_host(i_turb)
+                end do
+            endif
+
+        endif
+        #ifdef USE_NVTX
+            call nvtxEndRange
+        #endif
+    end do
+! ===============================================================================
+! post
+!===============================================================================
+    !---------------------------------------------------------------------------
+    ! close log
+    !---------------------------------------------------------------------------
+    if(log_flag > 0) call close_log(me)
+    if (me == 0) close (unit=90000)
+    !---------------------------------------------------------------------------
+    ! close inflow
+    !---------------------------------------------------------------------------
+    if (sim_flag > 1) then
+       call close_inflow_m(me)
+    end if
+    !---------------------------------------------------------------------------
+    ! close and recompose ta outputs
+    !---------------------------------------------------------------------------
+    if (ta_flag > 0) then
+       if (ta_flag==1) then
+           call close_ta1(me)
+           call recompose_ta1(me)
+       end if
+    end if
+    !---------------------------------------------------------------------------
+    ! close and recompose ts outputs
+    !---------------------------------------------------------------------------
+    if (ts_flag > 0) then
+       if (ts_flag==1) then
+           call close_ts1(me)
+           call recompose_ts1(me)
+       end if
+    end if
+    !---------------------------------------------------------------------------
+    ! close turb
+    !---------------------------------------------------------------------------
+    if(turb_flag > 0) call close_turb(me)
+    !---------------------------------------------------------------------------
+    ! save variables
+    !---------------------------------------------------------------------------
+    u_host = u
+    v_host = v
+    w_host = w
+
+    rhsx_host = rhsx
+    rhsy_host = rhsy
+    rhsz_host = rhsz
+
+    call save_variable(u_host,'input/u.bin',me,nall)
+    call save_variable(v_host,'input/v.bin',me,nall)
+    call save_variable(w_host,'input/w.bin',me,nall)
+
+    call save_variable(rhsx_host,'input/rhsx.bin',me,nall)
+    call save_variable(rhsy_host,'input/rhsy.bin',me,nall)
+    call save_variable(rhsz_host,'input/rhsz.bin',me,nall)
+
+    if (model == 3) then
+        lm_old_host = lm_old
+        mm_old_host = mm_old
+        qn_old_host = qn_old
+        nn_old_host = nn_old
+
+        call save_variable(lm_old_host,'input/lm_old.bin',me,nall)
+        call save_variable(mm_old_host,'input/mm_old.bin',me,nall)
+        call save_variable(qn_old_host,'input/qn_old.bin',me,nall)
+        call save_variable(nn_old_host,'input/nn_old.bin',me,nall)
+    end if
+    !---------------------------------------------------------------------------
+    ! save warmup data for precursor and main
+    !---------------------------------------------------------------------------
+    if (me == 0 .and. sim_flag < 2) then
+       if (resub_flag == 0 ) call system('mkdir ../init_data')
+       call system('cp input/* ../init_data')
+    end if
+    !---------------------------------------------------------------------------
+    ! print end
+    !---------------------------------------------------------------------------
+    call print_end(t01,me)
+    !---------------------------------------------------------------------------
+    ! mpi finalize
+    !---------------------------------------------------------------------------
+    999 call mpi_finalize(ierr)
+end program main

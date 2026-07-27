@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wireles"
+version = "0.0.0"
+description = "Document-first JAX large-eddy simulation core"
+requires-python = ">=3.11"
+dependencies = ["jax>=0.4.30"]
+
+[project.optional-dependencies]
+pressure = ["spectral-fd>=0.2.0"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 88

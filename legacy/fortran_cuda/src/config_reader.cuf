@@ -1,0 +1,478 @@
+module config_reader
+    use precision
+    use mpi
+    implicit none
+    
+    private
+    public :: read_config, config_t, get_mpi_real_type
+    
+    ! Configuration type
+    type :: config_t
+        ! init
+        integer :: sim_flag
+        integer :: resub_flag
+        integer :: double_flag
+        
+        ! space
+        integer :: dom_flag
+        integer :: nx, ny, nz
+        real(fp) :: z_i, l_z, l_r
+        real(fp) :: lx, ly, lz
+        real(fp) :: bl_height
+        
+        ! time
+        integer :: time_flag
+        integer :: nsteps
+        real(fp) :: dt, dtr
+        
+        ! bc
+        real(fp) :: zo, u_fric
+        
+        ! sgs
+        integer :: model
+        real(fp) :: fgr, tfr
+        integer :: cs_count
+        
+        ! turbine
+        integer :: turb_flag
+        integer :: turb_nb
+        integer :: turb_count
+        real(fp) :: turb_r
+        real(fp) :: turb_z
+        real(fp), allocatable :: turb_w(:)
+        real(fp) :: tow_r, tow_c
+        real(fp) :: nac_r, nac_c
+        real(fp), allocatable :: yaw_angle(:)
+        character(len=256) :: turb_w_str, yaw_angle_str
+        
+        ! precursor
+        integer :: inflow_istart, inflow_iend, inflow_count
+        integer :: inflow_nx
+        
+        ! output
+        integer :: c_count, p_count
+        integer :: log_flag
+        integer :: ta_flag, ta_mask
+        integer :: ta_istart, ta_iend, ta_jstart, ta_jend, ta_kend, ta_tstart
+        integer :: ta_nx, ta_ny, ta_ns
+        integer :: ts_flag, ts_mask
+        integer :: ts_istart, ts_iend, ts_jstart, ts_jend, ts_kend, ts_tstart
+        integer :: ts_nx, ts_ny, ts_ns
+        
+        ! exec
+        integer :: job_np
+        
+        ! derived (computed from above)
+        integer :: nzb, nz2, nprocs
+        real(fp) :: dx, dy, dz
+        real(fp) :: delta, delta_grid
+        real(fp) :: idx, idy, idz
+        real(fp) :: inxny, iny
+        real(fp) :: pres_force
+        integer :: fcx, fcy
+        integer :: block_size, batch_size, inflow_size
+    end type config_t
+    
+contains
+
+    subroutine read_config(config, config_file, me, nall)
+        type(config_t), intent(out) :: config
+        character(len=*), intent(in) :: config_file
+        integer, intent(in) :: me, nall
+        integer :: iunit, ierr, io
+        character(len=256) :: line, key, value
+        integer :: pos, comment_pos
+        integer :: i
+        
+        ! Only rank 0 reads the config
+        if (me == 0) then
+            open(newunit=iunit, file=config_file, status='old', action='read', iostat=ierr)
+            if (ierr /= 0) then
+                write(*,*) 'ERROR: Cannot open config file: ', trim(config_file)
+                call mpi_abort(nall, 1, ierr)
+            end if
+            
+            ! Read config file line by line
+            do
+                read(iunit, '(A)', iostat=io) line
+                if (io /= 0) exit
+                
+                ! Remove comments
+                comment_pos = index(line, '#')
+                if (comment_pos > 0) then
+                    line = line(1:comment_pos-1)
+                end if
+                
+                ! Find key=value pairs
+                pos = index(line, '=')
+                if (pos > 0) then
+                    key = adjustl(line(1:pos-1))
+                    value = adjustl(line(pos+1:))
+                    
+                    ! Parse values based on key
+                    select case(trim(key))
+                        case('sim_flag')
+                            read(value,*) config%sim_flag
+                        case('resub_flag')
+                            read(value,*) config%resub_flag
+                        case('double_flag')
+                            read(value,*) config%double_flag
+                        case('dom_flag')
+                            read(value,*) config%dom_flag
+                        case('nx')
+                            read(value,*) config%nx
+                        case('ny')
+                            read(value,*) config%ny
+                        case('nz')
+                            read(value,*) config%nz
+                        case('z_i')
+                            read(value,*) config%z_i
+                        case('l_z')
+                            read(value,*) config%l_z
+                        case('l_r')
+                            read(value,*) config%l_r
+                        case('lx')
+                            read(value,*) config%lx
+                        case('ly')
+                            read(value,*) config%ly
+                        case('lz')
+                            read(value,*) config%lz
+                        case('bl_height')
+                            read(value,*) config%bl_height
+                        case('time_flag')
+                            read(value,*) config%time_flag
+                        case('nsteps')
+                            read(value,*) config%nsteps
+                        case('dt')
+                            read(value,*) config%dt
+                        case('dtr')
+                            read(value,*) config%dtr
+                        case('zo')
+                            read(value,*) config%zo
+                        case('u_fric')
+                            read(value,*) config%u_fric
+                        case('model')
+                            read(value,*) config%model
+                        case('fgr')
+                            read(value,*) config%fgr
+                        case('tfr')
+                            read(value,*) config%tfr
+                        case('cs_count')
+                            read(value,*) config%cs_count
+                        case('turb_flag')
+                            read(value,*) config%turb_flag
+                        case('turb_nb')
+                            read(value,*) config%turb_nb
+                        case('turb_count')
+                            read(value,*) config%turb_count
+                        case('turb_r')
+                            read(value,*) config%turb_r
+                        case('turb_z')
+                            read(value,*) config%turb_z
+                        case('turb_w')
+                            config%turb_w_str = trim(value)
+                        case('yaw_angle')
+                            config%yaw_angle_str = trim(value)
+                        case('tow_r')
+                            read(value,*) config%tow_r
+                        case('tow_c')
+                            read(value,*) config%tow_c
+                        case('nac_r')
+                            read(value,*) config%nac_r
+                        case('nac_c')
+                            read(value,*) config%nac_c
+                        case('inflow_istart')
+                            read(value,*) config%inflow_istart
+                        case('inflow_iend')
+                            read(value,*) config%inflow_iend
+                        case('inflow_count')
+                            read(value,*) config%inflow_count
+                        case('c_count')
+                            read(value,*) config%c_count
+                        case('p_count')
+                            read(value,*) config%p_count
+                        case('log_flag')
+                            read(value,*) config%log_flag
+                        case('ta_flag')
+                            read(value,*) config%ta_flag
+                        case('ta_mask')
+                            read(value,*) config%ta_mask
+                        case('ta_istart')
+                            read(value,*) config%ta_istart
+                        case('ta_iend')
+                            read(value,*) config%ta_iend
+                        case('ta_jstart')
+                            read(value,*) config%ta_jstart
+                        case('ta_jend')
+                            read(value,*) config%ta_jend
+                        case('ta_kend')
+                            read(value,*) config%ta_kend
+                        case('ta_tstart')
+                            read(value,*) config%ta_tstart
+                        case('ts_flag')
+                            read(value,*) config%ts_flag
+                        case('ts_mask')
+                            read(value,*) config%ts_mask
+                        case('ts_istart')
+                            read(value,*) config%ts_istart
+                        case('ts_iend')
+                            read(value,*) config%ts_iend
+                        case('ts_jstart')
+                            read(value,*) config%ts_jstart
+                        case('ts_jend')
+                            read(value,*) config%ts_jend
+                        case('ts_kend')
+                            read(value,*) config%ts_kend
+                        case('ts_tstart')
+                            read(value,*) config%ts_tstart
+                        case('job_np')
+                            read(value,*) config%job_np
+                    end select
+                end if
+            end do
+            
+            close(iunit)
+            
+            ! Allocate and parse turbine arrays
+            if (config%turb_nb > 0) then
+                allocate(config%turb_w(config%turb_nb))
+                allocate(config%yaw_angle(config%turb_nb))
+                
+                ! Parse turb_w (can be single value or array)
+                call parse_array(config%turb_w_str, config%turb_w, config%turb_nb)
+                
+                ! Parse yaw_angle (can be single value or array)
+                call parse_array(config%yaw_angle_str, config%yaw_angle, config%turb_nb)
+            end if
+            
+            ! Process derived values
+            call process_config(config)
+        end if
+        
+        ! Broadcast config to all ranks
+        call broadcast_config(config, me, nall)
+    end subroutine read_config
+    
+    subroutine process_config(config)
+        type(config_t), intent(inout) :: config
+        real(fp), parameter :: pi = 3.14159265358979_fp
+        real(fp), parameter :: u_scale = 1.0_fp
+        
+        ! Process space parameters
+        if (config%dom_flag == 0) then
+            ! native mode - already set
+        else if (config%dom_flag == 1) then
+            ! custom mode
+            config%z_i = config%lx / (2.0_fp * pi)
+            config%l_z = config%lz
+            config%l_r = nint(config%lx / config%ly)
+        end if
+        
+        ! Compute derived space parameters
+        config%lx = config%z_i * 2.0_fp * pi
+        config%ly = config%z_i * 2.0_fp * pi / real(config%l_r, fp)
+        config%lz = config%l_z
+        config%dx = config%lx / real(config%nx, fp)
+        config%dy = config%ly / real(config%ny, fp)
+        config%dz = config%lz / real(config%nz - 1, fp)
+        
+        ! Process time parameters
+        if (config%time_flag == 0) then
+            ! native mode - dt already set
+        else if (config%time_flag == 1) then
+            ! custom mode
+            config%dt = config%dtr / config%z_i
+        end if
+        
+        ! Compute derived parameters
+        config%delta = (config%fgr * config%dx * config%fgr * config%dy * config%dz)**(1.0_fp/3.0_fp)
+        config%delta_grid = (config%dx * config%dy * config%dz)**(1.0_fp/3.0_fp)
+        config%idx = 1.0_fp / config%dx
+        config%idy = 1.0_fp / config%dy
+        config%idz = 1.0_fp / config%dz
+        config%inxny = 1.0_fp / (real(config%nx, fp) * real(config%ny, fp))
+        config%iny = 1.0_fp / real(config%ny, fp)
+        config%pres_force = (config%u_fric / u_scale)**2 / (config%bl_height / config%z_i)
+        
+        ! Compute fcx, fcy
+        config%fcx = nint(real(config%nx, fp) / 2.0_fp / config%fgr)
+        config%fcy = nint(real(config%ny, fp) / 2.0_fp / config%fgr)
+        
+        ! Process output parameters
+        if (config%ta_mask == 0) then
+            config%ta_istart = 1
+            config%ta_iend = config%nx
+            config%ta_jstart = 1
+            config%ta_jend = config%ny
+            config%ta_kend = config%nz
+        end if
+        config%ta_nx = config%ta_iend - config%ta_istart + 1
+        config%ta_ny = config%ta_jend - config%ta_jstart + 1
+        config%ta_ns = (config%nsteps - config%ta_tstart + 1) / config%p_count
+        
+        if (config%ts_mask == 0) then
+            config%ts_istart = 1
+            config%ts_iend = config%nx
+            config%ts_jstart = 1
+            config%ts_jend = config%ny
+            config%ts_kend = config%nz
+        end if
+        config%ts_nx = config%ts_iend - config%ts_istart + 1
+        config%ts_ny = config%ts_jend - config%ts_jstart + 1
+        config%ts_ns = (config%nsteps - config%ts_tstart + 1) / (config%c_count * 10)
+        
+        ! Process precursor parameters
+        config%inflow_nx = config%inflow_iend - config%inflow_istart + 1
+        
+        ! Process exec parameters
+        config%nprocs = config%job_np
+        config%nzb = config%nz / config%job_np
+        config%nz2 = config%nzb + 2
+        
+        ! Compute inflow parameters
+        config%block_size = config%nsteps / config%inflow_count
+        config%batch_size = config%c_count / config%inflow_count
+        config%inflow_size = config%inflow_nx * config%ny * config%nz2
+    end subroutine process_config
+    
+    integer function get_mpi_real_type()
+        if (fp == singlePrecision) then
+            get_mpi_real_type = MPI_REAL
+        else
+            get_mpi_real_type = MPI_DOUBLE_PRECISION
+        end if
+    end function get_mpi_real_type
+    
+    subroutine broadcast_config(config, me, nall)
+        type(config_t), intent(inout) :: config
+        integer, intent(in) :: me, nall
+        integer :: ierr, i, mpi_real_type
+        
+        mpi_real_type = get_mpi_real_type()
+        
+        ! Broadcast all scalar values
+        call mpi_bcast(config%sim_flag, 1, MPI_INTEGER, 0, nall, ierr)
+        call mpi_bcast(config%resub_flag, 1, MPI_INTEGER, 0, nall, ierr)
+        call mpi_bcast(config%double_flag, 1, MPI_INTEGER, 0, nall, ierr)
+        call mpi_bcast(config%dom_flag, 1, MPI_INTEGER, 0, nall, ierr)
+        call mpi_bcast(config%nx, 1, MPI_INTEGER, 0, nall, ierr)
+        call mpi_bcast(config%ny, 1, MPI_INTEGER, 0, nall, ierr)
+        call mpi_bcast(config%nz, 1, MPI_INTEGER, 0, nall, ierr)
+        call mpi_bcast(config%z_i, 1, mpi_real_type, 0, nall, ierr)
+        call mpi_bcast(config%l_z, 1, mpi_real_type, 0, nall, ierr)
+        call mpi_bcast(config%l_r, 1, MPI_INTEGER, 0, nall, ierr)
+        call mpi_bcast(config%lx, 1, mpi_real_type, 0, nall, ierr)
+        call mpi_bcast(config%ly, 1, mpi_real_type, 0, nall, ierr)
+        call mpi_bcast(config%lz, 1, mpi_real_type, 0, nall, ierr)
+        call mpi_bcast(config%bl_height, 1, mpi_real_type, 0, nall, ierr)
+        call mpi_bcast(config%time_flag, 1, MPI_INTEGER, 0, nall, ierr)
+        call mpi_bcast(config%nsteps, 1, MPI_INTEGER, 0, nall, ierr)
+        call mpi_bcast(config%dt, 1, mpi_real_type, 0, nall, ierr)
+        call mpi_bcast(config%dtr, 1, mpi_real_type, 0, nall, ierr)
+        call mpi_bcast(config%zo, 1, mpi_real_type, 0, nall, ierr)
+        call mpi_bcast(config%u_fric, 1, mpi_real_type, 0, nall, ierr)
+        call mpi_bcast(config%model, 1, MPI_INTEGER, 0, nall, ierr)
+        call mpi_bcast(config%fgr, 1, mpi_real_type, 0, nall, ierr)
+        call mpi_bcast(config%tfr, 1, mpi_real_type, 0, nall, ierr)
+        call mpi_bcast(config%cs_count, 1, MPI_INTEGER, 0, nall, ierr)
+        call mpi_bcast(config%turb_flag, 1, MPI_INTEGER, 0, nall, ierr)
+        call mpi_bcast(config%turb_nb, 1, MPI_INTEGER, 0, nall, ierr)
+        call mpi_bcast(config%turb_count, 1, MPI_INTEGER, 0, nall, ierr)
+        call mpi_bcast(config%turb_r, 1, mpi_real_type, 0, nall, ierr)
+        call mpi_bcast(config%turb_z, 1, mpi_real_type, 0, nall, ierr)
+        call mpi_bcast(config%tow_r, 1, mpi_real_type, 0, nall, ierr)
+        call mpi_bcast(config%tow_c, 1, mpi_real_type, 0, nall, ierr)
+        call mpi_bcast(config%nac_r, 1, mpi_real_type, 0, nall, ierr)
+        call mpi_bcast(config%nac_c, 1, mpi_real_type, 0, nall, ierr)
+        call mpi_bcast(config%inflow_istart, 1, MPI_INTEGER, 0, nall, ierr)
+        call mpi_bcast(config%inflow_iend, 1, MPI_INTEGER, 0, nall, ierr)
+        call mpi_bcast(config%inflow_count, 1, MPI_INTEGER, 0, nall, ierr)
+        call mpi_bcast(config%inflow_nx, 1, MPI_INTEGER, 0, nall, ierr)
+        call mpi_bcast(config%c_count, 1, MPI_INTEGER, 0, nall, ierr)
+        call mpi_bcast(config%p_count, 1, MPI_INTEGER, 0, nall, ierr)
+        call mpi_bcast(config%log_flag, 1, MPI_INTEGER, 0, nall, ierr)
+        call mpi_bcast(config%ta_flag, 1, MPI_INTEGER, 0, nall, ierr)
+        call mpi_bcast(config%ta_mask, 1, MPI_INTEGER, 0, nall, ierr)
+        call mpi_bcast(config%ta_istart, 1, MPI_INTEGER, 0, nall, ierr)
+        call mpi_bcast(config%ta_iend, 1, MPI_INTEGER, 0, nall, ierr)
+        call mpi_bcast(config%ta_jstart, 1, MPI_INTEGER, 0, nall, ierr)
+        call mpi_bcast(config%ta_jend, 1, MPI_INTEGER, 0, nall, ierr)
+        call mpi_bcast(config%ta_kend, 1, MPI_INTEGER, 0, nall, ierr)
+        call mpi_bcast(config%ta_tstart, 1, MPI_INTEGER, 0, nall, ierr)
+        call mpi_bcast(config%ta_nx, 1, MPI_INTEGER, 0, nall, ierr)
+        call mpi_bcast(config%ta_ny, 1, MPI_INTEGER, 0, nall, ierr)
+        call mpi_bcast(config%ta_ns, 1, MPI_INTEGER, 0, nall, ierr)
+        call mpi_bcast(config%ts_flag, 1, MPI_INTEGER, 0, nall, ierr)
+        call mpi_bcast(config%ts_mask, 1, MPI_INTEGER, 0, nall, ierr)
+        call mpi_bcast(config%ts_istart, 1, MPI_INTEGER, 0, nall, ierr)
+        call mpi_bcast(config%ts_iend, 1, MPI_INTEGER, 0, nall, ierr)
+        call mpi_bcast(config%ts_jstart, 1, MPI_INTEGER, 0, nall, ierr)
+        call mpi_bcast(config%ts_jend, 1, MPI_INTEGER, 0, nall, ierr)
+        call mpi_bcast(config%ts_kend, 1, MPI_INTEGER, 0, nall, ierr)
+        call mpi_bcast(config%ts_tstart, 1, MPI_INTEGER, 0, nall, ierr)
+        call mpi_bcast(config%ts_nx, 1, MPI_INTEGER, 0, nall, ierr)
+        call mpi_bcast(config%ts_ny, 1, MPI_INTEGER, 0, nall, ierr)
+        call mpi_bcast(config%ts_ns, 1, MPI_INTEGER, 0, nall, ierr)
+        call mpi_bcast(config%job_np, 1, MPI_INTEGER, 0, nall, ierr)
+        call mpi_bcast(config%nzb, 1, MPI_INTEGER, 0, nall, ierr)
+        call mpi_bcast(config%nz2, 1, MPI_INTEGER, 0, nall, ierr)
+        call mpi_bcast(config%nprocs, 1, MPI_INTEGER, 0, nall, ierr)
+        call mpi_bcast(config%dx, 1, mpi_real_type, 0, nall, ierr)
+        call mpi_bcast(config%dy, 1, mpi_real_type, 0, nall, ierr)
+        call mpi_bcast(config%dz, 1, mpi_real_type, 0, nall, ierr)
+        call mpi_bcast(config%delta, 1, mpi_real_type, 0, nall, ierr)
+        call mpi_bcast(config%delta_grid, 1, mpi_real_type, 0, nall, ierr)
+        call mpi_bcast(config%idx, 1, mpi_real_type, 0, nall, ierr)
+        call mpi_bcast(config%idy, 1, mpi_real_type, 0, nall, ierr)
+        call mpi_bcast(config%idz, 1, mpi_real_type, 0, nall, ierr)
+        call mpi_bcast(config%inxny, 1, mpi_real_type, 0, nall, ierr)
+        call mpi_bcast(config%iny, 1, mpi_real_type, 0, nall, ierr)
+        call mpi_bcast(config%pres_force, 1, mpi_real_type, 0, nall, ierr)
+        call mpi_bcast(config%fcx, 1, MPI_INTEGER, 0, nall, ierr)
+        call mpi_bcast(config%fcy, 1, MPI_INTEGER, 0, nall, ierr)
+        call mpi_bcast(config%block_size, 1, MPI_INTEGER, 0, nall, ierr)
+        call mpi_bcast(config%batch_size, 1, MPI_INTEGER, 0, nall, ierr)
+        call mpi_bcast(config%inflow_size, 1, MPI_INTEGER, 0, nall, ierr)
+        
+        ! Allocate and broadcast arrays if needed
+        if (me /= 0) then
+            if (config%turb_nb > 0) then
+                allocate(config%turb_w(config%turb_nb))
+                allocate(config%yaw_angle(config%turb_nb))
+            end if
+        end if
+        
+        if (config%turb_nb > 0) then
+            call mpi_bcast(config%turb_w, config%turb_nb, mpi_real_type, 0, nall, ierr)
+            call mpi_bcast(config%yaw_angle, config%turb_nb, mpi_real_type, 0, nall, ierr)
+        end if
+    end subroutine broadcast_config
+    
+    subroutine parse_array(str, arr, n)
+        character(len=*), intent(in) :: str
+        real(fp), intent(out) :: arr(:)
+        integer, intent(in) :: n
+        integer :: i, pos1, pos2, count
+        real(fp) :: val
+        
+        ! Check if it's an array syntax: (/val1, val2, .../)
+        pos1 = index(str, '(/')
+        pos2 = index(str, '/)')
+        
+        if (pos1 > 0 .and. pos2 > 0) then
+            ! Parse array syntax
+            ! For now, just read the first value and repeat
+            ! TODO: Implement full array parsing
+            read(str(pos1+2:pos2-1),*) val
+            arr = val
+        else
+            ! Single value - repeat for all turbines
+            read(str,*) val
+            do i = 1, n
+                arr(i) = val
+            end do
+        end if
+    end subroutine parse_array
+
+end module config_reader
+

@@ -1,0 +1,167 @@
+module dimen
+    use precision
+    use mpi
+    implicit none
+    ! include 'mpif.h'
+
+    !-------------------------------------------------------------------------------
+    ! csts
+    !-------------------------------------------------------------------------------
+    real(fp), parameter :: vonk=0.4_fp
+    real(fp), parameter :: Pi=3.14159265358979_fp
+    real(fp), parameter :: rad2deg = 180._fp/pi
+    real(fp), parameter :: Sc=1.0,Co=0.1,nnn=1.
+    real(fp), parameter :: u_scale=1._fp
+    real(fp), parameter :: iRe=1.5d-5
+
+    !-------------------------------------------------------------------------------
+    ! init
+    !-------------------------------------------------------------------------------
+    integer, parameter :: sim_flag = $sim_flag
+    integer, parameter ::  resub_flag = $resub_flag
+    integer, parameter ::  double_flag = $double_flag
+
+    !-------------------------------------------------------------------------------
+    ! space
+    !-------------------------------------------------------------------------------
+    integer, parameter :: nx=$nx, ny=$ny, nz=$nz
+    real(fp), parameter :: z_i=${z_i}_fp, l_z=${l_z}_fp
+    integer, parameter :: l_r=$l_r
+    real(fp), parameter :: bl_height=${bl_height}_fp
+
+    !-------------------------------------------------------------------------------
+    ! time
+    !-------------------------------------------------------------------------------
+    integer, parameter :: nsteps=$nsteps
+    real(fp), parameter :: dt=$dt
+
+    !-----------------------------------------------------------------------------
+    ! physic
+    !-------------------------------------------------------------------------------
+    real(fp), parameter :: u_s=$u_fric
+
+    !-----------------------------------------------------------------------------
+    ! sgs
+    !-------------------------------------------------------------------------------
+    integer, parameter :: model=$model
+    integer, parameter :: cs_count=$cs_count
+    real(fp), parameter :: fgr=$fgr, tfr=$tfr
+    real(fp), parameter :: dtl = dt*cs_count
+
+    !-------------------------------------------------------------------------------
+    ! turbine
+    !-------------------------------------------------------------------------------
+    ! integer :: i_turb,i_phi,i_r
+    integer :: idx1,idx3,idx2
+    integer, parameter :: turb_flag = $turb_flag
+    integer, parameter :: n_turb = $turb_nb
+    integer, parameter :: turb_count=$turb_count
+    ! real(fp), parameter, dimension(n_turb) :: dyn_yaw_freq = $dyn_yaw_freq
+
+    integer, parameter :: blade_num = 3      ! Don't change it! (because of cuda kernel)
+    integer, parameter :: n_phi = 64    ! Don't change it! (because of cuda kernel)
+    integer, parameter :: n_r = 32      ! Don't change it! (because of cuda kernel)
+    integer, parameter :: n_r_s = 1
+    integer, parameter :: clockwise = -1
+    ! Smearing keneral
+    integer, parameter :: mask_x = 32
+    integer, parameter :: mask_y = 64
+    integer, parameter :: mask_z = 32
+
+    integer, parameter :: ker_d_x = 32
+    integer, parameter :: ker_d_y = 32
+    integer, parameter :: ker_d_z = 16
+    
+    !-------------------------------------------------------------------------------
+    ! spec
+    ! real(fp), parameter, dimension(n_turb) :: turb_x != ${turb_x}/z_i
+    ! real(fp), parameter, dimension(n_turb) :: turb_y != ${turb_y}/z_i
+    real(fp), parameter, dimension(n_turb) :: turb_r = ${turb_r}/z_i
+    real(fp), parameter, dimension(n_turb) :: turb_z = ${turb_z}/z_i
+    real(fp), parameter, dimension(n_turb) :: turb_w = ${turb_w}
+    real(fp), parameter, dimension(n_turb) :: nac_r = ${nac_r}/z_i
+    real(fp), parameter, dimension(n_turb) :: tow_r = ${tow_r}/z_i
+    real(fp), parameter, dimension(n_turb) :: nac_c = ${nac_c}
+    real(fp), parameter, dimension(n_turb) :: tow_c = ${tow_c}
+    ! real(fp), parameter, dimension(n_turb) :: yaw_angle != $yaw_angle/180._fp*pi
+
+    !-------------------------------------------------------------------------------
+    ! model
+    integer, parameter :: turbine_model = 1
+    integer, parameter :: nacelle_model = 1
+    integer, parameter :: tower_model = 1
+
+    !-------------------------------------------------------------------------------
+    ! output
+    !-------------------------------------------------------------------------------
+    integer, parameter :: c_count=$c_count,p_count=$p_count
+
+    !-------------------------------------------------------------------------------
+    ! log_output (time averaged)
+    integer, parameter :: log_flag = $log_flag
+
+    !-------------------------------------------------------------------------------
+    ! ta_output (time averaged)
+    integer, parameter :: ta_flag = $ta_flag
+    integer, parameter :: ta_istart = $ta_istart
+    integer, parameter :: ta_iend = $ta_iend
+    integer, parameter :: ta_jstart = $ta_jstart
+    integer, parameter :: ta_jend = $ta_jend
+    integer, parameter :: ta_kend = $ta_kend
+    integer, parameter :: ta_nx = $ta_nx
+    integer, parameter :: ta_ny = $ta_ny
+    integer, parameter :: ta_tstart = $ta_tstart
+    integer, parameter :: ta_ns = $ta_ns
+
+    !-------------------------------------------------------------------------------
+    !  ts output (time sampled)
+    integer, parameter :: ts_flag = $ts_flag
+    integer, parameter :: ts_istart = $ts_istart
+    integer, parameter :: ts_iend = $ts_iend
+    integer, parameter :: ts_jstart = $ts_jstart
+    integer, parameter :: ts_jend = $ts_jend
+    integer, parameter :: ts_kend = $ts_kend
+    integer, parameter :: ts_nx = $ts_nx
+    integer, parameter :: ts_ny = $ts_ny
+    integer, parameter :: ts_tstart = $ts_tstart
+    integer, parameter :: ts_ns = $ts_ns
+
+    !-------------------------------------------------------------------------------
+    ! inflow
+    !-------------------------------------------------------------------------------
+    integer, parameter :: inflow_istart = $inflow_istart
+    integer, parameter :: inflow_iend = $inflow_iend
+    integer, parameter :: inflow_nx = $inflow_nx
+    integer, parameter :: inflow_count=$inflow_count
+
+    !-------------------------------------------------------------------------------
+    ! exec
+    !-------------------------------------------------------------------------------
+    integer, parameter :: nzb=$nzb, nz2=$nz2, nprocs=$job_np
+    integer job_np, me, nall, ierr, status2(MPI_STATUS_SIZE)
+
+    !-------------------------------------------------------------------------------
+    ! derived
+    !-------------------------------------------------------------------------------
+    real(fp), parameter :: dx=2.0_fp*pi/nx, dy=2.0_fp*pi/ny/l_r, dz=(l_z/z_i)/(nz-1)
+    real(fp), parameter :: delta=(fgr*dx*fgr*dy*dz)**(1./3.)
+    real(fp), parameter :: delta_grid=(dx*dy*dz)**(1./3.)
+    real(fp), parameter :: idx=1.0/dx, idy=1.0/dy, idz=1.0/dz
+    real(fp), parameter :: inxny=1.0/(nx*ny), iny=1.0/ny
+    real(fp), parameter :: pres_force =(u_s/u_scale)**2/(bl_height/z_i)
+
+    ! Predefined box cutoff
+    integer, dimension(nx/2+1), parameter :: freqx = [(idx1, idx1=0,nx/2-1),0]
+    integer, dimension(ny), parameter :: freqy = [(idx2*l_r, idx2=0,ny/2-1),0,((idx2-ny)*l_r, idx2=ny/2+1,ny-1)]
+    integer, parameter :: fcx = nint(nx/2/fgr)
+    integer, parameter :: fcy = nint(ny/2/fgr)
+    integer, dimension(nx/2+1), parameter :: windx = [(1, idx1=0,fcx-1),(0,idx1=fcx,nx/2)]
+    integer, dimension(ny), parameter :: windy = [(1, idx2=0,fcy-1),(0, idx2=fcy,ny-fcy),(1,idx2=ny-fcy+1,ny-1)]
+
+    ! Inflow
+    integer, parameter :: block_size = nsteps/inflow_count
+    integer, parameter :: batch_size = c_count/inflow_count 
+    integer, parameter :: inflow_size = inflow_nx*ny*nz2
+
+    
+end module dimen

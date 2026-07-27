@@ -1,0 +1,68 @@
+# Neutral Ekman boundary-layer smoke/diagnostic case.
+# The forcing uses du/dt += f*(v - Vg), dv/dt += -f*(u - Ug), so a uniform
+# geostrophic wind is in geostrophic balance before wall stress acts.
+
+[grid]
+nx = 64
+ny = 64
+nz = 64
+lx = 4000.0
+ly = 4000.0
+lz = 1000.0
+z_i = 1000.0
+
+[time]
+scheme = "ab2"
+steps = 7200
+log_every = 200
+dt = 1.0
+
+[physics]
+u_fric = 0.0
+zo = 0.1
+vonk = 0.4
+molecular_viscosity = 0.0
+initial_condition = "neutral_ekman"
+momentum_wall_model = "abl"
+wall_stress_model = "dynamic_neutral"
+
+[forcing]
+coriolis_f = 1.0e-4
+geostrophic_u = 10.0
+geostrophic_v = 0.0
+
+[wall_filter]
+fgr = 1.5
+tfr = 2.0
+
+[sgs]
+model = "lasd"
+smag_cs = 0.16
+sgs_delta_scale = 1.0
+cs_count = 10
+
+[numerics]
+horizontal_dealias = true
+
+[thermo]
+enabled = false
+theta0 = 300.0
+g = 9.81
+theta_initial_gradient = 0.0
+surface_theta_flux = 0.0
+scalar_sgs_model = "fixed_prandtl"
+prandtl_t = 0.74
+
+[runtime]
+random_seed = 2
+initial_velocity_perturbation = 0.1
+initial_perturbation_height = 300.0
+
+[postprocess]
+dump_frames = true
+frame_every = 200
+frame_start_step = 6000
+frame_end_step = 7200
+frame_output_dir = "outputs/neutral_ekman_64_lasd_frames"
+frame_component = "u"
+frame_y_index = -1

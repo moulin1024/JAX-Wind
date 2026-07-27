@@ -1,0 +1,261 @@
+module structural
+    use precision
+    use dimen
+    use cudafor
+    implicit none
+
+    integer, parameter :: N_total = N_r
+    integer, parameter :: N_start = n_r_s
+    integer, parameter :: N = N_total - N_start + 1
+    integer, parameter :: T_warmup = 1e5
+    integer, parameter :: simulation_type = 1
+    real, parameter :: radius = 61.5
+    real, parameter :: pitch = 0.0/180*3.1415926
+    ! real, parameter :: turb_loc_host(i_turb,5) = 5.0/180*3.1415926
+    real, parameter :: damping = 0.0!
+    real, parameter :: r_start = 2.0
+    real, parameter :: total_time_warmup = 20
+    real, parameter :: delta_t = total_time_warmup/T_warmup
+    real :: delta_r = radius/(N-1)
+    integer,parameter :: T_split = int(dt*z_i/delta_t)
+    contains
+
+    subroutine aeroelastic(deformation_host,displacement_host,moment_host,velocity_host,CTF_host,turb_rpm_host,turb_loc_host,t)
+        implicit none
+        real(fp),dimension(blade_num,n_r,n_turb,2),intent(out) :: deformation_host,displacement_host,moment_host,velocity_host
+        real(fp),dimension(blade_num,n_r,n_turb,2),intent(in)  :: CTF_host
+        real(fp),dimension(n_turb,5) :: turb_loc_host
+        real(fp),dimension(n_turb),intent(in) :: turb_rpm_host
+        real(fp),dimension(N+2,2,2) :: EI
+        real(fp),dimension(N+2) :: r_location,rho
+        real(fp),dimension(N+2,2) :: V_new, V_old, S_new, S_old, M_new, M_old, q_new, q_old
+        real(fp),dimension(blade_num,N+2,n_turb,2) :: V, S, M, q
+        real(fp),dimension(blade_num,n_turb) :: phase_angle
+        integer,intent(in) :: t
+        real :: time = 0.0
+        real :: omega(n_turb),gamma,phi,tau
+        real,dimension(2) :: g, initial_phase
+        real,dimension(N+2,2) :: F_a
+        integer :: j,i_blade,i_turb,i
+        integer :: counter = 1
+
+        save V, S, M, q, EI, r_location,rho, phase_angle
+
+        if (t == 1) then
+            ! Initial location
+            ! initial_phase = (/0,-pi/)
+
+            print *,T_split
+
+            ! OPEN(112, FILE='output/root_moment.csv', FORM='formatted')
+
+            call bladeConfig(EI,r_location,rho)
+            do i_turb = 1,n_turb
+                phase_angle(1,i_turb) = 0.0!initial_phase(1)
+                phase_angle(2,i_turb) = - 2*pi/3!initial_phase(2)
+                phase_angle(3,i_turb) = - 4*pi/3!initial_phase(2)
+
+                gamma = turb_loc_host(i_turb,4)
+                tau = turb_loc_host(i_turb,5)
+                do i_blade = 1,blade_num
+                    do j = 1, T_warmup       
+                        phi = phase_angle(i_blade,i_turb)  
+
+                        g(1) =  9.8*Sin(tau)
+                        g(2) = -(9.8*Cos(phi)*Cos(tau)) 
+
+                        F_a(2:N+1,1) = CTF_host(i_blade,n_r_s:n_r,i_turb,1)*dx*dy*dz*z_i**2/delta_r
+                        F_a(2:N+1,2) = CTF_host(i_blade,n_r_s:n_r,i_turb,2)*dx*dy*dz*z_i**2/delta_r
+
+                        call bladeSolve(V_new,M_new,S_new,q_new,V_old,M_old,S_old,q_old,&
+                                            rho,EI,r_location,g,F_a,delta_t,delta_r,10.0,0.0,0)
+                        ! Upload data to new time-step:
+                        V_old = V_new 
+                        q_old = q_new
+                        M_old = M_new 
+                        S_old = S_new
+
+                        V(i_blade,:,i_turb,:) = V_old
+                        q(i_blade,:,i_turb,:) = q_old
+                        M(i_blade,:,i_turb,:) = M_old
+                        S(i_blade,:,i_turb,:) = S_old
+                    end do
+                end do
+            end do
+        end if
+
+        do i_turb = 1,n_turb
+            omega(i_turb) = turb_rpm_host(i_turb)/60*2*pi
+            do i_blade = 1,blade_num
+                V_old = V(i_blade,:,i_turb,:)
+                q_old = q(i_blade,:,i_turb,:)
+                M_old = M(i_blade,:,i_turb,:)
+                S_old = S(i_blade,:,i_turb,:)
+                
+                gamma = turb_loc_host(i_turb,4)
+                tau = turb_loc_host(i_turb,5)
+                do j = 1, T_split            
+                    phi = mod(phase_angle(i_blade,i_turb) + omega(i_turb)*delta_t*j,2*pi)  
+                    g(1) =  9.8*Sin(tau)
+                    g(2) = -(9.8*Cos(phi)*Cos(tau)) 
+
+
+                    F_a(2:N+1,1) = CTF_host(i_blade,n_r_s:n_r,i_turb,1)*dx*dy*dz*z_i**2/delta_r
+                    F_a(2:N+1,2) = CTF_host(i_blade,n_r_s:n_r,i_turb,2)*dx*dy*dz*z_i**2/delta_r
+
+                    call bladeSolve(V_new,M_new,S_new,q_new,V_old,M_old,S_old,q_old,&
+                                    rho,EI,r_location,g,F_a,delta_t,delta_r,damping,omega(i_turb),1)
+                    ! Upload data to new time-step:
+                    V_old = V_new 
+                    q_old = q_new
+                    M_old = M_new 
+                    S_old = S_new
+                end do
+                
+                V(i_blade,:,i_turb,:) = V_old
+                q(i_blade,:,i_turb,:) = q_old
+                M(i_blade,:,i_turb,:) = M_old
+                S(i_blade,:,i_turb,:) = S_old
+            end do
+        end do
+
+        ! print *,v(1,32,1,1),v(1,32,1,2)
+        !  stop
+        ! print *,q(1,32,1,1)
+        ! write(112, '(E11.4)') M(1,2,1,1)
+        
+        do i_turb = 1,n_turb
+            phase_angle(2,i_turb) = mod(phase_angle(1,i_turb) + turb_rpm_host(i_turb)/60*2*pi*dt*z_i*turb_count,2*pi) - 2*pi/3
+            phase_angle(3,i_turb) = mod(phase_angle(1,i_turb) + turb_rpm_host(i_turb)/60*2*pi*dt*z_i*turb_count,2*pi) - 4*pi/3
+            phase_angle(1,i_turb) = mod(phase_angle(1,i_turb) + turb_rpm_host(i_turb)/60*2*pi*dt*z_i*turb_count,2*pi) 
+        end do
+
+
+        do i_turb = 1,n_turb
+            do i = 2, N+1
+                do i_blade = 1,blade_num
+                    displacement_host(i_blade,i+N_start-2,i_turb,:) = q(i_blade,i,i_turb,:)
+                    moment_host(i_blade,i+N_start-2,i_turb,:) = M(i_blade,i,i_turb,:)
+                    velocity_host(i_blade,i+N_start-2,i_turb,:) = V(i_blade,i,i_turb,:)
+                    deformation_host(i_blade,i+N_start-2,i_turb,:) = atan((q(i_blade,i,i_turb,:) - q(i_blade,i-1,i_turb,:))/delta_r)
+                end do
+            end do
+        end do
+
+    end subroutine
+
+    subroutine bladeConfig(EI,r_location,rho)
+        implicit none
+        real,dimension(N+2,2,2),intent(out) :: EI
+        real,dimension(N+2),intent(out) :: r_location
+        real,dimension(N+2) :: rho,twist,EI_f,EI_e
+        integer :: i
+
+        OPEN(1, FILE='input/density.csv', FORM='formatted')
+        OPEN(2, FILE='input/twist_angle.csv', FORM='formatted')
+        OPEN(3, FILE='input/flapwise_stiffness.csv', FORM='formatted')
+        OPEN(4, FILE='input/edgewise_stiffness.csv', FORM='formatted')
+        OPEN(5, FILE='input/alm_node.csv', FORM='formatted')
+    
+        Do i = 1, N_total
+            if (i >= N_start) then
+                read(1, '(E11.4)') rho(i-N_start+2)
+                read(2, '(E11.4)') twist(i-N_start+2)
+                read(3, '(E11.4)') EI_f(i-N_start+2)
+                read(4, '(E11.4)') EI_e(i-N_start+2)
+                read(5, '(E11.4)') r_location(i-N_start+2)
+            else
+                read(1, '(E11.4)')
+                read(2, '(E11.4)')
+                read(3, '(E11.4)')
+                read(4, '(E11.4)')
+                read(5, '(E11.4)')
+            end if
+        End do
+
+        do i = 2, N+1
+            EI(i,1,1) = 1e10*(EI_e(i) - (EI_e(i)-EI_f(i))*(cos(twist(i)+pitch)**2))
+            EI(i,2,2) = 1e10*(EI_f(i) + (EI_e(i)-EI_f(i))*(cos(twist(i)+pitch)**2))
+            EI(i,1,2) = 1e10*(sin(2*(twist(i)+pitch))*((EI_e(i)-EI_f(i))/2))
+            EI(i,2,1) = 1e10*(sin(2*(twist(i)+pitch))*((EI_e(i)-EI_f(i))/2))
+        end do
+
+        close(1)
+        close(2)
+        close(3)
+        close(4)
+    
+    end subroutine bladeConfig
+
+    subroutine bladeSolve(V_new,M_new,S_new,q_new,V_old,M_old,S_old,q_old,&
+                          rho,EI,r_location,g,F_a,delta_t,delta_r,damping,omega,flag)
+        implicit none
+        real, dimension(N+2,2),intent(out) :: V_new, S_new, M_new, q_new
+        real, dimension(N+2,2),intent(in)  :: V_old, S_old, M_old, q_old
+        real,dimension(N+2,2,2),intent(in) :: EI
+        real,dimension(N+2),intent(in) :: rho,r_location
+        real,dimension(N+2,2) :: F_a
+        real,intent(in) :: g(2)
+        real,intent(in) :: delta_t,delta_r
+        real,intent(in) :: damping,omega
+        integer,intent(in) :: flag
+        real :: centrifugal_force
+
+        integer :: i, j
+
+        ! Calculation of the velocity new values from the old step time:
+        if (flag == 0) then
+            do i = 2, N+1
+                do j = 1,2
+                    ! damping_coefficent = damping*12*EI(i,j,j)/(rho(i)*radius**3)
+                    V_new(i,j) = (1-damping*delta_t)*V_old(i,j) + &
+                        delta_t*((-1.0/rho(i))*((M_old(i+1,j)-(2.0*M_old(i,j))+M_old(i-1,j))/delta_r**2)+&
+                        ((1.0/rho(i))*((S_old(i+1,j)-S_old(i,j))/delta_r))+(F_a(i,j)/rho(i))+g(j))
+                end do
+            end do
+        else 
+            do i = 2, N+1
+                do j = 1,2
+                    ! damping_coefficent = damping*12*EI(i,j,j)/(rho(i)*radius**3)
+                    V_new(i,j) = (1-0.00214*12*EI(i,j,j)/(rho(i)*radius**3)*delta_t)*V_old(i,j) + &
+                        delta_t*((-1.0/rho(i))*((M_old(i+1,j)-(2.0*M_old(i,j))+M_old(i-1,j))/delta_r**2)+&
+                        ((1.0/rho(i))*((S_old(i+1,j)-S_old(i,j))/delta_r))+(F_a(i,j)/rho(i))+g(j))
+                end do
+            end do
+        end if
+    
+        ! Boundary conditions at the ROOT position:
+        q_new(1:2,:) = 0.0
+        V_new(1:2,:) = 0.0
+
+        do i = 2, N+1
+            ! Calculation of the bending moment from the new velocity values:
+            M_new(i,1) = M_old(i,1) + delta_t * (EI(i,1,1)*((V_new(i+1,1)-(2.0*V_new(i,1))+V_new(i-1,1))/delta_r**2) + &
+                                                EI(i,1,2)*((V_new(i+1,2)-(2.0*V_new(i,2))+V_new(i-1,2))/delta_r**2))
+            M_new(i,2) = M_old(i,2) + delta_t * (EI(i,2,2)*((V_new(i+1,2)-(2.0*V_new(i,2))+V_new(i-1,2))/delta_r**2) + &
+                                                EI(i,2,1)*((V_new(i+1,1)-(2.0*V_new(i,1))+V_new(i-1,1))/delta_r**2))                                     
+            ! centrifugal force integration from i to N
+            centrifugal_force = 0
+            do j = i, N+1
+                centrifugal_force = centrifugal_force + rho(j)*omega**2*(r_location(j))*delta_r
+            end do
+
+            S_new(i,:) = S_old(i,:) + delta_t*(centrifugal_force*((V_new(i,:)-V_new(i-1,:))/delta_r))
+        end do
+
+        ! Boundary conditions at the TIPS position:
+        M_new(N+1:N+2,:) = 0.0
+        ! V_new(N+2,:) = V_new(N+1,:)
+        
+        do i = 1, N+2
+            ! Calculation of the deformation value from the velocity calculated:
+            q_new(i,:) = q_old(i,:) + delta_t*((V_old(i,:)))
+        end do
+
+        ! print *,q_old(N,1),q_old(N,2)
+        ! print *,V_old(N,1),V_old(N,2)
+        
+        
+    end subroutine bladeSolve
+
+end module structural

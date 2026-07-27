@@ -1,0 +1,45 @@
+module convection
+use dimen
+use precision
+contains
+attributes(global) subroutine convec(cx,cy,cz,u,v,w,dudy,dudz,dvdx,dvdz,dwdx,dwdy)
+     ! ------------------------------------------------------------------------
+     ! declaration
+     ! ------------------------------------------------------------------------
+      implicit none
+      real(fp),dimension(nx,ny,nz2),intent(in) :: u,v,w,dudy,dudz,dvdx,dvdz,dwdx,dwdy
+      real(fp),dimension(nx,ny,nz2),intent(out) :: cx,cy,cz
+      real(fp) arg1, arg2a, arg2b, arg2
+
+      integer i,j,k
+
+      ! ------------------------------------------------------------------------
+      ! main code
+      ! ------------------------------------------------------------------------
+
+      i = (blockIdx%x - 1) * blockDim%x + threadIdx%x
+      j = (blockIdx%y - 1) * blockDim%y + threadIdx%y
+      k = (blockIdx%z - 1) * blockDim%z + threadIdx%z
+
+      if (k>1 .and. k<nz2) then
+         ! ------------------------------------------------------------------------
+         ! cx
+            arg1  = v(i,j,k  ) * (dudy(i,j,k  ) - dvdx(i,j,k  ))
+            arg2a = w(i,j,k+1) * (dudz(i,j,k+1) - dwdx(i,j,k+1))
+            arg2b = w(i,j,k  ) * (dudz(i,j,k  ) - dwdx(i,j,k  ))
+            cx(i,j,k)=arg1+0.5_fp*(arg2a+arg2b)
+         ! ------------------------------------------------------------------------
+         ! cy
+            arg1  = u(i,j,k  ) * (dvdx(i,j,k  ) - dudy(i,j,k  ))
+            arg2a = w(i,j,k+1) * (dvdz(i,j,k+1) - dwdy(i,j,k+1))
+            arg2b = w(i,j,k  ) * (dvdz(i,j,k  ) - dwdy(i,j,k  ))
+            cy(i,j,k)=arg1+0.5_fp*(arg2a+arg2b)
+         ! ------------------------------------------------------------------------
+         ! cz
+            arg1 = (0.5_fp*(u(i,j,k) + u(i,j,k-1))) * (dwdx(i,j,k)-dudz(i,j,k))
+            arg2 = (0.5_fp*(v(i,j,k) + v(i,j,k-1))) * (dwdy(i,j,k)-dvdz(i,j,k))
+            cz(i,j,k) = arg1+arg2
+      end if
+
+end subroutine convec
+end module convection

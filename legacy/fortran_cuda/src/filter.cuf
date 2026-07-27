@@ -1,0 +1,219 @@
+module filter
+    use iso_c_binding
+    use precision
+    use dimen
+    contains
+    subroutine ddxy_filter(f,dfdx,dfdy,plan)
+        !---------------------------------------------------------------------------
+        ! declaration
+        !---------------------------------------------------------------------------
+        use cufft_m 
+        use cudafor
+        implicit none 
+        ! Input: velocity field
+        real(fp), dimension(nx,ny,nz2),intent(inout),device :: f,dfdx, dfdy
+        type(c_ptr),intent(in) :: plan(2)
+        complex(fp), dimension(:,:,:),allocatable,device :: f_hat,dfdx_hat,dfdy_hat
+        ! fft plan
+        integer :: istat,k,t,stat_flag=1
+        ! Cuda variable
+        type(dim3) :: grid, tBlock
+        grid= dim3(int((nx/2+1)/32)+1,ny,nzb)
+        tBlock= dim3(32,1,1)
+
+        save f_hat,dfdx_hat,dfdy_hat,stat_flag
+        !---------------------------------------------------------------------------
+        ! main code
+        !---------------------------------------------------------------------------
+    
+        !---------------------------------------------------------------------------
+        ! init
+        if (stat_flag /= 0 ) then
+            allocate(f_hat(nx/2+1,ny,nzb),STAT=stat_flag)
+            allocate(dfdx_hat(nx/2+1,ny,nzb),STAT=stat_flag)
+            allocate(dfdy_hat(nx/2+1,ny,nzb),STAT=stat_flag)
+        endif
+        
+        !---------------------------------------------------------------------------
+        ! Forward fft
+        call  cufftExec(plan(1),f(:,:,2:nzb+1),f_hat)
+        
+        !---------------------------------------------------------------------------
+        ! ! Apply sharp spectral filter
+        call ddxy_filter_kernel<<<grid, tBlock>>>(f_hat,dfdx_hat,dfdy_hat)
+        ! !---------------------------------------------------------------------------
+        ! ! Backward fft
+        call  cufftExec(plan(2),f_hat,f(:,:,2:nzb+1))
+        call  cufftExec(plan(2),dfdx_hat,dfdx(:,:,2:nzb+1)) 
+        call  cufftExec(plan(2),dfdy_hat,dfdy(:,:,2:nzb+1)) 
+        
+    end subroutine ddxy_filter
+
+    attributes(global) subroutine ddxy_filter_kernel(f_hat,dfdx_hat,dfdy_hat)
+        implicit none
+        complex(fp), dimension(nx/2+1,ny,nzb),intent(inout) :: f_hat
+        complex(fp), dimension(nx/2+1,ny,nzb),intent(inout) :: dfdx_hat,dfdy_hat
+        integer :: i,j,k,ii,jj
+        i = (blockIdx%x - 1) * blockDim%x + threadIdx%x
+        j = (blockIdx%y - 1) * blockDim%y + threadIdx%y
+        k = (blockIdx%z - 1) * blockDim%z + threadIdx%z 
+
+        if (i <= nx/2+1) then
+            !---------------------------------------------------------------------------
+            ! Scale back the fft and apply box spectral cut-off
+            f_hat(i,j,k) = f_hat(i,j,k)*inxny*windx(i)*windy(j)
+            !---------------------------------------------------------------------------
+            ! Formulate derivatives in the spectral space
+            ! double2
+            dfdx_hat(i,j,k) = dcmplx(aimag(f_hat(i,j,k))*(-1.0),dble(f_hat(i,j,k)))*freqx(i)
+            dfdy_hat(i,j,k) = dcmplx(aimag(f_hat(i,j,k))*(-1.0),dble(f_hat(i,j,k)))*freqy(j)
+        end if
+
+    end subroutine ddxy_filter_kernel
+
+    subroutine filter_4d_vector(f_hat,filterRadius,plan)
+        use, intrinsic :: iso_c_binding 
+        use cufft_m 
+        use cudafor
+        implicit none
+        real(fp), dimension(nx,ny,nz2,3),intent(inout),device :: f_hat
+        real(fp),intent(in),value :: filterRadius
+        type(c_ptr),intent(in) :: plan(2)
+
+        complex(fp),dimension(:,:,:,:),allocatable,device :: f_hat_ft
+        type(dim3) :: grid, tBlock
+        grid=dim3(int((nx/2+1)/32)+1,ny,nz2)
+        tBlock= dim3(32,1,1)
+        integer :: stat_flag = 1
+
+        save f_hat_ft,stat_flag
+
+        if(stat_flag /= 0) allocate(f_hat_ft(nx/2+1,ny,nz2,3),STAT=stat_flag)
+
+        call cufftExec(plan(1),f_hat,f_hat_ft)
+        call filter_kernel<<<grid,tBlock>>>(f_hat_ft,filterRadius)
+        call cufftExec(plan(2),f_hat_ft,f_hat)
+    end subroutine filter_4d_vector
+
+    subroutine filter_4d_tensor(f_hat,filterRadius,plan)
+        use, intrinsic :: iso_c_binding 
+        use cufft_m 
+        use cudafor
+        implicit none
+        real(fp), dimension(nx,ny,nz2,6),intent(inout),device :: f_hat
+        real(fp),intent(in),value :: filterRadius
+        type(c_ptr),intent(in) :: plan(2)
+
+        complex(fp),dimension(:,:,:,:),allocatable,device :: f_hat_ft
+        type(dim3) :: grid, tBlock
+        grid=dim3(int((nx/2+1)/32)+1,ny,nz2)
+        tBlock= dim3(32,1,1)
+        integer :: stat_flag = 1
+        
+        save f_hat_ft,stat_flag
+
+        if(stat_flag /= 0) allocate(f_hat_ft(nx/2+1,ny,nz2,6),STAT=stat_flag)
+
+        call cufftExec(plan(1),f_hat,f_hat_ft)
+        call filter_kernel<<<grid,tBlock>>>(f_hat_ft,filterRadius)
+        call cufftExec(plan(2),f_hat_ft,f_hat)
+    end subroutine filter_4d_tensor
+
+    attributes(global) subroutine filter_kernel(f_hat_ft,filterRadius)
+        implicit none
+        complex(fp), dimension(:,:,:,:),intent(inout) :: f_hat_ft
+        real(fp),intent(in),value :: filterRadius
+        integer :: i,j,k,ii,jj
+        i = (blockIdx%x - 1) * blockDim%x + threadIdx%x
+        j = (blockIdx%y - 1) * blockDim%y + threadIdx%y
+        k = (blockIdx%z - 1) * blockDim%z + threadIdx%z
+        
+        if (i<=nx/2+1) then
+            !---------------------------------------------------------------------------
+            ! Scale back the fft
+            f_hat_ft(i,j,k,:) = f_hat_ft(i,j,k,:)*inxny
+            !---------------------------------------------------------------------------
+            ! Shift wave number
+            ii = i - 1
+            jj = j - 1
+            if(jj >= nint(ny/2.0)) jj = jj-ny
+            jj = jj*l_r
+            !---------------------------------------------------------------------------
+            ! Apply sharp spectral cut-off
+            if (ii >= nint(nx/(2.0*filterRadius)) .or. abs(jj) >= nint(l_r*ny/(2.0*filterRadius))) then
+                f_hat_ft(i,j,k,:)=dcmplx(0._fp)
+            end if
+        end if
+    end subroutine filter_kernel
+
+    subroutine filter_2dsl(f_filtered,f,t,plan_2d)
+
+        !---------------------------------------------------------------------------
+        ! declaration
+        !---------------------------------------------------------------------------
+        use cudafor
+        use cufft_m
+        implicit none
+    
+        integer :: i,j,k,ii,jj,t,flag,iret,istat
+        type(c_ptr) :: plan_2d(2)
+    
+        real(fp),dimension(nx,ny),intent(in),device :: f
+        real(fp),dimension(nx,ny),intent(out),device :: f_filtered
+        complex(fp), dimension(:,:),allocatable,device :: f_hat
+        
+        type(dim3) :: grid, tBlock
+        grid= dim3(int((nx/2+1)/32)+1,ny,1)
+        tBlock= dim3(32,1,1)
+        
+        save f_hat
+    
+        !---------------------------------------------------------------------------
+        ! main code
+        !---------------------------------------------------------------------------
+    
+        !---------------------------------------------------------------------------
+        ! init
+
+        if (t.eq.1) then
+            allocate(f_hat(nx/2+1,ny))
+        end if
+        !---------------------------------------------------------------------------
+        ! compute
+        ! forward fft --> f
+        call  cufftExec(plan_2d(1),f,f_hat)
+        ! Apply sharp spectral cutoff. Note: square cutoff
+        call filter_kernel_2d<<<grid, tBlock>>>(f_hat)
+        ! backward fft --> f
+        call cufftExec(plan_2d(2),f_hat,f_filtered)
+        
+    end subroutine filter_2dsl
+
+    attributes(global) subroutine filter_kernel_2d(f_hat)
+        ! 2d Filter at the wall
+        implicit none
+        complex(fp), dimension(nx/2+1,ny),intent(inout) :: f_hat
+        integer :: i,j,ii,jj
+        i = (blockIdx%x - 1) * blockDim%x + threadIdx%x;
+        j = (blockIdx%y - 1) * blockDim%y + threadIdx%y;
+        ! Scale back the fft
+        if (i<=nx/2+1) then
+            f_hat(i,j) = f_hat(i,j)*inxny
+            ! ! Shift wave number
+            ii = i - 1
+            jj = j - 1
+            if(jj.gt.int(nx/2)) jj=jj-ny
+            jj=jj*l_r
+            if (ii >= floor(nx/(2*fgr*tfr)))then
+                f_hat(i,j)= dcmplx(0.0_fp)
+            ! filter y
+            elseif(abs(jj) >= floor(l_r*ny/(2*fgr*tfr)))then
+                f_hat(i,j)= dcmplx(0.0_fp)
+            end if
+        end if
+    end subroutine filter_kernel_2d
+
+    
+
+
+end module filter
