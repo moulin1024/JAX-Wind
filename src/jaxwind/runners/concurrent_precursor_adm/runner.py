@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 from pathlib import Path
 import time
 from typing import Any
+
+import numpy as np
 
 from .config import CaseConfig
 from ..pressure_driven_warmup.runner import _configure_source_paths
@@ -24,6 +27,54 @@ def _directional_cfl(state, *, dt: float, grid, jnp) -> tuple[float, float, floa
         float(dt * jnp.max(jnp.abs(velocity.y.payload)) / grid.dy),
         float(dt * jnp.max(jnp.abs(velocity.z.owned.payload)) / grid.dz),
     )
+
+
+def _save_main_velocity_sample(
+    path: Path,
+    state,
+    *,
+    paired_step: int,
+    dt_seconds: float,
+    velocity_scale: float,
+    shape: tuple[int, int, int],
+    domain_metadata: dict[str, float | int],
+    jax,
+) -> None:
+    """Atomically save one global turbine-domain velocity field in SI units."""
+
+    accepted_step = int(state.clock.step)
+    velocity = state.fields.velocity
+
+    def physical_array(payload) -> np.ndarray:
+        addressable = np.asarray(jax.device_get(payload), dtype=np.float32)
+        return (addressable * np.float32(velocity_scale)).reshape(shape)
+
+    metadata = {
+        "schema": "jaxwind.concurrent-adm.main-velocity.v1",
+        "domain": "main",
+        "representation": "global-z-y-x",
+        "units": "m/s",
+        "field_locations": {
+            "u_m_s": "cell",
+            "v_m_s": "cell",
+            "w_upper_m_s": "upper-z-face",
+        },
+        "paired_step": paired_step,
+        "accepted_step": accepted_step,
+        "wake_time_seconds": paired_step * dt_seconds,
+        "physical_time_seconds": accepted_step * dt_seconds,
+        "grid": domain_metadata,
+    }
+    temporary = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+    with temporary.open("wb") as stream:
+        np.savez(
+            stream,
+            metadata=np.asarray(json.dumps(metadata)),
+            u_m_s=physical_array(velocity.x.payload),
+            v_m_s=physical_array(velocity.y.payload),
+            w_upper_m_s=physical_array(velocity.z.owned.payload),
+        )
+    os.replace(temporary, path)
 
 
 def run_case(
@@ -70,6 +121,7 @@ def run_case(
         BoussinesqModel,
         BoussinesqVectorField,
         ConcurrentPrecursorFringe,
+        ConcurrentPrecursorLasdAcceptedStepEvent,
         ConservativeAdvection,
         ConservativeScalarAdvection,
         DryFlowModel,
@@ -100,6 +152,8 @@ def run_case(
     output_dir.mkdir(parents=True, exist_ok=True)
     precursor_latest = output_dir / "precursor_checkpoint_latest.npz"
     main_latest = output_dir / "main_checkpoint_latest.npz"
+    field_sample_interval = case.output.field_sample_every_steps
+    fields_dir = output_dir / "fields"
     if (
         restart is None
         and (precursor_latest.exists() or main_latest.exists())
@@ -109,9 +163,22 @@ def run_case(
             f"{output_dir} already contains paired checkpoints; "
             "use --restart or --overwrite"
         )
+    if (
+        restart is None
+        and field_sample_interval is not None
+        and fields_dir.is_dir()
+        and next(fields_dir.glob("main_velocity_*.npz"), None) is not None
+        and not overwrite
+    ):
+        raise FileExistsError(
+            f"{fields_dir} already contains field samples; "
+            "use --restart or --overwrite"
+        )
     if not case.warmup.checkpoint.is_file():
         raise FileNotFoundError(case.warmup.checkpoint)
-    (output_dir / "resolved_config.json").write_text(case.resolved_json())
+    (output_dir / "resolved_config.toml").write_text(case.resolved_toml())
+    if field_sample_interval is not None:
+        fields_dir.mkdir(parents=True, exist_ok=True)
 
     base = case.base
     physical_grid = UniformGrid(
@@ -187,6 +254,12 @@ def run_case(
         WindTunnelModel(NoActuatorDisk(), NoFringe()),
     )
     turbine = case.turbine
+    concurrent_fringe = ConcurrentPrecursorFringe(
+        scales.to_execution_length(case.fringe.start_x_m),
+        scales.to_execution_time(case.fringe.relaxation_time_seconds),
+        scales.to_execution_length(case.fringe.rise_width_m),
+        scales.to_execution_length(case.fringe.fall_width_m),
+    )
     main_vector_field = WindTunnelBoussinesqVectorField(
         algebra,
         base_vector_field,
@@ -202,12 +275,7 @@ def run_case(
                 yaw_degrees=0.0,
                 filtered_velocity_correction=True,
             ),
-            ConcurrentPrecursorFringe(
-                scales.to_execution_length(case.fringe.start_x_m),
-                scales.to_execution_time(
-                    case.fringe.relaxation_time_seconds
-                ),
-            ),
+            concurrent_fringe,
         ),
     )
     integrator_config = AB2Config(
@@ -267,10 +335,11 @@ def run_case(
         boussinesq_model,
         integrator_config.dt,
     )
-    main_closure_event = LasdAcceptedStepEvent(
+    main_closure_event = ConcurrentPrecursorLasdAcceptedStepEvent(
         algebra,
         boussinesq_model,
         integrator_config.dt,
+        concurrent_fringe,
     )
 
     execution = case.concurrent.launch
@@ -303,9 +372,14 @@ def run_case(
     writer.writeheader()
 
     latest: dict[str, float] = {}
+    field_samples_written = 0
     started = time.perf_counter()
     try:
         for paired_step in range(1, steps_to_run + 1):
+            should_log = (
+                paired_step % case.output.log_every_steps == 0
+                or paired_step == steps_to_run
+            )
             result = step_concurrent_boussinesq_precursor(
                 paired,
                 config=integrator_config,
@@ -318,12 +392,43 @@ def run_case(
                 precursor_closure_event=precursor_closure_event,
                 main_closure_event=main_closure_event,
                 launch_pair=launch_pair,
+                compute_projection_residual=should_log,
             )
             paired = result.state
-            should_log = (
-                paired_step % case.output.log_every_steps == 0
-                or paired_step == steps_to_run
-            )
+            if (
+                field_sample_interval is not None
+                and paired_step % field_sample_interval == 0
+            ):
+                sample_path = (
+                    fields_dir / f"main_velocity_{paired_step:06d}.npz"
+                )
+                _save_main_velocity_sample(
+                    sample_path,
+                    paired.main,
+                    paired_step=paired_step,
+                    dt_seconds=base.time.dt_seconds,
+                    velocity_scale=scales.velocity,
+                    shape=(
+                        base.domain.nz,
+                        base.domain.ny,
+                        base.domain.nx,
+                    ),
+                    domain_metadata={
+                        "nx": base.domain.nx,
+                        "ny": base.domain.ny,
+                        "nz": base.domain.nz,
+                        "lx_m": base.domain.lx_m,
+                        "ly_m": base.domain.ly_m,
+                        "lz_m": base.domain.lz_m,
+                    },
+                    jax=jax,
+                )
+                field_samples_written += 1
+                print(
+                    f"field_sample={sample_path} "
+                    f"paired_step={paired_step}/{case.concurrent.steps}",
+                    flush=True,
+                )
             if should_log:
                 _block_pair(paired)
                 precursor_cfl_components = _directional_cfl(
@@ -435,6 +540,8 @@ def run_case(
             "steps_run": steps_to_run,
             "final_step": paired.main.clock.step,
             "runtime_seconds": runtime_seconds,
+            "field_samples_written": field_samples_written,
+            "lasd_closure_fringe_enabled": True,
             "actuator_disk_enabled": main_diagnostic.actuator_disk_enabled,
             "concurrent_fringe_enabled": main_diagnostic.concurrent_fringe_enabled,
             **latest,

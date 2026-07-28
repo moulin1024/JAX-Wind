@@ -99,6 +99,7 @@ from jaxwind.physics import (  # noqa: E402
     WindTunnelModel,
 )
 from jaxwind.pressure import build_spectral_fd_pressure_adapter  # noqa: E402
+from jaxwind.runners._toml import dumps as toml_dumps  # noqa: E402
 
 
 HERE = Path(__file__).resolve().parent
@@ -1431,8 +1432,8 @@ def run(args: argparse.Namespace) -> dict:
     (args.output_dir / "summary.json").write_text(
         json.dumps(summary, indent=2) + "\n"
     )
-    (args.output_dir / "configuration.json").write_text(
-        json.dumps(
+    (args.output_dir / "resolved_config.toml").write_text(
+        toml_dumps(
             {
                 **vars(args),
                 "output_dir": str(args.output_dir),
@@ -1447,11 +1448,8 @@ def run(args: argparse.Namespace) -> dict:
                 "fringe_relaxation_time_s": FRINGE_RELAXATION_TIME,
                 "side_by_side_resident": True,
                 "precursor_sample_time": "t_n",
-            },
-            indent=2,
-            sort_keys=True,
+            }
         )
-        + "\n"
     )
     print(f"results: {args.output_dir}", flush=True)
     return summary

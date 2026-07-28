@@ -78,12 +78,33 @@ class ConcurrentPrecursorFringe:
 
     start_x: float
     relaxation_time: float
+    rise_width: float | None = None
+    fall_width: float | None = None
 
     def __post_init__(self) -> None:
         if not math.isfinite(self.start_x) or self.start_x < 0.0:
             raise ValueError("fringe start must be finite and nonnegative")
         if not math.isfinite(self.relaxation_time) or self.relaxation_time <= 0.0:
             raise ValueError("fringe relaxation time must be finite and positive")
+        widths = (self.rise_width, self.fall_width)
+        if (widths[0] is None) != (widths[1] is None):
+            raise ValueError("fringe rise and fall widths must be specified together")
+        if widths[0] is not None and (
+            not all(math.isfinite(value) for value in widths)
+            or min(widths) <= 0.0
+        ):
+            raise ValueError("fringe rise and fall widths must be finite and positive")
+
+    def resolved_widths(self, end_x: float) -> tuple[float, float]:
+        available = end_x - self.start_x
+        if not math.isfinite(end_x) or available <= 0.0:
+            raise ValueError("fringe start must lie before the periodic seam")
+        if self.rise_width is None:
+            return 0.5 * available, 0.5 * available
+        assert self.fall_width is not None
+        if self.rise_width + self.fall_width > available:
+            raise ValueError("fringe rise and fall widths exceed the fringe region")
+        return self.rise_width, self.fall_width
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,6 +128,53 @@ class ConcurrentPrecursorEnvironment:
     """Same-layout precursor velocity sampled at the main evaluation time."""
 
     velocity: Any
+    closure: Any | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ConcurrentPrecursorLasdEventDiagnostic:
+    """LASD update plus confirmation that precursor memory was imposed."""
+
+    lasd: Any
+    closure_relaxed: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class ConcurrentPrecursorLasdAcceptedStepEvent:
+    """Relax main LASD memory at a synchronized accepted-step boundary."""
+
+    algebra: Any
+    model: Any
+    dt: float
+    fringe: ConcurrentPrecursorFringe
+
+    def __post_init__(self) -> None:
+        if not math.isfinite(self.dt) or self.dt <= 0.0:
+            raise ValueError("LASD event dt must be finite and positive")
+        if not isinstance(self.fringe, ConcurrentPrecursorFringe):
+            raise TypeError("concurrent LASD event requires a precursor fringe")
+
+    def __call__(self, fields: Any, clock: Any, environment: Any) -> tuple[Any, Any]:
+        if (
+            not isinstance(environment, ConcurrentPrecursorEnvironment)
+            or environment.closure is None
+        ):
+            raise TypeError(
+                "concurrent LASD event requires precursor closure memory"
+            )
+        relaxed = self.algebra.relax_lasd_closure(
+            fields,
+            environment.closure,
+            self.fringe,
+            self.dt,
+        )
+        prepared, diagnostic = self.algebra.prepare_lasd_closure(
+            relaxed,
+            self.model,
+            clock,
+            self.dt,
+        )
+        return prepared, ConcurrentPrecursorLasdEventDiagnostic(diagnostic)
 
 
 @dataclass(frozen=True, slots=True)

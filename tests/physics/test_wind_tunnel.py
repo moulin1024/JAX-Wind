@@ -29,6 +29,7 @@ from jaxwind.domain import (  # noqa: E402
     ZFace,
 )
 from jaxwind.interpreters.jax_reference import JaxReferenceProjection  # noqa: E402
+from jaxwind.interpreters.jax_fringe import plateau_fringe_mask  # noqa: E402
 from jaxwind.interpreters.jax_zslab import (  # noqa: E402
     ZFaceFieldContext,
     build_zslab_interpreter,
@@ -145,6 +146,53 @@ class WindTunnelForcingTests(unittest.TestCase):
             jnp.max(jnp.abs(reference.z.payload[1:] - production.z.owned.payload[0])),
         )
         self.assertLess(max(float(value) for value in errors), 2.0e-12)
+
+    def test_configured_fringe_has_a_unit_plateau_and_smooth_seam(self) -> None:
+        x = jnp.asarray(
+            [5.9, 6.0, 6.25, 6.5, 7.0, 7.5, 7.75, 8.0],
+            dtype=jnp.float64,
+        )
+        mask = plateau_fringe_mask(
+            x,
+            start_x=6.0,
+            end_x=8.0,
+            rise_width=0.5,
+            fall_width=0.5,
+        )
+
+        self.assertEqual(float(mask[0]), 0.0)
+        self.assertEqual(float(mask[1]), 0.0)
+        self.assertAlmostEqual(float(mask[2]), 0.5)
+        self.assertTrue(jnp.all(mask[3:6] == 1.0))
+        self.assertAlmostEqual(float(mask[6]), 0.5)
+        self.assertEqual(float(mask[7]), 0.0)
+
+    def test_fringe_tendency_relaxes_toward_precursor_on_the_plateau(self) -> None:
+        velocity = self.reference_velocity(self.u, self.v, self.w)
+        target = self.reference_velocity(
+            self.target_u,
+            self.target_v,
+            self.target_w,
+        )
+        tendency = JaxReferenceProjection().wind_tunnel_tendency(
+            velocity,
+            WindTunnelModel(
+                fringe=ConcurrentPrecursorFringe(
+                    6.0,
+                    0.5,
+                    rise_width=0.5,
+                    fall_width=0.5,
+                )
+            ),
+            ConcurrentPrecursorEnvironment(target),
+        )
+
+        expected_u = (self.target_u - self.u) / 0.5
+        self.assertEqual(float(jnp.max(jnp.abs(tendency.x.payload[..., :6]))), 0.0)
+        self.assertLess(
+            float(jnp.max(jnp.abs(tendency.x.payload[..., 6:] - expected_u[..., 6:]))),
+            2.0e-12,
+        )
 
     def test_zero_yaw_disk_removes_streamwise_momentum(self) -> None:
         velocity = self.reference_velocity(

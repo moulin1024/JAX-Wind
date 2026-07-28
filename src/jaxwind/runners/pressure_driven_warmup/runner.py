@@ -386,7 +386,7 @@ def run_case(
         )
     if restart is not None and not restart.exists():
         raise FileNotFoundError(restart)
-    (output_dir / "resolved_config.json").write_text(case.resolved_json())
+    (output_dir / "resolved_config.toml").write_text(case.resolved_toml())
 
     physical_grid = UniformGrid(
         case.domain.nx,
@@ -534,6 +534,11 @@ def run_case(
     latest_diagnostic: dict[str, float] = {}
     try:
         for local_step in range(1, steps_to_run + 1):
+            next_accepted_step = state.clock.step + 1
+            should_log = (
+                next_accepted_step % case.output.log_every_steps == 0
+                or local_step == steps_to_run
+            )
             result = step_boussinesq(
                 state,
                 config=integrator_config,
@@ -543,6 +548,7 @@ def run_case(
                 algebra=algebra,
                 pressure_solver=pressure_solver,
                 closure_event=closure_event,
+                compute_projection_residual=should_log,
             )
             state = result.state
             accepted_step = state.clock.step
@@ -561,10 +567,6 @@ def run_case(
                     np.asarray(jax.device_get(w), dtype=np.float64),
                 )
 
-            should_log = (
-                accepted_step % case.output.log_every_steps == 0
-                or local_step == steps_to_run
-            )
             if should_log:
                 latest_diagnostic = _diagnostics(
                     state,

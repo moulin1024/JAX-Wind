@@ -15,6 +15,7 @@ from jaxwind.interpreters.jax_actuator_disk import (
     filtered_disk_velocity_correction,
     gaussian_convolved_annulus,
 )
+from jaxwind.interpreters.jax_fringe import plateau_fringe_mask
 
 from jaxwind.domain import (
     Accepted,
@@ -200,6 +201,7 @@ class JaxZSlabInterpreter:
     _dry_sgs: Callable
     _dry_sgs_vertical_flux: Callable
     _lasd_accumulate: Callable
+    _lasd_accumulate_velocity: Callable
     _lasd_update: Callable
     _lasd_diagnostics: Callable
     _scalar_context: Callable
@@ -496,6 +498,80 @@ class JaxZSlabInterpreter:
         )
         return replace(fields, closure=closure)
 
+    def relax_lasd_closure(
+        self,
+        fields: BoussinesqFields,
+        target: LasdClosureMemory,
+        fringe: ConcurrentPrecursorFringe,
+        dt: float,
+    ) -> BoussinesqFields:
+        """Exponentially nudge all main LASD memory toward the precursor."""
+
+        closure = fields.closure
+        if not isinstance(closure, LasdClosureMemory) or not isinstance(
+            target, LasdClosureMemory
+        ):
+            raise TypeError("fringe relaxation requires LASD closure memory")
+        if closure.configuration_fingerprint != target.configuration_fingerprint:
+            raise ValueError("main and precursor LASD fingerprints do not match")
+        grid = self.decomposition.grid
+        rise_width, fall_width = fringe.resolved_widths(grid.lx)
+        dtype = fields.potential_temperature.payload.dtype
+        x = (jnp.arange(grid.nx, dtype=dtype) + 0.5) * grid.dx
+        mask = plateau_fringe_mask(
+            x,
+            start_x=fringe.start_x,
+            end_x=grid.lx,
+            rise_width=rise_width,
+            fall_width=fall_width,
+        )
+        blend = -jnp.expm1(
+            -jnp.asarray(dt, dtype)
+            * mask
+            / jnp.asarray(fringe.relaxation_time, dtype)
+        )[None, None, None, :]
+
+        def field(
+            current: AddressableField,
+            target_field: AddressableField,
+        ) -> AddressableField:
+            if (
+                current.quantity is not target_field.quantity
+                or current.regions != target_field.regions
+            ):
+                raise ValueError("main and precursor LASD fields do not align")
+            payload = current.payload + blend * (
+                target_field.payload - current.payload
+            )
+            return self._addressable_closure_field(
+                current,
+                current.quantity,
+                payload,
+            )
+
+        current_m = closure.momentum
+        target_m = target.momentum
+        current_s = closure.scalar
+        target_s = target.scalar
+        relaxed = LasdClosureMemory(
+            MomentumLasdMemory(
+                *(field(left, right) for left, right in zip(
+                    current_m.fields(),
+                    target_m.fields(),
+                    strict=True,
+                ))
+            ),
+            ScalarLasdMemory(
+                *(field(left, right) for left, right in zip(
+                    current_s.fields(),
+                    target_s.fields(),
+                    strict=True,
+                ))
+            ),
+            closure.configuration_fingerprint,
+        )
+        return replace(fields, closure=relaxed)
+
     def prepare_lasd_closure(
         self,
         fields: BoussinesqFields,
@@ -518,20 +594,40 @@ class JaxZSlabInterpreter:
         fingerprint = momentum_config.fingerprint + "|" + scalar_config.fingerprint
         if closure.configuration_fingerprint != fingerprint:
             raise ValueError("LASD memory fingerprint does not match the model")
-        context = self.boussinesq_context(fields)
         old_m = closure.momentum
         old_s = closure.scalar
         interval = momentum_config.update_interval
-        trajectory_x, trajectory_y, trajectory_z = self._lasd_accumulate(
-            context.momentum.arrays.u,
-            context.momentum.arrays.v,
-            context.momentum.arrays.w_at_cells,
-            old_m.trajectory_x.payload,
-            old_m.trajectory_y.payload,
-            old_m.trajectory_z.payload,
-            interval,
-        )
         should_update = (clock.step + 1) % interval == 0
+        if should_update:
+            context = self.boussinesq_context(fields)
+            trajectory_x, trajectory_y, trajectory_z = self._lasd_accumulate(
+                context.momentum.arrays.u,
+                context.momentum.arrays.v,
+                context.momentum.arrays.w_at_cells,
+                old_m.trajectory_x.payload,
+                old_m.trajectory_y.payload,
+                old_m.trajectory_z.payload,
+                interval,
+            )
+        else:
+            velocity = fields.velocity
+            self._validate_velocity_cell(velocity.x, XVelocity)
+            self._validate_velocity_cell(velocity.y, YVelocity)
+            self._validate_field(velocity.z.owned, ZFace)
+            if velocity.z.owned.quantity is not VerticalVelocity:
+                raise TypeError("LASD trajectory requires vertical velocity")
+            trajectory_x, trajectory_y, trajectory_z = (
+                self._lasd_accumulate_velocity(
+                    velocity.x.payload,
+                    velocity.y.payload,
+                    velocity.z.owned.payload,
+                    velocity.z.lower_boundary,
+                    old_m.trajectory_x.payload,
+                    old_m.trajectory_y.payload,
+                    old_m.trajectory_z.payload,
+                    interval,
+                )
+            )
         field = lambda template, payload: self._addressable_closure_field(  # noqa: E731
             template,
             template.quantity,
@@ -1016,10 +1112,19 @@ class JaxZSlabInterpreter:
                 raise TypeError("precursor vertical target requires VerticalVelocity")
             if fringe.start_x >= self.decomposition.grid.lx:
                 raise ValueError("fringe start must lie before the periodic seam")
-            fringe_parameters = (True, fringe.start_x, fringe.relaxation_time)
+            rise_width, fall_width = fringe.resolved_widths(
+                self.decomposition.grid.lx
+            )
+            fringe_parameters = (
+                True,
+                fringe.start_x,
+                fringe.relaxation_time,
+                rise_width,
+                fall_width,
+            )
         elif isinstance(fringe, NoFringe):
             target = velocity
-            fringe_parameters = (False, 0.0, 1.0)
+            fringe_parameters = (False, 0.0, 1.0, 1.0, 1.0)
         else:
             raise TypeError("unsupported wind-tunnel fringe choice")
 
@@ -2210,6 +2315,38 @@ def build_zslab_interpreter(
             trajectory_z + w_at_cells / interval,
         )
 
+    def lasd_accumulate_velocity_local(
+        u,
+        v,
+        w_upper,
+        lower_boundary,
+        trajectory_x,
+        trajectory_y,
+        trajectory_z,
+        update_interval,
+    ):
+        halo = exchange_local(w_upper[None, ...])
+        boundary_plane = jnp.broadcast_to(
+            jnp.asarray(lower_boundary, dtype=w_upper.dtype),
+            w_upper.shape[1:],
+        )
+        lower_plane = jnp.where(
+            halo.lower_is_physical,
+            boundary_plane,
+            halo.lower[0],
+        )
+        lower_faces = jnp.concatenate((lower_plane[None], w_upper[:-1]), axis=0)
+        w_at_cells = 0.5 * (lower_faces + w_upper)
+        return lasd_accumulate_local(
+            u,
+            v,
+            w_at_cells,
+            trajectory_x,
+            trajectory_y,
+            trajectory_z,
+            update_interval,
+        )
+
     def lasd_filter_local(values, filter_width):
         spectrum = jnp.fft.rfftn(values, axes=(-2, -1))
         x_mode = jnp.arange(grid.nx // 2 + 1)
@@ -2718,6 +2855,8 @@ def build_zslab_interpreter(
         fringe_enabled,
         fringe_start_x,
         fringe_relaxation_time,
+        fringe_rise_width,
+        fringe_fall_width,
     ):
         dtype = u.dtype
         local_nz = u.shape[0]
@@ -2802,20 +2941,12 @@ def build_zslab_interpreter(
             * jnp.asarray(disk_enabled, dtype)
         )
 
-        half_width = 0.5 * (grid.lx - jnp.asarray(fringe_start_x, dtype))
-
-        def cinf_step(coordinate):
-            epsilon = jnp.finfo(dtype).eps
-            safe = jnp.clip(coordinate, epsilon, 1.0 - epsilon)
-            interior = jax.nn.sigmoid(1.0 / (1.0 - safe) - 1.0 / safe)
-            return jnp.where(
-                coordinate <= 0.0,
-                0.0,
-                jnp.where(coordinate >= 1.0, 1.0, interior),
-            )
-
-        mask = cinf_step((x - fringe_start_x) / half_width) * cinf_step(
-            (grid.lx - x) / half_width
+        mask = plateau_fringe_mask(
+            x,
+            start_x=fringe_start_x,
+            end_x=grid.lx,
+            rise_width=fringe_rise_width,
+            fall_width=fringe_fall_width,
         )
         rate = (
             mask
@@ -2852,7 +2983,7 @@ def build_zslab_interpreter(
     )
     wind_tunnel = mapped(
         wind_tunnel_local,
-        in_axes=(0, 0, 0, 0, 0, 0) + (None,) * 14,
+        in_axes=(0, 0, 0, 0, 0, 0) + (None,) * 16,
     )
     dry_flow_context = mapped(
         dry_flow_context_local,
@@ -2868,6 +2999,10 @@ def build_zslab_interpreter(
     lasd_accumulate = mapped(
         lasd_accumulate_local,
         in_axes=(0, 0, 0, 0, 0, 0, None),
+    )
+    lasd_accumulate_velocity = mapped(
+        lasd_accumulate_velocity_local,
+        in_axes=(0, 0, 0, None, 0, 0, 0, None),
     )
     lasd_update = mapped(
         lasd_update_local,
@@ -2949,6 +3084,7 @@ def build_zslab_interpreter(
         dry_sgs,
         dry_sgs_vertical_flux,
         lasd_accumulate,
+        lasd_accumulate_velocity,
         lasd_update,
         lasd_diagnostics,
         scalar_context,

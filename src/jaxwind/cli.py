@@ -42,7 +42,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="validate and resolve the case without importing JAX",
+        help="validate and print the resolved TOML without importing JAX",
     )
     parser.add_argument(
         "--overwrite",
@@ -96,7 +96,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(str(error))
 
     if args.dry_run:
-        print(case.resolved_json(), end="")
+        print(case.resolved_toml(), end="")
         return 0
 
     output_dir = (

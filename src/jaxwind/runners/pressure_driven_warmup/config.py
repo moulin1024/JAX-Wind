@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import json
 import math
 from pathlib import Path
 from typing import Any
@@ -12,6 +11,8 @@ try:
     import tomllib
 except ModuleNotFoundError:  # pragma: no cover - Python 3.10 development fallback
     import tomli as tomllib
+
+from .._toml import dumps as toml_dumps
 
 
 class ConfigError(ValueError):
@@ -338,8 +339,8 @@ class CaseConfig:
             },
         }
 
-    def resolved_json(self) -> str:
-        return json.dumps(self.resolved(), indent=2) + "\n"
+    def resolved_toml(self) -> str:
+        return toml_dumps(self.resolved())
 
 
 def load_case(path: str | Path) -> CaseConfig:

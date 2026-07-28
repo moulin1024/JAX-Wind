@@ -53,6 +53,7 @@ def step_concurrent_precursor(
     launch_pair: Callable[
         [Callable[[], Any], Callable[[], Any]], tuple[Any, Any]
     ] = serial_pair,
+    compute_projection_residual: bool = True,
 ) -> ConcurrentPrecursorStepResult:
     """Advance both domains from one synchronized accepted boundary.
 
@@ -74,6 +75,7 @@ def step_concurrent_precursor(
             normal_boundary=normal_boundary,
             algebra=algebra,
             pressure_solver=precursor_pressure_solver,
+            compute_projection_residual=compute_projection_residual,
         )
 
     def advance_main() -> AB2StepResult:
@@ -85,6 +87,7 @@ def step_concurrent_precursor(
             normal_boundary=normal_boundary,
             algebra=algebra,
             pressure_solver=main_pressure_solver,
+            compute_projection_residual=compute_projection_residual,
         )
 
     precursor, main = launch_pair(advance_precursor, advance_main)
@@ -113,6 +116,7 @@ def step_concurrent_boussinesq_precursor(
     launch_pair: Callable[
         [Callable[[], Any], Callable[[], Any]], tuple[Any, Any]
     ] = serial_pair,
+    compute_projection_residual: bool = True,
 ) -> ConcurrentPrecursorStepResult:
     """Advance synchronized velocity--scalar precursor and main domains.
 
@@ -123,7 +127,8 @@ def step_concurrent_boussinesq_precursor(
     if state.precursor.clock != state.main.clock:
         raise ValueError("precursor and main clocks must be synchronized")
     environment = ConcurrentPrecursorEnvironment(
-        state.precursor.fields.velocity
+        state.precursor.fields.velocity,
+        state.precursor.fields.closure,
     )
 
     def advance_precursor():
@@ -136,6 +141,7 @@ def step_concurrent_boussinesq_precursor(
             algebra=algebra,
             pressure_solver=precursor_pressure_solver,
             closure_event=precursor_closure_event,
+            compute_projection_residual=compute_projection_residual,
         )
 
     def advance_main():
@@ -148,6 +154,7 @@ def step_concurrent_boussinesq_precursor(
             algebra=algebra,
             pressure_solver=main_pressure_solver,
             closure_event=main_closure_event,
+            compute_projection_residual=compute_projection_residual,
         )
 
     precursor, main = launch_pair(advance_precursor, advance_main)

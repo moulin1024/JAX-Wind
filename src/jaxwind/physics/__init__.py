@@ -45,6 +45,8 @@ from .dry_flow import (
 from .wind_tunnel import (
     ConcurrentPrecursorEnvironment,
     ConcurrentPrecursorFringe,
+    ConcurrentPrecursorLasdAcceptedStepEvent,
+    ConcurrentPrecursorLasdEventDiagnostic,
     NoActuatorDisk,
     NoFringe,
     PureThrustActuatorDisk,
@@ -67,6 +69,8 @@ __all__ = [
     "ConservativeScalarAdvection",
     "ConcurrentPrecursorEnvironment",
     "ConcurrentPrecursorFringe",
+    "ConcurrentPrecursorLasdAcceptedStepEvent",
+    "ConcurrentPrecursorLasdEventDiagnostic",
     "CoriolisGeostrophic",
     "DryFlowContributions",
     "DryFlowDiagnostic",

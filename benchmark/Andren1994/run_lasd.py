@@ -81,6 +81,7 @@ from jaxwind.physics import (  # noqa: E402
     ScalarFluxBoundary,
 )
 from jaxwind.pressure import build_spectral_fd_pressure_adapter  # noqa: E402
+from jaxwind.runners._toml import dumps as toml_dumps  # noqa: E402
 
 
 HERE = Path(__file__).resolve().parent
@@ -845,17 +846,14 @@ def run(args: argparse.Namespace) -> dict:
     (args.output / "summary.json").write_text(
         json.dumps(summary, indent=2, sort_keys=True) + "\n"
     )
-    (args.output / "configuration.json").write_text(
-        json.dumps(
+    (args.output / "resolved_config.toml").write_text(
+        toml_dumps(
             vars(args)
             | {
                 "output": str(args.output),
                 "restart": None if args.restart is None else str(args.restart),
-            },
-            indent=2,
-            sort_keys=True,
+            }
         )
-        + "\n"
     )
     return summary
 

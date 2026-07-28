@@ -88,6 +88,23 @@ class ReferenceProjectionLawTests(unittest.TestCase):
             second = getattr(twice.velocity, component).payload
             self.assertLess(float(jnp.max(jnp.abs(first - second))), 4.0e-13)
 
+    def test_projection_may_skip_diagnostic_residual(self) -> None:
+        with_residual = self.project(self.velocity)
+        without_residual = project(
+            self.velocity,
+            dt=0.2,
+            normal_boundary=self.boundary,
+            algebra=self.algebra,
+            pressure_solver=self.solver,
+            compute_residual=False,
+        )
+
+        self.assertIsNone(without_residual.divergence)
+        for component in ("x", "y", "z"):
+            expected = getattr(with_residual.velocity, component).payload
+            actual = getattr(without_residual.velocity, component).payload
+            self.assertEqual(float(jnp.max(jnp.abs(expected - actual))), 0.0)
+
     def test_pressure_gauge_does_not_change_gradient(self) -> None:
         result = self.project(self.velocity)
         shifted = type(result.pressure)(

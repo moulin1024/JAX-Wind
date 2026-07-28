@@ -18,6 +18,7 @@ from jaxwind.interpreters.jax_actuator_disk import (
     filtered_disk_velocity_correction,
     gaussian_convolved_annulus,
 )
+from jaxwind.interpreters.jax_fringe import plateau_fringe_mask
 
 from jaxwind.domain import (
     Accepted,
@@ -852,6 +853,77 @@ class JaxReferenceProjection:
             momentum_config.fingerprint + "|" + scalar_config.fingerprint,
         )
         return replace(fields, closure=closure)
+
+    def relax_lasd_closure(
+        self,
+        fields: BoussinesqFields,
+        target: LasdClosureMemory,
+        fringe: ConcurrentPrecursorFringe,
+        dt: float,
+    ) -> BoussinesqFields:
+        """Exponentially nudge all main LASD memory toward the precursor."""
+
+        closure = fields.closure
+        if not isinstance(closure, LasdClosureMemory) or not isinstance(
+            target, LasdClosureMemory
+        ):
+            raise TypeError("fringe relaxation requires LASD closure memory")
+        if closure.configuration_fingerprint != target.configuration_fingerprint:
+            raise ValueError("main and precursor LASD fingerprints do not match")
+        grid = fields.potential_temperature.ownership.grid
+        rise_width, fall_width = fringe.resolved_widths(grid.lx)
+        dtype = fields.potential_temperature.payload.dtype
+        x = (jnp.arange(grid.nx, dtype=dtype) + 0.5) * grid.dx
+        mask = plateau_fringe_mask(
+            x,
+            start_x=fringe.start_x,
+            end_x=grid.lx,
+            rise_width=rise_width,
+            fall_width=fall_width,
+        )
+        blend = -jnp.expm1(
+            -jnp.asarray(dt, dtype)
+            * mask
+            / jnp.asarray(fringe.relaxation_time, dtype)
+        )[None, None, :]
+
+        def field(current: Field, target_field: Field) -> Field:
+            if (
+                current.quantity is not target_field.quantity
+                or current.ownership != target_field.ownership
+            ):
+                raise ValueError("main and precursor LASD fields do not align")
+            payload = current.payload + blend * (
+                target_field.payload - current.payload
+            )
+            return self._reference_closure_field(
+                current,
+                current.quantity,
+                payload,
+            )
+
+        current_m = closure.momentum
+        target_m = target.momentum
+        current_s = closure.scalar
+        target_s = target.scalar
+        relaxed = LasdClosureMemory(
+            MomentumLasdMemory(
+                *(field(left, right) for left, right in zip(
+                    current_m.fields(),
+                    target_m.fields(),
+                    strict=True,
+                ))
+            ),
+            ScalarLasdMemory(
+                *(field(left, right) for left, right in zip(
+                    current_s.fields(),
+                    target_s.fields(),
+                    strict=True,
+                ))
+            ),
+            closure.configuration_fingerprint,
+        )
+        return replace(fields, closure=relaxed)
 
     def prepare_lasd_closure(
         self,
@@ -1836,22 +1908,13 @@ class JaxReferenceProjection:
                 raise ValueError("precursor target must share main-domain ownership")
             dtype = velocity.x.payload.dtype
             x = (jnp.arange(grid.nx, dtype=dtype) + 0.5) * grid.dx
-            half_width = 0.5 * (grid.lx - fringe.start_x)
-            if half_width <= 0.0:
-                raise ValueError("fringe start must lie before the periodic seam")
-
-            def cinf_step(coordinate):
-                epsilon = jnp.finfo(dtype).eps
-                safe = jnp.clip(coordinate, epsilon, 1.0 - epsilon)
-                interior = jax.nn.sigmoid(1.0 / (1.0 - safe) - 1.0 / safe)
-                return jnp.where(
-                    coordinate <= 0.0,
-                    0.0,
-                    jnp.where(coordinate >= 1.0, 1.0, interior),
-                )
-
-            mask = cinf_step((x - fringe.start_x) / half_width) * cinf_step(
-                (grid.lx - x) / half_width
+            rise_width, fall_width = fringe.resolved_widths(grid.lx)
+            mask = plateau_fringe_mask(
+                x,
+                start_x=fringe.start_x,
+                end_x=grid.lx,
+                rise_width=rise_width,
+                fall_width=fall_width,
             )
             rate = mask / fringe.relaxation_time
             source_x = source_x + rate[None, None, :] * (

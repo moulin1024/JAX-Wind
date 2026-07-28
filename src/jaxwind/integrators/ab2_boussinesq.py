@@ -77,6 +77,7 @@ def step_boussinesq(
     algebra: BoussinesqAB2Algebra,
     pressure_solver: Any,
     closure_event: Any = IdentityClosureEvent(),
+    compute_projection_residual: bool = True,
 ) -> AB2BoussinesqStepResult:
     """Advance both fields and apply the terminal projection only to velocity."""
     if state.integrator_fingerprint != config.fingerprint:
@@ -125,6 +126,7 @@ def step_boussinesq(
         normal_boundary=normal_boundary(accepted_clock, environment),
         algebra=algebra,
         pressure_solver=pressure_solver,
+        compute_residual=compute_projection_residual,
     )
     accepted_fields = BoussinesqFields(
         projected.velocity,

@@ -79,6 +79,7 @@ from jaxwind.physics import (  # noqa: E402
     ScalarFluxBoundary,
 )
 from jaxwind.pressure import build_spectral_fd_pressure_adapter  # noqa: E402
+from jaxwind.runners._toml import dumps as toml_dumps  # noqa: E402
 
 
 HERE = Path(__file__).resolve().parent
@@ -731,8 +732,8 @@ def save_outputs(
         **{f"profile_{key}": value for key, value in averaged.items()},
         **summary,
     )
-    (output / "configuration.json").write_text(
-        json.dumps(
+    (output / "resolved_config.toml").write_text(
+        toml_dumps(
             vars(args)
             | {
                 "output_dir": str(args.output_dir),
@@ -745,11 +746,8 @@ def save_outputs(
                     "beta": 30.0,
                     "power": 2.0,
                 },
-            },
-            indent=2,
-            sort_keys=True,
+            }
         )
-        + "\n"
     )
     make_plots_from_files(output)
     return summary

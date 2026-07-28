@@ -136,6 +136,7 @@ def step(
     normal_boundary: NormalBoundaryLaw,
     algebra: AB2VelocityAlgebra,
     pressure_solver: Any,
+    compute_projection_residual: bool = True,
 ) -> AB2StepResult:
     """Advance one accepted step with one vector evaluation and one projection."""
     if state.integrator_fingerprint != config.fingerprint:
@@ -171,6 +172,7 @@ def step(
         normal_boundary=normal_boundary(accepted_clock, environment),
         algebra=algebra,
         pressure_solver=pressure_solver,
+        compute_residual=compute_projection_residual,
     )
     accepted = AB2PersistentState(
         projected.velocity,

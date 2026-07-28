@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import json
 import math
 from pathlib import Path
 from typing import Any
@@ -13,6 +12,7 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - Python 3.10 development fallback
     import tomli as tomllib
 
+from .._toml import dumps as toml_dumps
 from ..pressure_driven_warmup.config import (
     CaseConfig as WarmupCaseConfig,
     load_case as load_warmup_case,
@@ -42,6 +42,12 @@ def _integer(table: dict[str, Any], key: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         raise ConfigError(f"{key} must be an integer")
     return value
+
+
+def _optional_integer(table: dict[str, Any], key: str) -> int | None:
+    if key not in table:
+        return None
+    return _integer(table, key)
 
 
 def _number(table: dict[str, Any], key: str) -> float:
@@ -100,12 +106,21 @@ class ConcurrentConfig:
 class FringeConfig:
     start_x_m: float
     relaxation_time_seconds: float
+    rise_width_m: float
+    fall_width_m: float
+    maximum_residual_fraction: float
 
     def __post_init__(self) -> None:
         if self.start_x_m < 0.0:
             raise ConfigError("fringe.start_x_m must be nonnegative")
         if self.relaxation_time_seconds <= 0.0:
             raise ConfigError("fringe relaxation time must be positive")
+        if min(self.rise_width_m, self.fall_width_m) <= 0.0:
+            raise ConfigError("fringe rise and fall widths must be positive")
+        if not 0.0 < self.maximum_residual_fraction < 1.0:
+            raise ConfigError(
+                "fringe.maximum_residual_fraction must lie in (0, 1)"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,12 +149,18 @@ class OutputConfig:
     directory: str
     log_every_steps: int
     checkpoint_every_steps: int
+    field_sample_every_steps: int | None
 
     def __post_init__(self) -> None:
         if not self.directory:
             raise ConfigError("output.directory must be non-empty")
         if min(self.log_every_steps, self.checkpoint_every_steps) <= 0:
             raise ConfigError("output step intervals must be positive")
+        if (
+            self.field_sample_every_steps is not None
+            and self.field_sample_every_steps <= 0
+        ):
+            raise ConfigError("output.field_sample_every_steps must be positive")
 
 
 @dataclass(frozen=True, slots=True)
@@ -173,6 +194,21 @@ class CaseConfig:
             raise ConfigError(
                 "fringe must start downstream of the rotor and before the periodic seam"
             )
+        available = domain.lx_m - self.fringe.start_x_m
+        if self.fringe.rise_width_m + self.fringe.fall_width_m > available:
+            raise ConfigError(
+                "fringe rise and fall widths exceed the fringe region"
+            )
+        if (
+            self.predicted_fringe_residual_fraction
+            > self.fringe.maximum_residual_fraction
+        ):
+            raise ConfigError(
+                "fringe attenuation is too weak: predicted residual "
+                f"{self.predicted_fringe_residual_fraction:.4g} exceeds "
+                f"{self.fringe.maximum_residual_fraction:.4g}; reduce the "
+                "relaxation time or widen the plateau"
+            )
 
     @property
     def normal_smoothing_width_m(self) -> float:
@@ -189,6 +225,30 @@ class CaseConfig:
     @property
     def rotor_cells_z(self) -> float:
         return self.turbine.diameter_m / self.base.domain.dz_m
+
+    @property
+    def fringe_plateau_width_m(self) -> float:
+        return (
+            self.base.domain.lx_m
+            - self.fringe.start_x_m
+            - self.fringe.rise_width_m
+            - self.fringe.fall_width_m
+        )
+
+    @property
+    def effective_fringe_damping_length_m(self) -> float:
+        available = self.base.domain.lx_m - self.fringe.start_x_m
+        return available - 0.5 * (
+            self.fringe.rise_width_m + self.fringe.fall_width_m
+        )
+
+    @property
+    def predicted_fringe_residual_fraction(self) -> float:
+        exponent = self.effective_fringe_damping_length_m / (
+            self.base.top_log_velocity_m_s
+            * self.fringe.relaxation_time_seconds
+        )
+        return math.exp(-exponent)
 
     def resolved(self) -> dict[str, Any]:
         base = self.base.resolved()
@@ -215,6 +275,22 @@ class CaseConfig:
             "fringe": {
                 "start_x_m": self.fringe.start_x_m,
                 "relaxation_time_seconds": self.fringe.relaxation_time_seconds,
+                "rise_width_m": self.fringe.rise_width_m,
+                "plateau_width_m": self.fringe_plateau_width_m,
+                "fall_width_m": self.fringe.fall_width_m,
+                "effective_damping_length_m": (
+                    self.effective_fringe_damping_length_m
+                ),
+                "attenuation_reference_velocity_m_s": (
+                    self.base.top_log_velocity_m_s
+                ),
+                "predicted_residual_fraction": (
+                    self.predicted_fringe_residual_fraction
+                ),
+                "maximum_residual_fraction": (
+                    self.fringe.maximum_residual_fraction
+                ),
+                "relaxes_lasd_closure_memory": True,
             },
             "turbine": {
                 "model": "uniform_pure_thrust_adm",
@@ -242,11 +318,14 @@ class CaseConfig:
                 "directory": self.output.directory,
                 "log_every_steps": self.output.log_every_steps,
                 "checkpoint_every_steps": self.output.checkpoint_every_steps,
+                "field_sample_every_steps": (
+                    self.output.field_sample_every_steps
+                ),
             },
         }
 
-    def resolved_json(self) -> str:
-        return json.dumps(self.resolved(), indent=2) + "\n"
+    def resolved_toml(self) -> str:
+        return toml_dumps(self.resolved())
 
 
 def load_case(path: str | Path) -> CaseConfig:
@@ -281,6 +360,11 @@ def load_case(path: str | Path) -> CaseConfig:
             relaxation_time_seconds=_number(
                 fringe, "relaxation_time_seconds"
             ),
+            rise_width_m=_number(fringe, "rise_width_m"),
+            fall_width_m=_number(fringe, "fall_width_m"),
+            maximum_residual_fraction=_number(
+                fringe, "maximum_residual_fraction"
+            ),
         ),
         turbine=TurbineConfig(
             location_m=_location(turbine),
@@ -293,6 +377,9 @@ def load_case(path: str | Path) -> CaseConfig:
             log_every_steps=_integer(output, "log_every_steps"),
             checkpoint_every_steps=_integer(
                 output, "checkpoint_every_steps"
+            ),
+            field_sample_every_steps=_optional_integer(
+                output, "field_sample_every_steps"
             ),
         ),
     )

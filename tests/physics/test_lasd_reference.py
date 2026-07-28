@@ -31,7 +31,9 @@ from jaxwind.effects import (  # noqa: E402
 )
 from jaxwind.integrators import (  # noqa: E402
     AB2Config,
+    ConcurrentPrecursorState,
     cold_start_boussinesq,
+    step_concurrent_boussinesq_precursor,
     step_boussinesq,
 )
 from jaxwind.interpreters.jax_reference import (  # noqa: E402
@@ -45,6 +47,9 @@ from jaxwind.physics import (  # noqa: E402
     BoussinesqVectorField,
     ConservativeAdvection,
     ConservativeScalarAdvection,
+    ConcurrentPrecursorEnvironment,
+    ConcurrentPrecursorFringe,
+    ConcurrentPrecursorLasdAcceptedStepEvent,
     DiagnosticLasdConstants,
     DryFlowModel,
     KinematicPressureGradient,
@@ -53,9 +58,13 @@ from jaxwind.physics import (  # noqa: E402
     LasdAcceptedStepEvent,
     LasdClosureMemory,
     NeutralLogWall,
+    NoActuatorDisk,
     NoBuoyancy,
+    NoFringe,
     NoRotation,
     ScalarFluxBoundary,
+    WindTunnelBoussinesqVectorField,
+    WindTunnelModel,
 )
 
 
@@ -213,6 +222,170 @@ class LasdReferenceTests(unittest.TestCase):
             updated.closure.momentum.trajectory_z,
         ):
             self.assertEqual(float(jnp.max(jnp.abs(trajectory.payload))), 0.0)
+
+    def test_concurrent_event_relaxes_all_lasd_memory_before_update(self) -> None:
+        current = self.initialized_fields()
+        target, _ = self.algebra.prepare_lasd_closure(
+            self.initialized_fields(),
+            self.model,
+            AcceptedClock(0.0, 0),
+            0.1,
+        )
+        fringe = ConcurrentPrecursorFringe(
+            4.0,
+            0.4,
+            rise_width=1.0,
+            fall_width=1.0,
+        )
+        event = ConcurrentPrecursorLasdAcceptedStepEvent(
+            self.algebra,
+            self.model,
+            0.1,
+            fringe,
+        )
+        environment = ConcurrentPrecursorEnvironment(
+            target.velocity,
+            target.closure,
+        )
+
+        actual, diagnostic = event(
+            current,
+            AcceptedClock(0.0, 0),
+            environment,
+        )
+        relaxed = self.algebra.relax_lasd_closure(
+            current,
+            target.closure,
+            fringe,
+            0.1,
+        )
+        expected, _ = self.algebra.prepare_lasd_closure(
+            relaxed,
+            self.model,
+            AcceptedClock(0.0, 0),
+            0.1,
+        )
+
+        self.assertTrue(diagnostic.closure_relaxed)
+        for left, right in zip(
+            actual.closure.fields(),
+            expected.closure.fields(),
+            strict=True,
+        ):
+            self.assertLess(
+                float(jnp.max(jnp.abs(left.payload - right.payload))),
+                2.0e-12,
+            )
+        x_index_on_plateau = 5
+        self.assertGreater(
+            float(
+                relaxed.closure.momentum.trajectory_x.payload[
+                    ..., x_index_on_plateau
+                ].mean()
+            ),
+            0.0,
+        )
+        self.assertEqual(
+            float(
+                jnp.max(
+                    jnp.abs(
+                        relaxed.closure.momentum.trajectory_x.payload[..., :4]
+                    )
+                )
+            ),
+            0.0,
+        )
+
+    def test_concurrent_step_applies_velocity_and_lasd_fringe_together(self) -> None:
+        config = AB2Config(0.01)
+        clock = AcceptedClock(0.0, 0)
+        current = self.initialized_fields()
+        target, _ = self.algebra.prepare_lasd_closure(
+            self.initialized_fields(),
+            self.model,
+            clock,
+            config.dt,
+        )
+        fringe = ConcurrentPrecursorFringe(
+            4.0,
+            0.4,
+            rise_width=1.0,
+            fall_width=1.0,
+        )
+        base = BoussinesqVectorField(self.algebra, self.model)
+        precursor_vector_field = WindTunnelBoussinesqVectorField(
+            self.algebra,
+            base,
+            WindTunnelModel(NoActuatorDisk(), NoFringe()),
+        )
+        main_vector_field = WindTunnelBoussinesqVectorField(
+            self.algebra,
+            base,
+            WindTunnelModel(NoActuatorDisk(), fringe),
+        )
+        precursor_event = LasdAcceptedStepEvent(
+            self.algebra,
+            self.model,
+            config.dt,
+        )
+        main_event = ConcurrentPrecursorLasdAcceptedStepEvent(
+            self.algebra,
+            self.model,
+            config.dt,
+            fringe,
+        )
+        state = ConcurrentPrecursorState(
+            cold_start_boussinesq(
+                target,
+                clock=clock,
+                config=config,
+            ),
+            cold_start_boussinesq(
+                current,
+                clock=clock,
+                config=config,
+            ),
+        )
+
+        result = step_concurrent_boussinesq_precursor(
+            state,
+            config=config,
+            precursor_vector_field=precursor_vector_field,
+            main_vector_field=main_vector_field,
+            normal_boundary=lambda _clock, _environment: VerticalBoundary(
+                0.0,
+                0.0,
+            ),
+            algebra=self.algebra,
+            precursor_pressure_solver=JaxReferencePressureSolver(),
+            main_pressure_solver=JaxReferencePressureSolver(),
+            precursor_closure_event=precursor_event,
+            main_closure_event=main_event,
+        )
+        expected, _ = main_event(
+            current,
+            clock,
+            ConcurrentPrecursorEnvironment(
+                target.velocity,
+                target.closure,
+            ),
+        )
+
+        self.assertTrue(
+            result.diagnostic.main.vector_field.concurrent_fringe_enabled
+        )
+        self.assertTrue(
+            result.diagnostic.main.closure_event.closure_relaxed
+        )
+        for actual, wanted in zip(
+            result.state.main.fields.closure.fields(),
+            expected.closure.fields(),
+            strict=True,
+        ):
+            self.assertLess(
+                float(jnp.max(jnp.abs(actual.payload - wanted.payload))),
+                2.0e-12,
+            )
 
     def test_scalar_wall_flux_is_globally_conservative(self) -> None:
         fields = self.initialized_fields()

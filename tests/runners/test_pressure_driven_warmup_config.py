@@ -1,12 +1,16 @@
 from __future__ import annotations
 
-import json
 import os
 from pathlib import Path
 import subprocess
 import sys
 
 import pytest
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Python 3.10 fallback
+    import tomli as tomllib
 
 
 from jaxwind.runners.pressure_driven_warmup import ConfigError, load_case
@@ -73,7 +77,7 @@ def test_dry_run_prints_the_resolved_plan_without_loading_jax() -> None:
         capture_output=True,
         text=True,
     )
-    resolved = json.loads(completed.stdout)
+    resolved = tomllib.loads(completed.stdout)
     assert resolved["runner"] == "pressure_driven_warmup"
     assert resolved["time"]["steps"] == 360_000
     assert resolved["flow"]["pressure_acceleration_m_s2"] == pytest.approx(
@@ -100,7 +104,7 @@ def test_cli_runs_a_declarative_case_directory_without_run_py(
 
     assert not (case_dir / "run.py").exists()
     assert (
-        json.loads(completed.stdout)["case"]
+        tomllib.loads(completed.stdout)["case"]
         == "pressure_driven_warmup_128x64x256"
     )
 

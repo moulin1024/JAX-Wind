@@ -50,6 +50,7 @@ class BoussinesqZSlabCommutingTests(unittest.TestCase):
                     "rayleigh",
                     "combined_scalar",
                     "lasd_memory",
+                    "lasd_fringe_memory",
                     "lasd_momentum_tendency",
                     "lasd_scalar_tendency",
                     "lasd_diagnostics",

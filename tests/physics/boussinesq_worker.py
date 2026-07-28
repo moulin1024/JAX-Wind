@@ -37,6 +37,7 @@ from jaxwind.operators import VelocityVector  # noqa: E402
 from jaxwind.physics import (  # noqa: E402
     BoussinesqFields,
     ConservativeScalarAdvection,
+    ConcurrentPrecursorFringe,
     DiagnosticLasdConstants,
     LinearBoussinesqBuoyancy,
     LagrangianScaleDependentDynamic,
@@ -229,6 +230,54 @@ def main() -> int:
             for actual, expected in zip(
                 production_lasd.closure.fields(),
                 reference_lasd.closure.fields(),
+                strict=True,
+            )
+        )
+    )
+    reference_target = reference.initialize_lasd_closure(
+        reference_fields,
+        lasd_model,
+    )
+    production_target = production.initialize_lasd_closure(
+        production_fields,
+        lasd_model,
+    )
+    reference_target, _ = reference.prepare_lasd_closure(
+        reference_target,
+        lasd_model,
+        AcceptedClock(0.0, 0),
+        0.01,
+    )
+    production_target, _ = production.prepare_lasd_closure(
+        production_target,
+        lasd_model,
+        AcceptedClock(0.0, 0),
+        0.01,
+    )
+    fringe = ConcurrentPrecursorFringe(
+        3.0,
+        0.2,
+        rise_width=0.5,
+        fall_width=0.5,
+    )
+    reference_relaxed = reference.relax_lasd_closure(
+        reference_lasd,
+        reference_target.closure,
+        fringe,
+        0.01,
+    )
+    production_relaxed = production.relax_lasd_closure(
+        production_lasd,
+        production_target.closure,
+        fringe,
+        0.01,
+    )
+    errors["lasd_fringe_memory"] = float(
+        max(
+            jnp.max(jnp.abs(actual.payload - expected.payload.reshape(shape)))
+            for actual, expected in zip(
+                production_relaxed.closure.fields(),
+                reference_relaxed.closure.fields(),
                 strict=True,
             )
         )
