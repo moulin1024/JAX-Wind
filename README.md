@@ -210,15 +210,17 @@ semantic core:
 | [`src/jaxwind/physics`](src/jaxwind/physics) | Pure dry-flow, Boussinesq, SGS, actuator-disk, and fringe models |
 | [`src/jaxwind/integrators`](src/jaxwind/integrators) | AB2 and concurrent-precursor state transitions |
 | [`src/jaxwind/interpreters`](src/jaxwind/interpreters) | Reference, local JAX, and distributed z-slab implementations |
+| [`src/jaxwind/openfast`](src/jaxwind/openfast) | OpenFAST-compatible input parsing and turbine model adapters |
 | [`src/jaxwind/pressure`](src/jaxwind/pressure) | Semantic adapter around the external pressure solver |
 | [`src/jaxwind/effects`](src/jaxwind/effects) | Checkpoint and execution-side adapters |
+| [`src/jaxwind/runners`](src/jaxwind/runners) | Configuration, initialization, diagnostics, and application orchestration |
 | [`tests`](tests) | Algebraic, physical, interpretation, restart, and distribution tests |
 | [`benchmark`](benchmark) | Reproducible physical cases and comparison tooling |
 
 The governing dependency direction is:
 
 ```text
-benchmarks and effects
+benchmarks, runners, and effects
         ↓
 JAX interpreters
         ↓
@@ -232,6 +234,12 @@ semantic domain types
 The domain and physics layers do not discover devices, read files, or choose a
 process topology. Runtime concerns remain in interpreters and application
 shells.
+
+Within implementation-heavy packages, public modules retain the stable API and
+semantic validation while private modules isolate numerical kernels, file
+parsing, configuration loading, and diagnostics. The detailed boundaries and
+the production-module size guard are described in
+[`doc/design/04-architecture-and-gates.md`](doc/design/04-architecture-and-gates.md).
 
 ## Benchmarks
 

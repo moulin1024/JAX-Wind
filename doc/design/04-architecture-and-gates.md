@@ -37,11 +37,35 @@ SHOULD separate these responsibilities:
 - `physics`: pure tendency contributions and closure state transitions;
 - `integrators`: higher-order construction of transitions from vector fields;
 - `interpreters`: reference arrays, JAX local, and JAX SPMD lowering;
+- `openfast`: format parsing and conversion into JAX-Wind turbine models;
 - `effects`: config, launch, checkpoint, logging, and postprocessing adapters;
+- `runners`: thin application shells around validated configuration and effects;
 - `benchmarks`: semantic cases and comparison criteria, not solver internals.
 
 A single universal `Params` record is prohibited. Each morphism receives the
 smallest immutable environment product that describes its dependencies.
+
+### Internal module boundaries
+
+Large implementation modules MUST be split at responsibility boundaries
+without exposing backend details through the public API:
+
+- interpreter public modules own semantic validation, field construction, and
+  stable entry points; private core and factory modules own numerical kernels
+  and backend mapping;
+- OpenFAST model modules own compatibility policy and turbine construction;
+  the shared parser owns tokenization and typed field extraction;
+- runner model modules own immutable validated configuration, loader modules
+  own file parsing, diagnostic modules own initialization and output
+  conversion, and runner modules own execution order;
+- private implementation modules are not compatibility surfaces. Cross-package
+  users import from the package facade or documented public module.
+
+Line count is only a warning signal, not a design method. Nevertheless, active
+production Python modules MUST remain at or below 1,000 physical lines so that
+a responsibility split happens before another monolithic module accumulates.
+`tests/test_source_layout.py` enforces this ceiling; a split MUST still
+preserve semantic and reference-versus-production regression tests.
 
 ## 3. Public API shape
 

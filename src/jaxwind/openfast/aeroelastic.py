@@ -22,17 +22,16 @@ import numpy as np
 from jaxwind.domain import ScaleSystem
 from jaxwind.physics import BladeElementActuatorLine
 
-from .rigid import (
-    OpenFASTInputError,
-    OpenFASTRigidTurbine,
+from .errors import OpenFASTInputError
+from .parser import (
     _boolean_value,
     _find,
     _float_value,
     _path_value,
     _read_lines,
     _rows_after,
-    load_openfast_rigid_turbine,
 )
+from .rigid import OpenFASTRigidTurbine, load_openfast_rigid_turbine
 
 
 _MODE_NAMES = ("flap1", "flap2", "edge1")

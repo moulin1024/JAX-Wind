@@ -1,8 +1,8 @@
 """OpenFAST input adapters for JAX-Wind turbine models."""
 
+from .errors import OpenFASTInputError
 from .rigid import (
     OpenFASTAirfoilPolar,
-    OpenFASTInputError,
     OpenFASTRigidTurbine,
     load_openfast_rigid_turbine,
 )
