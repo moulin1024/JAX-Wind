@@ -63,6 +63,11 @@ tmp
 # Active reconstruction package metadata.
 !/pyproject.toml
 
+# Versioned declarative runner documentation and direct rigid-ALM smoke case.
+!/runners/README.md
+!/runners/nrel5mw_direct_alm_smoke/
+!/runners/nrel5mw_direct_alm_smoke/**
+
 # The reconstruction is document-first; these specifications and the frozen
 # JAX implementation are source artifacts even when their suffixes match the
 # broad local-output rules above. Cache rules follow the unignore so generated

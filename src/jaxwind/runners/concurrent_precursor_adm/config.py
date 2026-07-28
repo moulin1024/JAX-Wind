@@ -1,4 +1,4 @@
-"""Configuration for a concurrent precursor and pure-thrust ADM case."""
+"""Configuration for concurrent-precursor wind-turbine cases."""
 
 from __future__ import annotations
 
@@ -6,6 +6,12 @@ from dataclasses import dataclass
 import math
 from pathlib import Path
 from typing import Any
+
+from jaxwind.openfast import (
+    OpenFASTInputError,
+    OpenFASTRigidTurbine,
+    load_openfast_rigid_turbine,
+)
 
 try:
     import tomllib
@@ -60,6 +66,12 @@ def _number(table: dict[str, Any], key: str) -> float:
     return result
 
 
+def _optional_number(table: dict[str, Any], key: str) -> float | None:
+    if key not in table:
+        return None
+    return _number(table, key)
+
+
 def _location(table: dict[str, Any]) -> tuple[float, float]:
     value = table.get("location_m")
     if (
@@ -92,6 +104,7 @@ class WarmupConfig:
 class ConcurrentConfig:
     steps: int
     launch: str
+    lasd_update_interval_steps: int | None = None
 
     def __post_init__(self) -> None:
         if self.steps <= 0:
@@ -99,6 +112,13 @@ class ConcurrentConfig:
         if self.launch not in ("auto", "serial", "threads", "cuda-streams"):
             raise ConfigError(
                 "concurrent.launch must be auto, serial, threads, or cuda-streams"
+            )
+        if (
+            self.lasd_update_interval_steps is not None
+            and self.lasd_update_interval_steps <= 0
+        ):
+            raise ConfigError(
+                "concurrent.lasd_update_interval_steps must be positive"
             )
 
 
@@ -145,6 +165,74 @@ class TurbineConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class RigidActuatorLineTurbineConfig:
+    """OpenFAST-backed, fixed-operating-point actuator-line configuration."""
+
+    location_m: tuple[float, float]
+    openfast_input_file: Path
+    openfast: OpenFASTRigidTurbine
+    smoothing_width_m: float
+    hub_height_override_m: float | None = None
+    rotor_speed_override_rpm: float | None = None
+    pitch_override_degrees: float | None = None
+    yaw_override_degrees: float | None = None
+    initial_azimuth_override_degrees: float | None = None
+
+    def __post_init__(self) -> None:
+        if self.smoothing_width_m <= 0.0:
+            raise ConfigError("turbine.smoothing_width_m must be positive")
+        if (
+            self.hub_height_override_m is not None
+            and self.hub_height_override_m <= 0.0
+        ):
+            raise ConfigError("turbine.hub_height_m must be positive")
+
+    @property
+    def diameter_m(self) -> float:
+        return 2.0 * self.openfast.tip_radius_m
+
+    @property
+    def hub_height_m(self) -> float:
+        return (
+            self.openfast.hub_height_m
+            if self.hub_height_override_m is None
+            else self.hub_height_override_m
+        )
+
+    @property
+    def rotor_speed_rpm(self) -> float:
+        return (
+            self.openfast.rotor_speed_rpm
+            if self.rotor_speed_override_rpm is None
+            else self.rotor_speed_override_rpm
+        )
+
+    @property
+    def pitch_degrees(self) -> float:
+        return (
+            self.openfast.pitch_degrees
+            if self.pitch_override_degrees is None
+            else self.pitch_override_degrees
+        )
+
+    @property
+    def yaw_degrees(self) -> float:
+        return (
+            self.openfast.yaw_degrees
+            if self.yaw_override_degrees is None
+            else self.yaw_override_degrees
+        )
+
+    @property
+    def initial_azimuth_degrees(self) -> float:
+        return (
+            self.openfast.initial_azimuth_degrees
+            if self.initial_azimuth_override_degrees is None
+            else self.initial_azimuth_override_degrees
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class OutputConfig:
     directory: str
     log_every_steps: int
@@ -171,7 +259,7 @@ class CaseConfig:
     base: WarmupCaseConfig
     concurrent: ConcurrentConfig
     fringe: FringeConfig
-    turbine: TurbineConfig
+    turbine: TurbineConfig | RigidActuatorLineTurbineConfig
     output: OutputConfig
 
     def __post_init__(self) -> None:
@@ -209,6 +297,29 @@ class CaseConfig:
                 f"{self.fringe.maximum_residual_fraction:.4g}; reduce the "
                 "relaxation time or widen the plateau"
             )
+        if (
+            self.estimated_lasd_trajectory_cfl
+            >= self.base.numerics.lasd_trajectory_cfl_abort
+        ):
+            raise ConfigError(
+                "concurrent LASD trajectory CFL estimate crosses the abort limit"
+            )
+
+    @property
+    def lasd_update_interval_steps(self) -> int:
+        configured = self.concurrent.lasd_update_interval_steps
+        return (
+            self.base.sgs.update_interval_steps
+            if configured is None
+            else configured
+        )
+
+    @property
+    def estimated_lasd_trajectory_cfl(self) -> float:
+        return (
+            self.base.estimated_startup_cfl
+            * self.lasd_update_interval_steps
+        )
 
     @property
     def normal_smoothing_width_m(self) -> float:
@@ -252,6 +363,75 @@ class CaseConfig:
 
     def resolved(self) -> dict[str, Any]:
         base = self.base.resolved()
+        sgs = dict(base["sgs"])
+        sgs["update_interval_steps"] = self.lasd_update_interval_steps
+        numerics = dict(base["numerics"])
+        numerics["estimated_lasd_trajectory_cfl"] = (
+            self.estimated_lasd_trajectory_cfl
+        )
+        if isinstance(self.turbine, TurbineConfig):
+            turbine = {
+                "model": "uniform_pure_thrust_adm",
+                "location_m": list(self.turbine.location_m),
+                "diameter_m": self.turbine.diameter_m,
+                "hub_height_m": self.turbine.hub_height_m,
+                "thrust_coefficient": self.turbine.thrust_coefficient,
+                "local_thrust_coefficient": (
+                    self.turbine.local_thrust_coefficient
+                ),
+                "normal_smoothing_width_m": self.normal_smoothing_width_m,
+                "transverse_smoothing_width_m": (
+                    self.transverse_smoothing_width_m
+                ),
+                "filtered_velocity_correction": True,
+                "cells_across_rotor_y": self.rotor_cells_y,
+                "cells_across_rotor_z": self.rotor_cells_z,
+                "under_resolved_for_science": min(
+                    self.rotor_cells_y, self.rotor_cells_z
+                )
+                < 8.0,
+            }
+        else:
+            turbine = {
+                "model": "openfast_rigid_actuator_line",
+                "location_m": list(self.turbine.location_m),
+                "openfast_input_file": str(
+                    self.turbine.openfast_input_file
+                ),
+                "aerodyn_input_file": str(
+                    self.turbine.openfast.aerodyn_source
+                ),
+                "elastodyn_input_file": str(
+                    self.turbine.openfast.elastodyn_source
+                ),
+                "diameter_m": self.turbine.diameter_m,
+                "hub_height_m": self.turbine.hub_height_m,
+                "rotor_speed_rpm": self.turbine.rotor_speed_rpm,
+                "pitch_degrees": self.turbine.pitch_degrees,
+                "yaw_degrees": self.turbine.yaw_degrees,
+                "initial_azimuth_degrees": (
+                    self.turbine.initial_azimuth_degrees
+                ),
+                "smoothing_width_m": self.turbine.smoothing_width_m,
+                "blade_count": self.turbine.openfast.blade_count,
+                "blade_element_count": len(
+                    self.turbine.openfast.element_radii_m
+                ),
+                "airfoil_count": len(
+                    self.turbine.openfast.airfoil_sources
+                ),
+                "tip_loss": self.turbine.openfast.tip_loss,
+                "root_loss": self.turbine.openfast.root_loss,
+                "compatibility_notes": list(
+                    self.turbine.openfast.compatibility_notes
+                ),
+                "cells_across_rotor_y": self.rotor_cells_y,
+                "cells_across_rotor_z": self.rotor_cells_z,
+                "under_resolved_for_science": min(
+                    self.rotor_cells_y, self.rotor_cells_z
+                )
+                < 8.0,
+            }
         return {
             "runner": self.runner,
             "case": self.name,
@@ -262,7 +442,7 @@ class CaseConfig:
             },
             "domain": base["domain"],
             "flow": base["flow"],
-            "sgs": base["sgs"],
+            "sgs": sgs,
             "time": {
                 "integrator": self.base.time.integrator,
                 "dt_seconds": self.base.time.dt_seconds,
@@ -271,7 +451,12 @@ class CaseConfig:
                     self.concurrent.steps * self.base.time.dt_seconds
                 ),
             },
-            "concurrent": {"launch": self.concurrent.launch},
+            "concurrent": {
+                "launch": self.concurrent.launch,
+                "warmup_lasd_update_interval_steps": (
+                    self.base.sgs.update_interval_steps
+                ),
+            },
             "fringe": {
                 "start_x_m": self.fringe.start_x_m,
                 "relaxation_time_seconds": self.fringe.relaxation_time_seconds,
@@ -292,28 +477,8 @@ class CaseConfig:
                 ),
                 "relaxes_lasd_closure_memory": True,
             },
-            "turbine": {
-                "model": "uniform_pure_thrust_adm",
-                "location_m": list(self.turbine.location_m),
-                "diameter_m": self.turbine.diameter_m,
-                "hub_height_m": self.turbine.hub_height_m,
-                "thrust_coefficient": self.turbine.thrust_coefficient,
-                "local_thrust_coefficient": (
-                    self.turbine.local_thrust_coefficient
-                ),
-                "normal_smoothing_width_m": self.normal_smoothing_width_m,
-                "transverse_smoothing_width_m": (
-                    self.transverse_smoothing_width_m
-                ),
-                "filtered_velocity_correction": True,
-                "cells_across_rotor_y": self.rotor_cells_y,
-                "cells_across_rotor_z": self.rotor_cells_z,
-                "under_resolved_for_science": min(
-                    self.rotor_cells_y, self.rotor_cells_z
-                )
-                < 8.0,
-            },
-            "numerics": base["numerics"],
+            "turbine": turbine,
+            "numerics": numerics,
             "output": {
                 "directory": self.output.directory,
                 "log_every_steps": self.output.log_every_steps,
@@ -345,6 +510,64 @@ def load_case(path: str | Path) -> CaseConfig:
         warmup_case_path = warmup_case_path / "config.toml"
     warmup_checkpoint = _resolved_path(source, _string(warmup, "checkpoint"))
     base = load_warmup_case(warmup_case_path)
+    turbine_model = turbine.get("model", "uniform_pure_thrust_adm")
+    if turbine_model == "uniform_pure_thrust_adm":
+        turbine_config: TurbineConfig | RigidActuatorLineTurbineConfig = (
+            TurbineConfig(
+                location_m=_location(turbine),
+                diameter_m=_number(turbine, "diameter_m"),
+                hub_height_m=_number(turbine, "hub_height_m"),
+                thrust_coefficient=_number(
+                    turbine,
+                    "thrust_coefficient",
+                ),
+            )
+        )
+    elif turbine_model == "openfast_rigid_actuator_line":
+        openfast_input_file = _resolved_path(
+            source,
+            _string(turbine, "openfast_input_file"),
+        )
+        try:
+            openfast = load_openfast_rigid_turbine(openfast_input_file)
+        except OpenFASTInputError as error:
+            raise ConfigError(str(error)) from error
+        smoothing_width_m = (
+            2.0 * max(base.domain.dy_m, base.domain.dz_m)
+            if "smoothing_width_m" not in turbine
+            else _number(turbine, "smoothing_width_m")
+        )
+        turbine_config = RigidActuatorLineTurbineConfig(
+            location_m=_location(turbine),
+            openfast_input_file=openfast_input_file,
+            openfast=openfast,
+            smoothing_width_m=smoothing_width_m,
+            hub_height_override_m=_optional_number(
+                turbine,
+                "hub_height_m",
+            ),
+            rotor_speed_override_rpm=_optional_number(
+                turbine,
+                "rotor_speed_rpm",
+            ),
+            pitch_override_degrees=_optional_number(
+                turbine,
+                "pitch_degrees",
+            ),
+            yaw_override_degrees=_optional_number(
+                turbine,
+                "yaw_degrees",
+            ),
+            initial_azimuth_override_degrees=_optional_number(
+                turbine,
+                "initial_azimuth_degrees",
+            ),
+        )
+    else:
+        raise ConfigError(
+            "turbine.model must be 'uniform_pure_thrust_adm' or "
+            "'openfast_rigid_actuator_line'"
+        )
 
     return CaseConfig(
         runner=_string(case, "runner"),
@@ -354,6 +577,10 @@ def load_case(path: str | Path) -> CaseConfig:
         concurrent=ConcurrentConfig(
             steps=_integer(concurrent, "steps"),
             launch=_string(concurrent, "launch"),
+            lasd_update_interval_steps=_optional_integer(
+                concurrent,
+                "lasd_update_interval_steps",
+            ),
         ),
         fringe=FringeConfig(
             start_x_m=_number(fringe, "start_x_m"),
@@ -366,12 +593,7 @@ def load_case(path: str | Path) -> CaseConfig:
                 fringe, "maximum_residual_fraction"
             ),
         ),
-        turbine=TurbineConfig(
-            location_m=_location(turbine),
-            diameter_m=_number(turbine, "diameter_m"),
-            hub_height_m=_number(turbine, "hub_height_m"),
-            thrust_coefficient=_number(turbine, "thrust_coefficient"),
-        ),
+        turbine=turbine_config,
         output=OutputConfig(
             directory=_string(output, "directory"),
             log_every_steps=_integer(output, "log_every_steps"),

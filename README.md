@@ -34,7 +34,8 @@ implementations directly testable.
   Smagorinsky, and Lagrangian scale-dependent dynamic (LASD) closures;
 - Boussinesq buoyancy, prescribed scalar fluxes, and optional upper-level
   Rayleigh damping;
-- actuator-disk forcing and concurrent-precursor fringe coupling; and
+- actuator-disk and rigid blade-element actuator-line forcing, including an
+  OpenFAST input-deck adapter, plus concurrent-precursor fringe coupling; and
 - reference and per-rank checkpoints for dry and velocity-scalar states.
 
 The first production decomposition is an equal z slab. General meshes, uneven
@@ -92,6 +93,69 @@ without allocating a JAX state:
 ```bash
 jaxwind runners/pressure_driven_warmup --dry-run
 ```
+
+### OpenFAST rigid actuator line
+
+The concurrent turbine runner can build a fixed-operating-point actuator line
+directly from an ordinary OpenFAST primary input deck. The adapter follows its
+ElastoDyn, AeroDyn, blade, and airfoil references, so those files remain the
+source of truth:
+
+```toml
+[turbine]
+model = "openfast_rigid_actuator_line"
+location_m = [512.0, 512.0] # rotor-apex x and y in the LES domain
+openfast_input_file = "OpenFAST/5MW_Land_DLL_WTurb.fst"
+smoothing_width_m = 6.0
+
+# Optional fixed operating-point overrides:
+# rotor_speed_rpm = 9.0
+# pitch_degrees = 0.0
+# yaw_degrees = 0.0
+# hub_height_m = 90.0
+# initial_azimuth_degrees = 0.0
+```
+
+The first compatibility surface uses one identical rigid blade definition for
+all blades, `AFTabMod = 1`, and linear airfoil interpolation. It imports the
+OpenFAST initial rotor speed, pitch, yaw, shaft tilt, precone, azimuth, radii,
+chord, twist, airfoil assignment, and first Cl/Cd table. ElastoDyn flexibility,
+ServoDyn control, AeroDyn induction/dynamic wake, unsteady aerodynamics, and
+curved/swept blade geometry are not advanced. These omissions are written into
+the resolved case configuration rather than applied silently.
+
+### JAX-native modal aeroelastic actuator line
+
+The direct actuator-line runner supports JAX-native, two-way,
+small-deflection blade coupling using ordinary ElastoDyn `BldFile` inputs as
+data. OpenFAST is not linked or executed. Set the aeroelastic runner and enable
+the structural block:
+
+```toml
+[case]
+runner = "direct_aeroelastic_alm"
+
+[aeroelastic]
+enabled = true
+air_density_kg_m3 = 1.225
+gravity_m_s2 = 9.80665
+maximum_tip_deflection_m = 20.0
+```
+
+`FlapDOF1`, `FlapDOF2`, and `EdgeDOF` select the active per-blade modes. The
+adapter reads `NBlInpSt`, distributed `BMassDen`, `FlpStff`, `EdgStff`,
+structural twist, modal damping, adjustment factors, and the `BldFl1Sh`,
+`BldFl2Sh`, and `BldEdgSh` polynomial coefficients. Modal mass, elastic
+stiffness, prescribed-speed centrifugal stiffening, and damping matrices are
+assembled from those data.
+
+At every accepted CFD step, deformed positions, slopes, and structural
+velocities enter actuator-line sampling and force projection. Equal and
+opposite aerodynamic loads plus gravity are projected back to the structural
+modes and advanced with average-acceleration Newmark. The current coupling is
+explicit and partitioned. It does not yet reproduce OpenFAST tight-coupling
+iterations, tower/platform/drivetrain/generator/pitch/yaw motion, ServoDyn, or
+BeamDyn.
 
 ## Verify the installation
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+from dataclasses import replace
 import json
 import os
 from pathlib import Path
@@ -11,7 +12,7 @@ from typing import Any
 
 import numpy as np
 
-from .config import CaseConfig
+from .config import CaseConfig, RigidActuatorLineTurbineConfig, TurbineConfig
 from ..pressure_driven_warmup.runner import _configure_source_paths
 
 
@@ -26,6 +27,44 @@ def _directional_cfl(state, *, dt: float, grid, jnp) -> tuple[float, float, floa
         float(dt * jnp.max(jnp.abs(velocity.x.payload)) / grid.dx),
         float(dt * jnp.max(jnp.abs(velocity.y.payload)) / grid.dy),
         float(dt * jnp.max(jnp.abs(velocity.z.owned.payload)) / grid.dz),
+    )
+
+
+def _retune_lasd_interval(
+    state,
+    *,
+    target_fingerprint: str,
+    target_interval: int,
+    jnp,
+):
+    """Retag LASD memory at a shared, empty trajectory boundary."""
+
+    if state.clock.step % target_interval:
+        raise ValueError(
+            "LASD interval transition requires a target-interval boundary"
+        )
+    closure = state.fields.closure
+    trajectories = (
+        closure.momentum.trajectory_x,
+        closure.momentum.trajectory_y,
+        closure.momentum.trajectory_z,
+    )
+    if any(
+        float(jnp.max(jnp.abs(field.payload))) != 0.0
+        for field in trajectories
+    ):
+        raise ValueError(
+            "LASD interval transition requires empty trajectory accumulators"
+        )
+    return replace(
+        state,
+        fields=replace(
+            state.fields,
+            closure=replace(
+                closure,
+                configuration_fingerprint=target_fingerprint,
+            ),
+        ),
     )
 
 
@@ -85,7 +124,7 @@ def run_case(
     max_steps: int | None,
     overwrite: bool,
 ) -> dict[str, Any]:
-    """Advance a live precursor beside a pure-thrust ADM turbine domain."""
+    """Advance a live precursor beside a configured turbine domain."""
 
     _configure_source_paths()
     import jax
@@ -143,7 +182,9 @@ def run_case(
     from jaxwind.pressure import build_spectral_fd_pressure_adapter
 
     if jax.process_count() != 1:
-        raise RuntimeError("concurrent ADM currently supports one JAX process")
+        raise RuntimeError(
+            "concurrent turbine runner currently supports one JAX process"
+        )
     shard_count = jax.device_count()
     if case.base.domain.nz % shard_count:
         raise RuntimeError("nz must be divisible by the number of JAX devices")
@@ -217,7 +258,7 @@ def run_case(
     momentum_sgs = LagrangianScaleDependentDynamic(
         filter_grid_ratio=base.sgs.filter_grid_ratio,
         test_filter_ratio=base.sgs.test_filter_ratio,
-        update_interval=base.sgs.update_interval_steps,
+        update_interval=case.lasd_update_interval_steps,
         timescale_coefficient=base.sgs.timescale_coefficient,
         initial_coefficient=base.sgs.initial_coefficient,
         minimum_coefficient=base.sgs.minimum_coefficient,
@@ -260,11 +301,9 @@ def run_case(
         scales.to_execution_length(case.fringe.rise_width_m),
         scales.to_execution_length(case.fringe.fall_width_m),
     )
-    main_vector_field = WindTunnelBoussinesqVectorField(
-        algebra,
-        base_vector_field,
-        WindTunnelModel(
-            PureThrustActuatorDisk(
+    if isinstance(turbine, TurbineConfig):
+        turbine_model = WindTunnelModel(
+            actuator_disk=PureThrustActuatorDisk(
                 scales.to_execution_length(turbine.location_m[0]),
                 scales.to_execution_length(turbine.location_m[1]),
                 scales.to_execution_length(turbine.hub_height_m),
@@ -275,8 +314,29 @@ def run_case(
                 yaw_degrees=0.0,
                 filtered_velocity_correction=True,
             ),
-            concurrent_fringe,
-        ),
+            fringe=concurrent_fringe,
+        )
+    elif isinstance(turbine, RigidActuatorLineTurbineConfig):
+        turbine_model = WindTunnelModel(
+            fringe=concurrent_fringe,
+            actuator_line=turbine.openfast.to_actuator_line(
+                scales=scales,
+                x_m=turbine.location_m[0],
+                y_m=turbine.location_m[1],
+                smoothing_width_m=turbine.smoothing_width_m,
+                hub_height_m=turbine.hub_height_m,
+                rotor_speed_rpm=turbine.rotor_speed_rpm,
+                pitch_degrees=turbine.pitch_degrees,
+                yaw_degrees=turbine.yaw_degrees,
+                initial_azimuth_degrees=turbine.initial_azimuth_degrees,
+            ),
+        )
+    else:  # pragma: no cover - CaseConfig validates the closed choice.
+        raise TypeError("unsupported concurrent turbine configuration")
+    main_vector_field = WindTunnelBoussinesqVectorField(
+        algebra,
+        base_vector_field,
+        turbine_model,
     )
     integrator_config = AB2Config(
         scales.to_execution_time(base.time.dt_seconds)
@@ -287,6 +347,14 @@ def run_case(
         jnp.asarray,
     )
     closure_fingerprint = momentum_sgs.fingerprint + "|" + scalar_sgs.fingerprint
+    warmup_momentum_sgs = replace(
+        momentum_sgs,
+        update_interval=base.sgs.update_interval_steps,
+    )
+    warmup_closure_fingerprint = (
+        warmup_momentum_sgs.fingerprint + "|" + scalar_sgs.fingerprint
+    )
+    interval_transition = None
 
     if restart is None:
         precursor = load_boussinesq_checkpoint(
@@ -294,8 +362,23 @@ def run_case(
             layout=checkpoint_layout,
             config=integrator_config,
             scale_fingerprint=scales.fingerprint,
-            closure_fingerprint=closure_fingerprint,
+            closure_fingerprint=warmup_closure_fingerprint,
         )
+        if (
+            base.sgs.update_interval_steps
+            != case.lasd_update_interval_steps
+        ):
+            precursor = _retune_lasd_interval(
+                precursor,
+                target_fingerprint=closure_fingerprint,
+                target_interval=case.lasd_update_interval_steps,
+                jnp=jnp,
+            )
+            interval_transition = {
+                "from_steps": base.sgs.update_interval_steps,
+                "to_steps": case.lasd_update_interval_steps,
+                "at_step": precursor.clock.step,
+            }
         main = cold_start_boussinesq(
             precursor.fields,
             clock=precursor.clock,
@@ -311,15 +394,42 @@ def run_case(
             layout=checkpoint_layout,
             config=integrator_config,
             scale_fingerprint=scales.fingerprint,
-            closure_fingerprint=closure_fingerprint,
         )
         main = load_boussinesq_checkpoint(
             restart_dir / "main_checkpoint_latest.npz",
             layout=checkpoint_layout,
             config=integrator_config,
             scale_fingerprint=scales.fingerprint,
-            closure_fingerprint=closure_fingerprint,
         )
+        loaded_fingerprints = {
+            precursor.fields.closure.configuration_fingerprint,
+            main.fields.closure.configuration_fingerprint,
+        }
+        if loaded_fingerprints == {closure_fingerprint}:
+            pass
+        elif loaded_fingerprints == {warmup_closure_fingerprint}:
+            precursor = _retune_lasd_interval(
+                precursor,
+                target_fingerprint=closure_fingerprint,
+                target_interval=case.lasd_update_interval_steps,
+                jnp=jnp,
+            )
+            main = _retune_lasd_interval(
+                main,
+                target_fingerprint=closure_fingerprint,
+                target_interval=case.lasd_update_interval_steps,
+                jnp=jnp,
+            )
+            interval_transition = {
+                "from_steps": base.sgs.update_interval_steps,
+                "to_steps": case.lasd_update_interval_steps,
+                "at_step": precursor.clock.step,
+            }
+        else:
+            raise ValueError(
+                "paired checkpoint LASD fingerprints do not match the "
+                "warmup or active concurrent configuration"
+            )
         initial_source = str(restart_dir)
     paired = ConcurrentPrecursorState(precursor, main)
     initial_step = paired.precursor.clock.step
@@ -446,7 +556,7 @@ def run_case(
                 precursor_cfl = max(precursor_cfl_components)
                 main_cfl = max(main_cfl_components)
                 maximum_cfl = max(precursor_cfl, main_cfl)
-                lasd_cfl = maximum_cfl * base.sgs.update_interval_steps
+                lasd_cfl = maximum_cfl * case.lasd_update_interval_steps
                 if maximum_cfl >= base.numerics.cfl_abort:
                     raise RuntimeError(
                         f"CFL abort limit reached: {maximum_cfl:.4f} >= "
@@ -542,7 +652,9 @@ def run_case(
             "runtime_seconds": runtime_seconds,
             "field_samples_written": field_samples_written,
             "lasd_closure_fringe_enabled": True,
+            "lasd_interval_transition": interval_transition,
             "actuator_disk_enabled": main_diagnostic.actuator_disk_enabled,
+            "actuator_line_enabled": main_diagnostic.actuator_line_enabled,
             "concurrent_fringe_enabled": main_diagnostic.concurrent_fringe_enabled,
             **latest,
         },

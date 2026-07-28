@@ -15,6 +15,11 @@ from jaxwind.interpreters.jax_actuator_disk import (
     filtered_disk_velocity_correction,
     gaussian_convolved_annulus,
 )
+from jaxwind.interpreters.jax_actuator_line import (
+    actuator_line_deformed_kinematics,
+    blade_element_kinematic_forces,
+    gaussian_weights,
+)
 from jaxwind.interpreters.jax_fringe import plateau_fringe_mask
 
 from jaxwind.domain import (
@@ -88,9 +93,11 @@ from jaxwind.physics.lasd import (
     ScalarLasdMemory,
 )
 from jaxwind.physics.wind_tunnel import (
+    BladeElementActuatorLine,
     ConcurrentPrecursorEnvironment,
     ConcurrentPrecursorFringe,
     NoActuatorDisk,
+    NoActuatorLine,
     NoFringe,
     PureThrustActuatorDisk,
     WindTunnelModel,
@@ -178,6 +185,22 @@ class ZSlabBoussinesqContext:
     arrays: ZSlabScalarArrays
 
 
+class ActuatorLineDiagnostic(NamedTuple):
+    """Replicated per-element aerodynamic data from a z-slab evaluation."""
+
+    force_on_fluid_per_density: Any
+    positions: Any
+    tangents: Any
+    normals: Any
+    span_directions: Any
+    blade_velocity: Any
+    sampled_velocity: Any
+    alpha_degrees: Any
+    lift_coefficients: Any
+    drag_coefficients: Any
+    loss_factors: Any
+
+
 @dataclass(frozen=True, slots=True)
 class JaxZSlabInterpreter:
     """Higher-order JAX interpretation of the first equal z-slab topology."""
@@ -194,7 +217,10 @@ class JaxZSlabInterpreter:
     _filter_boundary: Callable
     _correct: Callable
     _ab2_update: Callable
+    _combine_payloads: Callable
+    _relax_lasd_field: Callable
     _wind_tunnel: Callable
+    _actuator_line: Callable
     _dry_flow_context: Callable
     _dry_advection: Callable
     _dry_wall: Callable
@@ -220,6 +246,66 @@ class JaxZSlabInterpreter:
             * self.decomposition.grid.ny
             * self.decomposition.grid.nx
         )
+
+    def actuator_line_diagnostic(
+        self,
+        velocity: VelocityVector,
+        line: BladeElementActuatorLine,
+        *,
+        time: float,
+    ) -> ActuatorLineDiagnostic:
+        """Evaluate moving-line loads and return one replicated shard copy."""
+
+        if not isinstance(line, BladeElementActuatorLine):
+            raise TypeError("actuator-line diagnostics require a blade line")
+        dtype = velocity.x.payload.dtype
+        point_count = line.blade_count * len(line.element_radii)
+
+        def deformation(values):
+            return (
+                jnp.asarray(values, dtype=dtype)
+                if values
+                else jnp.zeros((point_count,), dtype=dtype)
+            )
+
+        values = self._actuator_line(
+            velocity.x.payload,
+            velocity.y.payload,
+            velocity.z.owned.payload,
+            velocity.z.lower_boundary,
+            time,
+            line.x,
+            line.y,
+            line.z,
+            line.blade_count,
+            line.hub_radius,
+            line.tip_radius,
+            line.angular_velocity,
+            line.smoothing_width,
+            jnp.asarray(line.element_radii, dtype=dtype),
+            jnp.asarray(line.element_widths, dtype=dtype),
+            jnp.asarray(line.element_chords, dtype=dtype),
+            jnp.asarray(line.element_twist_degrees, dtype=dtype),
+            jnp.asarray(line.element_airfoil_ids, dtype=jnp.int32),
+            jnp.asarray(line.polar_alpha_degrees, dtype=dtype),
+            jnp.asarray(line.polar_lift_coefficients, dtype=dtype),
+            jnp.asarray(line.polar_drag_coefficients, dtype=dtype),
+            line.pitch_degrees,
+            line.yaw_degrees,
+            line.tilt_degrees,
+            line.precone_degrees,
+            line.initial_azimuth_degrees,
+            line.tip_loss,
+            line.root_loss,
+            deformation(line.element_flap_displacements),
+            deformation(line.element_edge_displacements),
+            deformation(line.element_flap_slopes),
+            deformation(line.element_edge_slopes),
+            deformation(line.element_flap_velocities),
+            deformation(line.element_edge_velocities),
+        )
+        replicated = tuple(value[0] for value in values[3:])
+        return ActuatorLineDiagnostic(*replicated)
 
     def halo_communicated_elements(
         self,
@@ -540,8 +626,10 @@ class JaxZSlabInterpreter:
                 or current.regions != target_field.regions
             ):
                 raise ValueError("main and precursor LASD fields do not align")
-            payload = current.payload + blend * (
-                target_field.payload - current.payload
+            payload = self._relax_lasd_field(
+                current.payload,
+                target_field.payload,
+                blend,
             )
             return self._addressable_closure_field(
                 current,
@@ -913,9 +1001,8 @@ class JaxZSlabInterpreter:
             Cell,
             self._expected_regions(Cell),
             Evaluated,
-            sum(
-                (term.payload for term in tendencies),
-                jnp.zeros_like(first.payload),
+            self._combine_payloads(
+                tuple(term.payload for term in tendencies)
             ),
         )
 
@@ -1056,8 +1143,9 @@ class JaxZSlabInterpreter:
         velocity: VelocityVector,
         model: WindTunnelModel,
         environment: Any,
+        evaluation_time: Any | None = None,
     ) -> VelocityVector:
-        """Evaluate distributed pure-thrust ADM and precursor fringe forcing."""
+        """Evaluate distributed turbine and precursor-fringe forcing."""
         if not isinstance(model, WindTunnelModel):
             raise TypeError("unsupported wind-tunnel model")
         self._validate_velocity_cell(velocity.x, XVelocity)
@@ -1138,6 +1226,61 @@ class JaxZSlabInterpreter:
             *disk_parameters,
             *fringe_parameters,
         )
+        line = model.actuator_line
+        if isinstance(line, BladeElementActuatorLine):
+            dtype = velocity.x.payload.dtype
+            time = 0.0 if evaluation_time is None else evaluation_time.time
+            point_count = line.blade_count * len(line.element_radii)
+
+            def deformation(values):
+                return (
+                    jnp.asarray(values, dtype=dtype)
+                    if values
+                    else jnp.zeros((point_count,), dtype=dtype)
+                )
+
+            line_values = self._actuator_line(
+                velocity.x.payload,
+                velocity.y.payload,
+                velocity.z.owned.payload,
+                velocity.z.lower_boundary,
+                time,
+                line.x,
+                line.y,
+                line.z,
+                line.blade_count,
+                line.hub_radius,
+                line.tip_radius,
+                line.angular_velocity,
+                line.smoothing_width,
+                jnp.asarray(line.element_radii, dtype=dtype),
+                jnp.asarray(line.element_widths, dtype=dtype),
+                jnp.asarray(line.element_chords, dtype=dtype),
+                jnp.asarray(line.element_twist_degrees, dtype=dtype),
+                jnp.asarray(line.element_airfoil_ids, dtype=jnp.int32),
+                jnp.asarray(line.polar_alpha_degrees, dtype=dtype),
+                jnp.asarray(line.polar_lift_coefficients, dtype=dtype),
+                jnp.asarray(line.polar_drag_coefficients, dtype=dtype),
+                line.pitch_degrees,
+                line.yaw_degrees,
+                line.tilt_degrees,
+                line.precone_degrees,
+                line.initial_azimuth_degrees,
+                line.tip_loss,
+                line.root_loss,
+                deformation(line.element_flap_displacements),
+                deformation(line.element_edge_displacements),
+                deformation(line.element_flap_slopes),
+                deformation(line.element_edge_slopes),
+                deformation(line.element_flap_velocities),
+                deformation(line.element_edge_velocities),
+            )
+            line_x, line_y, line_z = line_values[:3]
+            x = x + line_x
+            y = y + line_y
+            z = z + line_z
+        elif not isinstance(line, NoActuatorLine):
+            raise TypeError("unsupported actuator-line choice")
         return self._dry_tendency(x, y, z)
 
     def combine_tendencies(
@@ -1163,19 +1306,17 @@ class JaxZSlabInterpreter:
             ):
                 raise TypeError("combined tendencies must preserve component dtypes")
         return self._dry_tendency(
-            sum(
-                (term.x.payload for term in tendencies), jnp.zeros_like(first.x.payload)
+            self._combine_payloads(
+                tuple(term.x.payload for term in tendencies)
             ),
-            sum(
-                (term.y.payload for term in tendencies), jnp.zeros_like(first.y.payload)
+            self._combine_payloads(
+                tuple(term.y.payload for term in tendencies)
             ),
-            sum(
-                (term.z.owned.payload for term in tendencies),
-                jnp.zeros_like(first.z.owned.payload),
+            self._combine_payloads(
+                tuple(term.z.owned.payload for term in tendencies)
             ),
-            sum(
-                (term.z.lower_boundary for term in tendencies),
-                jnp.zeros_like(first.z.lower_boundary),
+            self._combine_payloads(
+                tuple(term.z.lower_boundary for term in tendencies)
             ),
         )
 
@@ -2834,6 +2975,15 @@ def build_zslab_interpreter(
             + previous_coefficient * previous_tendency
         )
 
+    def combine_payloads_local(payloads):
+        total = payloads[0]
+        for payload in payloads[1:]:
+            total = total + payload
+        return total
+
+    def relax_lasd_field_local(current, target, blend):
+        return current + blend * (target - current)
+
     def wind_tunnel_local(
         u,
         v,
@@ -2962,6 +3112,262 @@ def build_zslab_interpreter(
         source_w = rate[None, None, :] * (target_w_upper - w_upper)
         return source_u, source_v, source_w
 
+    def actuator_line_local(
+        u,
+        v,
+        w_upper,
+        w_lower_boundary,
+        time,
+        line_x,
+        line_y,
+        line_z,
+        blade_count,
+        hub_radius,
+        tip_radius,
+        angular_velocity,
+        smoothing_width,
+        element_radii,
+        element_widths,
+        element_chords,
+        element_twist_degrees,
+        element_airfoil_ids,
+        polar_alpha_degrees,
+        polar_lift_coefficients,
+        polar_drag_coefficients,
+        pitch_degrees,
+        yaw_degrees,
+        tilt_degrees,
+        precone_degrees,
+        initial_azimuth_degrees,
+        tip_loss,
+        root_loss,
+        flap_displacements,
+        edge_displacements,
+        flap_slopes,
+        edge_slopes,
+        flap_velocities,
+        edge_velocities,
+    ):
+        """Sample and spread rigid or modal actuator lines across the z mesh."""
+
+        dtype = u.dtype
+        positions, tangents, blade_velocity, normal, span_directions = (
+            actuator_line_deformed_kinematics(
+                x=line_x,
+                y=line_y,
+                z=line_z,
+                blade_count=blade_count,
+                element_radii=element_radii,
+                angular_velocity=angular_velocity,
+                time=time,
+                yaw_degrees=yaw_degrees,
+                tilt_degrees=tilt_degrees,
+                precone_degrees=precone_degrees,
+                initial_azimuth_degrees=initial_azimuth_degrees,
+                flap_displacements=flap_displacements,
+                edge_displacements=edge_displacements,
+                flap_slopes=flap_slopes,
+                edge_slopes=edge_slopes,
+                flap_velocities=flap_velocities,
+                edge_velocities=edge_velocities,
+                dtype=dtype,
+            )
+        )
+        local_nz = u.shape[0]
+        shard_index = lax.axis_index(axis_name)
+        x_coordinates = (
+            jnp.arange(grid.nx, dtype=dtype) + 0.5
+        ) * grid.dx
+        y_coordinates = (
+            jnp.arange(grid.ny, dtype=dtype) + 0.5
+        ) * grid.dy
+        global_cell_index = (
+            shard_index * local_nz
+            + jnp.arange(local_nz, dtype=dtype)
+        )
+        z_cell_coordinates = (global_cell_index + 0.5) * grid.dz
+        z_upper_coordinates = (global_cell_index + 1.0) * grid.dz
+
+        weights_x = gaussian_weights(
+            positions[:, 0],
+            x_coordinates,
+            smoothing_width=smoothing_width,
+            period=grid.lx,
+        )
+        weights_y = gaussian_weights(
+            positions[:, 1],
+            y_coordinates,
+            smoothing_width=smoothing_width,
+            period=grid.ly,
+        )
+        width = jnp.asarray(smoothing_width, dtype=dtype)
+        raw_z_cells = jnp.exp(
+            -(
+                (z_cell_coordinates[None, :] - positions[:, 2, None])
+                / width
+            )
+            ** 2
+        )
+        cell_denominator = lax.psum(
+            jnp.sum(raw_z_cells, axis=1),
+            axis_name,
+        )
+        weights_z_cells = raw_z_cells / jnp.maximum(
+            cell_denominator[:, None],
+            jnp.finfo(dtype).tiny,
+        )
+
+        raw_z_upper = jnp.exp(
+            -(
+                (z_upper_coordinates[None, :] - positions[:, 2, None])
+                / width
+            )
+            ** 2
+        )
+        raw_lower_boundary = jnp.exp(
+            -(positions[:, 2] / width) ** 2
+        )
+        face_denominator = lax.psum(
+            jnp.sum(raw_z_upper, axis=1)
+            + jnp.where(
+                shard_index == 0,
+                raw_lower_boundary,
+                jnp.zeros_like(raw_lower_boundary),
+            ),
+            axis_name,
+        )
+        weights_z_upper = raw_z_upper / jnp.maximum(
+            face_denominator[:, None],
+            jnp.finfo(dtype).tiny,
+        )
+        weights_z_lower = raw_lower_boundary / jnp.maximum(
+            face_denominator,
+            jnp.finfo(dtype).tiny,
+        )
+
+        sampled_u_local = jnp.einsum(
+            "pz,py,px,zyx->p",
+            weights_z_cells,
+            weights_y,
+            weights_x,
+            u,
+            optimize="optimal",
+        )
+        sampled_v_local = jnp.einsum(
+            "pz,py,px,zyx->p",
+            weights_z_cells,
+            weights_y,
+            weights_x,
+            v,
+            optimize="optimal",
+        )
+        sampled_w_local = jnp.einsum(
+            "pz,py,px,zyx->p",
+            weights_z_upper,
+            weights_y,
+            weights_x,
+            w_upper,
+            optimize="optimal",
+        )
+        sampled_w_lower = jnp.einsum(
+            "p,py,px,yx->p",
+            weights_z_lower,
+            weights_y,
+            weights_x,
+            w_lower_boundary,
+            optimize="optimal",
+        )
+        sampled_local = jnp.stack(
+            (
+                sampled_u_local,
+                sampled_v_local,
+                sampled_w_local
+                + jnp.where(
+                    shard_index == 0,
+                    sampled_w_lower,
+                    jnp.zeros_like(sampled_w_lower),
+                ),
+            ),
+            axis=1,
+        )
+        sampled = lax.psum(sampled_local, axis_name)
+        repeat = blade_count
+        forces, alpha, lift, drag, loss = blade_element_kinematic_forces(
+            sampled,
+            tangents,
+            jnp.zeros((positions.shape[0],), dtype=dtype),
+            normal,
+            element_radii=jnp.tile(element_radii, repeat),
+            element_widths=jnp.tile(element_widths, repeat),
+            element_chords=jnp.tile(element_chords, repeat),
+            element_twist_degrees=jnp.tile(
+                element_twist_degrees,
+                repeat,
+            ),
+            element_airfoil_ids=jnp.tile(
+                element_airfoil_ids,
+                repeat,
+            ),
+            blade_count=blade_count,
+            hub_radius=hub_radius,
+            tip_radius=tip_radius,
+            pitch_degrees=pitch_degrees,
+            polar_alpha_degrees=polar_alpha_degrees,
+            polar_lift_coefficients=polar_lift_coefficients,
+            polar_drag_coefficients=polar_drag_coefficients,
+            tip_loss=tip_loss,
+            root_loss=root_loss,
+            blade_velocity=blade_velocity,
+        )
+        inverse_cell_volume = 1.0 / (grid.dx * grid.dy * grid.dz)
+        source_x = inverse_cell_volume * jnp.einsum(
+            "p,pz,py,px->zyx",
+            forces[:, 0],
+            weights_z_cells,
+            weights_y,
+            weights_x,
+            optimize="optimal",
+        )
+        source_y = inverse_cell_volume * jnp.einsum(
+            "p,pz,py,px->zyx",
+            forces[:, 1],
+            weights_z_cells,
+            weights_y,
+            weights_x,
+            optimize="optimal",
+        )
+        source_z = inverse_cell_volume * jnp.einsum(
+            "p,pz,py,px->zyx",
+            forces[:, 2],
+            weights_z_upper,
+            weights_y,
+            weights_x,
+            optimize="optimal",
+        )
+        source_z = source_z.at[-1].set(
+            jnp.where(
+                shard_index == shard_count - 1,
+                0.0,
+                source_z[-1],
+            )
+        )
+        return (
+            source_x,
+            source_y,
+            source_z,
+            forces,
+            positions,
+            tangents,
+            normal,
+            span_directions,
+            blade_velocity,
+            sampled,
+            alpha,
+            lift,
+            drag,
+            loss,
+        )
+
     mapped = partial(jax.pmap, axis_name=axis_name, axis_size=shard_count)
     exchange_packed = mapped(exchange_local)
     pressure_gradient = mapped(pressure_gradient_local, in_axes=(0, None))
@@ -2981,9 +3387,20 @@ def build_zslab_interpreter(
         ab2_update_local,
         in_axes=(0, 0, 0, None, None, None),
     )
+    # Stage composite elementwise expressions once so Python composition does
+    # not dispatch one full-grid GPU program for every arithmetic operator.
+    combine_payloads = jax.jit(combine_payloads_local)
+    relax_lasd_field = jax.jit(relax_lasd_field_local)
     wind_tunnel = mapped(
         wind_tunnel_local,
         in_axes=(0, 0, 0, 0, 0, 0) + (None,) * 16,
+        # Geometry and fringe parameters are invariant throughout a case.
+        static_broadcasted_argnums=tuple(range(6, 22)),
+    )
+    actuator_line = mapped(
+        actuator_line_local,
+        in_axes=(0, 0, 0) + (None,) * 31,
+        static_broadcasted_argnums=(8,),
     )
     dry_flow_context = mapped(
         dry_flow_context_local,
@@ -3077,7 +3494,10 @@ def build_zslab_interpreter(
         jax.jit(filter_boundary),
         correct,
         ab2_update,
+        combine_payloads,
+        relax_lasd_field,
         wind_tunnel,
+        actuator_line,
         dry_flow_context,
         dry_advection,
         dry_wall,

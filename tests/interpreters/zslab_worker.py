@@ -19,11 +19,24 @@ from jaxwind.domain import (  # noqa: E402
     MeshAxis,
     MeshTopology,
     PressureCorrection,
+    Projected,
     UniformGrid,
     VerticalBoundary,
+    VerticalVelocity,
+    XVelocity,
+    YVelocity,
+    ZFace,
 )
 from jaxwind.interpreters import jax_reference  # noqa: E402
-from jaxwind.interpreters.jax_zslab import build_zslab_interpreter  # noqa: E402
+from jaxwind.interpreters.jax_zslab import (  # noqa: E402
+    ZFaceFieldContext,
+    build_zslab_interpreter,
+)
+from jaxwind.operators import VelocityVector  # noqa: E402
+from jaxwind.physics import (  # noqa: E402
+    BladeElementActuatorLine,
+    WindTunnelModel,
+)
 
 
 def main() -> int:
@@ -98,6 +111,141 @@ def main() -> int:
         grid.nx,
     )
 
+    z_face = jnp.arange(grid.nz + 1, dtype=dtype)[:, None, None]
+    global_u = 2.0 + 0.02 * x + 0.03 * y + 0.01 * z
+    global_v = -0.1 + 0.01 * x - 0.02 * y + 0.0 * z
+    global_w = 0.01 * x + 0.02 * y + 0.015 * z_face
+    reference_velocity = VelocityVector(
+        Field(
+            XVelocity,
+            Cell,
+            GlobalTestRegion(grid, Cell),
+            Projected,
+            global_u,
+        ),
+        Field(
+            YVelocity,
+            Cell,
+            GlobalTestRegion(grid, Cell),
+            Projected,
+            global_v,
+        ),
+        Field(
+            VerticalVelocity,
+            ZFace,
+            GlobalTestRegion(grid, ZFace),
+            Projected,
+            global_w,
+        ),
+    )
+    distributed_velocity = VelocityVector(
+        AddressableField(
+            XVelocity,
+            Cell,
+            decomposition.regions(Cell),
+            Projected,
+            global_u.reshape(
+                args.devices,
+                local_z,
+                grid.ny,
+                grid.nx,
+            ),
+        ),
+        AddressableField(
+            YVelocity,
+            Cell,
+            decomposition.regions(Cell),
+            Projected,
+            global_v.reshape(
+                args.devices,
+                local_z,
+                grid.ny,
+                grid.nx,
+            ),
+        ),
+        ZFaceFieldContext(
+            AddressableField(
+                VerticalVelocity,
+                ZFace,
+                decomposition.regions(ZFace),
+                Projected,
+                global_w[1:].reshape(
+                    args.devices,
+                    local_z,
+                    grid.ny,
+                    grid.nx,
+                ),
+            ),
+            global_w[0],
+        ),
+    )
+    line = BladeElementActuatorLine(
+        x=2.0,
+        y=1.5,
+        z=2.0,
+        blade_count=3,
+        hub_radius=0.25,
+        tip_radius=1.25,
+        angular_velocity=1.5,
+        smoothing_width=0.45,
+        element_radii=(0.25, 0.75, 1.25),
+        element_widths=(0.25, 0.5, 0.25),
+        element_chords=(0.2, 0.15, 0.1),
+        element_twist_degrees=(8.0, 4.0, 0.0),
+        element_airfoil_ids=(0, 0, 0),
+        polar_alpha_degrees=(-180.0, 0.0, 180.0),
+        polar_lift_coefficients=((0.0, 0.0, 0.0),),
+        polar_drag_coefficients=((0.1, 0.1, 0.1),),
+        tip_loss=False,
+        root_loss=False,
+    )
+    line_model = WindTunnelModel(actuator_line=line)
+    reference_line = jax_reference.JaxReferenceProjection().wind_tunnel_tendency(
+        reference_velocity,
+        line_model,
+        None,
+    )
+    distributed_line = interpreter.wind_tunnel_tendency(
+        distributed_velocity,
+        line_model,
+        None,
+    )
+    line_errors = (
+        jnp.max(
+            jnp.abs(
+                distributed_line.x.payload
+                - reference_line.x.payload.reshape(
+                    args.devices,
+                    local_z,
+                    grid.ny,
+                    grid.nx,
+                )
+            )
+        ),
+        jnp.max(
+            jnp.abs(
+                distributed_line.y.payload
+                - reference_line.y.payload.reshape(
+                    args.devices,
+                    local_z,
+                    grid.ny,
+                    grid.nx,
+                )
+            )
+        ),
+        jnp.max(
+            jnp.abs(
+                distributed_line.z.owned.payload
+                - reference_line.z.payload[1:].reshape(
+                    args.devices,
+                    local_z,
+                    grid.ny,
+                    grid.nx,
+                )
+            )
+        ),
+    )
+
     packed = jnp.stack((sharded_pressure, 2.0 * sharded_pressure), axis=1)
     halo = interpreter.exchange_packed(packed)
     halo.lower.block_until_ready()
@@ -114,6 +262,10 @@ def main() -> int:
         "divergence_error": float(
             jnp.max(jnp.abs(distributed_laplacian.payload - expected_laplacian))
         ),
+        "actuator_line_error": float(jnp.max(jnp.asarray(line_errors))),
+        "actuator_line_component_errors": [
+            float(value) for value in line_errors
+        ],
         "lower_halo_error": float(jnp.max(jnp.abs(halo.lower - expected_lower))),
         "upper_halo_error": float(jnp.max(jnp.abs(halo.upper - expected_upper))),
         "halo_shape_stable": (
@@ -128,8 +280,14 @@ def main() -> int:
             interpreter.halo_communicated_elements(packed.shape[1], shard)
             for shard in range(args.devices)
         ],
-        "lower_flags": [bool(value) for value in jax.device_get(halo.lower_is_physical)],
-        "upper_flags": [bool(value) for value in jax.device_get(halo.upper_is_physical)],
+        "lower_flags": [
+            bool(value)
+            for value in jax.device_get(halo.lower_is_physical)
+        ],
+        "upper_flags": [
+            bool(value)
+            for value in jax.device_get(halo.upper_is_physical)
+        ],
         "extract_identity": distributed_gradient.extract_owned()
         is distributed_gradient.owned,
     }

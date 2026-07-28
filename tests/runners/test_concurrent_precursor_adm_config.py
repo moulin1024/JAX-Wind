@@ -46,6 +46,7 @@ def test_dtu_smoke_case_reuses_the_warmup_and_derives_adm_parameters() -> None:
         case.base.domain.nz,
     ) == (128, 64, 256)
     assert case.concurrent.steps == 2
+    assert case.lasd_update_interval_steps == 4
     assert case.output.field_sample_every_steps is None
     assert case.fringe.relaxation_time_seconds == 4.0
     assert case.fringe_plateau_width_m == 256.0
@@ -92,6 +93,12 @@ def test_dtu_one_hour_case_samples_velocity_every_ten_seconds() -> None:
 
     assert case.concurrent.steps == 36_000
     assert case.concurrent.launch == "serial"
+    assert case.base.sgs.update_interval_steps == 4
+    assert case.concurrent.lasd_update_interval_steps == 8
+    assert case.lasd_update_interval_steps == 8
+    assert case.estimated_lasd_trajectory_cfl == pytest.approx(
+        0.7068636024872894
+    )
     assert case.base.time.dt_seconds == 0.1
     assert case.output.field_sample_every_steps == 100
     assert (
@@ -100,6 +107,9 @@ def test_dtu_one_hour_case_samples_velocity_every_ten_seconds() -> None:
     assert (
         case.concurrent.steps // case.output.field_sample_every_steps
     ) == 360
+    resolved = case.resolved()
+    assert resolved["sgs"]["update_interval_steps"] == 8
+    assert resolved["concurrent"]["warmup_lasd_update_interval_steps"] == 4
 
 
 def test_case_rejects_a_fringe_that_cannot_meet_its_attenuation_target() -> None:

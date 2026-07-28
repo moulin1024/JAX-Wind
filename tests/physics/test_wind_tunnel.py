@@ -36,6 +36,7 @@ from jaxwind.interpreters.jax_zslab import (  # noqa: E402
 )
 from jaxwind.operators import VelocityVector  # noqa: E402
 from jaxwind.physics import (  # noqa: E402
+    BladeElementActuatorLine,
     BoussinesqFields,
     BoussinesqTendency,
     ConcurrentPrecursorEnvironment,
@@ -208,6 +209,69 @@ class WindTunnelForcingTests(unittest.TestCase):
         self.assertLess(float(jnp.sum(tendency.x.payload)), 0.0)
         self.assertEqual(float(jnp.max(jnp.abs(tendency.y.payload))), 0.0)
         self.assertEqual(float(jnp.max(jnp.abs(tendency.z.payload))), 0.0)
+
+    def test_reference_and_zslab_actuator_lines_commute(self) -> None:
+        line = BladeElementActuatorLine(
+            x=3.5,
+            y=3.0,
+            z=2.0,
+            blade_count=3,
+            hub_radius=0.25,
+            tip_radius=1.0,
+            angular_velocity=2.0,
+            smoothing_width=0.5,
+            element_radii=(0.25, 0.625, 1.0),
+            element_widths=(0.1875, 0.375, 0.1875),
+            element_chords=(0.2, 0.15, 0.1),
+            element_twist_degrees=(8.0, 4.0, 0.0),
+            element_airfoil_ids=(0, 0, 0),
+            polar_alpha_degrees=(-180.0, 0.0, 180.0),
+            polar_lift_coefficients=((0.0, 0.0, 0.0),),
+            polar_drag_coefficients=((0.1, 0.1, 0.1),),
+            tip_loss=False,
+            root_loss=False,
+        )
+        velocity = self.reference_velocity(
+            jnp.full_like(self.u, 2.0),
+            jnp.zeros_like(self.v),
+            jnp.zeros_like(self.w),
+        )
+        reference = JaxReferenceProjection().wind_tunnel_tendency(
+            velocity,
+            WindTunnelModel(actuator_line=line),
+            None,
+        )
+
+        decomposition = EqualZSlab(
+            self.grid,
+            MeshTopology((MeshAxis("z", 1),)),
+            DistributionSpec.z_slab(),
+        )
+        production = build_zslab_interpreter(
+            decomposition,
+            addressable_shards=(0,),
+        ).wind_tunnel_tendency(
+            self.zslab_velocity(
+                jnp.full_like(self.u, 2.0),
+                jnp.zeros_like(self.v),
+                jnp.zeros_like(self.w),
+            ),
+            WindTunnelModel(actuator_line=line),
+            None,
+        )
+
+        errors = (
+            jnp.max(jnp.abs(reference.x.payload - production.x.payload[0])),
+            jnp.max(jnp.abs(reference.y.payload - production.y.payload[0])),
+            jnp.max(
+                jnp.abs(
+                    reference.z.payload[1:]
+                    - production.z.owned.payload[0]
+                )
+            ),
+        )
+        self.assertLess(max(float(value) for value in errors), 2.0e-12)
+        self.assertLess(float(jnp.sum(reference.x.payload)), 0.0)
 
     def test_disk_projection_conserves_thrust_after_grid_translation(self) -> None:
         velocity = self.reference_velocity(

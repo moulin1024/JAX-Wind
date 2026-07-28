@@ -18,6 +18,11 @@ from jaxwind.interpreters.jax_actuator_disk import (
     filtered_disk_velocity_correction,
     gaussian_convolved_annulus,
 )
+from jaxwind.interpreters.jax_actuator_line import (
+    actuator_line_deformed_kinematics,
+    blade_element_kinematic_forces,
+    gaussian_weights,
+)
 from jaxwind.interpreters.jax_fringe import plateau_fringe_mask
 
 from jaxwind.domain import (
@@ -91,9 +96,11 @@ from jaxwind.physics.lasd import (
     ScalarLasdMemory,
 )
 from jaxwind.physics.wind_tunnel import (
+    BladeElementActuatorLine,
     ConcurrentPrecursorEnvironment,
     ConcurrentPrecursorFringe,
     NoActuatorDisk,
+    NoActuatorLine,
     NoFringe,
     PureThrustActuatorDisk,
     WindTunnelModel,
@@ -1805,8 +1812,9 @@ class JaxReferenceProjection:
         velocity: VelocityVector,
         model: WindTunnelModel,
         environment: Any,
+        evaluation_time: Any | None = None,
     ) -> VelocityVector:
-        """Evaluate pure-thrust ADM and concurrent fringe on a tiny grid."""
+        """Evaluate turbine and concurrent-fringe forcing on a tiny grid."""
         if not isinstance(model, WindTunnelModel):
             raise TypeError("unsupported wind-tunnel model")
         x_ownership = _require_velocity_component(velocity.x, XVelocity)
@@ -1888,6 +1896,170 @@ class JaxReferenceProjection:
             source_y = source_y + acceleration * normal_y
         elif not isinstance(disk, NoActuatorDisk):
             raise TypeError("unsupported actuator-disk choice")
+
+        line = model.actuator_line
+        if isinstance(line, BladeElementActuatorLine):
+            dtype = velocity.x.payload.dtype
+            time = 0.0 if evaluation_time is None else evaluation_time.time
+            point_count = line.blade_count * len(line.element_radii)
+
+            def deformation(values):
+                return (
+                    jnp.asarray(values, dtype=dtype)
+                    if values
+                    else jnp.zeros((point_count,), dtype=dtype)
+                )
+
+            positions, tangents, blade_velocity, normal, _ = (
+                actuator_line_deformed_kinematics(
+                    x=line.x,
+                    y=line.y,
+                    z=line.z,
+                    blade_count=line.blade_count,
+                    element_radii=line.element_radii,
+                    angular_velocity=line.angular_velocity,
+                    time=time,
+                    yaw_degrees=line.yaw_degrees,
+                    tilt_degrees=line.tilt_degrees,
+                    precone_degrees=line.precone_degrees,
+                    initial_azimuth_degrees=line.initial_azimuth_degrees,
+                    flap_displacements=deformation(
+                        line.element_flap_displacements
+                    ),
+                    edge_displacements=deformation(
+                        line.element_edge_displacements
+                    ),
+                    flap_slopes=deformation(line.element_flap_slopes),
+                    edge_slopes=deformation(line.element_edge_slopes),
+                    flap_velocities=deformation(
+                        line.element_flap_velocities
+                    ),
+                    edge_velocities=deformation(
+                        line.element_edge_velocities
+                    ),
+                    dtype=dtype,
+                )
+            )
+            x = (jnp.arange(grid.nx, dtype=dtype) + 0.5) * grid.dx
+            y = (jnp.arange(grid.ny, dtype=dtype) + 0.5) * grid.dy
+            z_cells = (jnp.arange(grid.nz, dtype=dtype) + 0.5) * grid.dz
+            z_faces = jnp.arange(grid.nz + 1, dtype=dtype) * grid.dz
+            weights_x = gaussian_weights(
+                positions[:, 0],
+                x,
+                smoothing_width=line.smoothing_width,
+                period=grid.lx,
+            )
+            weights_y = gaussian_weights(
+                positions[:, 1],
+                y,
+                smoothing_width=line.smoothing_width,
+                period=grid.ly,
+            )
+            weights_z_cells = gaussian_weights(
+                positions[:, 2],
+                z_cells,
+                smoothing_width=line.smoothing_width,
+            )
+            weights_z_faces = gaussian_weights(
+                positions[:, 2],
+                z_faces,
+                smoothing_width=line.smoothing_width,
+            )
+            sampled = jnp.stack(
+                (
+                    jnp.einsum(
+                        "pz,py,px,zyx->p",
+                        weights_z_cells,
+                        weights_y,
+                        weights_x,
+                        velocity.x.payload,
+                        optimize="optimal",
+                    ),
+                    jnp.einsum(
+                        "pz,py,px,zyx->p",
+                        weights_z_cells,
+                        weights_y,
+                        weights_x,
+                        velocity.y.payload,
+                        optimize="optimal",
+                    ),
+                    jnp.einsum(
+                        "pz,py,px,zyx->p",
+                        weights_z_faces,
+                        weights_y,
+                        weights_x,
+                        velocity.z.payload,
+                        optimize="optimal",
+                    ),
+                ),
+                axis=1,
+            )
+            repeat = line.blade_count
+            forces, _, _, _, _ = blade_element_kinematic_forces(
+                sampled,
+                tangents,
+                jnp.zeros((point_count,), dtype=dtype),
+                normal,
+                element_radii=jnp.tile(
+                    jnp.asarray(line.element_radii, dtype=dtype),
+                    repeat,
+                ),
+                element_widths=jnp.tile(
+                    jnp.asarray(line.element_widths, dtype=dtype),
+                    repeat,
+                ),
+                element_chords=jnp.tile(
+                    jnp.asarray(line.element_chords, dtype=dtype),
+                    repeat,
+                ),
+                element_twist_degrees=jnp.tile(
+                    jnp.asarray(line.element_twist_degrees, dtype=dtype),
+                    repeat,
+                ),
+                element_airfoil_ids=jnp.tile(
+                    jnp.asarray(line.element_airfoil_ids, dtype=jnp.int32),
+                    repeat,
+                ),
+                blade_count=line.blade_count,
+                hub_radius=line.hub_radius,
+                tip_radius=line.tip_radius,
+                pitch_degrees=line.pitch_degrees,
+                polar_alpha_degrees=line.polar_alpha_degrees,
+                polar_lift_coefficients=line.polar_lift_coefficients,
+                polar_drag_coefficients=line.polar_drag_coefficients,
+                tip_loss=line.tip_loss,
+                root_loss=line.root_loss,
+                blade_velocity=blade_velocity,
+            )
+            inverse_cell_volume = 1.0 / (grid.dx * grid.dy * grid.dz)
+            source_x = source_x + inverse_cell_volume * jnp.einsum(
+                "p,pz,py,px->zyx",
+                forces[:, 0],
+                weights_z_cells,
+                weights_y,
+                weights_x,
+                optimize="optimal",
+            )
+            source_y = source_y + inverse_cell_volume * jnp.einsum(
+                "p,pz,py,px->zyx",
+                forces[:, 1],
+                weights_z_cells,
+                weights_y,
+                weights_x,
+                optimize="optimal",
+            )
+            source_z = source_z + inverse_cell_volume * jnp.einsum(
+                "p,pz,py,px->zyx",
+                forces[:, 2],
+                weights_z_faces,
+                weights_y,
+                weights_x,
+                optimize="optimal",
+            )
+            source_z = source_z.at[0].set(0.0).at[-1].set(0.0)
+        elif not isinstance(line, NoActuatorLine):
+            raise TypeError("unsupported actuator-line choice")
 
         fringe = model.fringe
         if isinstance(fringe, ConcurrentPrecursorFringe):

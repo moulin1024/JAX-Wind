@@ -26,7 +26,17 @@ def get_runner(name: str) -> RunnerDefinition:
         from .pressure_driven_warmup import load_case, run_case
 
         return RunnerDefinition(load_case=load_case, run_case=run_case)
-    available = "concurrent_precursor_adm, pressure_driven_warmup"
+    if name in (
+        "direct_rigid_alm",
+        "direct_aeroelastic_alm",
+    ):
+        from .direct_rigid_alm import load_case, run_case
+
+        return RunnerDefinition(load_case=load_case, run_case=run_case)
+    available = (
+        "concurrent_precursor_adm, direct_aeroelastic_alm, "
+        "direct_rigid_alm, pressure_driven_warmup"
+    )
     raise ValueError(f"unknown runner {name!r}; available runners: {available}")
 
 

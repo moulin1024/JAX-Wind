@@ -43,6 +43,7 @@ class JaxZSlabCommutingTests(unittest.TestCase):
                 tolerance = 3.0e-6 if dtype == "float32" else 2.0e-13
                 self.assertLess(result["gradient_error"], tolerance)
                 self.assertLess(result["divergence_error"], tolerance)
+                self.assertLess(result["actuator_line_error"], tolerance)
                 self.assertEqual(result["lower_halo_error"], 0.0)
                 self.assertEqual(result["upper_halo_error"], 0.0)
                 self.assertTrue(result["halo_shape_stable"])

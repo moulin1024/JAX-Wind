@@ -1,0 +1,27 @@
+------- ElastoDyn-compatible rigid NREL 5 MW smoke input -----------------------
+True    FlapDOF1
+True    FlapDOF2
+True    EdgeDOF
+0.0     OoPDefl
+0.0     IPDefl
+3       NumBl
+63.0    TipRad
+1.5     HubRad
+-2.5    PreCone(1)
+-2.5    PreCone(2)
+-2.5    PreCone(3)
+0.0     BlPitch(1)
+0.0     BlPitch(2)
+0.0     BlPitch(3)
+0.0     Azimuth
+12.1    RotSpeed
+0.0     NacYaw
+5.0     ShftTilt
+0.0     AzimB1Up
+-5.0191 OverHang
+1.96256 Twr2Shft
+87.6    TowerHt
+19      BldNodes
+"NREL5MW_ElastoDyn_blade.dat" BldFile(1)
+"NREL5MW_ElastoDyn_blade.dat" BldFile(2)
+"NREL5MW_ElastoDyn_blade.dat" BldFile(3)

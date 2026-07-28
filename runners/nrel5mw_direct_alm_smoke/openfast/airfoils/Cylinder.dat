@@ -1,0 +1,14 @@
+! Compact cylindrical-root polar for integration smoke testing
+DEFAULT InterpOrd
+0 NumCoords
+1 NumTabs
+9 NumAlf
+-180.0 0.0 0.50
+-135.0 0.0 0.50
+ -90.0 0.0 0.50
+ -45.0 0.0 0.50
+   0.0 0.0 0.50
+  45.0 0.0 0.50
+  90.0 0.0 0.50
+ 135.0 0.0 0.50
+ 180.0 0.0 0.50
