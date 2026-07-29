@@ -5,16 +5,16 @@ from __future__ import annotations
 import jax.numpy as jnp
 from jax import lax
 
-from jaxwind.interpreters.jax_actuator_disk import (
+from jaxwind.interpreters._jax_actuator_disk import (
     filtered_disk_velocity_correction,
     gaussian_convolved_annulus,
 )
-from jaxwind.interpreters.jax_actuator_line import (
+from jaxwind.interpreters._jax_actuator_line import (
     actuator_line_deformed_kinematics,
     blade_element_kinematic_forces,
     gaussian_weights,
 )
-from jaxwind.interpreters.jax_fringe import plateau_fringe_mask
+from jaxwind.interpreters._jax_fringe import plateau_fringe_mask
 
 
 def build_wind_tunnel_kernel(*, grid, axis_name: str):

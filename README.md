@@ -209,7 +209,7 @@ semantic core:
 | [`src/jaxwind/operators`](src/jaxwind/operators) | Backend-independent projection program and operator contracts |
 | [`src/jaxwind/physics`](src/jaxwind/physics) | Pure dry-flow, Boussinesq, SGS, actuator-disk, and fringe models |
 | [`src/jaxwind/integrators`](src/jaxwind/integrators) | AB2 and concurrent-precursor state transitions |
-| [`src/jaxwind/interpreters`](src/jaxwind/interpreters) | Reference, local JAX, and distributed z-slab implementations |
+| [`src/jaxwind/interpreters`](src/jaxwind/interpreters) | Unified JAX z-slab interpretation; one shard is the local case |
 | [`src/jaxwind/openfast`](src/jaxwind/openfast) | OpenFAST-compatible input parsing and turbine model adapters |
 | [`src/jaxwind/pressure`](src/jaxwind/pressure) | Semantic adapter around the external pressure solver |
 | [`src/jaxwind/effects`](src/jaxwind/effects) | Checkpoint and execution-side adapters |

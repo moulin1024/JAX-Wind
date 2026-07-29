@@ -11,16 +11,16 @@ not authorize a complete LES solver or a generic distributed framework.
   construction validation, and exhaustive small-mesh partition laws.
 - The initial Milestone B path is implemented: packed transient cell halos with
   explicit physical-boundary flags and JAX `ppermute` communication.
-- The vertical-operator part of Milestone C is implemented: independent JAX
-  reference, local JAX, and z-slab `G_z`/`D_z` interpretations commute for
-  one, two, and four host CPU devices in float32/float64 tests.
+- The vertical-operator part of Milestone C is implemented: the unified z-slab
+  `G_z`/`D_z` interpretation commutes with an independent test oracle for one,
+  two, and four host CPU devices in float32/float64 tests.
 - The compatible three-dimensional projection is implemented as one
-  higher-order program over reference and production algebras. Its horizontal
+  higher-order program over oracle and production algebras. Its horizontal
   spectral symbols, vertical face operators, physical normal-boundary
   reconstruction, pressure gauge, and correction path are tested together.
 - The Milestone D owned-cell adapter is implemented against `spectral-fd>=0.2.0`.
   Transpose, exact SPIKE, and adaptive SPIKE commute with the independent
-  reference on forced one/two/four-device CPU meshes.
+  oracle on forced one/two/four-device CPU meshes.
 - True JAX multi-process CPU execution is implemented and validated for one,
   two, and four processes. Every process constructs only its owned z slab;
   global divergence, idempotence, pressure gauge, dtype preservation, and
@@ -31,10 +31,10 @@ not authorize a complete LES solver or a generic distributed framework.
   AB2 with explicit Euler startup, one vector-field evaluation at `t_n`, one
   terminal compatible projection, accepted diagnostics/boundaries at
   `t_(n+1)`, explicit previous-tendency history, and a versioned fingerprint.
-- Accepted-boundary checkpoint save/load is implemented for the bounded
-  reference and owned z-slab representations. True one/two/four-process CPU
-  tests save one file per rank and reproduce uninterrupted continuation exactly
-  in float32 and float64.
+- Accepted-boundary checkpoint save/load is implemented for the owned z-slab
+  representation. The bounded oracle validates transition laws without being a
+  restart format. True one/two/four-process CPU tests save one file per rank
+  and reproduce uninterrupted continuation exactly in float32 and float64.
 
 ## 1. Scope and explicit non-goals
 
@@ -55,9 +55,9 @@ and the full ABL integrator are out of scope.
 
 ## 2. Backend and remaining decision boundaries
 
-ADR-0008 accepts an independent JAX tiny-grid reference and JAX production
-interpretations, with no generic multi-backend public promise. The array
-reference implementation is therefore admitted.
+ADR-0015 accepts one JAX z-slab production interpretation, with one shard as
+the local case and no generic multi-backend public promise. An independent
+tiny-grid array implementation is admitted only as a test oracle.
 
 Decision E does not block this slice because all admitted failures are static
 construction errors. H, I, and J do not alter the ownership/operator laws and
@@ -75,12 +75,11 @@ these responsibilities:
 
 - `domain`: axes, locations, grids, mesh topology, distribution specifications,
   owned regions, quantities, phases, and immutable field wrappers;
-- `operators`: reference definitions and semantic signatures for vertical
+- `operators`: semantic definitions and signatures for vertical
   boundary reconstruction, `G_z`, `D_z`, and projection composition;
-- `interpreters/jax_reference`: the independent tiny-grid JAX interpretation;
-- `interpreters/jax_local`: local JAX lowering of the same operators;
 - `interpreters/jax_zslab`: z ownership, packed halo contexts, compiled
-  collectives, and the pressure adapter;
+  collectives, single-shard execution, and the pressure adapter;
+- `tests/support/jax_oracle`: independent bounded global validation only;
 - `effects`: configuration validation and JAX/distributed runtime ownership.
 
 No registry, base-class hierarchy, universal `Params`, runtime symbolic tensor,
@@ -150,17 +149,16 @@ D_z : ZFace -> Cell
 L_z = D_z . G_z
 ```
 
-The independent JAX reference interpretation constructs boundary faces
-explicitly. The z-slab interpretation reconstructs only the transient values
-required by the owned stencil. Neither interpretation stores pressure ghosts
-in persistent state.
+The independent JAX test oracle constructs boundary faces explicitly. The
+z-slab interpretation reconstructs only the transient values required by the
+owned stencil. Neither stores pressure ghosts in persistent state.
 
 Acceptance tests:
 
 - `G_z(constant) == 0`, including physical boundaries;
-- discrete integration by parts holds to reference precision;
+- discrete integration by parts holds to oracle precision;
 - the domain integral of `D_z(w)` equals prescribed net boundary flux;
-- reference, local JAX, and z-slab outputs agree shard by shard;
+- one- through four-shard z-slab outputs agree with the oracle shard by shard;
 - an intentionally reversed face-owner rule fails the commuting test.
 
 Exit criterion: all laws hold for one through four slabs and both float32 and
@@ -193,12 +191,12 @@ Acceptance tests:
 - projection idempotence and divergence elimination;
 - transpose versus exact SPIKE pointwise comparison;
 - exact versus adaptive SPIKE comparison;
-- one/two/four-device local and distributed commuting tests;
+- one/two/four-device single- and multi-shard commuting tests;
 - a process-local allocation audit showing no global physical payload.
 
-Exit criterion: the same projection program passes the reference, JAX local,
-transpose, exact SPIKE, and adaptive SPIKE interpretations within declared
-tolerances.
+Exit criterion: the same projection program passes the independent oracle and
+the unified z-slab transpose, exact SPIKE, and adaptive SPIKE paths within
+declared tolerances.
 
 ## 8. Milestone E: complete deterministic step gate
 
@@ -218,9 +216,9 @@ does not yet select the first physical dry-flow vector field.
 Correctness work proceeds in this order:
 
 1. construction and law tests without JIT;
-2. independent tiny-grid JAX reference results;
-3. local JAX agreement;
-4. z-slab shard-local agreement;
+2. independent tiny-grid JAX oracle results;
+3. single-shard z-slab agreement;
+4. multi-shard z-slab agreement;
 5. restart-independent ownership serialization checks;
 6. synchronized communication and execution measurements.
 
@@ -235,4 +233,4 @@ exists. The first measurements report separately:
 - peak addressable bytes per process.
 
 No speedup is accepted if it weakens a partition, projection, or
-local/distributed law.
+single-shard/multi-shard law.

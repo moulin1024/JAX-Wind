@@ -34,10 +34,10 @@ The lowering boundary, not an individual physics module, applies this
 transformation. Runtime unit packages and symbolic unit tensors MUST NOT enter
 compiled numerical kernels.
 
-The reference interpreter evaluates canonical SI values in float64 by default.
-The production JAX interpreter evaluates the corresponding nondimensional
-program. This independence makes scaling errors observable rather than shared
-between the reference and production paths.
+The independent test oracle evaluates canonical SI values in float64 by
+default. The production JAX interpreter evaluates the corresponding
+nondimensional program. This independence makes scaling errors observable
+rather than shared between the oracle and production paths.
 
 ## Quantity distinctions
 

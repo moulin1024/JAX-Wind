@@ -1,4 +1,4 @@
-"""JAX building blocks for rigid blade-element actuator lines."""
+"""Private JAX building blocks for rigid blade-element actuator lines."""
 
 from __future__ import annotations
 

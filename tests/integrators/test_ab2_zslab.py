@@ -19,7 +19,7 @@ class ZSlabAB2CommutingTests(unittest.TestCase):
         for devices, dtype in ((1, "float64"), (2, "float32"), (4, "float64")):
             with self.subTest(devices=devices, dtype=dtype):
                 environment = dict(os.environ)
-                paths = [str(root / "src")]
+                paths = [str(root), str(root / "src")]
                 if dependency.exists():
                     paths.append(str(dependency))
                 if environment.get("PYTHONPATH"):

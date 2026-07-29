@@ -7,7 +7,7 @@ The intended dependency graph points downward only:
 ```text
 effects / applications / benchmarks
                 |
-interpreters: JAX local, JAX SPMD, reference
+interpreter: unified JAX z-slab
                 |
 integrators and complete step composition
                 |
@@ -22,9 +22,10 @@ Semantic layers MUST NOT import JAX, filesystem libraries, launchers, plotting,
 or benchmark configuration. Physics MUST NOT select a process topology.
 Interpreters MAY depend on the semantic layers and backend libraries.
 
-JAX is therefore a target interpreter, not the domain model. The reference
-interpreter evaluates canonical SI values; the JAX interpreter lowers the same
-semantic program through the accepted explicit nondimensional `ScaleSystem`.
+JAX is therefore a target interpreter, not the domain model. The z-slab
+interpreter lowers the semantic program through the accepted explicit
+nondimensional `ScaleSystem`. One shard is the local case; additional shards
+change ownership and communication, not the public interpretation API.
 
 ## 2. Proposed package responsibilities
 
@@ -36,7 +37,7 @@ SHOULD separate these responsibilities:
 - `operators`: gradient, divergence, filters, fluxes, projection interfaces;
 - `physics`: pure tendency contributions and closure state transitions;
 - `integrators`: higher-order construction of transitions from vector fields;
-- `interpreters`: reference arrays, JAX local, and JAX SPMD lowering;
+- `interpreters`: the unified JAX z-slab lowering and its private kernels;
 - `openfast`: format parsing and conversion into JAX-Wind turbine models;
 - `effects`: config, launch, checkpoint, logging, and postprocessing adapters;
 - `runners`: thin application shells around validated configuration and effects;
@@ -65,7 +66,7 @@ Line count is only a warning signal, not a design method. Nevertheless, active
 production Python modules MUST remain at or below 1,000 physical lines so that
 a responsibility split happens before another monolithic module accumulates.
 `tests/test_source_layout.py` enforces this ceiling; a split MUST still
-preserve semantic and reference-versus-production regression tests.
+preserve semantic and oracle-versus-production regression tests.
 
 ## 3. Public API shape
 
@@ -87,15 +88,17 @@ decisions about field location, units, grids, and error values.
 Closures with persistent memory are transitions over an explicit product of
 flow state and closure state. They are not objects that mutate internal arrays.
 
-## 4. Reference interpreter
+## 4. Unified interpreter and independent test oracle
 
-Before optimization, a small, readable JAX reference interpretation MUST
-establish the laws on tiny grids, following ADR-0008. It MUST NOT share
-optimized kernels, halo implementations, or pressure adapters with the
-production interpreter in a way that makes agreement tautological.
+Production has one public interpretation, `jax_zslab`, following ADR-0015.
+A one-shard `EqualZSlab` MUST execute through the same construction and field
+types as a multi-shard case. It MUST NOT select a separate local or global
+production implementation.
 
-The reference interpreter is allowed to materialize a global tiny test array.
-Production local and distributed interpreters are not.
+An independent, bounded global JAX oracle MAY live under `tests/support` to
+establish laws on tiny grids. It is not a production interpreter or public API,
+and active source modules MUST NOT import it. Production never gathers a field
+in order to call the oracle.
 
 ## 5. Implementation slices
 

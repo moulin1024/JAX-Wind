@@ -1,4 +1,4 @@
-"""Independent, bounded, global tiny-grid JAX reference operators.
+"""Independent, bounded, global tiny-grid JAX test oracle.
 
 This module deliberately does not import production operator or pressure
 modules. Its explicit full-face representation is a correctness oracle for the
@@ -42,10 +42,10 @@ from jaxwind.domain import (
 from jaxwind.operators import PressureGradient, VelocityVector
 from jaxwind.physics.boussinesq import BoussinesqFields
 
-from ._jax_reference_core import (
-    MAX_REFERENCE_CELLS,
-    ReferenceBoussinesqContext,
-    ReferenceDryFlowContext,
+from .jax_oracle_core import (
+    MAX_ORACLE_CELLS,
+    OracleBoussinesqContext,
+    OracleDryFlowContext,
     _boundary_plane,
     _cell_gradient_on_full_faces,
     _cell_to_full_faces,
@@ -58,12 +58,12 @@ from ._jax_reference_core import (
     pressure_gradient_z,
 )
 
-from ._jax_reference_flow import ReferenceFlowMixin
-from ._jax_reference_lasd import ReferenceLasdMixin
+from .jax_oracle_flow import OracleFlowMixin
+from .jax_oracle_lasd import OracleLasdMixin
 
 
 @dataclass(frozen=True, slots=True)
-class JaxReferenceProjection(ReferenceLasdMixin, ReferenceFlowMixin):
+class JaxOracleProjection(OracleLasdMixin, OracleFlowMixin):
     """Independent tiny-grid interpretation of the hybrid projection algebra."""
 
     def enforce_normal_boundary(
@@ -115,7 +115,7 @@ class JaxReferenceProjection(ReferenceLasdMixin, ReferenceFlowMixin):
             ),
         )
 
-    def dry_flow_context(self, velocity: VelocityVector) -> ReferenceDryFlowContext:
+    def dry_flow_context(self, velocity: VelocityVector) -> OracleDryFlowContext:
         """Build the reference interpolation and gradient bundle exactly once."""
         x_ownership = _require_velocity_component(velocity.x, XVelocity)
         y_ownership = _require_velocity_component(velocity.y, YVelocity)
@@ -144,7 +144,7 @@ class JaxReferenceProjection(ReferenceLasdMixin, ReferenceFlowMixin):
         dvdz_on_faces = dvdz_on_faces.at[1].multiply(wall_correction)
         dudz_at_cells = 0.5 * (dudz_on_faces[:-1] + dudz_on_faces[1:])
         dvdz_at_cells = 0.5 * (dvdz_on_faces[:-1] + dvdz_on_faces[1:])
-        return ReferenceDryFlowContext(
+        return OracleDryFlowContext(
             velocity,
             u_on_faces,
             v_on_faces,
@@ -167,7 +167,7 @@ class JaxReferenceProjection(ReferenceLasdMixin, ReferenceFlowMixin):
     def boussinesq_context(
         self,
         fields: BoussinesqFields,
-    ) -> ReferenceBoussinesqContext:
+    ) -> OracleBoussinesqContext:
         momentum = self.dry_flow_context(fields.velocity)
         scalar = fields.potential_temperature
         ownership = _require_tiny_global(scalar, Cell)
@@ -182,7 +182,7 @@ class JaxReferenceProjection(ReferenceLasdMixin, ReferenceFlowMixin):
             raise ValueError("velocity and scalar must share one grid")
         grid = ownership.grid
         momentum = replace(momentum, closure=fields.closure)
-        return ReferenceBoussinesqContext(
+        return OracleBoussinesqContext(
             momentum,
             scalar,
             _cell_to_full_faces(scalar.payload),
@@ -423,7 +423,7 @@ class JaxReferenceProjection(ReferenceLasdMixin, ReferenceFlowMixin):
 
 
 @dataclass(frozen=True, slots=True)
-class JaxReferencePressureSolver:
+class JaxOraclePressureSolver:
     """Independent spectral/dense-z solve for bounded global test fields."""
 
     def solve(self, rhs: Field) -> Field:

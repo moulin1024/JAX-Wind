@@ -26,7 +26,7 @@ class ZSlabProjectionCommutingTests(unittest.TestCase):
         for devices, dtype, method in cases:
             with self.subTest(devices=devices, dtype=dtype, method=method):
                 environment = dict(os.environ)
-                paths = [str(root / "src")]
+                paths = [str(root), str(root / "src")]
                 if dependency.exists():
                     paths.append(str(dependency))
                 if environment.get("PYTHONPATH"):

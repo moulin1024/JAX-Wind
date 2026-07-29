@@ -27,7 +27,7 @@ from jaxwind.domain import (  # noqa: E402
     YVelocity,
     ZFace,
 )
-from jaxwind.interpreters import jax_reference  # noqa: E402
+from tests.support import jax_oracle  # noqa: E402
 from jaxwind.interpreters.jax_zslab import (  # noqa: E402
     ZFaceFieldContext,
     build_zslab_interpreter,
@@ -68,11 +68,11 @@ def main() -> int:
         global_pressure,
     )
     boundary = VerticalBoundary(dtype(0.25), dtype(-0.125))
-    reference_gradient = jax_reference.pressure_gradient_z(
+    reference_gradient = jax_oracle.pressure_gradient_z(
         reference_pressure,
         boundary,
     )
-    reference_laplacian = jax_reference.divergence_z(reference_gradient)
+    reference_laplacian = jax_oracle.divergence_z(reference_gradient)
 
     local_z = decomposition.cells_per_shard
     sharded_pressure = global_pressure.reshape(
@@ -90,7 +90,9 @@ def main() -> int:
     )
     interpreter = build_zslab_interpreter(
         decomposition,
-        addressable_shards=tuple(range(args.devices)),
+        addressable_shards=(
+            None if args.devices == 1 else tuple(range(args.devices))
+        ),
     )
     distributed_gradient = interpreter.pressure_gradient_z(
         addressable_pressure,
@@ -200,7 +202,7 @@ def main() -> int:
         root_loss=False,
     )
     line_model = WindTunnelModel(actuator_line=line)
-    reference_line = jax_reference.JaxReferenceProjection().wind_tunnel_tendency(
+    reference_line = jax_oracle.JaxOracleProjection().wind_tunnel_tendency(
         reference_velocity,
         line_model,
         None,

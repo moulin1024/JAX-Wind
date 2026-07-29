@@ -31,11 +31,17 @@ from .jax_zslab import (
 def build_zslab_interpreter(
     decomposition: EqualZSlab,
     *,
-    addressable_shards: tuple[int, ...],
+    addressable_shards: tuple[int, ...] | None = None,
     axis_name: str = "jaxwind_z",
 ) -> JaxZSlabInterpreter:
     """Build mapped kernels without capturing any field-sized constants."""
     shard_count = decomposition.shard_count
+    if addressable_shards is None:
+        if shard_count != 1:
+            raise ValueError(
+                "addressable_shards is required for a multi-shard decomposition"
+            )
+        addressable_shards = (0,)
     if not addressable_shards:
         raise ValueError("at least one addressable shard is required")
     if len(set(addressable_shards)) != len(addressable_shards):

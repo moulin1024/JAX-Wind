@@ -20,10 +20,10 @@ from jaxwind.domain import (  # noqa: E402
     VerticalVelocity,
     ZFace,
 )
-from jaxwind.interpreters import jax_reference  # noqa: E402
+from tests.support import jax_oracle  # noqa: E402
 
 
-class JaxReferenceLawTests(unittest.TestCase):
+class JaxOracleLawTests(unittest.TestCase):
     def setUp(self) -> None:
         self.grid = UniformGrid(4, 3, 6, 4.0, 3.0, 3.0)
         self.cell_region = GlobalTestRegion(self.grid, Cell)
@@ -41,7 +41,7 @@ class JaxReferenceLawTests(unittest.TestCase):
     def test_gradient_of_constant_is_zero_including_boundaries(self) -> None:
         pressure = self.pressure_field(jnp.ones(self.cell_region.storage_shape) * 7.0)
 
-        gradient = jax_reference.pressure_gradient_z(
+        gradient = jax_oracle.pressure_gradient_z(
             pressure,
             VerticalBoundary(0.0, 0.0),
         )
@@ -68,11 +68,11 @@ class JaxReferenceLawTests(unittest.TestCase):
             jnp.concatenate((zeros, interior, zeros), axis=0),
         )
 
-        gradient = jax_reference.pressure_gradient_z(
+        gradient = jax_oracle.pressure_gradient_z(
             pressure,
             VerticalBoundary(0.0, 0.0),
         )
-        divergence = jax_reference.divergence_z(velocity)
+        divergence = jax_oracle.divergence_z(velocity)
         left = jnp.sum(pressure.payload * divergence.payload) * self.grid.dz
         right = jnp.sum(gradient.payload * velocity.payload) * self.grid.dz
 
@@ -91,17 +91,17 @@ class JaxReferenceLawTests(unittest.TestCase):
             values,
         )
 
-        divergence = jax_reference.divergence_z(velocity)
+        divergence = jax_oracle.divergence_z(velocity)
         integrated = jnp.sum(divergence.payload) * self.grid.dz
         boundary_flux = jnp.sum(values[-1] - values[0])
 
         self.assertLess(float(jnp.abs(integrated - boundary_flux)), 2.0e-13)
 
-    def test_reference_rejects_non_global_or_oversized_fields(self) -> None:
+    def test_oracle_rejects_non_global_or_oversized_fields(self) -> None:
         oversized = UniformGrid(
             1,
             1,
-            jax_reference.MAX_REFERENCE_CELLS + 1,
+            jax_oracle.MAX_ORACLE_CELLS + 1,
             1.0,
             1.0,
             1.0,
@@ -115,13 +115,13 @@ class JaxReferenceLawTests(unittest.TestCase):
         )
 
         with self.assertRaisesRegex(ValueError, "bounded global limit"):
-            jax_reference.pressure_gradient_z(
+            jax_oracle.pressure_gradient_z(
                 field,
                 VerticalBoundary(0.0, 0.0),
             )
 
-    def test_reference_has_no_production_or_pressure_import(self) -> None:
-        tree = ast.parse(inspect.getsource(jax_reference))
+    def test_oracle_has_no_production_or_pressure_import(self) -> None:
+        tree = ast.parse(inspect.getsource(jax_oracle))
         imports = []
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
@@ -129,7 +129,7 @@ class JaxReferenceLawTests(unittest.TestCase):
             elif isinstance(node, ast.ImportFrom) and node.module:
                 imports.append(node.module)
 
-        prohibited = ("jax_local", "jax_zslab", "spectral_fd")
+        prohibited = ("jax_zslab", "spectral_fd")
         self.assertFalse(
             any(name.endswith(prohibited) or name.startswith("spectral_fd") for name in imports)
         )

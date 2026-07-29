@@ -1,4 +1,4 @@
-"""LASD and scalar-transport methods for the reference interpreter."""
+"""LASD and scalar-transport methods for the independent test oracle."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from typing import Any
 
 import jax.numpy as jnp
 
-from jaxwind.interpreters.jax_fringe import plateau_fringe_mask
+from jaxwind.interpreters._jax_fringe import plateau_fringe_mask
 
 from jaxwind.domain import (
     Accepted,
@@ -60,15 +60,15 @@ from jaxwind.physics.lasd import (
 )
 from jaxwind.physics.wind_tunnel import ConcurrentPrecursorFringe
 
-from ._jax_reference_core import (
-    ReferenceBoussinesqContext,
-    ReferenceDryFlowContext,
+from .jax_oracle_core import (
+    OracleBoussinesqContext,
+    OracleDryFlowContext,
     _cell_to_full_faces,
     _history_boundary,
     _lagrangian_average,
     _lasd_beta,
     _momentum_lasd_contractions,
-    _reference_tendency,
+    _oracle_tendency,
     _require_tiny_global,
     _safe_divide,
     _scalar_cell_gradient,
@@ -79,13 +79,13 @@ from ._jax_reference_core import (
 )
 
 
-class ReferenceLasdMixin:
+class OracleLasdMixin:
     """Reference closure and scalar-transport interpretation."""
 
     __slots__ = ()
 
     @staticmethod
-    def _reference_closure_field(
+    def _oracle_closure_field(
         template: Field, quantity: type, payload: Any
     ) -> Field:
         return Field(
@@ -119,7 +119,7 @@ class ReferenceLasdMixin:
             scalar.payload,
             scalar_config.initial_coefficient,
         )
-        field = lambda quantity, payload: self._reference_closure_field(  # noqa: E731
+        field = lambda quantity, payload: self._oracle_closure_field(  # noqa: E731
             scalar,
             quantity,
             payload,
@@ -188,7 +188,7 @@ class ReferenceLasdMixin:
             payload = current.payload + blend * (
                 target_field.payload - current.payload
             )
-            return self._reference_closure_field(
+            return self._oracle_closure_field(
                 current,
                 current.quantity,
                 payload,
@@ -252,7 +252,7 @@ class ReferenceLasdMixin:
         )
         trajectory_z = old_m.trajectory_z.payload + momentum.w_at_cells / interval
         should_update = (clock.step + 1) % interval == 0
-        field = lambda template, payload: self._reference_closure_field(  # noqa: E731
+        field = lambda template, payload: self._oracle_closure_field(  # noqa: E731
             template,
             template.quantity,
             payload,
@@ -429,18 +429,18 @@ class ReferenceLasdMixin:
 
     def momentum_context(
         self,
-        context: ReferenceBoussinesqContext,
-    ) -> ReferenceDryFlowContext:
+        context: OracleBoussinesqContext,
+    ) -> OracleDryFlowContext:
         return context.momentum
 
     def buoyancy_tendency(
         self,
-        context: ReferenceBoussinesqContext,
+        context: OracleBoussinesqContext,
         config: LinearBoussinesqBuoyancy | NoBuoyancy,
     ) -> VelocityVector:
         momentum = context.momentum
         if isinstance(config, NoBuoyancy):
-            return _reference_tendency(
+            return _oracle_tendency(
                 momentum,
                 jnp.zeros_like(momentum.velocity.x.payload),
                 jnp.zeros_like(momentum.velocity.y.payload),
@@ -455,7 +455,7 @@ class ReferenceLasdMixin:
         )
         z = config.acceleration_per_temperature * hydrostatic_free_theta
         z = z.at[0].set(0.0).at[-1].set(0.0)
-        return _reference_tendency(
+        return _oracle_tendency(
             momentum,
             jnp.zeros_like(momentum.velocity.x.payload),
             jnp.zeros_like(momentum.velocity.y.payload),
@@ -464,13 +464,13 @@ class ReferenceLasdMixin:
 
     def rayleigh_damping_tendency(
         self,
-        context: ReferenceBoussinesqContext,
+        context: OracleBoussinesqContext,
         config: NoRayleighDamping | RayleighGeostrophicDamping,
     ) -> VelocityVector:
         momentum = context.momentum
         velocity = momentum.velocity
         if isinstance(config, NoRayleighDamping):
-            return _reference_tendency(
+            return _oracle_tendency(
                 momentum,
                 jnp.zeros_like(velocity.x.payload),
                 jnp.zeros_like(velocity.y.payload),
@@ -495,7 +495,7 @@ class ReferenceLasdMixin:
             )
             * face_eta.astype(velocity.z.payload.dtype) ** 2
         )
-        return _reference_tendency(
+        return _oracle_tendency(
             momentum,
             -cell_rate[:, None, None]
             * (velocity.x.payload - config.geostrophic_x_velocity),
@@ -504,9 +504,9 @@ class ReferenceLasdMixin:
             -face_rate[:, None, None] * velocity.z.payload,
         )
 
-    def _reference_scalar_tendency(
+    def _oracle_scalar_tendency(
         self,
-        context: ReferenceBoussinesqContext,
+        context: OracleBoussinesqContext,
         payload: Any,
     ) -> Field:
         scalar = context.potential_temperature
@@ -525,7 +525,7 @@ class ReferenceLasdMixin:
 
     def scalar_advection_tendency(
         self,
-        context: ReferenceBoussinesqContext,
+        context: OracleBoussinesqContext,
         config: ConservativeScalarAdvection,
     ) -> Field:
         if not isinstance(config, ConservativeScalarAdvection):
@@ -550,11 +550,11 @@ class ReferenceLasdMixin:
             )
             + (vertical_flux[1:] - vertical_flux[:-1]) / grid.dz
         )
-        return self._reference_scalar_tendency(context, tendency)
+        return self._oracle_scalar_tendency(context, tendency)
 
     def scalar_sgs_tendency(
         self,
-        context: ReferenceBoussinesqContext,
+        context: OracleBoussinesqContext,
         momentum_config: StaticSmagorinsky | LagrangianScaleDependentDynamic,
         config: StaticSmagorinskyScalarFlux | LagrangianScaleDependentScalarFlux,
         boundary: ScalarFluxBoundary = ScalarFluxBoundary(),
@@ -632,11 +632,11 @@ class ReferenceLasdMixin:
             + _truncated_horizontal_derivative(qy, grid=grid, axis="y")
             + (qz[1:] - qz[:-1]) / grid.dz
         )
-        return self._reference_scalar_tendency(context, tendency)
+        return self._oracle_scalar_tendency(context, tendency)
 
     def lasd_diagnostic_fields(
         self,
-        context: ReferenceBoussinesqContext,
+        context: OracleBoussinesqContext,
         momentum_config: LagrangianScaleDependentDynamic,
         scalar_config: LagrangianScaleDependentScalarFlux,
         boundary: ScalarFluxBoundary = ScalarFluxBoundary(),

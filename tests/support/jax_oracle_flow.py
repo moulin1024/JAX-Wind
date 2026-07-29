@@ -1,4 +1,4 @@
-"""Momentum and wind-tunnel methods for the reference interpreter."""
+"""Momentum and wind-tunnel methods for the independent test oracle."""
 
 from __future__ import annotations
 
@@ -7,16 +7,16 @@ from typing import Any
 
 import jax.numpy as jnp
 
-from jaxwind.interpreters.jax_actuator_disk import (
+from jaxwind.interpreters._jax_actuator_disk import (
     filtered_disk_velocity_correction,
     gaussian_convolved_annulus,
 )
-from jaxwind.interpreters.jax_actuator_line import (
+from jaxwind.interpreters._jax_actuator_line import (
     actuator_line_deformed_kinematics,
     blade_element_kinematic_forces,
     gaussian_weights,
 )
-from jaxwind.interpreters.jax_fringe import plateau_fringe_mask
+from jaxwind.interpreters._jax_fringe import plateau_fringe_mask
 
 from jaxwind.domain import (
     Cell,
@@ -56,12 +56,12 @@ from jaxwind.physics.wind_tunnel import (
     WindTunnelModel,
 )
 
-from ._jax_reference_core import (
-    ReferenceDryFlowContext,
+from .jax_oracle_core import (
+    OracleDryFlowContext,
     _cell_gradient_on_full_faces,
     _cell_to_full_faces,
-    _reference_tendency,
-    _reference_tendency_from_velocity,
+    _oracle_tendency,
+    _oracle_tendency_from_velocity,
     _require_tiny_global,
     _require_velocity_component,
     _strain_magnitude,
@@ -71,14 +71,14 @@ from ._jax_reference_core import (
 )
 
 
-class ReferenceFlowMixin:
+class OracleFlowMixin:
     """Reference dry-flow and turbine-forcing interpretation."""
 
     __slots__ = ()
 
     def advection_tendency(
         self,
-        context: ReferenceDryFlowContext,
+        context: OracleDryFlowContext,
         config: ConservativeAdvection,
     ) -> VelocityVector:
         if not isinstance(config, ConservativeAdvection):
@@ -128,11 +128,11 @@ class ReferenceFlowMixin:
             + vertical_w_derivative
         )
         z_tendency = z_tendency.at[0].set(0.0).at[-1].set(0.0)
-        return _reference_tendency(context, x_tendency, y_tendency, z_tendency)
+        return _oracle_tendency(context, x_tendency, y_tendency, z_tendency)
 
     def pressure_gradient_tendency(
         self,
-        context: ReferenceDryFlowContext,
+        context: OracleDryFlowContext,
         config: KinematicPressureGradient,
     ) -> VelocityVector:
         if not isinstance(config, KinematicPressureGradient):
@@ -141,11 +141,11 @@ class ReferenceFlowMixin:
         x = jnp.full_like(velocity.x.payload, config.x_acceleration)
         y = jnp.full_like(velocity.y.payload, config.y_acceleration)
         z = jnp.zeros_like(velocity.z.payload)
-        return _reference_tendency(context, x, y, z)
+        return _oracle_tendency(context, x, y, z)
 
     def wall_stress_tendency(
         self,
-        context: ReferenceDryFlowContext,
+        context: OracleDryFlowContext,
         config: NeutralLogWall | FilteredNeutralLogWall,
     ) -> VelocityVector:
         if not isinstance(
@@ -175,11 +175,11 @@ class ReferenceFlowMixin:
         x = jnp.zeros_like(velocity.x.payload).at[0].set(-drag * speed * u0 / grid.dz)
         y = jnp.zeros_like(velocity.y.payload).at[0].set(-drag * speed * v0 / grid.dz)
         z = jnp.zeros_like(velocity.z.payload)
-        return _reference_tendency(context, x, y, z)
+        return _oracle_tendency(context, x, y, z)
 
     def sgs_tendency(
         self,
-        context: ReferenceDryFlowContext,
+        context: OracleDryFlowContext,
         config: StaticSmagorinsky | LagrangianScaleDependentDynamic,
     ) -> VelocityVector:
         if not isinstance(config, (StaticSmagorinsky, LagrangianScaleDependentDynamic)):
@@ -222,11 +222,11 @@ class ReferenceFlowMixin:
             + _cell_gradient_on_full_faces(tzz, grid.dz)
         )
         z = z.at[0].set(0.0).at[-1].set(0.0)
-        return _reference_tendency(context, x, y, z)
+        return _oracle_tendency(context, x, y, z)
 
     def sgs_vertical_flux(
         self,
-        context: ReferenceDryFlowContext,
+        context: OracleDryFlowContext,
         config: StaticSmagorinsky | LagrangianScaleDependentDynamic,
     ) -> tuple[Any, Any]:
         """Return filtered SGS xz and yz stresses on full vertical faces."""
@@ -259,7 +259,7 @@ class ReferenceFlowMixin:
 
     @staticmethod
     def _momentum_sgs_coefficient(
-        context: ReferenceDryFlowContext,
+        context: OracleDryFlowContext,
         config: StaticSmagorinsky | LagrangianScaleDependentDynamic,
     ):
         if isinstance(config, StaticSmagorinsky):
@@ -271,7 +271,7 @@ class ReferenceFlowMixin:
 
     def coriolis_geostrophic_tendency(
         self,
-        context: ReferenceDryFlowContext,
+        context: OracleDryFlowContext,
         config: NoRotation | CoriolisGeostrophic,
     ) -> VelocityVector:
         velocity = context.velocity
@@ -300,7 +300,7 @@ class ReferenceFlowMixin:
             raise TypeError("unsupported rotation choice")
         if isinstance(config, NoRotation):
             z = jnp.zeros_like(velocity.z.payload)
-        return _reference_tendency(
+        return _oracle_tendency(
             context,
             x,
             y,
@@ -601,7 +601,7 @@ class ReferenceFlowMixin:
         elif not isinstance(fringe, NoFringe):
             raise TypeError("unsupported wind-tunnel fringe choice")
 
-        return _reference_tendency_from_velocity(
+        return _oracle_tendency_from_velocity(
             velocity,
             source_x,
             source_y,
@@ -662,7 +662,7 @@ class ReferenceFlowMixin:
                 jnp.zeros_like(first.z.payload),
             ),
         )
-        return _reference_tendency_from_velocity(
+        return _oracle_tendency_from_velocity(
             velocity,
             sum(
                 (term.x.payload for term in tendencies), jnp.zeros_like(first.x.payload)

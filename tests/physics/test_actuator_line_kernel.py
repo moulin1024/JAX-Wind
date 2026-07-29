@@ -6,7 +6,7 @@ import pytest
 jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp  # noqa: E402
 
-from jaxwind.interpreters.jax_actuator_line import (  # noqa: E402
+from jaxwind.interpreters._jax_actuator_line import (  # noqa: E402
     actuator_line_deformed_kinematics,
     actuator_line_geometry,
     blade_element_kinematic_forces,

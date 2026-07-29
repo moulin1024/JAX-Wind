@@ -6,7 +6,7 @@ import pytest
 jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp  # noqa: E402
 
-from jaxwind.interpreters.jax_actuator_disk import (  # noqa: E402
+from jaxwind.interpreters._jax_actuator_disk import (  # noqa: E402
     filtered_disk_velocity_correction,
     gaussian_convolved_annulus,
 )

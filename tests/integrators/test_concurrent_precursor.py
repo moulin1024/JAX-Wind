@@ -29,9 +29,9 @@ from jaxwind.integrators import (
     cold_start,
     step_concurrent_precursor,
 )
-from jaxwind.interpreters.jax_reference import (
-    JaxReferencePressureSolver,
-    JaxReferenceProjection,
+from tests.support.jax_oracle import (
+    JaxOraclePressureSolver,
+    JaxOracleProjection,
 )
 from jaxwind.operators import VelocityVector
 from jaxwind.physics import ConcurrentPrecursorEnvironment
@@ -43,7 +43,7 @@ class ConcurrentPrecursorTests(unittest.TestCase):
         self.cells = GlobalTestRegion(self.grid, Cell)
         self.faces = GlobalTestRegion(self.grid, ZFace)
         self.config = AB2Config(0.1)
-        self.algebra = JaxReferenceProjection()
+        self.algebra = JaxOracleProjection()
 
     def velocity(self, value: float) -> VelocityVector:
         return VelocityVector(
@@ -127,8 +127,8 @@ class ConcurrentPrecursorTests(unittest.TestCase):
             main_vector_field=main,
             normal_boundary=lambda _clock, _environment: VerticalBoundary(0.0, 0.0),
             algebra=self.algebra,
-            precursor_pressure_solver=JaxReferencePressureSolver(),
-            main_pressure_solver=JaxReferencePressureSolver(),
+            precursor_pressure_solver=JaxOraclePressureSolver(),
+            main_pressure_solver=JaxOraclePressureSolver(),
         )
         with SideBySideStreamLauncher(execution_streams=False) as launcher:
             first = step_concurrent_precursor(

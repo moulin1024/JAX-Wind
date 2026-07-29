@@ -28,8 +28,8 @@ from jaxwind.domain import (  # noqa: E402
     YVelocityTendency,
     ZFace,
 )
-from jaxwind.interpreters.jax_reference import JaxReferenceProjection  # noqa: E402
-from jaxwind.interpreters.jax_fringe import plateau_fringe_mask  # noqa: E402
+from tests.support.jax_oracle import JaxOracleProjection  # noqa: E402
+from jaxwind.interpreters._jax_fringe import plateau_fringe_mask  # noqa: E402
 from jaxwind.interpreters.jax_zslab import (  # noqa: E402
     ZFaceFieldContext,
     build_zslab_interpreter,
@@ -115,12 +115,12 @@ class WindTunnelForcingTests(unittest.TestCase):
             ),
         )
 
-    def test_reference_and_zslab_forcing_commute(self) -> None:
+    def test_oracle_and_zslab_forcing_commute(self) -> None:
         reference_velocity = self.reference_velocity(self.u, self.v, self.w)
         reference_target = self.reference_velocity(
             self.target_u, self.target_v, self.target_w
         )
-        reference = JaxReferenceProjection().wind_tunnel_tendency(
+        reference = JaxOracleProjection().wind_tunnel_tendency(
             reference_velocity,
             self.model,
             ConcurrentPrecursorEnvironment(reference_target),
@@ -175,7 +175,7 @@ class WindTunnelForcingTests(unittest.TestCase):
             self.target_v,
             self.target_w,
         )
-        tendency = JaxReferenceProjection().wind_tunnel_tendency(
+        tendency = JaxOracleProjection().wind_tunnel_tendency(
             velocity,
             WindTunnelModel(
                 fringe=ConcurrentPrecursorFringe(
@@ -201,7 +201,7 @@ class WindTunnelForcingTests(unittest.TestCase):
             jnp.zeros_like(self.v),
             jnp.zeros_like(self.w),
         )
-        tendency = JaxReferenceProjection().wind_tunnel_tendency(
+        tendency = JaxOracleProjection().wind_tunnel_tendency(
             velocity,
             WindTunnelModel(actuator_disk=self.model.actuator_disk),
             None,
@@ -210,7 +210,7 @@ class WindTunnelForcingTests(unittest.TestCase):
         self.assertEqual(float(jnp.max(jnp.abs(tendency.y.payload))), 0.0)
         self.assertEqual(float(jnp.max(jnp.abs(tendency.z.payload))), 0.0)
 
-    def test_reference_and_zslab_actuator_lines_commute(self) -> None:
+    def test_oracle_and_zslab_actuator_lines_commute(self) -> None:
         line = BladeElementActuatorLine(
             x=3.5,
             y=3.0,
@@ -236,7 +236,7 @@ class WindTunnelForcingTests(unittest.TestCase):
             jnp.zeros_like(self.v),
             jnp.zeros_like(self.w),
         )
-        reference = JaxReferenceProjection().wind_tunnel_tendency(
+        reference = JaxOracleProjection().wind_tunnel_tendency(
             velocity,
             WindTunnelModel(actuator_line=line),
             None,
@@ -291,7 +291,7 @@ class WindTunnelForcingTests(unittest.TestCase):
                 0.5,
                 filtered_velocity_correction=False,
             )
-            tendency = JaxReferenceProjection().wind_tunnel_tendency(
+            tendency = JaxOracleProjection().wind_tunnel_tendency(
                 velocity,
                 WindTunnelModel(actuator_disk=disk),
                 None,
@@ -304,7 +304,7 @@ class WindTunnelForcingTests(unittest.TestCase):
 
     def test_fringe_requires_explicit_precursor_environment(self) -> None:
         with self.assertRaisesRegex(TypeError, "ConcurrentPrecursorEnvironment"):
-            JaxReferenceProjection().wind_tunnel_tendency(
+            JaxOracleProjection().wind_tunnel_tendency(
                 self.reference_velocity(self.u, self.v, self.w),
                 WindTunnelModel(fringe=ConcurrentPrecursorFringe(6.0, 0.5)),
                 None,
@@ -350,7 +350,7 @@ class WindTunnelForcingTests(unittest.TestCase):
             jnp.zeros_like(self.w),
         )
         wrapper = WindTunnelBoussinesqVectorField(
-            JaxReferenceProjection(),
+            JaxOracleProjection(),
             base,
             WindTunnelModel(actuator_disk=self.model.actuator_disk),
         )

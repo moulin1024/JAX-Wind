@@ -19,7 +19,7 @@ from jaxwind.domain import (  # noqa: E402
     YVelocity,
     ZFace,
 )
-from jaxwind.interpreters.jax_reference import JaxReferenceProjection  # noqa: E402
+from tests.support.jax_oracle import JaxOracleProjection  # noqa: E402
 from jaxwind.operators import VelocityVector  # noqa: E402
 from jaxwind.physics import (  # noqa: E402
     ConservativeAdvection,
@@ -69,7 +69,7 @@ class DryFlowScalingNaturalityTests(unittest.TestCase):
         u = 7.5 + 0.2 * jnp.sin(x) + 0.03 * z + 0.0 * y
         v = -0.4 + 0.15 * jnp.cos(y) + 0.0 * x + 0.0 * z
         w = 0.1 * jnp.sin(x) * jnp.cos(y) * jnp.sin(jnp.pi * zf / grid.nz)
-        reference = JaxReferenceProjection()
+        reference = JaxOracleProjection()
         physical_context = reference.dry_flow_context(velocity(grid, u, v, w))
         execution_context = reference.dry_flow_context(
             velocity(

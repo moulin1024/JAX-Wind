@@ -1,3 +1,5 @@
+"""Projection laws evaluated with the independent global test oracle."""
+
 from __future__ import annotations
 
 import unittest
@@ -19,9 +21,9 @@ from jaxwind.domain import (  # noqa: E402
     YVelocity,
     ZFace,
 )
-from jaxwind.interpreters.jax_reference import (  # noqa: E402
-    JaxReferencePressureSolver,
-    JaxReferenceProjection,
+from tests.support.jax_oracle import (  # noqa: E402
+    JaxOraclePressureSolver,
+    JaxOracleProjection,
 )
 from jaxwind.operators import VelocityVector, project  # noqa: E402
 
@@ -58,8 +60,8 @@ class ReferenceProjectionLawTests(unittest.TestCase):
                 jnp.sin(0.5 * zf + 0.3 * y + 0.2 * x),
             ),
         )
-        self.algebra = JaxReferenceProjection()
-        self.solver = JaxReferencePressureSolver()
+        self.algebra = JaxOracleProjection()
+        self.solver = JaxOraclePressureSolver()
         self.boundary = VerticalBoundary(0.0, 0.0)
 
     def project(self, velocity):

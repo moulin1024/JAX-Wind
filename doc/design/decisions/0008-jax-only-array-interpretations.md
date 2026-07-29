@@ -1,6 +1,6 @@
 # ADR-0008: JAX-only array interpretations
 
-Status: **Accepted**
+Status: **Superseded by [ADR-0015](0015-unified-zslab-interpreter.md)**
 
 ## Context
 

@@ -1,4 +1,4 @@
-"""JAX kernels for force-conserving filtered actuator disks."""
+"""Private JAX kernels for force-conserving filtered actuator disks."""
 
 from __future__ import annotations
 

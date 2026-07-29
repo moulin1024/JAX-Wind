@@ -24,7 +24,7 @@ from jaxwind.domain import (  # noqa: E402
     YVelocity,
     ZFace,
 )
-from jaxwind.interpreters.jax_reference import JaxReferenceProjection  # noqa: E402
+from tests.support.jax_oracle import JaxOracleProjection  # noqa: E402
 from jaxwind.interpreters.jax_zslab import (  # noqa: E402
     ZFaceFieldContext,
     build_zslab_interpreter,
@@ -66,7 +66,7 @@ def main() -> int:
         Field(YVelocity, Cell, cells, Projected, v),
         Field(VerticalVelocity, ZFace, faces, Projected, w),
     )
-    reference = JaxReferenceProjection()
+    reference = JaxOracleProjection()
     reference_context = reference.dry_flow_context(reference_velocity)
 
     decomposition = EqualZSlab(

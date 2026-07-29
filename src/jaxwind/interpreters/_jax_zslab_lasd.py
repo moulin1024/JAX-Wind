@@ -8,7 +8,7 @@ from typing import Any
 
 import jax.numpy as jnp
 
-from jaxwind.interpreters.jax_fringe import plateau_fringe_mask
+from jaxwind.interpreters._jax_fringe import plateau_fringe_mask
 
 from jaxwind.domain import (
     Accepted,

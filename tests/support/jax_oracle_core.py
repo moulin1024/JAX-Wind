@@ -1,4 +1,4 @@
-"""Numerical kernels for the bounded global JAX reference oracle.
+"""Numerical kernels for the bounded global JAX test oracle.
 
 This module deliberately does not import production operator or pressure
 modules. Its explicit full-face representation is a correctness oracle for the
@@ -14,16 +14,16 @@ from typing import Any
 import jax
 import jax.numpy as jnp
 
-from jaxwind.interpreters.jax_actuator_disk import (
+from jaxwind.interpreters._jax_actuator_disk import (
     filtered_disk_velocity_correction,
     gaussian_convolved_annulus,
 )
-from jaxwind.interpreters.jax_actuator_line import (
+from jaxwind.interpreters._jax_actuator_line import (
     actuator_line_deformed_kinematics,
     blade_element_kinematic_forces,
     gaussian_weights,
 )
-from jaxwind.interpreters.jax_fringe import plateau_fringe_mask
+from jaxwind.interpreters._jax_fringe import plateau_fringe_mask
 
 from jaxwind.domain import (
     Accepted,
@@ -107,19 +107,19 @@ from jaxwind.physics.wind_tunnel import (
 )
 
 
-MAX_REFERENCE_CELLS = 32_768
+MAX_ORACLE_CELLS = 32_768
 
 
 def _require_tiny_global(field: Field, location: type) -> GlobalTestRegion:
     ownership = field.ownership
     if not isinstance(ownership, GlobalTestRegion):
-        raise TypeError("the JAX reference interpreter requires global test ownership")
+        raise TypeError("the JAX test oracle requires global test ownership")
     if field.location is not location:
         raise TypeError(f"reference operator requires {location.__name__} input")
-    if ownership.grid.cell_count > MAX_REFERENCE_CELLS:
+    if ownership.grid.cell_count > MAX_ORACLE_CELLS:
         raise ValueError(
             "reference grid exceeds the bounded global limit of "
-            f"{MAX_REFERENCE_CELLS} cells"
+            f"{MAX_ORACLE_CELLS} cells"
         )
     return ownership
 
@@ -275,7 +275,7 @@ def _require_velocity_component(field: Field, quantity: type) -> GlobalTestRegio
 
 
 @dataclass(frozen=True, slots=True)
-class ReferenceDryFlowContext:
+class OracleDryFlowContext:
     """Global tiny-grid velocity, interpolation, and shared gradient bundle."""
 
     velocity: VelocityVector
@@ -299,8 +299,8 @@ class ReferenceDryFlowContext:
 
 
 @dataclass(frozen=True, slots=True)
-class ReferenceBoussinesqContext:
-    momentum: ReferenceDryFlowContext
+class OracleBoussinesqContext:
+    momentum: OracleDryFlowContext
     potential_temperature: Field
     theta_on_faces: Any
     dtheta_dx: Any
@@ -345,7 +345,7 @@ def _strain_magnitude(
     return jnp.sqrt(jnp.maximum(2.0 * symmetric_dot, 0.0))
 
 
-def _strain_tensor(context: ReferenceDryFlowContext):
+def _strain_tensor(context: OracleDryFlowContext):
     return jnp.stack(
         (
             context.dudx,
@@ -638,7 +638,7 @@ def _scalar_lasd_contractions(context, config, ratio: float):
     return jnp.sum(resolved * model, axis=-1), jnp.sum(model * model, axis=-1)
 
 
-def _reference_tendency_from_velocity(
+def _oracle_tendency_from_velocity(
     velocity: VelocityVector, x, y, z
 ) -> VelocityVector:
     return VelocityVector(
@@ -666,6 +666,5 @@ def _reference_tendency_from_velocity(
     )
 
 
-def _reference_tendency(context: ReferenceDryFlowContext, x, y, z) -> VelocityVector:
-    return _reference_tendency_from_velocity(context.velocity, x, y, z)
-
+def _oracle_tendency(context: OracleDryFlowContext, x, y, z) -> VelocityVector:
+    return _oracle_tendency_from_velocity(context.velocity, x, y, z)

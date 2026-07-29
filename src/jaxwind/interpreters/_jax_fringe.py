@@ -1,4 +1,4 @@
-"""Shared JAX construction of smooth concurrent-precursor fringe masks."""
+"""Private JAX construction of smooth concurrent-precursor fringe masks."""
 
 from __future__ import annotations
 

@@ -1,3 +1,5 @@
+"""Dry-flow laws evaluated with the independent global test oracle."""
+
 from __future__ import annotations
 
 import unittest
@@ -22,9 +24,9 @@ from jaxwind.domain import (  # noqa: E402
     ZFace,
 )
 from jaxwind.integrators import AB2Config, Evaluation, cold_start, step  # noqa: E402
-from jaxwind.interpreters.jax_reference import (  # noqa: E402
-    JaxReferencePressureSolver,
-    JaxReferenceProjection,
+from tests.support.jax_oracle import (  # noqa: E402
+    JaxOraclePressureSolver,
+    JaxOracleProjection,
 )
 from jaxwind.operators import VelocityVector  # noqa: E402
 from jaxwind.physics import (  # noqa: E402
@@ -45,7 +47,7 @@ class DryFlowReferenceTests(unittest.TestCase):
         self.grid = UniformGrid(6, 6, 4, 6.0, 6.0, 4.0)
         self.cells = GlobalTestRegion(self.grid, Cell)
         self.faces = GlobalTestRegion(self.grid, ZFace)
-        self.algebra = JaxReferenceProjection()
+        self.algebra = JaxOracleProjection()
 
     def velocity(self, u, v, w) -> VelocityVector:
         return VelocityVector(
@@ -245,7 +247,7 @@ class DryFlowReferenceTests(unittest.TestCase):
             vector_field=DryFlowVectorField(self.algebra, model),
             normal_boundary=lambda _clock, _environment: VerticalBoundary(0.0, 0.0),
             algebra=self.algebra,
-            pressure_solver=JaxReferencePressureSolver(),
+            pressure_solver=JaxOraclePressureSolver(),
         )
         self.assertEqual(result.state.clock.step, 1)
         self.assertLess(

@@ -739,10 +739,15 @@ class JaxZSlabInterpreter(ZSlabLasdMixin, ZSlabFlowMixin):
 def build_zslab_interpreter(
     decomposition: EqualZSlab,
     *,
-    addressable_shards: tuple[int, ...],
+    addressable_shards: tuple[int, ...] | None = None,
     axis_name: str = "jaxwind_z",
 ) -> JaxZSlabInterpreter:
-    """Build the JAX interpreter without creating an import-time cycle."""
+    """Build the sole production interpreter.
+
+    A one-shard decomposition is the ordinary single-process case and defaults
+    to its only addressable shard. Multi-shard decompositions use the same
+    interpreter and require the caller's addressable global shard indices.
+    """
 
     from ._jax_zslab_factory import (
         build_zslab_interpreter as _build_zslab_interpreter,

@@ -1,3 +1,5 @@
+"""Boussinesq laws evaluated with the independent global test oracle."""
+
 from __future__ import annotations
 
 import unittest
@@ -35,9 +37,9 @@ from jaxwind.effects import (  # noqa: E402
     load_boussinesq_checkpoint,
     save_boussinesq_checkpoint,
 )
-from jaxwind.interpreters.jax_reference import (  # noqa: E402
-    JaxReferencePressureSolver,
-    JaxReferenceProjection,
+from tests.support.jax_oracle import (  # noqa: E402
+    JaxOraclePressureSolver,
+    JaxOracleProjection,
 )
 from jaxwind.operators import VelocityVector  # noqa: E402
 from jaxwind.physics import (  # noqa: E402
@@ -63,7 +65,7 @@ class BoussinesqReferenceTests(unittest.TestCase):
         self.grid = UniformGrid(6, 6, 4, 6.0, 6.0, 4.0)
         self.cells = GlobalTestRegion(self.grid, Cell)
         self.faces = GlobalTestRegion(self.grid, ZFace)
-        self.algebra = JaxReferenceProjection()
+        self.algebra = JaxOracleProjection()
 
     def fields(self) -> BoussinesqFields:
         z = jnp.arange(self.grid.nz, dtype=jnp.float64)[:, None, None]
@@ -167,7 +169,7 @@ class BoussinesqReferenceTests(unittest.TestCase):
             vector_field=BoussinesqVectorField(self.algebra, self.model()),
             normal_boundary=lambda _clock, _environment: VerticalBoundary(0.0, 0.0),
             algebra=self.algebra,
-            pressure_solver=JaxReferencePressureSolver(),
+            pressure_solver=JaxOraclePressureSolver(),
         )
         self.assertIs(result.state.fields.potential_temperature.phase, Accepted)
         self.assertLess(
@@ -247,7 +249,7 @@ class BoussinesqReferenceTests(unittest.TestCase):
             vector_field=BoussinesqVectorField(self.algebra, self.model()),
             normal_boundary=lambda _clock, _environment: VerticalBoundary(0.0, 0.0),
             algebra=self.algebra,
-            pressure_solver=JaxReferencePressureSolver(),
+            pressure_solver=JaxOraclePressureSolver(),
         ).state
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "checkpoint.npz"

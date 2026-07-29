@@ -26,9 +26,9 @@ from jaxwind.domain import (  # noqa: E402
     YVelocity,
     ZFace,
 )
-from jaxwind.interpreters.jax_reference import (  # noqa: E402
-    JaxReferencePressureSolver,
-    JaxReferenceProjection,
+from tests.support.jax_oracle import (  # noqa: E402
+    JaxOraclePressureSolver,
+    JaxOracleProjection,
 )
 from jaxwind.interpreters.jax_zslab import (  # noqa: E402
     ZFaceFieldContext,
@@ -86,8 +86,8 @@ def main() -> int:
         global_velocity,
         dt=0.2,
         normal_boundary=boundary,
-        algebra=JaxReferenceProjection(),
-        pressure_solver=JaxReferencePressureSolver(),
+        algebra=JaxOracleProjection(),
+        pressure_solver=JaxOraclePressureSolver(),
     )
 
     decomposition = EqualZSlab(

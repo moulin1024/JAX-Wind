@@ -15,7 +15,9 @@ class JaxZSlabCommutingTests(unittest.TestCase):
         for devices, dtype in ((1, "float64"), (2, "float32"), (4, "float64")):
             with self.subTest(devices=devices, dtype=dtype):
                 environment = dict(os.environ)
-                environment["PYTHONPATH"] = str(root / "src")
+                environment["PYTHONPATH"] = os.pathsep.join(
+                    (str(root), str(root / "src"))
+                )
                 environment["JAX_ENABLE_X64"] = "1"
                 existing_flags = environment.get("XLA_FLAGS", "")
                 environment["XLA_FLAGS"] = (

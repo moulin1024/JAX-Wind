@@ -1,3 +1,5 @@
+"""LASD laws evaluated with the independent global test oracle."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -36,9 +38,9 @@ from jaxwind.integrators import (  # noqa: E402
     step_concurrent_boussinesq_precursor,
     step_boussinesq,
 )
-from jaxwind.interpreters.jax_reference import (  # noqa: E402
-    JaxReferencePressureSolver,
-    JaxReferenceProjection,
+from tests.support.jax_oracle import (  # noqa: E402
+    JaxOraclePressureSolver,
+    JaxOracleProjection,
 )
 from jaxwind.operators import VelocityVector  # noqa: E402
 from jaxwind.physics import (  # noqa: E402
@@ -73,7 +75,7 @@ class LasdReferenceTests(unittest.TestCase):
         self.grid = UniformGrid(8, 8, 6, 8.0, 8.0, 6.0)
         self.cells = GlobalTestRegion(self.grid, Cell)
         self.faces = GlobalTestRegion(self.grid, ZFace)
-        self.algebra = JaxReferenceProjection()
+        self.algebra = JaxOracleProjection()
         self.momentum_lasd = LagrangianScaleDependentDynamic(update_interval=2)
         self.scalar_lasd = LagrangianScaleDependentScalarFlux()
         self.model = BoussinesqModel(
@@ -357,8 +359,8 @@ class LasdReferenceTests(unittest.TestCase):
                 0.0,
             ),
             algebra=self.algebra,
-            precursor_pressure_solver=JaxReferencePressureSolver(),
-            main_pressure_solver=JaxReferencePressureSolver(),
+            precursor_pressure_solver=JaxOraclePressureSolver(),
+            main_pressure_solver=JaxOraclePressureSolver(),
             precursor_closure_event=precursor_event,
             main_closure_event=main_event,
         )
@@ -495,7 +497,7 @@ class LasdReferenceTests(unittest.TestCase):
                         0.0,
                     ),
                     algebra=self.algebra,
-                    pressure_solver=JaxReferencePressureSolver(),
+                    pressure_solver=JaxOraclePressureSolver(),
                     closure_event=event,
                 ).state
             return state

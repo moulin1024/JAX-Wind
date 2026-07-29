@@ -1,3 +1,5 @@
+"""AB2 laws evaluated with the independent global test oracle."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -39,9 +41,9 @@ from jaxwind.integrators import (  # noqa: E402
     cold_start,
     step,
 )
-from jaxwind.interpreters.jax_reference import (  # noqa: E402
-    JaxReferencePressureSolver,
-    JaxReferenceProjection,
+from tests.support.jax_oracle import (  # noqa: E402
+    JaxOraclePressureSolver,
+    JaxOracleProjection,
 )
 from jaxwind.operators import VelocityVector  # noqa: E402
 
@@ -51,8 +53,8 @@ class ReferenceAB2Tests(unittest.TestCase):
         self.grid = UniformGrid(4, 4, 4, 4.0, 4.0, 4.0)
         self.cells = GlobalTestRegion(self.grid, Cell)
         self.faces = GlobalTestRegion(self.grid, ZFace)
-        self.algebra = JaxReferenceProjection()
-        self.pressure_solver = JaxReferencePressureSolver()
+        self.algebra = JaxOracleProjection()
+        self.pressure_solver = JaxOraclePressureSolver()
 
     def velocity(self, *, dtype=jnp.float64) -> VelocityVector:
         return VelocityVector(

@@ -44,9 +44,9 @@ from jaxwind.integrators import (  # noqa: E402
     cold_start,
     step,
 )
-from jaxwind.interpreters.jax_reference import (  # noqa: E402
-    JaxReferencePressureSolver,
-    JaxReferenceProjection,
+from tests.support.jax_oracle import (  # noqa: E402
+    JaxOraclePressureSolver,
+    JaxOracleProjection,
 )
 from jaxwind.interpreters.jax_zslab import (  # noqa: E402
     ZFaceFieldContext,
@@ -239,8 +239,8 @@ def main() -> int:
         )
         return VectorFieldResult(tendency, time)
 
-    reference_algebra = JaxReferenceProjection()
-    reference_solver = JaxReferencePressureSolver()
+    reference_algebra = JaxOracleProjection()
+    reference_solver = JaxOraclePressureSolver()
     production_algebra = build_zslab_interpreter(
         decomposition,
         addressable_shards=shards,
