@@ -29,6 +29,16 @@ from .adjoint_sharded import (
     make_adjoint_pipeline_batch,
     make_adjoint_pipeline_prime,
 )
+from .inflow_batches import (
+    INFLOW_BATCH_FORMAT,
+    INFLOW_FIELDS,
+    build_inflow_manifest,
+    load_local_inflow_batch,
+    make_precursor_inflow_batch,
+    read_inflow_manifest,
+    write_inflow_manifest,
+    write_local_inflow_batch,
+)
 from .spray_dpm_sharded import (
     ShardedSprayCoupledState,
     ShardedSprayDiagnostics,
@@ -81,4 +91,12 @@ __all__ = [
     "spray_exchange",
     "step_spray_dpm",
     "spray_sharding",
+    "INFLOW_BATCH_FORMAT",
+    "INFLOW_FIELDS",
+    "build_inflow_manifest",
+    "load_local_inflow_batch",
+    "make_precursor_inflow_batch",
+    "read_inflow_manifest",
+    "write_inflow_manifest",
+    "write_local_inflow_batch",
 ]

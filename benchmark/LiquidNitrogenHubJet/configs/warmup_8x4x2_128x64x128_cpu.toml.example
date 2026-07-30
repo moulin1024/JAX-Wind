@@ -1,0 +1,69 @@
+# CPU-scale equivalent-LN2 pure-jet experiment.
+# The .example suffix keeps this versioned despite the repository-wide TOML
+# ignore rule; run_warmup_diagnostics.py parses it as TOML directly.
+
+[grid]
+nx = 128
+ny = 64
+nz = 128
+lx = 8.0
+ly = 4.0
+lz = 2.0
+z_i = 1.0
+
+[time]
+scheme = "ab2"
+steps = 1000
+log_every = 10
+dt = 0.001
+
+[physics]
+u_fric = 0.0
+zo = 0.001
+bl_height = 2.0
+vonk = 0.4
+pressure_force = 0.0
+horizontal_homogeneous = true
+initial_condition = "uniform_flow"
+uniform_u = 0.0
+uniform_v = 0.0
+momentum_wall_model = "free_slip"
+wall_stress_model = "dynamic_neutral"
+initial_velocity_noise = 0.0
+molecular_viscosity = 1.5e-5
+
+[sgs]
+model = "smagorinsky"
+smag_cs = 0.16
+precision = "float32"
+
+[numerics]
+projection_mode = "stage"
+horizontal_dealias = true
+pressure_filter_nyquist = true
+sharded_pressure_solver = "transpose"
+top_boundary_condition = "rigid_lid"
+
+[thermo]
+enabled = false
+moisture_enabled = false
+theta0 = 300.0
+surface_theta_flux = 0.0
+scalar_sgs_model = "fixed_prandtl"
+prandtl_t = 0.74
+
+[actuator_disk]
+enabled = false
+
+[fringe]
+enabled = false
+start_x = 7.5
+timescale = 0.10
+target_u = 0.0
+target_v = 0.0
+target_theta = 300.0
+
+[runtime]
+precision = "float32"
+sgs_precision = "float32"
+use_jit = true

@@ -32,6 +32,15 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument(
+        "--mode",
+        choices=("concurrent", "precursor-dump"),
+        default="concurrent",
+        help=(
+            "Run the paired concurrent pipeline or advance only the precursor "
+            "and dump batched fringe targets."
+        ),
+    )
     parser.add_argument("--coordinator-address", default="127.0.0.1:12670")
     parser.add_argument("--num-processes", type=int)
     parser.add_argument("--process-id", type=int)
@@ -55,6 +64,30 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=8,
         help="Paired concurrent steps; use 0 for a warm-up-only run.",
+    )
+    parser.add_argument(
+        "--precursor-steps",
+        type=int,
+        help="Number of precursor-only timesteps to dump in precursor-dump mode.",
+    )
+    parser.add_argument(
+        "--inflow-batch-steps",
+        type=int,
+        default=10,
+        help="Maximum timesteps stored in each rank-local inflow batch file.",
+    )
+    parser.add_argument(
+        "--inflow-start-x",
+        type=float,
+        help=(
+            "Physical x coordinate where dumped fringe targets begin. "
+            "Defaults to [fringe].start_x from the config."
+        ),
+    )
+    parser.add_argument(
+        "--inflow-compress",
+        action="store_true",
+        help="Compress each NPZ batch; saves disk at additional host cost.",
     )
     parser.add_argument("--chunk-steps", type=int, default=8)
     parser.add_argument(
@@ -131,17 +164,255 @@ def _save_local_state(output_dir: Path, state, rank: int, params) -> None:
     )
 
 
+def _run_precursor_dump(
+    args: argparse.Namespace,
+    *,
+    configured,
+    warm_state,
+    warm_mesh,
+    rank: int,
+    size: int,
+) -> None:
+    import jax
+    from jax.experimental import multihost_utils
+
+    from wireles_jax.checkpoint_sharded import save_sharded_checkpoint
+    from wireles_jax.diagnostics import validate_cfl, validate_lasd_cfl
+    from wireles_jax.inflow_batches import (
+        build_inflow_manifest,
+        make_precursor_inflow_batch,
+        write_inflow_manifest,
+        write_local_inflow_batch,
+    )
+    from wireles_jax.timestep_sharded import (
+        make_diagnostics_sharded,
+        make_sharded_operators,
+    )
+
+    params = replace(
+        configured,
+        nsteps=args.precursor_steps,
+        actuator_disk_enabled=False,
+        cold_source_enabled=False,
+        fringe_enabled=False,
+        fringe_start_x=(
+            configured.fringe_start_x
+            if args.inflow_start_x is None
+            else args.inflow_start_x
+        ),
+        horizontal_homogeneous=True,
+        buoyancy_reference="plane_mean",
+        sharded_pressure_solver="transpose",
+    )
+    physical_lx = params.lx * params.z_i
+    if not 0.0 <= params.fringe_start_x < physical_lx:
+        raise SystemExit(
+            f"inflow start x must lie in [0, {physical_lx:g}) m, "
+            f"got {params.fringe_start_x:g}"
+        )
+
+    start_step = int(jax.device_get(warm_state.step))
+    manifest = build_inflow_manifest(
+        params,
+        source_parts=size,
+        start_step=start_step,
+        total_steps=args.precursor_steps,
+        batch_steps=args.inflow_batch_steps,
+        compress=args.inflow_compress,
+    )
+    inflow_dir = args.output_dir / "inflow_batches"
+    if rank == 0:
+        largest = max(
+            batch["uncompressed_bytes_per_rank"] for batch in manifest["batches"]
+        )
+        print(
+            f"[precursor-dump] {args.precursor_steps} step(s), "
+            f"{manifest['batch_count']} time batch(es), {size} z slab(s); "
+            f"fields={','.join(manifest['fields'])}; "
+            f"largest uncompressed rank file={largest / 2**20:.1f} MiB",
+            flush=True,
+        )
+        print(
+            f"[precursor-dump] capture x index "
+            f"{manifest['fringe_start_index']}:{params.nx} "
+            f"(x >= {params.fringe_start_x:g} m)",
+            flush=True,
+        )
+
+    ops = make_sharded_operators(params, warm_mesh)
+    diag_fn = jax.jit(make_diagnostics_sharded(params, ops.horizontal, warm_mesh))
+    compiled_batches: dict[int, object] = {}
+    state = warm_state
+    wall_start = time.perf_counter()
+    report_every = max(1, math.ceil(manifest["batch_count"] / 10))
+
+    for batch in manifest["batches"]:
+        batch_id = int(batch["batch_id"])
+        step_count = int(batch["step_count"])
+        executable = compiled_batches.get(step_count)
+        if executable is None:
+            batch_fn = jax.jit(
+                make_precursor_inflow_batch(
+                    params,
+                    ops,
+                    warm_mesh,
+                    batch_steps=step_count,
+                ),
+                donate_argnums=(0,),
+            )
+            compile_start = time.perf_counter()
+            executable = batch_fn.lower(
+                state,
+                ops.pressure,
+                ops.pressure_spike,
+            ).compile()
+            compiled_batches[step_count] = executable
+            if rank == 0:
+                print(
+                    f"[precursor-dump] compiled {step_count}-step batch in "
+                    f"{time.perf_counter() - compile_start:.2f}s",
+                    flush=True,
+                )
+
+        state, snapshots = executable(
+            state,
+            ops.pressure,
+            ops.pressure_spike,
+        )
+        snapshots = jax.block_until_ready(snapshots)
+        shards = snapshots.addressable_shards
+        if len(shards) != 1:
+            raise RuntimeError(
+                "precursor-dump expects one addressable device per process; "
+                f"got {len(shards)}"
+            )
+        shard = shards[0]
+        z_part = shard.index[-1]
+        if not isinstance(z_part, slice):
+            raise RuntimeError(f"Expected a z slice, got {z_part!r}")
+        z_start = 0 if z_part.start is None else z_part.start
+        z_stop = params.nz if z_part.stop is None else z_part.stop
+        expected_z_start = rank * int(manifest["local_z_planes"])
+        expected_z_stop = expected_z_start + int(manifest["local_z_planes"])
+        if (z_start, z_stop) != (expected_z_start, expected_z_stop):
+            raise RuntimeError(
+                f"rank {rank} owns z=[{z_start},{z_stop}), expected "
+                f"[{expected_z_start},{expected_z_stop})"
+            )
+        write_local_inflow_batch(
+            inflow_dir,
+            np.asarray(shard.data),
+            batch_id=batch_id,
+            rank=rank,
+            global_start_step=int(batch["global_start_step"]),
+            z_start=z_start,
+            z_stop=z_stop,
+            compress=args.inflow_compress,
+        )
+
+        diag = jax.block_until_ready(
+            diag_fn(
+                state.u,
+                state.v,
+                state.w,
+                state.theta,
+                state.qv,
+                state.step,
+            )
+        )
+        cfl = validate_cfl(diag)
+        if params.sgs_model == "lasd":
+            validate_lasd_cfl(diag, params)
+        if rank == 0 and (
+            (batch_id + 1) % report_every == 0
+            or batch_id + 1 == manifest["batch_count"]
+        ):
+            print(
+                f"[precursor-dump] batch={batch_id + 1}/"
+                f"{manifest['batch_count']}, step={int(diag.step)}, "
+                f"ustar={float(diag.ustar):.6f}, CFL={cfl:.4f}, "
+                f"wall={time.perf_counter() - wall_start:.1f}s",
+                flush=True,
+            )
+
+    final_checkpoint = args.output_dir / "precursor_final"
+    save_sharded_checkpoint(
+        final_checkpoint,
+        state,
+        params,
+        warm_mesh,
+        rank=rank,
+    )
+    multihost_utils.sync_global_devices("precursor-dump-files-written")
+    elapsed = time.perf_counter() - wall_start
+    missing = [
+        inflow_dir / batch["file_pattern"].format(rank=source_rank)
+        for batch in manifest["batches"]
+        for source_rank in range(size)
+        if not (inflow_dir / batch["file_pattern"].format(rank=source_rank)).is_file()
+    ]
+    if missing:
+        preview = ", ".join(str(path) for path in missing[:3])
+        raise RuntimeError(f"Missing inflow batch files: {preview}")
+    if rank == 0:
+        write_inflow_manifest(inflow_dir, manifest)
+        args.output_dir.mkdir(parents=True, exist_ok=True)
+        (args.output_dir / "precursor_dump_run.json").write_text(
+            json.dumps(
+                {
+                    "mode": "precursor-dump",
+                    "start_step": start_step,
+                    "end_step": start_step + args.precursor_steps,
+                    "precursor_steps": args.precursor_steps,
+                    "inflow_batch_steps": args.inflow_batch_steps,
+                    "batch_count": manifest["batch_count"],
+                    "source_parts": size,
+                    "execution_seconds": elapsed,
+                    "milliseconds_per_step": (1.0e3 * elapsed / args.precursor_steps),
+                    "inflow_manifest": str(inflow_dir / "manifest.json"),
+                    "final_checkpoint": str(final_checkpoint),
+                },
+                indent=2,
+            )
+            + "\n"
+        )
+        print(
+            f"[precursor-dump] complete in {elapsed:.2f}s; "
+            f"manifest: {inflow_dir / 'manifest.json'}",
+            flush=True,
+        )
+    multihost_utils.sync_global_devices("precursor-dump-manifest-written")
+
+
 def main() -> None:
     args = parse_args()
     rank, size = _rank_and_size(args)
-    if size < 4 or size % 2:
+    if size <= 0:
+        raise SystemExit("num-processes must be positive")
+    if args.mode == "concurrent" and (size < 4 or size % 2):
         raise SystemExit("JAX-native adjoint mesh requires an even rank count >= 4")
-    if args.warmup_steps < 0 or args.concurrent_steps < 0:
+    if args.warmup_steps < 0:
+        raise SystemExit("warmup steps must be nonnegative")
+    if args.mode == "concurrent" and args.concurrent_steps < 0:
         raise SystemExit("warmup and concurrent steps must be nonnegative")
-    if args.chunk_steps <= 0 or args.concurrent_steps % args.chunk_steps:
+    if args.mode == "concurrent" and (
+        args.chunk_steps <= 0 or args.concurrent_steps % args.chunk_steps
+    ):
         raise SystemExit("concurrent steps must be divisible by chunk steps")
-    if args.chunks_per_launch <= 0:
+    if args.mode == "concurrent" and args.chunks_per_launch <= 0:
         raise SystemExit("--chunks-per-launch must be positive")
+    if args.mode == "precursor-dump":
+        if args.precursor_steps is None or args.precursor_steps <= 0:
+            raise SystemExit(
+                "--precursor-steps must be positive in precursor-dump mode"
+            )
+        if args.inflow_batch_steps <= 0:
+            raise SystemExit("--inflow-batch-steps must be positive")
+        inflow_dir = args.output_dir / "inflow_batches"
+        if inflow_dir.exists() and any(inflow_dir.iterdir()):
+            raise SystemExit(
+                f"Refusing to overwrite non-empty inflow directory: {inflow_dir}"
+            )
     if args.target_hub_speed is not None and args.hub_height is None:
         raise SystemExit("--target-hub-speed requires --hub-height")
     if args.hub_height is not None and args.hub_height <= 0.0:
@@ -196,8 +467,22 @@ def main() -> None:
     )
 
     configured = params_from_settings(settings, jnp)
-    if not configured.fringe_enabled:
+    if args.mode == "concurrent" and not configured.fringe_enabled:
         raise SystemExit("Concurrent turbine domain requires [fringe] enabled=true")
+    if (
+        args.mode == "precursor-dump"
+        and args.inflow_start_x is None
+        and not configured.fringe_enabled
+        and configured.fringe_start_x == 0.0
+    ):
+        raise SystemExit(
+            "Set [fringe].start_x in the config or pass --inflow-start-x. "
+            "Pass --inflow-start-x 0 explicitly to dump the whole x domain."
+        )
+    if args.mode == "precursor-dump" and args.inflow_start_x is not None:
+        physical_lx = configured.lx * configured.z_i
+        if not 0.0 <= args.inflow_start_x < physical_lx:
+            raise SystemExit(f"--inflow-start-x must lie in [0, {physical_lx:g}) m")
     warmup_params = replace(
         configured,
         nsteps=args.warmup_steps,
@@ -217,9 +502,7 @@ def main() -> None:
             if args.warmup_initial_velocity_noise is None
             else args.warmup_initial_velocity_noise
         ),
-        sponge_enabled=(
-            configured.sponge_enabled and not args.warmup_disable_sponge
-        ),
+        sponge_enabled=(configured.sponge_enabled and not args.warmup_disable_sponge),
     )
     window_samples = max(
         1,
@@ -228,9 +511,7 @@ def main() -> None:
             / (warmup_params.dt_physical * args.ustar_sample_steps)
         ),
     )
-    minimum_step = math.ceil(
-        args.warmup_min_seconds / warmup_params.dt_physical
-    )
+    minimum_step = math.ceil(args.warmup_min_seconds / warmup_params.dt_physical)
     ustar_criterion = UStarSlidingWindow(
         target=warmup_params.pressure_ustar,
         relative_tolerance=args.ustar_tolerance,
@@ -239,10 +520,7 @@ def main() -> None:
     )
     report_interval_steps = max(
         args.ustar_sample_steps,
-        math.ceil(
-            5.0
-            / (warmup_params.dt_physical * args.ustar_sample_steps)
-        )
+        math.ceil(5.0 / (warmup_params.dt_physical * args.ustar_sample_steps))
         * args.ustar_sample_steps,
     )
     warmup_wall_start = time.perf_counter()
@@ -363,14 +641,9 @@ def main() -> None:
         )
         hub_speed = float(jax.block_until_ready(hub_probe(warm_state.u)))
         if rank == 0:
-            message = (
-                f"[warmup] mean U(z={args.hub_height:g} m)="
-                f"{hub_speed:.6f} m/s"
-            )
+            message = f"[warmup] mean U(z={args.hub_height:g} m)={hub_speed:.6f} m/s"
             if args.target_hub_speed is not None:
-                relative_error = (
-                    hub_speed / args.target_hub_speed - 1.0
-                )
+                relative_error = hub_speed / args.target_hub_speed - 1.0
                 suggested_force = (
                     warmup_params.driving_pressure_force
                     * (args.target_hub_speed / hub_speed) ** 2
@@ -381,6 +654,18 @@ def main() -> None:
                     f"next pressure_force={suggested_force:.9g} m/s^2"
                 )
             print(message, flush=True)
+
+    if args.mode == "precursor-dump":
+        _run_precursor_dump(
+            args,
+            configured=configured,
+            warm_state=warm_state,
+            warm_mesh=warm_mesh,
+            rank=rank,
+            size=size,
+        )
+        jax.distributed.shutdown()
+        return
 
     if args.concurrent_steps == 0:
         if rank == 0:
@@ -398,9 +683,7 @@ def main() -> None:
     mesh = make_adjoint_distributed_mesh(size)
     state = duplicate_state_for_adjoint(warm_state, mesh)
     ops = make_sharded_operators(concurrent_params, mesh)
-    empty = make_empty_fringe_chunk(
-        concurrent_params, mesh, args.chunk_steps
-    )
+    empty = make_empty_fringe_chunk(concurrent_params, mesh, args.chunk_steps)
     prime = jax.jit(
         make_adjoint_pipeline_prime(
             concurrent_params,
@@ -418,9 +701,7 @@ def main() -> None:
             flush=True,
         )
     start = time.perf_counter()
-    state, targets = prime(
-        state, empty, ops.pressure, ops.pressure_spike
-    )
+    state, targets = prime(state, empty, ops.pressure, ops.pressure_spike)
     jax.block_until_ready(targets)
     prime_seconds = time.perf_counter() - start
     if rank == 0:
@@ -430,9 +711,7 @@ def main() -> None:
         )
 
     total_chunks = args.concurrent_steps // args.chunk_steps
-    full_batches, tail_chunks = divmod(
-        total_chunks, args.chunks_per_launch
-    )
+    full_batches, tail_chunks = divmod(total_chunks, args.chunks_per_launch)
 
     compile_seconds: dict[int, float] = {}
 
@@ -463,22 +742,17 @@ def main() -> None:
             )
         return executable
 
-    full_batch = (
-        compile_batch(args.chunks_per_launch) if full_batches else None
-    )
+    full_batch = compile_batch(args.chunks_per_launch) if full_batches else None
     tail_batch = compile_batch(tail_chunks) if tail_chunks else None
 
     start = time.perf_counter()
     completed_chunks = 0
     report_every = max(1, math.ceil(full_batches / 10))
     for batch_id in range(full_batches):
-        state, targets = full_batch(
-            state, targets, ops.pressure, ops.pressure_spike
-        )
+        state, targets = full_batch(state, targets, ops.pressure, ops.pressure_spike)
         completed_chunks += args.chunks_per_launch
         if rank == 0 and (
-            (batch_id + 1) % report_every == 0
-            or batch_id + 1 == full_batches
+            (batch_id + 1) % report_every == 0 or batch_id + 1 == full_batches
         ):
             print(
                 f"[native] batch {batch_id + 1}/{full_batches} dispatched; "
@@ -486,9 +760,7 @@ def main() -> None:
                 flush=True,
             )
     if tail_batch is not None:
-        state, targets = tail_batch(
-            state, targets, ops.pressure, ops.pressure_spike
-        )
+        state, targets = tail_batch(state, targets, ops.pressure, ops.pressure_spike)
         completed_chunks += tail_chunks
         if rank == 0:
             print(
