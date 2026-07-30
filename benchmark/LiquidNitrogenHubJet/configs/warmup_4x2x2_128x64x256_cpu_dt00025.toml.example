@@ -1,0 +1,95 @@
+# Local-CPU full-physics LN2 pure-jet experiment on a 4 m x 2 m x 2 m
+# domain. The 0.00025 s time step is one quarter of the earlier 0.001 s
+# 128 x 64 x 128 CPU case; 4000 steps advance exactly 1 second.
+
+[grid]
+nx = 128
+ny = 64
+nz = 256
+lx = 4.0
+ly = 2.0
+lz = 2.0
+z_i = 1.0
+
+[time]
+scheme = "ab2"
+steps = 4000
+log_every = 40
+dt = 0.00025
+
+[physics]
+u_fric = 0.0
+zo = 0.001
+bl_height = 2.0
+vonk = 0.4
+pressure_force = 0.0
+horizontal_homogeneous = true
+initial_condition = "uniform_flow"
+uniform_u = 0.0
+uniform_v = 0.0
+momentum_wall_model = "free_slip"
+wall_stress_model = "dynamic_neutral"
+initial_velocity_noise = 0.0
+molecular_viscosity = 1.5e-5
+
+[sgs]
+model = "smagorinsky"
+smag_cs = 0.16
+precision = "float32"
+
+[numerics]
+projection_mode = "stage"
+horizontal_dealias = true
+pressure_filter_nyquist = true
+sharded_pressure_solver = "transpose"
+top_boundary_condition = "rigid_lid"
+
+[thermo]
+enabled = true
+moisture_enabled = true
+theta0 = 300.0
+qv0 = 0.011
+surface_theta_flux = 0.0
+scalar_sgs_model = "fixed_prandtl"
+prandtl_t = 0.74
+
+[actuator_disk]
+enabled = false
+
+[fringe]
+# No velocity or temperature fringe in the pure-jet case.
+enabled = false
+start_x = 3.75
+timescale = 0.10
+target_u = 0.0
+target_v = 0.0
+target_theta = 300.0
+
+[mass_outlet]
+# Weak mass-only outlet in the final 0.25 m of the shortened domain.
+enabled = true
+start_x = 3.75
+end_x = 4.0
+timescale = 1.0
+
+[cryogenic]
+enabled = true
+# The quarter time step creates four times as many representative parcels
+# over the same physical duration, so retain enough slots for their lifetime.
+max_parcels_per_shard = 16384
+parcels_per_step = 4
+initial_diameter = 0.000150
+minimum_diameter = 0.000050
+maximum_diameter = 0.000300
+rosin_rammler_spread = 3.0
+substeps = 4
+saturation_timescale = 0.01
+freezing_timescale = 0.05
+melting_timescale = 0.05
+liquid_fog_diameter = 0.000010
+ice_fog_diameter = 0.000020
+
+[runtime]
+precision = "float32"
+sgs_precision = "float32"
+use_jit = true

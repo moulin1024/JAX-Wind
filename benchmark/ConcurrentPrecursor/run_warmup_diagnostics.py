@@ -647,6 +647,102 @@ def make_cold_plume_gif(
     plt.close(fig)
 
 
+def make_water_fog_gif(
+    path: Path,
+    liquid_fog_xz_frames: np.ndarray,
+    ice_fog_xz_frames: np.ndarray,
+    liquid_fog_mass_kg: np.ndarray,
+    ice_fog_mass_kg: np.ndarray,
+    elapsed_times: np.ndarray,
+    params,
+) -> None:
+    """Animate center-plane liquid-water and ice-fog mixing ratios."""
+
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.animation import FuncAnimation, PillowWriter
+
+    liquid_g_kg = 1.0e3 * np.maximum(liquid_fog_xz_frames, 0.0)
+    ice_g_kg = 1.0e3 * np.maximum(ice_fog_xz_frames, 0.0)
+    liquid_max = max(float(liquid_g_kg.max()), 1.0e-9)
+    ice_max = max(float(ice_g_kg.max()), 1.0e-9)
+    x_length = params.lx * params.z_i
+    z_length = params.lz * params.z_i
+
+    fig, axes = plt.subplots(
+        2,
+        1,
+        figsize=(11.0, 7.0),
+        sharex=True,
+        constrained_layout=True,
+    )
+    liquid_image = axes[0].imshow(
+        liquid_g_kg[0].T,
+        origin="lower",
+        extent=(0.0, x_length, 0.0, z_length),
+        vmin=0.0,
+        vmax=liquid_max,
+        cmap="Blues",
+        interpolation="bilinear",
+        aspect="auto",
+    )
+    ice_image = axes[1].imshow(
+        ice_g_kg[0].T,
+        origin="lower",
+        extent=(0.0, x_length, 0.0, z_length),
+        vmin=0.0,
+        vmax=ice_max,
+        cmap="Purples",
+        interpolation="bilinear",
+        aspect="auto",
+    )
+    for axis in axes:
+        axis.scatter(
+            [params.cold_source_x],
+            [params.cold_source_z],
+            marker=">",
+            s=55,
+            color="lime",
+            edgecolor="black",
+            linewidth=0.5,
+            zorder=5,
+            label="LN2 nozzle",
+        )
+        axis.set_ylabel("z [m]")
+        axis.grid(False)
+    axes[0].legend(loc="upper right")
+    axes[0].set_title(r"center-plane liquid-water fog $q_l$ [g kg$^{-1}$]")
+    axes[1].set_title(r"center-plane ice fog $q_i$ [g kg$^{-1}$]")
+    axes[1].set_xlabel("x [m]")
+    liquid_colorbar = fig.colorbar(liquid_image, ax=axes[0], pad=0.015)
+    ice_colorbar = fig.colorbar(ice_image, ax=axes[1], pad=0.015)
+    liquid_colorbar.set_label(r"$q_l$ [g kg$^{-1}$]")
+    ice_colorbar.set_label(r"$q_i$ [g kg$^{-1}$]")
+    title = fig.suptitle("")
+
+    def update(frame: int):
+        liquid_image.set_data(liquid_g_kg[frame].T)
+        ice_image.set_data(ice_g_kg[frame].T)
+        title.set_text(
+            f"Water fog: t = {elapsed_times[frame]:.2f} s; "
+            f"liquid = {1.0e3 * liquid_fog_mass_kg[frame]:.3f} g, "
+            f"ice = {1.0e3 * ice_fog_mass_kg[frame]:.3f} g"
+        )
+        return liquid_image, ice_image, title
+
+    animation = FuncAnimation(
+        fig,
+        update,
+        frames=len(elapsed_times),
+        interval=100,
+        blit=False,
+    )
+    animation.save(path, writer=PillowWriter(fps=10), dpi=90)
+    plt.close(fig)
+
+
 def main() -> None:
     args = parse_args()
     rank, size = rank_and_size(args)
@@ -1295,6 +1391,7 @@ def main() -> None:
     gif = args.output_dir / "abl_loglaw_profile_100frames.gif"
     flow_gif = args.output_dir / "abl_flow_three_slices_100frames.gif"
     cold_plume_gif = args.output_dir / "ln2_cold_plume_100frames.gif"
+    water_fog_gif = args.output_dir / "ln2_water_fog_100frames.gif"
     make_diagnostic_figure(
         figure,
         profile_array,
@@ -1323,6 +1420,16 @@ def main() -> None:
             elapsed_array,
             params,
         )
+        if multiphase_enabled:
+            make_water_fog_gif(
+                water_fog_gif,
+                np.stack(sampled_ql_xz),
+                np.stack(sampled_qi_xz),
+                np.asarray(sampled_liquid_fog_mass),
+                np.asarray(sampled_ice_fog_mass),
+                elapsed_array,
+                params,
+            )
         x = (np.arange(params.nx) + 0.5) * params.dx * params.z_i
         final_rows = np.column_stack(
             (
@@ -1441,11 +1548,18 @@ def main() -> None:
                 cold_plume_gif,
                 args.copy_to / cold_plume_gif.name,
             )
+            if multiphase_enabled:
+                shutil.copy2(
+                    water_fog_gif,
+                    args.copy_to / water_fog_gif.name,
+                )
     print(f"[done] diagnostics: {figure}", flush=True)
     print(f"[done] animation: {gif}", flush=True)
     print(f"[done] flow animation: {flow_gif}", flush=True)
     if args.liquid_nitrogen_nozzle:
         print(f"[done] LN2 cold-plume animation: {cold_plume_gif}", flush=True)
+        if multiphase_enabled:
+            print(f"[done] water-fog animation: {water_fog_gif}", flush=True)
     print(
         f"[done] restart round-trip exact on {exact_count}/{size} ranks",
         flush=True,

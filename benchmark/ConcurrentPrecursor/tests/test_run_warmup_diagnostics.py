@@ -16,6 +16,7 @@ from run_warmup_diagnostics import (  # noqa: E402
     liquid_nitrogen_cooling_power,
     local_device_id,
     make_diagnostic_figure,
+    make_water_fog_gif,
 )
 
 
@@ -180,6 +181,43 @@ def test_quiescent_jet_diagnostic_has_no_zero_ustar_failure(
     )
 
     assert output.stat().st_size > 0
+
+
+def test_water_fog_gif_contains_liquid_and_ice_frames(
+    tmp_path: Path,
+) -> None:
+    from types import SimpleNamespace
+
+    from PIL import Image
+
+    liquid = np.zeros((2, 4, 3))
+    ice = np.zeros_like(liquid)
+    liquid[0, 1, 1] = 1.0e-4
+    liquid[1, 2, 1] = 2.0e-4
+    ice[0, 1, 1] = 3.0e-4
+    ice[1, 2, 0] = 4.0e-4
+    params = SimpleNamespace(
+        lx=8.0,
+        lz=2.0,
+        z_i=1.0,
+        cold_source_x=1.0,
+        cold_source_z=1.0,
+    )
+    output = tmp_path / "water_fog.gif"
+
+    make_water_fog_gif(
+        output,
+        liquid,
+        ice,
+        np.asarray((1.0e-5, 2.0e-5)),
+        np.asarray((3.0e-5, 4.0e-5)),
+        np.asarray((0.1, 0.2)),
+        params,
+    )
+
+    with Image.open(output) as image:
+        assert image.n_frames == 2
+        assert image.size[0] > image.size[1]
 
 
 def test_8x4x2_ln2_experiment_config_resolves() -> None:
