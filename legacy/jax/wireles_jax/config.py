@@ -39,6 +39,7 @@ class Params:
     bl_height: float = 1.0
     vonk: float = 0.4
     pressure_force: float | None = None
+    pressure_force_height: float | None = None
     coriolis_f: float = 0.0
     geostrophic_u: float = 0.0
     geostrophic_v: float = 0.0
@@ -277,6 +278,15 @@ class Params:
         if wall_stress_model not in wall_stress_aliases:
             raise ValueError(f"Unsupported wall_stress_model: {self.wall_stress_model}")
         object.__setattr__(self, "wall_stress_model", wall_stress_aliases[wall_stress_model])
+        domain_height = self.lz * self.z_i
+        if self.pressure_force_height is not None and not (
+            0.0 < self.pressure_force_height <= domain_height
+        ):
+            raise ValueError(
+                "pressure_force_height must lie in (0, domain height], "
+                f"got {self.pressure_force_height:.6e} for "
+                f"domain height {domain_height:.6e}"
+            )
         if self.initial_velocity_noise < 0.0:
             raise ValueError(f"initial_velocity_noise must be non-negative, got {self.initial_velocity_noise:.6e}")
         if self.molecular_viscosity < 0.0:
@@ -558,7 +568,7 @@ class Params:
     def driving_pressure_force(self) -> float:
         if self.pressure_force is not None:
             return self.pressure_force
-        return self.u_fric * self.u_fric / (self.bl_height / self.z_i)
+        return self.u_fric * self.u_fric / self.forcing_height
 
     @property
     def pressure_ustar(self) -> float:
@@ -584,7 +594,12 @@ class Params:
 
     @property
     def forcing_height(self) -> float:
-        return self.bl_height / self.z_i
+        physical_height = (
+            self.bl_height
+            if self.pressure_force_height is None
+            else self.pressure_force_height
+        )
+        return physical_height / self.z_i
 
     @property
     def theta_v0(self) -> float:

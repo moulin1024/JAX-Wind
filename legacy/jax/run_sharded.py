@@ -46,6 +46,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bl-height", type=float)
     parser.add_argument("--z-i", type=float)
     parser.add_argument("--pressure-force", type=float)
+    parser.add_argument("--pressure-force-height", type=float)
     parser.add_argument("--coriolis-f", type=float, help="Physical Coriolis parameter f in s^-1.")
     parser.add_argument("--geostrophic-u", type=float, help="Physical geostrophic wind U_g in m/s.")
     parser.add_argument("--geostrophic-v", type=float, help="Physical geostrophic wind V_g in m/s.")
@@ -166,6 +167,7 @@ def main() -> None:
             z_i=z_i,
             vonk=settings["vonk"],
             pressure_force=settings["pressure_force"],
+            pressure_force_height=settings["pressure_force_height"],
             coriolis_f=settings["coriolis_f"],
             geostrophic_u=settings["geostrophic_u"],
             geostrophic_v=settings["geostrophic_v"],

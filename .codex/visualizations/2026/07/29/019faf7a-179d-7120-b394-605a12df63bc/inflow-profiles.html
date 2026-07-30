@@ -1,0 +1,274 @@
+<div id="inflow-profile-vis">
+  <div class="inflow-profile-grid">
+    <figure>
+      <figcaption>Wind speed</figcaption>
+      <svg id="inflow-speed-chart" viewBox="0 0 260 360" role="img" aria-labelledby="inflow-speed-title inflow-speed-desc">
+        <title id="inflow-speed-title">Wind speed by height</title>
+        <desc id="inflow-speed-desc">Measured wind speed and logarithmic fit from 100 to 2,000 millimetres.</desc>
+      </svg>
+    </figure>
+    <figure>
+      <figcaption>Turbulence intensity</figcaption>
+      <svg id="inflow-ti-chart" viewBox="0 0 260 360" role="img" aria-labelledby="inflow-ti-title inflow-ti-desc">
+        <title id="inflow-ti-title">Turbulence intensity by height</title>
+        <desc id="inflow-ti-desc">Turbulence intensity in percent from 100 to 2,000 millimetres.</desc>
+      </svg>
+    </figure>
+    <figure>
+      <figcaption>Log-fit error</figcaption>
+      <svg id="inflow-error-chart" viewBox="0 0 260 360" role="img" aria-labelledby="inflow-error-title inflow-error-desc">
+        <title id="inflow-error-title">Log-fit relative error by height</title>
+        <desc id="inflow-error-desc">Relative error of the logarithmic wind-speed fit in percent from 100 to 2,000 millimetres.</desc>
+      </svg>
+    </figure>
+  </div>
+  <div class="text-small text-muted inflow-source">20 levels, 100–2,000 mm · source: <code>wind-speed&amp;turbulent.csv</code></div>
+  <div class="sr-only">
+    <h2>Inflow data table</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Height (mm)</th>
+          <th>Wind speed (m/s)</th>
+          <th>Turbulence intensity (%)</th>
+          <th>Log fit (m/s)</th>
+          <th>Relative error (%)</th>
+        </tr>
+      </thead>
+      <tbody id="inflow-data-rows"></tbody>
+    </table>
+  </div>
+</div>
+
+<style>
+  #inflow-profile-vis {
+    width: 100%;
+    color: var(--foreground);
+  }
+  #inflow-profile-vis .inflow-profile-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 1rem;
+    align-items: start;
+  }
+  #inflow-profile-vis figure {
+    min-width: 0;
+    margin: 0;
+  }
+  #inflow-profile-vis figcaption {
+    margin-bottom: 0.25rem;
+    font-weight: 500;
+    text-align: center;
+  }
+  #inflow-profile-vis svg {
+    display: block;
+    width: 100%;
+    height: auto;
+    overflow: visible;
+    color: var(--foreground);
+  }
+  #inflow-profile-vis .axis,
+  #inflow-profile-vis .tick {
+    stroke: var(--border);
+    stroke-width: 1;
+    vector-effect: non-scaling-stroke;
+  }
+  #inflow-profile-vis .zero-line {
+    stroke: var(--muted-foreground);
+    stroke-width: 1;
+    stroke-dasharray: 4 4;
+    vector-effect: non-scaling-stroke;
+  }
+  #inflow-profile-vis .series-1,
+  #inflow-profile-vis .series-2,
+  #inflow-profile-vis .series-3,
+  #inflow-profile-vis .series-4 {
+    fill: none;
+    stroke-width: 2;
+    stroke-linejoin: round;
+    stroke-linecap: round;
+    vector-effect: non-scaling-stroke;
+  }
+  #inflow-profile-vis .series-1 { stroke: var(--viz-series-1); }
+  #inflow-profile-vis .series-2 {
+    stroke: var(--viz-series-2);
+    stroke-dasharray: 5 4;
+  }
+  #inflow-profile-vis .series-3 { stroke: var(--viz-series-3); }
+  #inflow-profile-vis .series-4 { stroke: var(--viz-series-4); }
+  #inflow-profile-vis .point-1,
+  #inflow-profile-vis .point-3,
+  #inflow-profile-vis .point-4 {
+    stroke: var(--background);
+    stroke-width: 1;
+    vector-effect: non-scaling-stroke;
+  }
+  #inflow-profile-vis .point-1 { fill: var(--viz-series-1); }
+  #inflow-profile-vis .point-3 { fill: var(--viz-series-3); }
+  #inflow-profile-vis .point-4 { fill: var(--viz-series-4); }
+  #inflow-profile-vis .chart-text {
+    fill: var(--muted-foreground);
+  }
+  #inflow-profile-vis .annotation {
+    fill: var(--foreground);
+    font-weight: 500;
+  }
+  #inflow-profile-vis .legend-line-1 {
+    stroke: var(--viz-series-1);
+    stroke-width: 2;
+  }
+  #inflow-profile-vis .legend-line-2 {
+    stroke: var(--viz-series-2);
+    stroke-width: 2;
+    stroke-dasharray: 5 4;
+  }
+  #inflow-profile-vis .inflow-source {
+    margin-top: 0.5rem;
+    text-align: right;
+  }
+</style>
+
+<script>
+(() => {
+  const root = document.getElementById("inflow-profile-vis");
+  if (!root) return;
+
+  const data = [
+    {h:100, u:2.826, ti:10.7, fit:2.684450393, err:5.008832531},
+    {h:200, u:2.984, ti:9.76, fit:2.897491478, err:2.899079162},
+    {h:300, u:2.976, ti:9.34, fit:3.022112524, err:-1.549479963},
+    {h:400, u:3.039, ti:8.86, fit:3.110532563, err:-2.353819115},
+    {h:500, u:3.153, ti:9.21, fit:3.179116474, err:-0.828305537},
+    {h:600, u:3.117, ti:9.29, fit:3.235153609, err:-3.790619468},
+    {h:700, u:3.244, ti:9.16, fit:3.282532332, err:-1.187803069},
+    {h:800, u:3.231, ti:9.79, fit:3.323573648, err:-2.865170165},
+    {h:900, u:3.336, ti:9.21, fit:3.359774655, err:-0.712669506},
+    {h:1000, u:3.262, ti:10.2, fit:3.392157559, err:-3.990115226},
+    {h:1100, u:3.396, ti:10.1, fit:3.421451459, err:-0.749454022},
+    {h:1200, u:3.428, ti:10.2, fit:3.448194694, err:-0.589110091},
+    {h:1300, u:3.461, ti:9.91, fit:3.472796086, err:-0.340828825},
+    {h:1400, u:3.455, ti:10.9, fit:3.495573417, err:-1.174339123},
+    {h:1500, u:3.546, ti:10.3, fit:3.516778605, err:0.824066424},
+    {h:1600, u:3.599, ti:9.25, fit:3.536614733, err:1.733405581},
+    {h:1700, u:3.553, ti:9.28, fit:3.555247912, err:-0.063267992},
+    {h:1800, u:3.645, ti:8.44, fit:3.57281574, err:1.980363791},
+    {h:1900, u:3.742, ti:8.57, fit:3.58943348, err:4.077138439},
+    {h:2000, u:3.708, ti:8.57, fit:3.605198644, err:2.77242061}
+  ];
+
+  const ns = "http://www.w3.org/2000/svg";
+  const dims = {w:260, h:360, left:49, right:15, top:15, bottom:46};
+  const plotW = dims.w - dims.left - dims.right;
+  const plotH = dims.h - dims.top - dims.bottom;
+  const y = value => dims.top + plotH - (value / 2100) * plotH;
+
+  function node(name, attrs = {}, textValue = "") {
+    const element = document.createElementNS(ns, name);
+    Object.entries(attrs).forEach(([key, value]) => element.setAttribute(key, value));
+    if (textValue) element.textContent = textValue;
+    return element;
+  }
+
+  function xScale(value, domain) {
+    return dims.left + ((value - domain[0]) / (domain[1] - domain[0])) * plotW;
+  }
+
+  function addAxes(svg, domain, xTicks, xLabel, formatter) {
+    const yTicks = [0, 500, 1000, 1500, 2000];
+    yTicks.forEach(value => {
+      const py = y(value);
+      svg.appendChild(node("line", {x1:dims.left, y1:py, x2:dims.w-dims.right, y2:py, class:"tick"}));
+      svg.appendChild(node("text", {
+        x:dims.left-7, y:py+4, "text-anchor":"end", class:"chart-text text-small"
+      }, value.toLocaleString()));
+    });
+
+    xTicks.forEach(value => {
+      const px = xScale(value, domain);
+      svg.appendChild(node("line", {x1:px, y1:dims.top, x2:px, y2:dims.h-dims.bottom, class:"tick"}));
+      svg.appendChild(node("text", {
+        x:px, y:dims.h-dims.bottom+19, "text-anchor":"middle", class:"chart-text text-small"
+      }, formatter(value)));
+    });
+
+    svg.appendChild(node("line", {
+      x1:dims.left, y1:dims.h-dims.bottom, x2:dims.w-dims.right, y2:dims.h-dims.bottom, class:"axis"
+    }));
+    svg.appendChild(node("line", {
+      x1:dims.left, y1:dims.top, x2:dims.left, y2:dims.h-dims.bottom, class:"axis"
+    }));
+    svg.appendChild(node("text", {
+      x:dims.left+plotW/2, y:dims.h-8, "text-anchor":"middle", class:"chart-text text-small"
+    }, xLabel));
+    svg.appendChild(node("text", {
+      x:13, y:dims.top+plotH/2, "text-anchor":"middle",
+      transform:`rotate(-90 13 ${dims.top+plotH/2})`, class:"chart-text text-small"
+    }, "Height (mm)"));
+  }
+
+  function pathFor(key, domain) {
+    return data.map((row, index) => {
+      const command = index === 0 ? "M" : "L";
+      return `${command}${xScale(row[key], domain).toFixed(2)},${y(row.h).toFixed(2)}`;
+    }).join(" ");
+  }
+
+  function addSeries(svg, key, domain, lineClass, pointClass) {
+    svg.appendChild(node("path", {d:pathFor(key, domain), class:lineClass}));
+    if (!pointClass) return;
+    data.forEach(row => {
+      svg.appendChild(node("circle", {
+        cx:xScale(row[key], domain), cy:y(row.h), r:2.8, class:pointClass
+      }));
+    });
+  }
+
+  function addAnnotation(svg, row, key, domain, label, anchor, dx, dy) {
+    svg.appendChild(node("text", {
+      x:xScale(row[key], domain)+dx,
+      y:y(row.h)+dy,
+      "text-anchor":anchor,
+      class:"annotation text-small"
+    }, label));
+  }
+
+  const speedSvg = root.querySelector("#inflow-speed-chart");
+  const speedDomain = [2.6, 3.85];
+  addAxes(speedSvg, speedDomain, [2.6, 3.0, 3.4, 3.8], "Wind speed (m/s)", value => value.toFixed(1));
+  addSeries(speedSvg, "fit", speedDomain, "series-2");
+  addSeries(speedSvg, "u", speedDomain, "series-1", "point-1");
+  speedSvg.appendChild(node("line", {x1:61, y1:27, x2:76, y2:27, class:"legend-line-1"}));
+  speedSvg.appendChild(node("text", {x:80, y:31, class:"chart-text text-small"}, "Measured"));
+  speedSvg.appendChild(node("line", {x1:143, y1:27, x2:158, y2:27, class:"legend-line-2"}));
+  speedSvg.appendChild(node("text", {x:162, y:31, class:"chart-text text-small"}, "Log fit"));
+  addAnnotation(speedSvg, data[18], "u", speedDomain, "3.74 max", "end", -5, -6);
+
+  const tiSvg = root.querySelector("#inflow-ti-chart");
+  const tiDomain = [8.0, 11.2];
+  addAxes(tiSvg, tiDomain, [8, 9, 10, 11], "Turbulence intensity (%)", value => value.toFixed(0));
+  addSeries(tiSvg, "ti", tiDomain, "series-3", "point-3");
+  addAnnotation(tiSvg, data[13], "ti", tiDomain, "10.9% max", "end", -5, -7);
+  addAnnotation(tiSvg, data[17], "ti", tiDomain, "8.44% min", "start", 5, -6);
+
+  const errorSvg = root.querySelector("#inflow-error-chart");
+  const errorDomain = [-5.5, 5.5];
+  addAxes(errorSvg, errorDomain, [-5, 0, 5], "Relative error (%)", value => value.toFixed(0));
+  errorSvg.appendChild(node("line", {
+    x1:xScale(0, errorDomain), y1:dims.top, x2:xScale(0, errorDomain), y2:dims.h-dims.bottom, class:"zero-line"
+  }));
+  addSeries(errorSvg, "err", errorDomain, "series-4", "point-4");
+  addAnnotation(errorSvg, data[0], "err", errorDomain, "+5.01%", "end", -5, -7);
+  addAnnotation(errorSvg, data[9], "err", errorDomain, "−3.99%", "start", 5, -7);
+
+  const rows = root.querySelector("#inflow-data-rows");
+  data.forEach(row => {
+    const tr = document.createElement("tr");
+    [row.h, row.u, row.ti, row.fit, row.err].forEach(value => {
+      const td = document.createElement("td");
+      td.textContent = String(value);
+      tr.appendChild(td);
+    });
+    rows.appendChild(tr);
+  });
+})();
+</script>

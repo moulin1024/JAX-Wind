@@ -116,6 +116,7 @@ def build_params(settings: dict, jnp):
         z_i=z_i,
         vonk=settings["vonk"],
         pressure_force=settings["pressure_force"],
+        pressure_force_height=settings["pressure_force_height"],
         coriolis_f=settings["coriolis_f"],
         geostrophic_u=settings["geostrophic_u"],
         geostrophic_v=settings["geostrophic_v"],

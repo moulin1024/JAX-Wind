@@ -77,6 +77,58 @@ def test_pressure_gradient_is_confined_below_1000_m() -> None:
     assert np.min(z[expected == 0.0]) > 1000.0
 
 
+def test_pressure_gradient_height_can_cover_the_full_domain() -> None:
+    jax = pytest.importorskip("jax")
+    jnp = pytest.importorskip("jax.numpy")
+
+    from wireles_jax import Params
+    from wireles_jax.rhs import assemble_rhs
+
+    params = Params(
+        nx=4,
+        ny=4,
+        nz=8,
+        lz=1.0,
+        z_i=3.6,
+        bl_height=2.0,
+        pressure_force_height=3.6,
+        u_fric=0.16140448019041365,
+        zo=1.6100320393803134e-5,
+        dtype=jnp.float32,
+    )
+    zeros = jnp.zeros((params.nx, params.ny, params.nz), dtype=params.dtype)
+    rhs = np.asarray(
+        jax.block_until_ready(
+            assemble_rhs(zeros, zeros, params, pressure_force=True)
+        )
+    )
+
+    np.testing.assert_allclose(rhs, params.driving_pressure_force, rtol=2.0e-6)
+    assert params.forcing_height == pytest.approx(1.0)
+    assert params.pressure_ustar == pytest.approx(params.u_fric)
+    assert params.driving_pressure_force == pytest.approx(params.u_fric**2)
+
+
+@pytest.mark.parametrize("height", (0.0, -1.0, 3.6001))
+def test_pressure_gradient_height_must_lie_inside_domain(height: float) -> None:
+    jnp = pytest.importorskip("jax.numpy")
+
+    from wireles_jax import Params
+
+    with pytest.raises(ValueError, match="pressure_force_height"):
+        Params(
+            nx=4,
+            ny=4,
+            nz=8,
+            lz=1.0,
+            z_i=3.6,
+            bl_height=2.0,
+            pressure_force_height=height,
+            zo=1.0e-3,
+            dtype=jnp.float32,
+        )
+
+
 def test_log_law_initial_state_is_uniform_above_1000_m() -> None:
     jax = pytest.importorskip("jax")
     jnp = pytest.importorskip("jax.numpy")

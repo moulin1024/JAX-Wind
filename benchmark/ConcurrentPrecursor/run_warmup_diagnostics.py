@@ -22,10 +22,17 @@ from run_single import RUN_DEFAULTS, load_config_file, params_from_settings  # n
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Resume a distributed warm-up checkpoint and create ABL profile diagnostics."
+        description=(
+            "Run or resume a distributed warm-up and create ABL profile "
+            "and flow-slice diagnostics."
+        )
     )
     parser.add_argument("--config", type=Path, required=True)
-    parser.add_argument("--checkpoint", type=Path, required=True)
+    parser.add_argument(
+        "--checkpoint",
+        type=Path,
+        help="Optional warm-up checkpoint; omit to start from the configured initial field.",
+    )
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--duration-seconds", type=float, default=10.0)
     parser.add_argument("--frames", type=int, default=100)
@@ -87,11 +94,18 @@ def make_diagnostic_figure(
     zfh = z_face / height
     ustar = params.pressure_ustar
     ulog = (ustar / params.vonk) * np.log(np.maximum(z, params.zo * 1.01) / params.zo)
+    log_cap = (ustar / params.vonk) * np.log(params.bl_height / params.zo)
+    ulog = np.where(z >= params.bl_height, log_cap, ulog)
     sponge = params.sponge_start_height / height if params.sponge_enabled else None
 
     fig, axes = plt.subplots(2, 3, figsize=(14.5, 8.6), constrained_layout=True)
     ax = axes[0, 0]
-    ax.plot(mean[index["mean_u"]], zh, lw=2.2, label="LES 10 s mean")
+    ax.plot(
+        mean[index["mean_u"]],
+        zh,
+        lw=2.2,
+        label=f"LES {duration_seconds:g} s mean",
+    )
     ax.plot(ulog, zh, "--", lw=1.8, label="target log law")
     ax.set(xlabel=r"$\langle u\rangle$ [m s$^{-1}$]", ylabel=r"$z/H$")
     ax.legend()
@@ -190,6 +204,8 @@ def make_profile_gif(
     zh = z / (params.lz * params.z_i)
     ustar = params.pressure_ustar
     ulog = (ustar / params.vonk) * np.log(np.maximum(z, params.zo * 1.01) / params.zo)
+    log_cap = (ustar / params.vonk) * np.log(params.bl_height / params.zo)
+    ulog = np.where(z >= params.bl_height, log_cap, ulog)
     u_frames = profiles[:, index["mean_u"], :]
     running = np.cumsum(u_frames, axis=0) / np.arange(1, len(u_frames) + 1)[:, None]
     xmin = min(float(u_frames.min()), float(ulog.min())) - 0.15
@@ -215,7 +231,7 @@ def make_profile_gif(
     def update(frame: int):
         instantaneous.set_xdata(u_frames[frame])
         averaged.set_xdata(running[frame])
-        time_text.set_text(f"restart + {elapsed_times[frame]:.1f} s")
+        time_text.set_text(f"elapsed time = {elapsed_times[frame]:.1f} s")
         return instantaneous, averaged, time_text
 
     animation = FuncAnimation(
@@ -330,7 +346,7 @@ def make_flow_slices_gif(
         images[0].set_data(xy_frames[frame].T)
         images[1].set_data(xz_frames[frame].T)
         images[2].set_data(yz_frames[frame].T)
-        title.set_text(f"ABL flow field: restart + {elapsed_times[frame]:.1f} s")
+        title.set_text(f"ABL flow field: t = {elapsed_times[frame]:.1f} s")
         return (*images, title)
 
     animation = FuncAnimation(
@@ -375,11 +391,15 @@ def main() -> None:
     from wireles_jax.sharding import make_distributed_mesh
     from wireles_jax.timestep_sharded import (
         ABL_PROFILE_NAMES,
+        initial_sharded_state,
         make_abl_profiles_sharded,
         make_diagnostics_sharded,
         make_flow_slices_sharded,
+        make_project_velocity_sharded,
         make_sharded_operators,
         make_step_ab2_sharded,
+        validate_cfl,
+        validate_lasd_cfl,
     )
 
     configured = params_from_settings(settings, jnp)
@@ -407,11 +427,32 @@ def main() -> None:
         sharded_pressure_solver="transpose",
     )
     mesh = make_distributed_mesh(size)
-    state = load_sharded_checkpoint(
-        args.checkpoint, params, mesh, rank=rank
-    )
-    start_step = int(jax.device_get(state.step))
     ops = make_sharded_operators(params, mesh)
+    if args.checkpoint is None:
+        if rank == 0:
+            print("[initial] creating and projecting the configured initial field", flush=True)
+        state = initial_sharded_state(params, mesh)
+        project = jax.jit(
+            make_project_velocity_sharded(
+                params,
+                ops.pressure,
+                mesh,
+                spike_ops=ops.pressure_spike,
+            )
+        )
+        u, v, w, p = project(
+            state.u,
+            state.v,
+            state.w,
+            ops.pressure,
+            ops.pressure_spike,
+        )
+        state = state._replace(u=u, v=v, w=w, p=p)
+    else:
+        state = load_sharded_checkpoint(
+            args.checkpoint, params, mesh, rank=rank
+        )
+    start_step = int(jax.device_get(state.step))
     step_fn = make_step_ab2_sharded(params, ops, mesh)
     profile_fn = make_abl_profiles_sharded(params, ops.horizontal, mesh)
     slice_fn = make_flow_slices_sharded(
@@ -421,7 +462,7 @@ def main() -> None:
 
     if rank == 0:
         print(
-            f"[restart] step={start_step}; advancing {total_steps} steps "
+            f"[run] start step={start_step}; advancing {total_steps} steps "
             f"({args.duration_seconds:g}s), sampling every {sample_every} steps",
             flush=True,
         )
@@ -457,6 +498,9 @@ def main() -> None:
                 state.step,
             )
         )
+        validate_cfl(diag)
+        if params.sgs_model == "lasd":
+            validate_lasd_cfl(diag, params)
         xy_slice, xz_slice, yz_slice = jax.block_until_ready(
             slice_fn(state.u)
         )
@@ -565,11 +609,18 @@ def main() -> None:
         args.flow_height,
     )
     metadata = {
-        "source_checkpoint": str(args.checkpoint.resolve()),
+        "source_checkpoint": (
+            None if args.checkpoint is None else str(args.checkpoint.resolve())
+        ),
         "start_step": start_step,
         "final_step": int(start_step + total_steps),
         "dt_seconds": params.dt_physical,
         "duration_seconds": args.duration_seconds,
+        "bl_height_m": params.bl_height,
+        "pressure_force_height_m": params.forcing_height * params.z_i,
+        "pressure_acceleration_m_s2": (
+            params.driving_pressure_force / params.z_i
+        ),
         "frames": args.frames,
         "sample_every_steps": sample_every,
         "time_mean_samples": args.frames,

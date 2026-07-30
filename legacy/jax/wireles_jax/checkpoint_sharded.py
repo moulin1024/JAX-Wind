@@ -46,6 +46,11 @@ def _validate_restart_parameters(manifest: dict[str, Any], params: Params) -> No
     saved = manifest.get("restart_parameters")
     if saved is None:
         return
+    # Checkpoints written before pressure forcing was decoupled from
+    # ``bl_height`` implicitly used the legacy default.
+    if "pressure_force_height" not in saved:
+        saved = dict(saved)
+        saved["pressure_force_height"] = None
     current = _restart_parameters(params)
     if saved == current:
         return

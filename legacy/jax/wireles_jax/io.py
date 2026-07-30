@@ -84,6 +84,11 @@ def save_velocity_h5(path: str | Path, state: FlowState, params: Params, diag: D
         handle.attrs["vonk"] = float(params.vonk)
         handle.attrs["bl_height"] = float(params.bl_height)
         handle.attrs["pressure_force"] = np.nan if params.pressure_force is None else float(params.pressure_force)
+        handle.attrs["pressure_force_height"] = (
+            np.nan
+            if params.pressure_force_height is None
+            else float(params.pressure_force_height)
+        )
         handle.attrs["coriolis_f"] = float(params.coriolis_f)
         handle.attrs["geostrophic_u"] = float(params.geostrophic_u)
         handle.attrs["geostrophic_v"] = float(params.geostrophic_v)

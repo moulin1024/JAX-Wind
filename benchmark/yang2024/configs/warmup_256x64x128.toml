@@ -1,0 +1,67 @@
+# Four-process precursor warm-up for the Yang 2024 wind tunnel.
+#
+# The fitted measured-log profile is rescaled to U(0.876 m) = 4.4 m/s.
+# This is a numerical benchmark choice; the paper itself specifies a uniform
+# low-turbulence tunnel inflow.
+
+[grid]
+nx = 256
+ny = 64
+nz = 128
+lx = 24.0
+ly = 6.0
+lz = 3.6
+z_i = 3.6
+
+[time]
+scheme = "ab2"
+steps = 10000
+log_every = 100
+dt = 0.001
+
+[physics]
+u_fric = 0.16140448019041365
+zo = 1.6100320393803134e-5
+bl_height = 3.6
+pressure_force_height = 3.6
+vonk = 0.4
+horizontal_homogeneous = true
+initial_condition = "log_law"
+momentum_wall_model = "abl"
+wall_stress_model = "prescribed_ustar"
+initial_velocity_noise = 0.1
+molecular_viscosity = 1.5e-5
+
+[wall_filter]
+fgr = 1.5
+tfr = 2.0
+
+[sgs]
+model = "lasd"
+precision = "float32"
+cs_count = 10
+smag_cs = 0.16
+
+[numerics]
+projection_mode = "stage"
+horizontal_dealias = true
+pressure_filter_nyquist = true
+sharded_pressure_solver = "transpose"
+top_boundary_condition = "rigid_lid"
+
+[thermo]
+enabled = false
+moisture_enabled = false
+theta0 = 300.0
+surface_theta_flux = 0.0
+
+[actuator_disk]
+enabled = false
+
+[fringe]
+enabled = false
+
+[runtime]
+precision = "float32"
+sgs_precision = "float32"
+use_jit = true
