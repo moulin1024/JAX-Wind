@@ -1870,6 +1870,7 @@ def make_project_velocity_sharded(
         u_i: jax.Array,
         v_i: jax.Array,
         w_i: jax.Array,
+        target_divergence_i: jax.Array,
         kx: jax.Array,
         ky: jax.Array,
     ) -> jax.Array:
@@ -1878,7 +1879,9 @@ def make_project_velocity_sharded(
         dwdz_i = ((w_h[:, :, 1:-1] - w_h[:, :, :-2]) / params.dz).astype(params.dtype)
         u_hat = rfft2_fortran_layout(u_i)
         v_hat = rfft2_fortran_layout(v_i)
-        dwdz_hat = rfft2_fortran_layout(dwdz_i)
+        dwdz_hat = rfft2_fortran_layout(
+            dwdz_i - target_divergence_i
+        )
         return (
             1j * kx.astype(u_hat.real.dtype) * u_hat
             + 1j * ky.astype(v_hat.real.dtype) * v_hat
@@ -1910,14 +1913,14 @@ def make_project_velocity_sharded(
     if adjoint_axis_name is not None:
         z = adjoint_z_slab_spec(adjoint_axis_name, axis_name)
         mapped_divergence = jax.vmap(
-            local_divergence_hat, in_axes=(0, 0, 0, None, None)
+            local_divergence_hat, in_axes=(0, 0, 0, 0, None, None)
         )
         mapped_correct = jax.vmap(local_correct)
         additional = (adjoint_axis_name,)
     div_hat_fn = _shard_map(
         mapped_divergence,
         mesh=mesh,
-        in_specs=(z, z, z, P(), P()),
+        in_specs=(z, z, z, z, P(), P()),
         out_specs=z,
         axis_name=axis_name,
         additional_axis_names=additional,
@@ -1937,9 +1940,19 @@ def make_project_velocity_sharded(
         w_i: jax.Array,
         runtime_pressure_ops: ShardedPressureOperators | None = None,
         runtime_spike_ops: ShardedSpikeOperators | None = None,
+        target_divergence: jax.Array | None = None,
     ) -> tuple[jax.Array, ...]:
         active_ops = pressure_ops if runtime_pressure_ops is None else runtime_pressure_ops
-        div_hat = div_hat_fn(u_i, v_i, w_i, active_ops.kx, active_ops.ky)
+        if target_divergence is None:
+            target_divergence = jnp.zeros_like(u_i)
+        div_hat = div_hat_fn(
+            u_i,
+            v_i,
+            w_i,
+            target_divergence,
+            active_ops.kx,
+            active_ops.ky,
+        )
         if params.sharded_pressure_solver == "spike":
             active_spike = spike_ops if runtime_spike_ops is None else runtime_spike_ops
             if active_spike is None:  # pragma: no cover - guarded at construction
@@ -2190,6 +2203,10 @@ def make_step_ab2_sharded(
         runtime_pressure_ops: ShardedPressureOperators | None = None,
         runtime_spike_ops: ShardedSpikeOperators | None = None,
         fringe_target: tuple[jax.Array, ...] | None = None,
+        extra_rhs_w: jax.Array | None = None,
+        extra_rhs_theta: jax.Array | None = None,
+        extra_rhs_qv: jax.Array | None = None,
+        target_divergence: jax.Array | None = None,
     ) -> ShardedFlowState:
         (
             u,
@@ -2246,6 +2263,12 @@ def make_step_ab2_sharded(
             rhs_w = rhs_w + source_w
             rhs_theta = rhs_theta + source_theta
             rhs_qv = rhs_qv + source_qv
+        if extra_rhs_w is not None:
+            rhs_w = rhs_w + extra_rhs_w
+        if extra_rhs_theta is not None:
+            rhs_theta = rhs_theta + extra_rhs_theta
+        if extra_rhs_qv is not None:
+            rhs_qv = rhs_qv + extra_rhs_qv
         u_star = _ab_update_inner(u, rhs_u, state.rhs_u_prev, state.step, params)
         v_star = _ab_update_inner(v, rhs_v, state.rhs_v_prev, state.step, params)
         w_star = _ab_update_inner(w, rhs_w, state.rhs_w_prev, state.step, params)
@@ -2269,6 +2292,7 @@ def make_step_ab2_sharded(
             w_star,
             runtime_pressure_ops,
             runtime_spike_ops,
+            target_divergence,
         )
         return ShardedFlowState(
             u=u_new,

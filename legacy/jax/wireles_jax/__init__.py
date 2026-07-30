@@ -2,6 +2,28 @@
 
 from .config import AB2_DEFAULT_DT, RK4_DEFAULT_DT, Params, default_dt_for_time_scheme
 from .convergence import UStarSlidingWindow
+from .cryogenic_microphysics import (
+    CryogenicMicrophysicsConfig,
+    FogMicrophysicsUpdate,
+    MassOnlyOutletUpdate,
+    NitrogenDropletUpdate,
+    advance_fog_microphysics,
+    advance_nitrogen_droplet,
+    mass_only_outlet_update,
+    saturation_adjustment,
+    stokes_terminal_velocity,
+)
+from .cryogenic_sharded import (
+    CryogenicScalarState,
+    ShardedCryogenicDiagnostics,
+    ShardedCryogenicState,
+    initial_cryogenic_scalar_state,
+    load_cryogenic_checkpoint_sidecar,
+    make_cryogenic_buoyancy_sharded,
+    make_fog_settling_sharded,
+    make_prescribed_ln2_mass_outlet_sharded,
+    make_step_cryogenic_sharded,
+)
 from .driver import run
 from .init import initial_state
 from .state import Diagnostics, FlowState
@@ -52,8 +74,13 @@ from .spray_dpm_sharded import (
 )
 
 __all__ = [
+    "CryogenicMicrophysicsConfig",
+    "CryogenicScalarState",
+    "FogMicrophysicsUpdate",
     "Diagnostics",
     "FlowState",
+    "MassOnlyOutletUpdate",
+    "NitrogenDropletUpdate",
     "SprayCoupledState",
     "SprayDPMConfig",
     "SprayDiagnostics",
@@ -63,6 +90,8 @@ __all__ = [
     "ShardedSprayCoupledState",
     "ShardedSprayDiagnostics",
     "ShardedFlowState",
+    "ShardedCryogenicDiagnostics",
+    "ShardedCryogenicState",
     "UStarSlidingWindow",
     "Params",
     "AB2_DEFAULT_DT",
@@ -70,15 +99,26 @@ __all__ = [
     "default_dt_for_time_scheme",
     "duplicate_state_for_adjoint",
     "initial_state",
+    "initial_cryogenic_scalar_state",
+    "load_cryogenic_checkpoint_sidecar",
     "initialize_sharded_spray",
     "initialize_spray",
     "inject_spray",
     "apply_spray_increments",
+    "advance_fog_microphysics",
+    "advance_nitrogen_droplet",
+    "mass_only_outlet_update",
     "run",
     "run_spray_dpm",
     "sample_diameters",
+    "saturation_adjustment",
+    "stokes_terminal_velocity",
     "run_sharded",
     "make_inject_sharded_spray",
+    "make_cryogenic_buoyancy_sharded",
+    "make_fog_settling_sharded",
+    "make_prescribed_ln2_mass_outlet_sharded",
+    "make_step_cryogenic_sharded",
     "make_adjoint_chunk_step",
     "make_adjoint_pipeline_batch",
     "make_adjoint_pipeline_prime",

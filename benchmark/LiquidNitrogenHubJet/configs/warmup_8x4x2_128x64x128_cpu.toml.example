@@ -45,9 +45,10 @@ sharded_pressure_solver = "transpose"
 top_boundary_condition = "rigid_lid"
 
 [thermo]
-enabled = false
-moisture_enabled = false
+enabled = true
+moisture_enabled = true
 theta0 = 300.0
+qv0 = 0.011
 surface_theta_flux = 0.0
 scalar_sgs_model = "fixed_prandtl"
 prandtl_t = 0.74
@@ -56,12 +57,35 @@ prandtl_t = 0.74
 enabled = false
 
 [fringe]
+# Keep the old velocity/temperature fringe disabled for the pure-jet case.
 enabled = false
 start_x = 7.5
 timescale = 0.10
 target_u = 0.0
 target_v = 0.0
 target_theta = 300.0
+
+[mass_outlet]
+# Weak low-Mach mass closure only: no u/v/w or temperature relaxation.
+enabled = true
+start_x = 7.5
+end_x = 8.0
+timescale = 1.0
+
+[cryogenic]
+enabled = true
+max_parcels_per_shard = 4096
+parcels_per_step = 4
+initial_diameter = 0.000150
+minimum_diameter = 0.000050
+maximum_diameter = 0.000300
+rosin_rammler_spread = 3.0
+substeps = 4
+saturation_timescale = 0.01
+freezing_timescale = 0.05
+melting_timescale = 0.05
+liquid_fog_diameter = 0.000010
+ice_fog_diameter = 0.000020
 
 [runtime]
 precision = "float32"

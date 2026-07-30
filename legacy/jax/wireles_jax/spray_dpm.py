@@ -33,6 +33,7 @@ from .timestep import step as flow_step
 class SprayDPMConfig:
     """Physical and numerical parameters for a parcel-based spray injection."""
 
+    material: str = "water"
     max_parcels: int = 1024
     initial_parcels: int = 0
     parcel_weight: float = 1.0
@@ -72,6 +73,7 @@ class SprayDPMConfig:
     water_density: float = 997.0
     liquid_heat_capacity: float = 4180.0
     latent_heat: float = 2.45e6
+    boiling_temperature: float = 373.15
     salinity_mass_fraction: float = 0.0
     salt_molar_mass: float = 58.44e-3
     water_molar_mass: float = 18.01528e-3
@@ -96,6 +98,10 @@ class SprayDPMConfig:
     stefan_boltzmann: float = 5.670374419e-8
 
     def __post_init__(self) -> None:
+        material = str(self.material).lower().replace("-", "_")
+        if material not in {"water", "nitrogen"}:
+            raise ValueError("spray material must be 'water' or 'nitrogen'")
+        object.__setattr__(self, "material", material)
         if self.max_parcels <= 0:
             raise ValueError("max_parcels must be positive")
         if not 0 <= self.initial_parcels <= self.max_parcels:
@@ -165,6 +171,7 @@ class SprayDPMConfig:
             self.water_density,
             self.liquid_heat_capacity,
             self.latent_heat,
+            self.boiling_temperature,
             self.salt_molar_mass,
             self.water_molar_mass,
             self.salt_vant_hoff_factor,
@@ -1002,6 +1009,36 @@ def _proposed_phase_change(
     A fixed-count vectorized bisection avoids explicit latent-heat oscillations
     for droplets whose thermal time scale is much shorter than the LES step.
     """
+    if config.material == "nitrogen":
+        # Nitrogen is injected close to its normal boiling point.  In this
+        # reduced model it cannot condense from the ambient carrier: sensible
+        # heating first brings a subcooled parcel to the boiling point, then
+        # all remaining convective/radiative heat drives vaporization.
+        dtype = spray.mass.dtype
+        dt_value = jnp.asarray(dt, dtype=dtype)
+        boiling = jnp.asarray(config.boiling_temperature, dtype=dtype)
+        heat_available = jnp.maximum(
+            dt_value
+            * (
+                rates.heat_conductance
+                * (rates.gas_temperature - spray.temperature)
+                + rates.radiative_power
+            ),
+            0.0,
+        )
+        sensible = (
+            spray.mass
+            * config.liquid_heat_capacity
+            * jnp.maximum(boiling - spray.temperature, 0.0)
+        )
+        latent_energy = jnp.maximum(heat_available - sensible, 0.0)
+        evaporation = jnp.minimum(
+            spray.mass,
+            latent_energy
+            / jnp.asarray(config.latent_heat, dtype=dtype),
+        )
+        return jnp.where(spray.active, evaporation, 0.0)
+
     dt_value = jnp.asarray(dt, spray.mass.dtype)
     conductance_dt = dt_value * rates.heat_conductance
     radiative_energy = dt_value * rates.radiative_power
@@ -1125,6 +1162,50 @@ def _advance_parcel_implicit(
     )
     conductance_dt = dt_value * rates.heat_conductance
     radiative_energy = dt_value * rates.radiative_power
+    if config.material == "nitrogen":
+        boiling = jnp.asarray(config.boiling_temperature, dtype=dtype)
+        raw_convective_energy = jnp.maximum(
+            conductance_dt * (rates.gas_temperature - spray.temperature),
+            0.0,
+        )
+        radiative_heating = jnp.maximum(radiative_energy, 0.0)
+        sensible_needed = (
+            spray.mass
+            * config.liquid_heat_capacity
+            * jnp.maximum(boiling - spray.temperature, 0.0)
+        )
+        sensible_energy = jnp.minimum(
+            raw_convective_energy + radiative_heating,
+            sensible_needed,
+        )
+        absorbed_energy = sensible_energy + config.latent_heat * phase_change
+        convective_energy = jnp.minimum(
+            raw_convective_energy,
+            jnp.maximum(absorbed_energy - radiative_heating, 0.0),
+        )
+        new_temperature = jnp.minimum(
+            spray.temperature
+            + sensible_energy
+            / jnp.maximum(
+                spray.mass * config.liquid_heat_capacity,
+                jnp.asarray(1.0e-30, dtype=dtype),
+            ),
+            boiling,
+        )
+        return _ParcelAdvance(
+            u=new_u,
+            v=new_v,
+            w=new_w,
+            mass=new_mass,
+            diameter=new_diameter,
+            temperature=new_temperature,
+            drag_delta_u=drag_delta_u,
+            drag_delta_v=drag_delta_v,
+            drag_delta_w=drag_delta_w,
+            convective_energy=convective_energy,
+            radiative_energy=radiative_energy,
+        )
+
     new_temperature = (
         heat_capacity * spray.temperature
         + conductance_dt * rates.gas_temperature

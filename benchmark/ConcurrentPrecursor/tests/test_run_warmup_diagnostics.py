@@ -25,6 +25,7 @@ ROOT = Path(__file__).resolve().parents[3]
 def _args(**overrides) -> Namespace:
     values = {
         "liquid_nitrogen_nozzle": True,
+        "ln2_multiphase": False,
         "ln2_mass_flow_kg_s": 0.020,
         "ln2_injection_speed": 8.0,
         "ln2_x": 12.15,
@@ -82,6 +83,38 @@ def test_explicit_ln2_cooling_power_overrides_enthalpy_estimate() -> None:
     assert liquid_nitrogen_cooling_power(
         _args(ln2_cooling_power_w=12_000.0)
     ) == pytest.approx(12_000.0)
+
+
+def test_multiphase_ln2_enables_humid_carrier_transport() -> None:
+    import jax.numpy as jnp
+
+    from wireles_jax import Params
+
+    configured = Params(
+        nx=8,
+        ny=4,
+        nz=4,
+        lx=8.0,
+        ly=4.0,
+        lz=2.0,
+        z_i=1.0,
+        momentum_wall_model="free_slip",
+        thermo_enabled=True,
+        moisture_enabled=True,
+        qv0=0.011,
+        sgs_model="smagorinsky",
+        scalar_sgs_model="fixed_prandtl",
+        dtype=jnp.float32,
+    )
+    params, _ = configured_run_params(
+        configured,
+        _args(ln2_multiphase=True, ln2_x=1.0, ln2_y=2.0, ln2_z=1.0),
+        total_steps=10,
+    )
+
+    assert params.thermo_enabled is True
+    assert params.moisture_enabled is True
+    assert params.qv0 == pytest.approx(0.011)
 
 
 def test_local_device_defaults_to_mpi_local_rank(monkeypatch) -> None:
@@ -191,3 +224,8 @@ def test_8x4x2_ln2_experiment_config_resolves() -> None:
     assert params.fringe_enabled is False
     assert params.fringe_start_x == pytest.approx(7.5)
     assert params.fringe_target_u == pytest.approx(0.0)
+    assert settings["mass_outlet_enabled"] is True
+    assert settings["mass_outlet_start_x"] == pytest.approx(7.5)
+    assert settings["mass_outlet_end_x"] == pytest.approx(8.0)
+    assert settings["cryogenic_enabled"] is True
+    assert settings["cryogenic_initial_diameter"] == pytest.approx(150.0e-6)

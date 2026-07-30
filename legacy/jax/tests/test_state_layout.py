@@ -205,3 +205,56 @@ def test_one_device_slab_projection_matches_single_device_projection() -> None:
             rtol=3.0e-5,
             atol=3.0e-5,
         )
+
+
+def test_sharded_projection_accepts_zero_mean_volume_source() -> None:
+    jax = pytest.importorskip("jax")
+    jnp = pytest.importorskip("jax.numpy")
+
+    from wireles_jax import Params
+    from wireles_jax.derivative import ddx, ddy
+    from wireles_jax.grid import make_operators
+    from wireles_jax.pressure_sharded import make_sharded_pressure_operators
+    from wireles_jax.sharding import make_single_node_mesh, put_z_slab
+    from wireles_jax.timestep_sharded import make_project_velocity_sharded
+
+    params = Params(
+        nx=8,
+        ny=4,
+        nz=4,
+        lx=2.0,
+        ly=1.0,
+        lz=1.0,
+        dt=1.0e-3,
+        momentum_wall_model="free_slip",
+        pressure_filter_nyquist=True,
+        dtype=jnp.float32,
+    )
+    shape = (params.nx, params.ny, params.nz)
+    x = (jnp.arange(params.nx) + 0.5) * params.dx
+    target = 0.02 * jnp.sin(2.0 * jnp.pi * x / params.lx)
+    target = jnp.broadcast_to(target[:, None, None], shape)
+    zeros = jnp.zeros(shape, dtype=jnp.float32)
+    mesh = make_single_node_mesh(1)
+    pressure_ops = make_sharded_pressure_operators(params, mesh)
+    project = make_project_velocity_sharded(params, pressure_ops, mesh)
+    u, v, w, _ = jax.block_until_ready(
+        project(
+            put_z_slab(zeros, mesh),
+            put_z_slab(zeros, mesh),
+            put_z_slab(zeros, mesh),
+            target_divergence=put_z_slab(target, mesh),
+        )
+    )
+
+    ops = make_operators(params)
+    dwdz = jnp.concatenate(
+        (w[:, :, :1], w[:, :, 1:] - w[:, :, :-1]), axis=2
+    ) / params.dz
+    divergence = ddx(u, params, ops) + ddy(v, params, ops) + dwdz
+    np.testing.assert_allclose(
+        np.asarray(divergence),
+        np.asarray(target),
+        rtol=2.0e-4,
+        atol=2.0e-5,
+    )

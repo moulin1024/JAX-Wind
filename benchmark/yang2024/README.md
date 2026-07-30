@@ -217,7 +217,14 @@ to the carrier phase.
 The dedicated configuration
 `benchmark/LiquidNitrogenHubJet/configs/warmup_8x4x2_256x128x256.toml.example`
 uses an `8 x 4 x 2 m` domain, a `256 x 128 x 256` grid,
-`dt = 0.0004 s`, and 25000 steps. The suffix is `.toml.example` only because
+`dt = 0.0004 s`, and 25000 steps. This configuration enables the multiphase
+path: Rosin--Rammler LN2 parcels, an independent gaseous-nitrogen scalar,
+conservative moist-mixture enthalpy, finite-rate water-vapour/liquid-fog/
+ice-fog phase change, fog settling, and a weak mass-only outlet over
+`x = 7.5--8.0 m`. Newly vaporized nitrogen enters at `77.34 K`, so its
+subsequent sensible warming contributes to cooling in addition to the LN2
+latent heat. The legacy velocity/temperature fringe remains disabled. The
+suffix is `.toml.example` only because
 the repository ignores `*.toml`; the runner still parses it as TOML. On one
 node with four GPUs, launch. Scaling the measured CPU reference CFL by the
 twofold grid refinement and the `0.4` timestep ratio predicts a maximum CFL
@@ -246,10 +253,18 @@ env \
 
 This is a pure-jet case in quiescent air: the initial velocity is zero and
 there is no pressure-gradient forcing. The only streamwise momentum comes from
-the equivalent LN2 nozzle. The fringe zone is disabled, so the streamwise
-boundary remains periodic and the plume may recirculate during this ten-second
-run. Each MPI process automatically selects the GPU matching its MPI or Slurm
-local rank.
+the LN2 parcels. The carrier grid remains streamwise-periodic, but gas-volume
+production is balanced by the mass-only outlet; it does not relax velocity,
+temperature, or humidity. In addition to the cold-plume files, the runner
+writes `ln2_multiphase_centerplane_100frames.npz` and one
+`cryogenic_rankNNNNN.npz` checkpoint sidecar per MPI process. Each MPI process
+automatically selects the GPU matching its MPI or Slurm local rank.
+
+The NPZ diagnostics include nitrogen injection/evaporation/outlet mass,
+nitrogen sensible-cooling energy, liquid- and ice-fog mass, condensation and
+re-evaporation mass, and maximum relative humidity. The cryogenic checkpoint
+stores total enthalpy and all AB2 scalar histories, so a resumed multiphase
+run continues the same mass and energy budgets.
 
 ## Validation boundary
 

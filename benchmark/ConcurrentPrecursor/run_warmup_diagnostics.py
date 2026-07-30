@@ -58,6 +58,15 @@ def parse_args() -> argparse.Namespace:
             "thermal buoyancy."
         ),
     )
+    parser.add_argument(
+        "--ln2-multiphase",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Use LN2 parcels plus independent nitrogen/water-fog/ice-fog "
+            "transport. Defaults to [cryogenic].enabled."
+        ),
+    )
     parser.add_argument("--ln2-mass-flow-kg-s", type=float, default=0.020)
     parser.add_argument("--ln2-injection-speed", type=float, default=8.0)
     parser.add_argument("--ln2-x", type=float, default=12.15)
@@ -133,7 +142,7 @@ def configured_run_params(configured, args: argparse.Namespace, total_steps: int
     nozzle = replace(
         baseline,
         thermo_enabled=True,
-        moisture_enabled=False,
+        moisture_enabled=bool(args.ln2_multiphase),
         horizontal_homogeneous=False,
         buoyancy_reference="ambient",
         fringe_enabled=configured.fringe_enabled,
@@ -667,6 +676,10 @@ def main() -> None:
 
     settings = dict(RUN_DEFAULTS)
     settings.update(load_config_file(args.config))
+    if args.ln2_multiphase is None:
+        args.ln2_multiphase = bool(settings["cryogenic_enabled"])
+    if args.ln2_multiphase and not args.liquid_nitrogen_nozzle:
+        raise SystemExit("--ln2-multiphase requires --liquid-nitrogen-nozzle")
     if settings["precision"] == "float64" or settings["sgs_precision"] == "float64":
         from jax import config as jax_config
 
@@ -689,6 +702,16 @@ def main() -> None:
         read_sharded_checkpoint_manifest,
         save_sharded_checkpoint,
     )
+    from wireles_jax.cryogenic_microphysics import CryogenicMicrophysicsConfig
+    from wireles_jax.cryogenic_sharded import (
+        ShardedCryogenicState,
+        initial_cryogenic_scalar_state,
+        load_cryogenic_checkpoint_sidecar,
+        make_step_cryogenic_sharded,
+        make_prescribed_ln2_mass_outlet_sharded,
+    )
+    from wireles_jax.spray_dpm import SprayDPMConfig
+    from wireles_jax.spray_dpm_sharded import initialize_sharded_spray
     from wireles_jax.sharding import make_distributed_mesh
     from wireles_jax.timestep_sharded import (
         ABL_PROFILE_NAMES,
@@ -722,6 +745,17 @@ def main() -> None:
         args,
         total_steps,
     )
+    multiphase_enabled = bool(
+        args.liquid_nitrogen_nozzle and args.ln2_multiphase
+    )
+    if multiphase_enabled and not settings["mass_outlet_enabled"]:
+        raise SystemExit(
+            "multiphase LN2 requires [mass_outlet].enabled=true in the "
+            "periodic rigid-lid domain"
+        )
+    if multiphase_enabled:
+        # Parcel exchange supplies momentum, cooling, and nitrogen mass.
+        params = replace(params, cold_source_enabled=False)
     mesh = make_distributed_mesh(size)
     ops = make_sharded_operators(params, mesh)
     checkpoint_transition = "new_initial_state"
@@ -766,8 +800,142 @@ def main() -> None:
             mesh,
             rank=rank,
         )
-    start_step = int(jax.device_get(state.step))
-    step_fn = make_step_ab2_sharded(params, ops, mesh)
+    mass_outlet_enabled = bool(
+        args.liquid_nitrogen_nozzle and settings["mass_outlet_enabled"]
+    )
+    outlet_end_x = settings["mass_outlet_end_x"]
+    if outlet_end_x is None:
+        outlet_end_x = params.lx * params.z_i
+    outlet_config = CryogenicMicrophysicsConfig(
+        pressure=params.surface_pressure,
+        dry_air_density=args.ln2_carrier_density,
+        dry_air_heat_capacity=args.ln2_carrier_heat_capacity,
+        outlet_start_x=float(settings["mass_outlet_start_x"]),
+        outlet_end_x=float(outlet_end_x),
+        outlet_scalar_timescale=float(settings["mass_outlet_timescale"]),
+        saturation_relaxation_timescale=float(
+            settings["cryogenic_saturation_timescale"]
+        ),
+        freezing_timescale=float(
+            settings["cryogenic_freezing_timescale"]
+        ),
+        melting_timescale=float(
+            settings["cryogenic_melting_timescale"]
+        ),
+        liquid_fog_diameter=float(
+            settings["cryogenic_liquid_fog_diameter"]
+        ),
+        ice_fog_diameter=float(
+            settings["cryogenic_ice_fog_diameter"]
+        ),
+    )
+
+    if multiphase_enabled:
+        injection_end_time = (
+            int(jax.device_get(state.step)) * params.dt_physical
+            + args.duration_seconds
+        )
+        spray_config = SprayDPMConfig(
+            material="nitrogen",
+            max_parcels=int(settings["cryogenic_max_parcels_per_shard"]),
+            parcels_per_step=int(settings["cryogenic_parcels_per_step"]),
+            mass_flow_rate=args.ln2_mass_flow_kg_s,
+            injection_end_time=injection_end_time,
+            injection_x=params.cold_source_x,
+            injection_y=params.cold_source_y,
+            injection_z=params.cold_source_z,
+            injection_radius=params.cold_source_sigma_r,
+            injection_u=args.ln2_injection_speed,
+            initial_diameter=float(
+                settings["cryogenic_initial_diameter"]
+            ),
+            diameter_distribution="rosin_rammler",
+            minimum_diameter=float(
+                settings["cryogenic_minimum_diameter"]
+            ),
+            maximum_diameter=float(
+                settings["cryogenic_maximum_diameter"]
+            ),
+            rosin_rammler_spread=float(
+                settings["cryogenic_rosin_rammler_spread"]
+            ),
+            initial_temperature=outlet_config.nitrogen_boiling_temperature,
+            boiling_temperature=outlet_config.nitrogen_boiling_temperature,
+            substeps=int(settings["cryogenic_substeps"]),
+            air_density=outlet_config.dry_air_density,
+            air_heat_capacity=outlet_config.dry_air_heat_capacity,
+            liquid_density=outlet_config.liquid_nitrogen_density,
+            water_density=outlet_config.liquid_nitrogen_density,
+            liquid_heat_capacity=outlet_config.liquid_nitrogen_heat_capacity,
+            latent_heat=outlet_config.liquid_nitrogen_latent_heat,
+            surface_tension=8.85e-3,
+        )
+        cryogenic_manifest = (
+            None
+            if args.checkpoint is None
+            else args.checkpoint / "cryogenic_manifest.json"
+        )
+        if cryogenic_manifest is not None and cryogenic_manifest.exists():
+            state = load_cryogenic_checkpoint_sidecar(
+                args.checkpoint,
+                state,
+                spray_config,
+                params,
+                mesh,
+                rank=rank,
+            )
+            checkpoint_transition = "exact_multiphase_restart"
+        else:
+            state = ShardedCryogenicState(
+                flow=state,
+                spray=initialize_sharded_spray(
+                    spray_config, params, mesh
+                ),
+                scalars=initial_cryogenic_scalar_state(
+                    state, outlet_config
+                ),
+            )
+            if args.checkpoint is not None:
+                checkpoint_transition += "_fresh_cryogenic_fields"
+        start_step = int(jax.device_get(state.flow.step))
+        step_fn = make_step_cryogenic_sharded(
+            spray_config,
+            outlet_config,
+            params,
+            ops,
+            mesh,
+        )
+    else:
+        start_step = int(jax.device_get(state.step))
+        base_step_fn = make_step_ab2_sharded(params, ops, mesh)
+        if not mass_outlet_enabled:
+            step_fn = base_step_fn
+        else:
+            mass_outlet_target = make_prescribed_ln2_mass_outlet_sharded(
+                params,
+                mesh,
+                mass_flow_rate=args.ln2_mass_flow_kg_s,
+                source_x=params.cold_source_x,
+                source_y=params.cold_source_y,
+                source_z=params.cold_source_z,
+                source_sigma_x=params.cold_source_sigma_x,
+                source_sigma_r=params.cold_source_sigma_r,
+                config=outlet_config,
+                return_scalar_sink=True,
+            )
+
+            def step_fn(state, runtime_pressure_ops, runtime_spike_ops):
+                target_divergence, scalar_sink = mass_outlet_target(
+                    state.theta
+                )
+                return base_step_fn(
+                    state,
+                    runtime_pressure_ops,
+                    runtime_spike_ops,
+                    extra_rhs_theta=-scalar_sink * state.theta,
+                    extra_rhs_qv=-scalar_sink * state.qv,
+                    target_divergence=target_divergence,
+                )
     profile_fn = make_abl_profiles_sharded(params, ops.horizontal, mesh)
     slice_fn = make_flow_slices_sharded(
         params, mesh, horizontal_height=args.flow_height
@@ -776,17 +944,32 @@ def main() -> None:
 
     if rank == 0:
         if args.liquid_nitrogen_nozzle:
-            print(
-                f"[ln2] equivalent nozzle at "
-                f"({params.cold_source_x:g}, {params.cold_source_y:g}, "
-                f"{params.cold_source_z:g}) m, +x injection; "
-                f"mass_flow={args.ln2_mass_flow_kg_s:g} kg/s, "
-                f"speed={args.ln2_injection_speed:g} m/s, "
-                f"momentum={params.cold_source_momentum_flux:g} N, "
-                f"cooling={params.cold_source_cooling_power:g} W; "
-                f"checkpoint_transition={checkpoint_transition}",
-                flush=True,
-            )
+            if multiphase_enabled:
+                print(
+                    f"[ln2] multiphase parcel nozzle at "
+                    f"({params.cold_source_x:g}, {params.cold_source_y:g}, "
+                    f"{params.cold_source_z:g}) m, +x injection; "
+                    f"mass_flow={args.ln2_mass_flow_kg_s:g} kg/s, "
+                    f"speed={args.ln2_injection_speed:g} m/s, "
+                    f"d50={spray_config.initial_diameter:.3e} m, "
+                    f"substeps={spray_config.substeps}; "
+                    f"mass_outlet={'on' if mass_outlet_enabled else 'off'}; "
+                    f"checkpoint_transition={checkpoint_transition}",
+                    flush=True,
+                )
+            else:
+                print(
+                    f"[ln2] equivalent nozzle at "
+                    f"({params.cold_source_x:g}, {params.cold_source_y:g}, "
+                    f"{params.cold_source_z:g}) m, +x injection; "
+                    f"mass_flow={args.ln2_mass_flow_kg_s:g} kg/s, "
+                    f"speed={args.ln2_injection_speed:g} m/s, "
+                    f"momentum={params.cold_source_momentum_flux:g} N, "
+                    f"cooling={params.cold_source_cooling_power:g} W; "
+                    f"mass_outlet={'on' if mass_outlet_enabled else 'off'}; "
+                    f"checkpoint_transition={checkpoint_transition}",
+                    flush=True,
+                )
         print(
             f"[run] start step={start_step}; advancing {total_steps} steps "
             f"({args.duration_seconds:g}s), sampling every {sample_every} steps",
@@ -808,35 +991,67 @@ def main() -> None:
     sampled_yz: list[np.ndarray] = []
     sampled_theta_xz: list[np.ndarray] = []
     sampled_w_xz: list[np.ndarray] = []
+    sampled_yn2_xz: list[np.ndarray] = []
+    sampled_ql_xz: list[np.ndarray] = []
+    sampled_qi_xz: list[np.ndarray] = []
+    sampled_nitrogen_mass: list[float] = []
+    sampled_liquid_fog_mass: list[float] = []
+    sampled_ice_fog_mass: list[float] = []
+    sampled_relative_humidity: list[float] = []
+    sampled_evaporated_mass: list[float] = []
+    sampled_nitrogen_sensible_cooling: list[float] = []
+    sampled_nitrogen_outlet_mass: list[float] = []
+    sampled_fog_condensed_mass: list[float] = []
+    sampled_fog_evaporated_mass: list[float] = []
     wall_start = time.perf_counter()
     for local_step in range(1, total_steps + 1):
-        state = step_fn(state, ops.pressure, ops.pressure_spike)
+        if multiphase_enabled:
+            state, cryogenic_diagnostics = step_fn(
+                state, ops.pressure, ops.pressure_spike
+            )
+            flow_state = state.flow
+        else:
+            state = step_fn(state, ops.pressure, ops.pressure_spike)
+            flow_state = state
         if local_step % sample_every:
             continue
         profile = jax.block_until_ready(
-            profile_fn(state.u, state.v, state.w, state.cs2)
+            profile_fn(
+                flow_state.u,
+                flow_state.v,
+                flow_state.w,
+                flow_state.cs2,
+            )
         )
         diag = jax.block_until_ready(
             diag_fn(
-                state.u,
-                state.v,
-                state.w,
-                state.theta,
-                state.qv,
-                state.step,
+                flow_state.u,
+                flow_state.v,
+                flow_state.w,
+                flow_state.theta,
+                flow_state.qv,
+                flow_state.step,
             )
         )
         validate_cfl(diag)
         if params.sgs_model == "lasd":
             validate_lasd_cfl(diag, params)
         xy_slice, xz_slice, yz_slice = jax.block_until_ready(
-            slice_fn(state.u)
+            slice_fn(flow_state.u)
         )
         if args.liquid_nitrogen_nozzle:
             theta_slices, w_slices = jax.block_until_ready(
                 (
-                    slice_fn(state.theta),
-                    slice_fn(state.w),
+                    slice_fn(flow_state.theta),
+                    slice_fn(flow_state.w),
+                )
+            )
+        if multiphase_enabled:
+            yn2_slices, ql_slices, qi_slices = jax.block_until_ready(
+                (
+                    slice_fn(state.scalars.yn2),
+                    slice_fn(state.scalars.ql),
+                    slice_fn(state.scalars.qi),
                 )
             )
         if rank == 0:
@@ -853,6 +1068,39 @@ def main() -> None:
                 w_xz = np.asarray(w_slices[1])
                 sampled_theta_xz.append(theta_xz)
                 sampled_w_xz.append(w_xz)
+            if multiphase_enabled:
+                sampled_yn2_xz.append(np.asarray(yn2_slices[1]))
+                sampled_ql_xz.append(np.asarray(ql_slices[1]))
+                sampled_qi_xz.append(np.asarray(qi_slices[1]))
+                sampled_nitrogen_mass.append(
+                    float(cryogenic_diagnostics.nitrogen_gas_mass)
+                )
+                sampled_liquid_fog_mass.append(
+                    float(cryogenic_diagnostics.liquid_fog_mass)
+                )
+                sampled_ice_fog_mass.append(
+                    float(cryogenic_diagnostics.ice_fog_mass)
+                )
+                sampled_relative_humidity.append(
+                    float(cryogenic_diagnostics.max_relative_humidity)
+                )
+                sampled_evaporated_mass.append(
+                    float(cryogenic_diagnostics.spray.evaporated_mass)
+                )
+                sampled_nitrogen_sensible_cooling.append(
+                    float(
+                        cryogenic_diagnostics.nitrogen_sensible_cooling
+                    )
+                )
+                sampled_nitrogen_outlet_mass.append(
+                    float(cryogenic_diagnostics.nitrogen_outlet_mass)
+                )
+                sampled_fog_condensed_mass.append(
+                    float(cryogenic_diagnostics.fog_condensed_mass)
+                )
+                sampled_fog_evaporated_mass.append(
+                    float(cryogenic_diagnostics.fog_evaporated_mass)
+                )
             frame = len(sampled_profiles)
             if frame % 10 == 0 or frame == args.frames:
                 message = (
@@ -879,18 +1127,67 @@ def main() -> None:
                         f", max_dT={float(peak.max()):.3f}K, "
                         f"min_cold_z={minimum_height:.3f}m"
                     )
+                if multiphase_enabled:
+                    message += (
+                        f", N2gas={sampled_nitrogen_mass[-1]:.4e}kg, "
+                        f"fog={sampled_liquid_fog_mass[-1] + sampled_ice_fog_mass[-1]:.4e}kg, "
+                        f"RHmax={sampled_relative_humidity[-1]:.3f}"
+                    )
                 print(message, flush=True)
 
     state = jax.block_until_ready(state)
+    final_flow_state = state.flow if multiphase_enabled else state
     final_checkpoint = args.output_dir / "final_checkpoint"
-    save_sharded_checkpoint(final_checkpoint, state, params, mesh, rank=rank)
+    save_sharded_checkpoint(
+        final_checkpoint,
+        final_flow_state,
+        params,
+        mesh,
+        rank=rank,
+    )
+    if multiphase_enabled:
+        cryogenic_payload = {
+            f"scalar_{name}": np.asarray(
+                getattr(state.scalars, name).addressable_shards[0].data
+            )
+            for name in state.scalars._fields
+        }
+        cryogenic_payload.update(
+            {
+                f"spray_{name}": np.asarray(
+                    getattr(state.spray, name).addressable_shards[0].data
+                )
+                for name in state.spray._fields
+            }
+        )
+        np.savez_compressed(
+            final_checkpoint / f"cryogenic_rank{rank:05d}.npz",
+            **cryogenic_payload,
+        )
+        if rank == 0:
+            cryogenic_manifest = {
+                "format": "wireles-jax-cryogenic-zslab-v1",
+                "source_parts": size,
+                "global_shape": [params.nx, params.ny, params.nz],
+                "step": int(jax.device_get(state.flow.step)),
+                "scalar_fields": list(state.scalars._fields),
+                "spray_fields": list(state.spray._fields),
+                "material": spray_config.material,
+                "mass_flow_rate_kg_s": spray_config.mass_flow_rate,
+                "max_parcels_per_shard": spray_config.max_parcels,
+            }
+            (
+                final_checkpoint / "cryogenic_manifest.json"
+            ).write_text(
+                json.dumps(cryogenic_manifest, indent=2) + "\n"
+            )
     multihost_utils.sync_global_devices("abl-diagnostics-checkpoint-written")
     restored = load_sharded_checkpoint(
         final_checkpoint, params, mesh, rank=rank
     )
     local_exact = True
-    for name in state._fields:
-        current = getattr(state, name)
+    for name in final_flow_state._fields:
+        current = getattr(final_flow_state, name)
         reloaded = getattr(restored, name)
         if name == "step":
             local_exact &= int(jax.device_get(current)) == int(jax.device_get(reloaded))
@@ -938,6 +1235,33 @@ def main() -> None:
                     params.cold_source_z,
                 )
             ),
+        )
+    if multiphase_enabled:
+        np.savez_compressed(
+            args.output_dir / "ln2_multiphase_centerplane_100frames.npz",
+            yn2_xz=np.stack(sampled_yn2_xz),
+            liquid_fog_xz=np.stack(sampled_ql_xz),
+            ice_fog_xz=np.stack(sampled_qi_xz),
+            nitrogen_gas_mass_kg=np.asarray(sampled_nitrogen_mass),
+            liquid_fog_mass_kg=np.asarray(sampled_liquid_fog_mass),
+            ice_fog_mass_kg=np.asarray(sampled_ice_fog_mass),
+            max_relative_humidity=np.asarray(sampled_relative_humidity),
+            evaporated_nitrogen_mass_per_step_kg=np.asarray(
+                sampled_evaporated_mass
+            ),
+            nitrogen_sensible_cooling_per_step_j=np.asarray(
+                sampled_nitrogen_sensible_cooling
+            ),
+            nitrogen_outlet_mass_per_step_kg=np.asarray(
+                sampled_nitrogen_outlet_mass
+            ),
+            fog_condensed_mass_per_step_kg=np.asarray(
+                sampled_fog_condensed_mass
+            ),
+            fog_evaporated_mass_per_step_kg=np.asarray(
+                sampled_fog_evaporated_mass
+            ),
+            elapsed_seconds=elapsed_array,
         )
     np.savez_compressed(
         args.output_dir / "abl_profile_samples.npz",
@@ -1044,7 +1368,12 @@ def main() -> None:
         "liquid_nitrogen_nozzle": (
             {
                 "enabled": True,
-                "model": "equivalent_streamwise_momentum_and_cooling_source",
+                "model": (
+                    "lagrangian_ln2_eulerian_n2_water_fog_ice_fog"
+                    if multiphase_enabled
+                    else "equivalent_streamwise_momentum_and_cooling_source"
+                ),
+                "multiphase_enabled": multiphase_enabled,
                 "mass_flow_kg_s": args.ln2_mass_flow_kg_s,
                 "injection_speed_m_s": args.ln2_injection_speed,
                 "direction": "+x",
@@ -1070,7 +1399,29 @@ def main() -> None:
                 "outflow_fringe_timescale_s": (
                     params.fringe_timescale if params.fringe_enabled else None
                 ),
-                "mass_source_included": False,
+                "mass_source_included": mass_outlet_enabled,
+                "mass_only_outlet_enabled": mass_outlet_enabled,
+                "mass_only_outlet_start_x_m": (
+                    float(settings["mass_outlet_start_x"])
+                    if mass_outlet_enabled
+                    else None
+                ),
+                "mass_only_outlet_end_x_m": (
+                    float(
+                        settings["mass_outlet_end_x"]
+                        if settings["mass_outlet_end_x"] is not None
+                        else params.lx * params.z_i
+                    )
+                    if mass_outlet_enabled
+                    else None
+                ),
+                "outlet_velocity_relaxation": False,
+                "water_vapor_initial_kg_kg": params.qv0,
+                "cryogenic_checkpoint_sidecars": (
+                    "cryogenic_rankNNNNN.npz"
+                    if multiphase_enabled
+                    else None
+                ),
             }
             if args.liquid_nitrogen_nozzle
             else {"enabled": False}
