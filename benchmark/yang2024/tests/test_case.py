@@ -81,6 +81,7 @@ def test_measured_log_override_is_normalized_at_rated_hub_speed() -> None:
     settings = paper_settings(inflow_mode="measured_log")
     assert settings["initial_condition"] == "log_law"
     assert settings["momentum_wall_model"] == "abl"
+    assert settings["wall_stress_model"] == "dynamic_neutral"
     assert settings["fringe_enabled"] is False
     assert settings["bl_height"] == pytest.approx(3.6)
     assert settings["pressure_force_height"] == pytest.approx(3.6)
@@ -167,7 +168,7 @@ def test_distributed_warmup_config_matches_requested_smoke_case() -> None:
     assert config["physics"]["zo"] == pytest.approx(
         INFLOW_FIT.roughness_length_m
     )
-    assert config["physics"]["wall_stress_model"] == "prescribed_ustar"
+    assert config["physics"]["wall_stress_model"] == "dynamic_neutral"
     assert config["physics"]["bl_height"] == pytest.approx(3.6)
     assert config["physics"]["pressure_force_height"] == pytest.approx(3.6)
     assert config["actuator_disk"]["enabled"] is False
@@ -194,7 +195,7 @@ def test_refined_distributed_warmup_config_matches_output_run() -> None:
     assert config["time"]["steps"] == 10_000
     assert config["time"]["dt"] == pytest.approx(1.0e-3)
     assert config["time"]["log_every"] == 100
-    assert config["physics"]["wall_stress_model"] == "prescribed_ustar"
+    assert config["physics"]["wall_stress_model"] == "dynamic_neutral"
     assert config["physics"]["bl_height"] == pytest.approx(3.6)
     assert config["physics"]["pressure_force_height"] == pytest.approx(3.6)
     assert config["sgs"]["model"] == "lasd"

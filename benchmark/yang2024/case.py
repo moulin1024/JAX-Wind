@@ -278,7 +278,7 @@ def paper_settings(
         "horizontal_homogeneous": False,
         "initial_condition": "uniform_flow" if uniform else "log_law",
         "momentum_wall_model": "free_slip" if uniform else "abl",
-        "wall_stress_model": ("dynamic_neutral" if uniform else "prescribed_ustar"),
+        "wall_stress_model": "dynamic_neutral",
         "initial_velocity_noise": 0.0,
         "molecular_viscosity": PAPER_CASE.molecular_viscosity_m2_s,
         "sgs_model": "smagorinsky" if quick else "lasd",

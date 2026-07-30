@@ -91,11 +91,11 @@ env PYTHONPATH=src JAX_PLATFORMS=cpu \
 ```
 
 This warm-up configuration disables the turbine and fringe, uses the
-hub-speed-normalized measured log fit, and prescribes its fitted friction
-velocity at the wall. Both the initial log profile and pressure gradient cover
-the full 3.6 m tunnel height; the fit is therefore extrapolated above its 2 m
-measured range. It is a short numerical stability and throughput check, not a
-statistically converged turbulent precursor.
+hub-speed-normalized measured log fit, and diagnoses friction velocity with
+the dynamic-neutral wall model. Both the initial log profile and pressure
+gradient cover the full 3.6 m tunnel height; the fit is therefore extrapolated
+above its 2 m measured range. It is a short numerical stability and throughput
+check, not a statistically converged turbulent precursor.
 
 Run the refined `256 × 64 × 128` case for 10000 steps at `dt = 0.001 s`,
 sampling three flow-field slices every 100 steps and rendering 100-frame GIFs:

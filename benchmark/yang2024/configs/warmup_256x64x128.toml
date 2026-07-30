@@ -28,7 +28,7 @@ vonk = 0.4
 horizontal_homogeneous = true
 initial_condition = "log_law"
 momentum_wall_model = "abl"
-wall_stress_model = "prescribed_ustar"
+wall_stress_model = "dynamic_neutral"
 initial_velocity_noise = 0.1
 molecular_viscosity = 1.5e-5
 
