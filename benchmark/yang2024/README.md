@@ -212,12 +212,12 @@ recirculating the cold plume. This experiment represents completed near-field
 vaporization as a momentum source and heat sink. It does not add nitrogen mass
 to the carrier phase.
 
-### 8 x 4 x 2 m, 256 x 128 x 256 one-second test
+### 8 x 4 x 2 m, 256 x 128 x 256 ten-second test
 
 The dedicated configuration
 `benchmark/LiquidNitrogenHubJet/configs/warmup_8x4x2_256x128x256.toml.example`
 uses an `8 x 4 x 2 m` domain, a `256 x 128 x 256` grid,
-`dt = 0.0004 s`, and 2500 steps. The suffix is `.toml.example` only because
+`dt = 0.0004 s`, and 25000 steps. The suffix is `.toml.example` only because
 the repository ignores `*.toml`; the runner still parses it as TOML. On one
 node with four GPUs, launch. Scaling the measured CPU reference CFL by the
 twofold grid refinement and the `0.4` timestep ratio predicts a maximum CFL
@@ -232,8 +232,8 @@ env \
   python benchmark/ConcurrentPrecursor/run_warmup_diagnostics.py \
     --config \
       benchmark/LiquidNitrogenHubJet/configs/warmup_8x4x2_256x128x256.toml.example \
-    --output-dir benchmark_results/ln2_8x4x2_256x128x256_1s \
-    --duration-seconds 1 \
+    --output-dir benchmark_results/ln2_8x4x2_256x128x256_10s \
+    --duration-seconds 10 \
     --frames 100 \
     --flow-height 1.0 \
     --liquid-nitrogen-nozzle \
@@ -246,9 +246,10 @@ env \
 
 This is a pure-jet case in quiescent air: the initial velocity is zero and
 there is no pressure-gradient forcing. The only streamwise momentum comes from
-the equivalent LN2 nozzle. The fringe zone is disabled for this initial
-one-second test, so the streamwise boundary remains periodic. Each MPI process
-automatically selects the GPU matching its MPI or Slurm local rank.
+the equivalent LN2 nozzle. The fringe zone is disabled, so the streamwise
+boundary remains periodic and the plume may recirculate during this ten-second
+run. Each MPI process automatically selects the GPU matching its MPI or Slurm
+local rank.
 
 ## Validation boundary
 

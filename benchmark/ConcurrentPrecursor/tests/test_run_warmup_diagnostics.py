@@ -172,7 +172,7 @@ def test_8x4x2_ln2_experiment_config_resolves() -> None:
         ln2_sigma_r=0.15,
     )
 
-    params, _ = configured_run_params(configured, args, total_steps=2500)
+    params, _ = configured_run_params(configured, args, total_steps=25000)
 
     assert (params.nx, params.ny, params.nz) == (256, 128, 256)
     assert (
@@ -181,7 +181,7 @@ def test_8x4x2_ln2_experiment_config_resolves() -> None:
         params.lz * params.z_i,
     ) == pytest.approx((8.0, 4.0, 2.0))
     assert params.dt_physical == pytest.approx(0.0004)
-    assert params.nsteps == 2500
+    assert params.nsteps == 25000
     assert params.uniform_u == pytest.approx(0.0)
     assert params.initial_velocity_noise == pytest.approx(0.0)
     assert params.driving_pressure_force == pytest.approx(0.0)

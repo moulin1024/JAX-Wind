@@ -674,12 +674,13 @@ def main() -> None:
 
     import jax
 
-    jax.distributed.initialize(
-        coordinator_address=args.coordinator_address,
-        num_processes=size,
-        process_id=rank,
-        local_device_ids=[selected_local_device_id],
-    )
+    if size > 1:
+        jax.distributed.initialize(
+            coordinator_address=args.coordinator_address,
+            num_processes=size,
+            process_id=rank,
+            local_device_ids=[selected_local_device_id],
+        )
     import jax.numpy as jnp
     from jax.experimental import multihost_utils
 
