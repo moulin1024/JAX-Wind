@@ -111,7 +111,8 @@ def _validate_sharded_params(params: Params, mesh: Mesh, axis_name: str) -> None
         )
     if params.thermo_enabled and params.scalar_vertical_scheme != "centered":
         raise ValueError(
-            "Distributed z-sharded thermo currently requires scalar_vertical_scheme='centered'."
+            "Distributed z-sharded thermo currently requires "
+            "scalar_vertical_scheme='centered'."
         )
     if params.thermo_enabled and params.theta_bc != "flux":
         raise ValueError("Distributed z-sharded thermo currently supports theta_bc='flux' only.")

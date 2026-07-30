@@ -2,9 +2,10 @@
 
 The carrier phase remains Eulerian.  A fixed-capacity parcel buffer stores
 physical positions, velocities, diameter, temperature, multiplicity, and an
-active mask.  Parcel-to-grid exchange uses conservative cloud-in-cell (CIC)
-deposition.  All parcel calculations use SI units; the returned carrier-phase
-increments can be applied directly to the solver fields before projection.
+active mask. Parcel-to-grid exchange uses conservative cloud-in-cell (CIC)
+deposition on a 2 x 2 x 2 stencil. All parcel calculations use SI units; the
+returned carrier-phase increments can be applied directly to the solver fields
+before projection.
 """
 
 from __future__ import annotations
@@ -47,6 +48,8 @@ class SprayDPMConfig:
     injection_y: float = 0.0
     injection_z: float = 100.0
     injection_radius: float = 0.0
+    injection_streamwise_thickness: float = 0.0
+    injection_ramp_time: float = 0.0
     injection_u: float = 0.0
     injection_v: float = 0.0
     injection_w: float = 0.0
@@ -157,6 +160,12 @@ class SprayDPMConfig:
             raise ValueError("absolute temperatures must be positive")
         if self.injection_radius < 0.0:
             raise ValueError("injection_radius must be non-negative")
+        if self.injection_streamwise_thickness < 0.0:
+            raise ValueError(
+                "injection_streamwise_thickness must be non-negative"
+            )
+        if self.injection_ramp_time < 0.0:
+            raise ValueError("injection_ramp_time must be non-negative")
         if self.substeps <= 0:
             raise ValueError("substeps must be positive")
         positive_properties = (
@@ -338,6 +347,88 @@ def sample_diameters(
     return diameters[jnp.minimum(indices, diameters.size - 1)]
 
 
+def _injection_basis(
+    config: SprayDPMConfig,
+    dtype: jnp.dtype,
+) -> tuple[jax.Array, jax.Array, jax.Array]:
+    """Return streamwise and two transverse unit vectors for the nozzle."""
+
+    velocity = jnp.asarray(
+        (config.injection_u, config.injection_v, config.injection_w),
+        dtype=dtype,
+    )
+    speed = jnp.linalg.norm(velocity)
+    default_normal = jnp.asarray((0.0, 0.0, 1.0), dtype=dtype)
+    normal = jnp.where(
+        speed > jnp.asarray(1.0e-12, dtype=dtype),
+        velocity / jnp.maximum(speed, jnp.asarray(1.0e-12, dtype=dtype)),
+        default_normal,
+    )
+    reference = jnp.where(
+        jnp.abs(normal[2]) < jnp.asarray(0.9, dtype=dtype),
+        jnp.asarray((0.0, 0.0, 1.0), dtype=dtype),
+        jnp.asarray((0.0, 1.0, 0.0), dtype=dtype),
+    )
+    transverse_1 = jnp.cross(reference, normal)
+    transverse_1 = transverse_1 / jnp.maximum(
+        jnp.linalg.norm(transverse_1),
+        jnp.asarray(1.0e-12, dtype=dtype),
+    )
+    transverse_2 = jnp.cross(normal, transverse_1)
+    return normal, transverse_1, transverse_2
+
+
+def _injection_positions(
+    radial: jax.Array,
+    angle: jax.Array,
+    streamwise: jax.Array,
+    config: SprayDPMConfig,
+    dtype: jnp.dtype,
+) -> tuple[jax.Array, jax.Array, jax.Array]:
+    """Place parcels in the plane normal to injection velocity.
+
+    The difference of two uniform variates used for ``streamwise`` gives a
+    compact triangular distribution. It vanishes continuously at the two
+    edges of the configured full thickness and avoids a zero-thickness source.
+    """
+
+    normal, transverse_1, transverse_2 = _injection_basis(config, dtype)
+    origin = jnp.asarray(
+        (config.injection_x, config.injection_y, config.injection_z),
+        dtype=dtype,
+    )
+    transverse = (
+        radial[:, None]
+        * (
+            jnp.cos(angle)[:, None] * transverse_1[None, :]
+            + jnp.sin(angle)[:, None] * transverse_2[None, :]
+        )
+    )
+    positions = (
+        origin[None, :]
+        + streamwise[:, None] * normal[None, :]
+        + transverse
+    )
+    return positions[:, 0], positions[:, 1], positions[:, 2]
+
+
+def _injection_ramp_factor(
+    time: jax.Array,
+    config: SprayDPMConfig,
+    dtype: jnp.dtype,
+) -> jax.Array:
+    """Return a C1 half-cosine startup factor for the mass flow."""
+
+    if config.injection_ramp_time <= 0.0:
+        return jnp.asarray(1.0, dtype=dtype)
+    phase = jnp.clip(
+        (time - config.injection_start_time) / config.injection_ramp_time,
+        0.0,
+        1.0,
+    )
+    return 0.5 * (1.0 - jnp.cos(jnp.pi * phase))
+
+
 def initialize_spray(
     config: SprayDPMConfig,
     *,
@@ -347,15 +438,31 @@ def initialize_spray(
     """Create a fixed-capacity parcel buffer with a circular initial injection."""
     count = config.max_parcels
     active = jnp.arange(count) < config.initial_parcels
-    key_radius, key_angle, key_diameter = jax.random.split(
-        jax.random.PRNGKey(seed), 3
+    (
+        key_radius,
+        key_angle,
+        key_streamwise_1,
+        key_streamwise_2,
+        key_diameter,
+    ) = jax.random.split(
+        jax.random.PRNGKey(seed), 5
     )
     radial = config.injection_radius * jnp.sqrt(
         jax.random.uniform(key_radius, (count,), dtype=dtype)
     )
     angle = 2.0 * jnp.pi * jax.random.uniform(key_angle, (count,), dtype=dtype)
-    x = jnp.asarray(config.injection_x, dtype=dtype) + radial * jnp.cos(angle)
-    y = jnp.asarray(config.injection_y, dtype=dtype) + radial * jnp.sin(angle)
+    streamwise = 0.5 * config.injection_streamwise_thickness * (
+        jax.random.uniform(key_streamwise_1, (count,), dtype=dtype)
+        - jax.random.uniform(key_streamwise_2, (count,), dtype=dtype)
+    )
+    x, y, z = _injection_positions(
+        radial,
+        angle,
+        streamwise,
+        config,
+        dtype,
+    )
+
     def fill(value: float) -> jax.Array:
         return jnp.full((count,), value, dtype=dtype)
     diameter = sample_diameters(config, key_diameter, count, dtype)
@@ -369,7 +476,7 @@ def initialize_spray(
     return SprayState(
         x=x,
         y=y,
-        z=fill(config.injection_z),
+        z=z,
         u=fill(config.injection_u),
         v=fill(config.injection_v),
         w=fill(config.injection_w),
@@ -407,12 +514,33 @@ def inject_spray(
     slot_valid = slot_valid & time_active
 
     key = jax.random.fold_in(jax.random.PRNGKey(config.random_seed), step)
-    key_radius, key_angle, key_diameter = jax.random.split(key, 3)
+    (
+        key_radius,
+        key_angle,
+        key_streamwise_1,
+        key_streamwise_2,
+        key_diameter,
+    ) = jax.random.split(key, 5)
     radial = config.injection_radius * jnp.sqrt(
         jax.random.uniform(key_radius, (count,), dtype=spray.x.dtype)
     )
     angle = 2.0 * jnp.pi * jax.random.uniform(
         key_angle, (count,), dtype=spray.x.dtype
+    )
+    streamwise = 0.5 * config.injection_streamwise_thickness * (
+        jax.random.uniform(
+            key_streamwise_1, (count,), dtype=spray.x.dtype
+        )
+        - jax.random.uniform(
+            key_streamwise_2, (count,), dtype=spray.x.dtype
+        )
+    )
+    injection_x, injection_y, injection_z = _injection_positions(
+        radial,
+        angle,
+        streamwise,
+        config,
+        spray.x.dtype,
     )
     diameter = sample_diameters(config, key_diameter, count, spray.x.dtype)
     mass = (jnp.pi / 6.0) * config.liquid_density * diameter**3
@@ -423,7 +551,17 @@ def inject_spray(
         0.0,
     )
     if config.mass_flow_rate > 0.0:
-        parcel_weight = config.mass_flow_rate * dt_physical / (count * mass)
+        ramp = _injection_ramp_factor(
+            time + 0.5 * dt_physical,
+            config,
+            spray.x.dtype,
+        )
+        parcel_weight = (
+            config.mass_flow_rate
+            * ramp
+            * dt_physical
+            / (count * mass)
+        )
     else:
         parcel_weight = jnp.full_like(mass, config.parcel_weight)
     parcel_id = (
@@ -437,9 +575,9 @@ def inject_spray(
         return field.at[slots].set(jnp.where(slot_valid, values, old))
 
     return SprayState(
-        x=assign(spray.x, config.injection_x + radial * jnp.cos(angle)),
-        y=assign(spray.y, config.injection_y + radial * jnp.sin(angle)),
-        z=assign(spray.z, jnp.full((count,), config.injection_z, dtype=spray.z.dtype)),
+        x=assign(spray.x, injection_x),
+        y=assign(spray.y, injection_y),
+        z=assign(spray.z, injection_z),
         u=assign(spray.u, jnp.full((count,), config.injection_u, dtype=spray.u.dtype)),
         v=assign(spray.v, jnp.full((count,), config.injection_v, dtype=spray.v.dtype)),
         w=assign(spray.w, jnp.full((count,), config.injection_w, dtype=spray.w.dtype)),
@@ -1347,7 +1485,10 @@ def spray_exchange(
             * current.active.astype(params.dtype)
         )
         proposed_vapor_mass = _cic_deposit(
-            proposed_weighted_change, coords, shape, params.dtype
+            proposed_weighted_change,
+            coords,
+            shape,
+            params.dtype,
         )
         available_vapor_mass = jnp.maximum(
             effective_qv - params.qv_floor, 0.0
@@ -1426,12 +1567,41 @@ def spray_exchange(
         )
         return _ExchangeAccumulator(
             spray=updated,
-            vapor_mass=acc.vapor_mass + _cic_deposit(weighted_evaporation, coords, shape, params.dtype),
-            gas_energy=acc.gas_energy - _cic_deposit(weighted_energy, coords, shape, params.dtype),
-            impulse_u=acc.impulse_u + _cic_deposit(impulse_u, coords, shape, params.dtype),
-            impulse_v=acc.impulse_v + _cic_deposit(impulse_v, coords, shape, params.dtype),
+            vapor_mass=acc.vapor_mass
+            + _cic_deposit(
+                weighted_evaporation,
+                coords,
+                shape,
+                params.dtype,
+            ),
+            gas_energy=acc.gas_energy
+            - _cic_deposit(
+                weighted_energy,
+                coords,
+                shape,
+                params.dtype,
+            ),
+            impulse_u=acc.impulse_u
+            + _cic_deposit(
+                impulse_u,
+                coords,
+                shape,
+                params.dtype,
+            ),
+            impulse_v=acc.impulse_v
+            + _cic_deposit(
+                impulse_v,
+                coords,
+                shape,
+                params.dtype,
+            ),
             impulse_w=acc.impulse_w
-            + _cic_deposit(impulse_w, face_coords, shape, params.dtype),
+            + _cic_deposit(
+                impulse_w,
+                face_coords,
+                shape,
+                params.dtype,
+            ),
             evaporated_mass=acc.evaporated_mass + jnp.sum(weighted_evaporation),
             air_energy_loss=acc.air_energy_loss + jnp.sum(weighted_energy),
             net_radiative_energy=acc.net_radiative_energy

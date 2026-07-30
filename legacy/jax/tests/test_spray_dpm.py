@@ -1000,6 +1000,105 @@ def test_continuous_injection_matches_configured_mass_flow() -> None:
     assert np.unique(np.asarray(injected.diameter[injected.active])).size == 2
 
 
+def test_streamwise_nozzle_uses_transverse_disk_and_finite_thickness() -> None:
+    jnp = pytest.importorskip("jax.numpy")
+
+    from wireles_jax import SprayDPMConfig, initialize_spray
+
+    config = SprayDPMConfig(
+        max_parcels=4096,
+        initial_parcels=4096,
+        injection_x=1.0,
+        injection_y=1.0,
+        injection_z=1.0,
+        injection_radius=0.15,
+        injection_streamwise_thickness=0.0625,
+        injection_u=8.0,
+    )
+
+    spray = initialize_spray(config, dtype=jnp.float32, seed=73)
+    x = np.asarray(spray.x)
+    y = np.asarray(spray.y)
+    z = np.asarray(spray.z)
+    transverse_radius = np.sqrt((y - 1.0) ** 2 + (z - 1.0) ** 2)
+
+    assert np.max(np.abs(x - 1.0)) <= 0.03125 + 1.0e-7
+    assert np.std(x) > 0.005
+    assert np.std(y) > 0.05
+    assert np.std(z) > 0.05
+    assert np.max(transverse_radius) <= 0.15 + 2.0e-7
+
+
+def test_continuous_injection_uses_half_cosine_startup_ramp() -> None:
+    jnp = pytest.importorskip("jax.numpy")
+
+    from wireles_jax import SprayDPMConfig, initialize_spray
+    from wireles_jax.spray_dpm import inject_spray
+
+    config = SprayDPMConfig(
+        max_parcels=4,
+        parcels_per_step=2,
+        mass_flow_rate=0.2,
+        injection_ramp_time=0.2,
+        initial_diameter=1.0e-3,
+    )
+    initial = initialize_spray(config, dtype=jnp.float32)
+    startup = inject_spray(initial, jnp.asarray(0), 0.1, config)
+    established = inject_spray(initial, jnp.asarray(2), 0.1, config)
+
+    startup_mass = float(
+        jnp.sum(startup.mass * startup.weight * startup.active)
+    )
+    established_mass = float(
+        jnp.sum(established.mass * established.weight * established.active)
+    )
+    expected_ramp = 0.5 * (1.0 - np.cos(np.pi * 0.25))
+    assert startup_mass == pytest.approx(
+        config.mass_flow_rate * 0.1 * expected_ramp,
+        rel=2.0e-6,
+    )
+    assert established_mass == pytest.approx(
+        config.mass_flow_rate * 0.1,
+        rel=2.0e-6,
+    )
+
+
+def test_cic_deposition_has_eight_point_support_and_preserves_total() -> None:
+    jnp = pytest.importorskip("jax.numpy")
+
+    from wireles_jax import Params
+    from wireles_jax.spray_dpm import (
+        _cic_coordinates,
+        _cic_deposit,
+    )
+
+    params = Params(
+        nx=8,
+        ny=8,
+        nz=8,
+        lx=1.0,
+        ly=1.0,
+        lz=1.0,
+        z_i=1.0,
+        dtype=jnp.float32,
+    )
+    x = jnp.asarray((0.43,), dtype=params.dtype)
+    y = jnp.asarray((0.46,), dtype=params.dtype)
+    z = jnp.asarray((0.49,), dtype=params.dtype)
+    cic_coordinates = _cic_coordinates(x, y, z, params)
+    deposited = np.asarray(
+        _cic_deposit(
+            jnp.asarray((3.5,), dtype=params.dtype),
+            cic_coordinates,
+            (params.nx, params.ny, params.nz),
+            params.dtype,
+        )
+    )
+
+    assert np.count_nonzero(deposited) == 2 * 2 * 2
+    assert deposited.sum() == pytest.approx(3.5, rel=2.0e-6)
+
+
 def test_rosin_rammler_sampler_matches_truncated_mass_cdf() -> None:
     jax = pytest.importorskip("jax")
     jnp = pytest.importorskip("jax.numpy")

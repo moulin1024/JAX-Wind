@@ -52,6 +52,7 @@ qv0 = 0.011
 surface_theta_flux = 0.0
 scalar_sgs_model = "fixed_prandtl"
 prandtl_t = 0.74
+scalar_vertical_scheme = "centered"
 
 [actuator_disk]
 enabled = false
@@ -78,6 +79,8 @@ enabled = true
 # over the same physical duration, so retain enough slots for their lifetime.
 max_parcels_per_shard = 16384
 parcels_per_step = 4
+injection_streamwise_cells = 2.0
+injection_ramp_time = 0.05
 initial_diameter = 0.000150
 minimum_diameter = 0.000050
 maximum_diameter = 0.000300

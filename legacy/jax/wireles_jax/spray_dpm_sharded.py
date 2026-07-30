@@ -142,6 +142,41 @@ def initialize_sharded_spray(
         rng = np.random.default_rng(np.random.SeedSequence([seed, rank]))
         radial = config.injection_radius * np.sqrt(rng.random(capacity))
         angle = 2.0 * np.pi * rng.random(capacity)
+        streamwise = 0.5 * config.injection_streamwise_thickness * (
+            rng.random(capacity) - rng.random(capacity)
+        )
+        velocity = np.asarray(
+            (config.injection_u, config.injection_v, config.injection_w),
+            dtype=dtype,
+        )
+        speed = np.linalg.norm(velocity)
+        normal = (
+            velocity / speed
+            if speed > 1.0e-12
+            else np.asarray((0.0, 0.0, 1.0), dtype=dtype)
+        )
+        reference = np.asarray(
+            (0.0, 0.0, 1.0)
+            if abs(normal[2]) < 0.9
+            else (0.0, 1.0, 0.0),
+            dtype=dtype,
+        )
+        transverse_1 = np.cross(reference, normal)
+        transverse_1 /= np.linalg.norm(transverse_1)
+        transverse_2 = np.cross(normal, transverse_1)
+        origin = np.asarray(
+            (config.injection_x, config.injection_y, config.injection_z),
+            dtype=dtype,
+        )
+        positions = (
+            origin[None, :]
+            + streamwise[:, None] * normal[None, :]
+            + radial[:, None]
+            * (
+                np.cos(angle)[:, None] * transverse_1[None, :]
+                + np.sin(angle)[:, None] * transverse_2[None, :]
+            )
+        )
         diameter = _sample_numpy_diameters(config, rng, capacity, dtype)
         mass = (np.pi / 6.0) * config.liquid_density * diameter**3
         solute_mass = config.salinity_mass_fraction * mass
@@ -154,9 +189,9 @@ def initialize_sharded_spray(
         if rank == injection_owner:
             active[: config.initial_parcels] = True
         return {
-            "x": np.asarray(config.injection_x + radial * np.cos(angle), dtype=dtype),
-            "y": np.asarray(config.injection_y + radial * np.sin(angle), dtype=dtype),
-            "z": np.full(capacity, config.injection_z, dtype=dtype),
+            "x": np.asarray(positions[:, 0], dtype=dtype),
+            "y": np.asarray(positions[:, 1], dtype=dtype),
+            "z": np.asarray(positions[:, 2], dtype=dtype),
             "u": np.full(capacity, config.injection_u, dtype=dtype),
             "v": np.full(capacity, config.injection_v, dtype=dtype),
             "w": np.full(capacity, config.injection_w, dtype=dtype),
@@ -413,6 +448,7 @@ def _fold_deposit_halos(
     ndev: int,
 ) -> tuple[jax.Array, ...]:
     """Return owner-local fields after transferring CIC halo contributions."""
+
     packed = jnp.stack(fields_h, axis=-1)
     interior = packed[:, :, 1:-1, :]
     if ndev == 1:
@@ -724,12 +760,35 @@ def make_spray_exchange_sharded(
         )
         deposited = _fold_deposit_halos(
             (
-                _cic_deposit(impulse_u, coords, halo_shape, params.dtype),
-                _cic_deposit(impulse_v, coords, halo_shape, params.dtype),
-                _cic_deposit(impulse_w, face_coords, halo_shape, params.dtype),
-                -_cic_deposit(weighted_energy, coords, halo_shape, params.dtype),
                 _cic_deposit(
-                    weighted_evaporation, coords, halo_shape, params.dtype
+                    impulse_u,
+                    coords,
+                    halo_shape,
+                    params.dtype,
+                ),
+                _cic_deposit(
+                    impulse_v,
+                    coords,
+                    halo_shape,
+                    params.dtype,
+                ),
+                _cic_deposit(
+                    impulse_w,
+                    face_coords,
+                    halo_shape,
+                    params.dtype,
+                ),
+                -_cic_deposit(
+                    weighted_energy,
+                    coords,
+                    halo_shape,
+                    params.dtype,
+                ),
+                _cic_deposit(
+                    weighted_evaporation,
+                    coords,
+                    halo_shape,
+                    params.dtype,
                 ),
             ),
             axis_name,
@@ -811,21 +870,17 @@ def make_spray_exchange_sharded(
             *(jnp.zeros_like(flow.u) for _ in SprayGasIncrements._fields)
         )
         scalar_zero = jnp.asarray(0.0, dtype=params.dtype)
-        count_zero = jnp.asarray(0, dtype=jnp.int32)
         evaporated = scalar_zero
         air_energy = scalar_zero
         radiation = scalar_zero
-        exited = count_zero
-        overflow = count_zero
-        current = spray
+        current, migration = migrate(spray)
+        exited = migration.exited_parcels
+        overflow = migration.overflow_parcels
         if config.turbulent_dispersion_enabled:
             sgs_statistics = statistics(flow.u, flow.v, flow.w)
         else:
             zeros = jnp.zeros_like(flow.u)
             sgs_statistics = (zeros, zeros, zeros, jnp.ones_like(zeros))
-        migration = SprayMigrationDiagnostics(
-            count_zero, count_zero, count_zero, scalar_zero
-        )
         for substep_index in range(config.substeps):
             counter = (
                 flow.step.astype(jnp.uint32) * config.substeps

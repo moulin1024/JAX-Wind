@@ -138,6 +138,91 @@ def test_sharded_injection_preserves_requested_mass_flow() -> None:
     )
 
 
+def test_two_device_transverse_nozzle_and_cic_halo_are_conservative() -> None:
+    jax = pytest.importorskip("jax")
+    jnp = pytest.importorskip("jax.numpy")
+    if jax.device_count() < 2:
+        pytest.skip("requires two local JAX devices")
+
+    from wireles_jax import (
+        Params,
+        SprayDPMConfig,
+        initialize_sharded_spray,
+        make_spray_exchange_sharded,
+    )
+    from wireles_jax.sharding import make_single_node_mesh
+    from wireles_jax.timestep_sharded import initial_sharded_state
+
+    params = Params(
+        nx=8,
+        ny=8,
+        nz=8,
+        lx=1.0,
+        ly=1.0,
+        lz=2.0,
+        z_i=1.0,
+        dt=0.00025,
+        thermo_enabled=True,
+        moisture_enabled=True,
+        qv0=0.0,
+        scalar_sgs_model="fixed_prandtl",
+        scalar_vertical_scheme="centered",
+        momentum_wall_model="free_slip",
+        sgs_model="smagorinsky",
+        dtype=jnp.float32,
+    )
+    config = SprayDPMConfig(
+        material="nitrogen",
+        max_parcels=32,
+        initial_parcels=16,
+        parcel_weight=1.0e7,
+        injection_x=0.25,
+        injection_y=0.5,
+        injection_z=1.0,
+        injection_radius=0.15,
+        injection_streamwise_thickness=2.0 * params.dx * params.z_i,
+        injection_u=8.0,
+        initial_diameter=150.0e-6,
+        initial_temperature=77.34,
+        boiling_temperature=77.34,
+        liquid_density=808.0,
+        water_density=808.0,
+        liquid_heat_capacity=2040.0,
+        latent_heat=199000.0,
+        substeps=1,
+    )
+    mesh = make_single_node_mesh(2)
+    spray = initialize_sharded_spray(config, params, mesh, seed=31)
+    flow = initial_sharded_state(params, mesh)
+    exchange = jax.jit(
+        make_spray_exchange_sharded(config, params, mesh)
+    )
+
+    migrated, increments, diagnostics = jax.block_until_ready(
+        exchange(flow, spray)
+    )
+    local_counts = [
+        int(jnp.sum(shard.data))
+        for shard in migrated.active.addressable_shards
+    ]
+    cell_mass = (
+        config.air_density
+        * params.dx
+        * params.z_i
+        * params.dy
+        * params.z_i
+        * params.dz
+        * params.z_i
+    )
+    deposited_vapor = float(jnp.sum(increments.qv) * cell_mass)
+
+    assert all(count > 0 for count in local_counts)
+    assert deposited_vapor == pytest.approx(
+        float(diagnostics.evaporated_mass),
+        rel=5.0e-6,
+    )
+
+
 def test_sharded_evaporation_conserves_liquid_and_vapor_mass() -> None:
     jax = pytest.importorskip("jax")
     jnp = pytest.importorskip("jax.numpy")

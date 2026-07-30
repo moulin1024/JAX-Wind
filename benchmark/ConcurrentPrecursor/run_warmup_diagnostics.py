@@ -941,6 +941,18 @@ def main() -> None:
             injection_y=params.cold_source_y,
             injection_z=params.cold_source_z,
             injection_radius=params.cold_source_sigma_r,
+            injection_streamwise_thickness=(
+                float(
+                    settings[
+                        "cryogenic_injection_streamwise_cells"
+                    ]
+                )
+                * params.dx
+                * params.z_i
+            ),
+            injection_ramp_time=float(
+                settings["cryogenic_injection_ramp_time"]
+            ),
             injection_u=args.ln2_injection_speed,
             initial_diameter=float(
                 settings["cryogenic_initial_diameter"]
@@ -1047,6 +1059,8 @@ def main() -> None:
                     f"{params.cold_source_z:g}) m, +x injection; "
                     f"mass_flow={args.ln2_mass_flow_kg_s:g} kg/s, "
                     f"speed={args.ln2_injection_speed:g} m/s, "
+                    f"thickness={spray_config.injection_streamwise_thickness:g} m, "
+                    f"ramp={spray_config.injection_ramp_time:g} s, "
                     f"d50={spray_config.initial_diameter:.3e} m, "
                     f"substeps={spray_config.substeps}; "
                     f"mass_outlet={'on' if mass_outlet_enabled else 'off'}; "
@@ -1484,6 +1498,16 @@ def main() -> None:
                 "mass_flow_kg_s": args.ln2_mass_flow_kg_s,
                 "injection_speed_m_s": args.ln2_injection_speed,
                 "direction": "+x",
+                "injection_streamwise_thickness_m": (
+                    spray_config.injection_streamwise_thickness
+                    if multiphase_enabled
+                    else None
+                ),
+                "injection_ramp_time_s": (
+                    spray_config.injection_ramp_time
+                    if multiphase_enabled
+                    else None
+                ),
                 "position_m": [
                     params.cold_source_x,
                     params.cold_source_y,

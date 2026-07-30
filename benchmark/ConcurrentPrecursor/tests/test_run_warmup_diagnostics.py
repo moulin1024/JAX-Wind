@@ -267,3 +267,33 @@ def test_8x4x2_ln2_experiment_config_resolves() -> None:
     assert settings["mass_outlet_end_x"] == pytest.approx(8.0)
     assert settings["cryogenic_enabled"] is True
     assert settings["cryogenic_initial_diameter"] == pytest.approx(150.0e-6)
+
+
+def test_4x2x2_smoothed_ln2_config_resolves() -> None:
+    import jax.numpy as jnp
+
+    from run_single import RUN_DEFAULTS, load_config_file, params_from_settings
+
+    config = (
+        ROOT
+        / "benchmark"
+        / "LiquidNitrogenHubJet"
+        / "configs"
+        / "warmup_4x2x2_128x64x256_cpu_dt00025.toml.example"
+    )
+    settings = dict(RUN_DEFAULTS)
+    settings.update(load_config_file(config))
+    params = params_from_settings(settings, jnp)
+
+    assert (params.nx, params.ny, params.nz) == (128, 64, 256)
+    assert (
+        params.lx * params.z_i,
+        params.ly * params.z_i,
+        params.lz * params.z_i,
+    ) == pytest.approx((4.0, 2.0, 2.0))
+    assert params.dt_physical == pytest.approx(0.00025)
+    assert params.scalar_vertical_scheme == "centered"
+    assert settings["cryogenic_injection_streamwise_cells"] == pytest.approx(
+        2.0
+    )
+    assert settings["cryogenic_injection_ramp_time"] == pytest.approx(0.05)
