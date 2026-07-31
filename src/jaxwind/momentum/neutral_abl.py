@@ -25,6 +25,8 @@ from jaxwind.pressure import (
 )
 
 from .lasd import LASDModel, LASDState, PhysicalSpaceLASD
+from .physical_filter import physical_top_hat_filter
+from .surface_layer import NeutralLogWallLaw, SurfaceLayerFluxes
 
 
 Array = jax.Array
@@ -56,6 +58,9 @@ class NeutralABLConfig:
     friction_velocity: float = 0.1
     roughness_length: float = 1.0e-3
     von_karman: float = 0.4
+    wall_matching_level: int = 0
+    wall_filter_width: float | None = None
+    wall_temporal_filter_timescale: float | None = None
     mp5_dissipation_strength: float = 1.0
     geostrophic_wind: tuple[float, float] | None = None
     coriolis_vertical: float = 0.0
@@ -73,6 +78,24 @@ class NeutralABLConfig:
             raise ValueError("roughness length must be positive")
         if self.von_karman <= 0.0:
             raise ValueError("von Karman constant must be positive")
+        if (
+            isinstance(self.wall_matching_level, bool)
+            or not isinstance(self.wall_matching_level, int)
+            or self.wall_matching_level < 0
+        ):
+            raise ValueError("wall matching level must be a nonnegative integer")
+        if self.wall_filter_width is not None and (
+            not math.isfinite(self.wall_filter_width)
+            or self.wall_filter_width <= 0.0
+        ):
+            raise ValueError("wall filter width must be positive and finite")
+        if self.wall_temporal_filter_timescale is not None and (
+            not math.isfinite(self.wall_temporal_filter_timescale)
+            or self.wall_temporal_filter_timescale <= 0.0
+        ):
+            raise ValueError(
+                "wall temporal filter timescale must be positive and finite"
+            )
         if (
             not math.isfinite(self.mp5_dissipation_strength)
             or self.mp5_dissipation_strength < 0.0
@@ -111,6 +134,12 @@ class FPJ2State(NamedTuple):
     history_count: int
 
 
+class WallModelState(NamedTuple):
+    """Accepted-step memory for the temporally filtered wall input."""
+
+    filtered_velocity: Array
+
+
 @dataclass(frozen=True, slots=True)
 class NeutralABLDiagnostic:
     time: float
@@ -137,9 +166,17 @@ class NeutralABLDiagnostic:
 
 
 def _uniform_spacing(faces: tuple[float, ...], name: str) -> float:
-    widths = jnp.diff(jnp.asarray(faces))
-    reference = float(widths[0])
-    if not bool(jnp.allclose(widths, reference, rtol=1.0e-6, atol=1.0e-10)):
+    reference = (faces[-1] - faces[0]) / (len(faces) - 1)
+    tolerance = 1.0e-12 * max(1.0, abs(reference))
+    if not all(
+        math.isclose(
+            right - left,
+            reference,
+            rel_tol=1.0e-12,
+            abs_tol=tolerance,
+        )
+        for left, right in zip(faces[:-1], faces[1:], strict=True)
+    ):
         raise ValueError(f"KEP4 momentum currently requires uniform {name}")
     return reference
 
@@ -397,9 +434,15 @@ class NeutralABLMomentum:
         self.dx = _uniform_spacing(grid.x_faces, "x spacing")
         self.dy = _uniform_spacing(grid.y_faces, "y spacing")
         self.dz = _uniform_spacing(grid.z_faces, "z spacing")
+        if config.wall_matching_level >= grid.shape[0]:
+            raise ValueError("wall matching level must lie inside the grid")
         if config.roughness_length >= 0.5 * self.dz:
             raise ValueError("roughness must lie below the first cell centre")
         self.height = grid.z_faces[-1] - grid.z_faces[0]
+        self.wall_law = NeutralLogWallLaw(
+            config.roughness_length,
+            config.von_karman,
+        )
         self.pressure_acceleration = (
             0.0
             if config.geostrophic_wind is not None
@@ -419,13 +462,19 @@ class NeutralABLMomentum:
         self._lasd_step = 0
         self._lasd_interval_time = 0.0
         self._fpj2_state: FPJ2State | None = None
+        self._wall_model_state: WallModelState | None = None
 
         def compiled_tendency(
             velocity: MACVelocity,
             lasd_coefficient: Array,
+            wall_velocity: Array,
         ) -> MACVelocity:
             return _cells_to_faces(
-                self.cell_tendency(velocity, lasd_coefficient)
+                self.cell_tendency(
+                    velocity,
+                    lasd_coefficient,
+                    wall_velocity=wall_velocity,
+                )
             )
 
         self._compiled_tendency = jax.jit(compiled_tendency)
@@ -436,15 +485,17 @@ class NeutralABLMomentum:
             gradient: Array,
             frozen_viscosity: Array,
             lasd_coefficient: Array,
+            wall_velocity: Array,
         ) -> tuple[MACVelocity, MACVelocity]:
             principal, cross = self.sgs_split_tendency(
                 cells,
                 frozen_viscosity,
                 lasd_coefficient,
                 gradient=gradient,
+                wall_velocity=wall_velocity,
             )
             explicit = (
-                self.skew_advection(cells, gradient=gradient)
+                self.conservative_advection(velocity, cells)
                 + cross
                 + self.forcing_tendency(cells)
             )
@@ -455,6 +506,7 @@ class NeutralABLMomentum:
         def compiled_imex_initial_tendencies(
             velocity: MACVelocity,
             lasd_coefficient: Array,
+            wall_velocity: Array,
         ) -> tuple[MACVelocity, MACVelocity, Array]:
             cells = _cell_velocity(velocity)
             gradient = self.velocity_gradient(cells)
@@ -468,6 +520,7 @@ class NeutralABLMomentum:
                 gradient,
                 frozen_viscosity,
                 lasd_coefficient,
+                wall_velocity,
             )
             return explicit, implicit, frozen_viscosity
 
@@ -479,6 +532,7 @@ class NeutralABLMomentum:
             velocity: MACVelocity,
             frozen_viscosity: Array,
             lasd_coefficient: Array,
+            wall_velocity: Array,
         ) -> tuple[MACVelocity, MACVelocity]:
             cells = _cell_velocity(velocity)
             gradient = self.velocity_gradient(cells)
@@ -488,6 +542,7 @@ class NeutralABLMomentum:
                 gradient,
                 frozen_viscosity,
                 lasd_coefficient,
+                wall_velocity,
             )
 
         self._compiled_imex_tendencies = jax.jit(
@@ -521,6 +576,7 @@ class NeutralABLMomentum:
             velocity: MACVelocity,
             timestep: Array,
             lasd_coefficient: Array,
+            wall_velocity: Array,
         ) -> tuple[Array, ...]:
             cells = _cell_velocity(velocity)
             viscosity = self.sgs_viscosity(cells, lasd_coefficient)
@@ -554,7 +610,9 @@ class NeutralABLMomentum:
                     + 1.0 / self.dz**2
                 ),
                 self.pressure_solver.operator.norm(divergence),
-                jnp.mean(self.wall_ustar(cells)),
+                jnp.mean(
+                    self.wall_ustar(cells, wall_velocity=wall_velocity)
+                ),
                 jnp.mean(viscosity),
                 jnp.max(viscosity),
                 mean_coefficient,
@@ -701,23 +759,58 @@ class NeutralABLMomentum:
         result = result.at[1:].add(-flux / self.dz)
         return result
 
+    def _vertical_stress_faces_from_cell_stress(
+        self,
+        vertical_cell_stress: Array,
+    ) -> Array:
+        """Return the exact telescoping face representation of ``-D_z^T tau``.
+
+        The variational SGS operator stores strain and stress at cell centres.
+        Its wall-normal divergence is therefore not a conventional two-point
+        face stencil.  Cumulatively integrating the conservative tendency
+        exposes the unique face flux with zero stress on the lower natural
+        boundary.  The upper face is zero to roundoff because ``D_z 1 = 0``.
+        """
+        vertical_tendency = -_wall_normal_derivative_transpose(
+            vertical_cell_stress,
+            self.dz,
+        )
+        lower = jnp.zeros_like(vertical_tendency[:1])
+        return jnp.concatenate(
+            (
+                lower,
+                self.dz * jnp.cumsum(vertical_tendency, axis=0),
+            ),
+            axis=0,
+        )
+
+    def _vertical_stress_divergence(self, face_stress: Array) -> Array:
+        return (face_stress[1:] - face_stress[:-1]) / self.dz
+
     def variational_sgs_tendency(
         self,
         cell_velocity: Array,
         frozen_viscosity: Array,
         *,
         gradient: Array | None = None,
+        wall_stress: Array | None = None,
     ) -> Array:
-        """Return the energy-dissipative divergence of frozen SGS stress."""
+        """Return the energy-dissipative SGS divergence plus wall traction."""
         if gradient is None:
             gradient = self.velocity_gradient(cell_velocity)
         stress = frozen_viscosity[..., None, None] * (
             gradient + jnp.swapaxes(gradient, -1, -2)
         )
+        vertical_faces = self._vertical_stress_faces_from_cell_stress(
+            stress[..., :, 2]
+        )
+        if wall_stress is not None:
+            vertical_faces = vertical_faces.at[0].add(wall_stress)
+        vertical = self._vertical_stress_divergence(vertical_faces)
         components = []
         for component in range(3):
-            value = jnp.zeros_like(cell_velocity[..., component])
-            for direction in range(3):
+            value = vertical[..., component]
+            for direction in range(2):
                 value += self._negative_derivative_transpose(
                     stress[..., component, direction],
                     direction,
@@ -732,6 +825,7 @@ class NeutralABLMomentum:
         lasd_coefficient: Array,
         *,
         gradient: Array | None = None,
+        wall_velocity: Array | None = None,
     ) -> tuple[Array, Array]:
         """Split a frozen vertical reference from the full nonlinear SGS."""
         if gradient is None:
@@ -748,6 +842,10 @@ class NeutralABLMomentum:
             cell_velocity,
             dynamic_viscosity,
             gradient=gradient,
+            wall_stress=self.wall_stress(
+                cell_velocity,
+                wall_velocity=wall_velocity,
+            ),
         )
         return principal, full - principal
 
@@ -890,6 +988,66 @@ class NeutralABLMomentum:
             tendency.append(-total)
         return jnp.stack(tendency, axis=-1)
 
+    def conservative_advection(
+        self,
+        velocity: MACVelocity,
+        cell_velocity: Array | None = None,
+    ) -> Array:
+        """Return compatible centered MAC momentum-flux divergence.
+
+        Centering transported momentum on the normal velocity faces makes the
+        finite-volume flux telescope exactly. For a projected MAC velocity,
+        the same construction is also kinetic-energy neutral because its
+        residual work is proportional to the cellwise MAC divergence.
+        """
+        cells = _cell_velocity(velocity) if cell_velocity is None else cell_velocity
+
+        x_boundary = 0.5 * (cells[..., -1, :] + cells[..., 0, :])
+        x_faces = jnp.concatenate(
+            (
+                x_boundary[..., None, :],
+                0.5 * (cells[..., :-1, :] + cells[..., 1:, :]),
+                x_boundary[..., None, :],
+            ),
+            axis=2,
+        )
+        x_flux = velocity.x[..., None] * x_faces
+
+        y_boundary = 0.5 * (cells[:, -1, ...] + cells[:, 0, ...])
+        y_faces = jnp.concatenate(
+            (
+                y_boundary[:, None, ...],
+                0.5 * (cells[:, :-1, ...] + cells[:, 1:, ...]),
+                y_boundary[:, None, ...],
+            ),
+            axis=1,
+        )
+        y_flux = velocity.y[..., None] * y_faces
+
+        z_flux = self.vertical_advective_flux(velocity, cells)
+        return -(
+            (x_flux[:, :, 1:, :] - x_flux[:, :, :-1, :]) / self.dx
+            + (y_flux[:, 1:, :, :] - y_flux[:, :-1, :, :]) / self.dy
+            + (z_flux[1:] - z_flux[:-1]) / self.dz
+        )
+
+    def vertical_advective_flux(
+        self,
+        velocity: MACVelocity,
+        cell_velocity: Array | None = None,
+    ) -> Array:
+        """Return the conservative vertical flux of all momentum components."""
+        cells = _cell_velocity(velocity) if cell_velocity is None else cell_velocity
+        flux = jnp.zeros(
+            (cells.shape[0] + 1, *cells.shape[1:]),
+            dtype=cells.dtype,
+        )
+        return flux.at[1:-1].set(
+            velocity.z[1:-1, ..., None]
+            * 0.5
+            * (cells[:-1] + cells[1:])
+        )
+
     def amd_tendency(self, cell_velocity: Array) -> Array:
         stress = self.amd_stress(cell_velocity)
         result = []
@@ -973,6 +1131,7 @@ class NeutralABLMomentum:
         lasd_coefficient: Array | None = None,
         *,
         gradient: Array | None = None,
+        wall_velocity: Array | None = None,
     ) -> Array:
         if gradient is None:
             gradient = self.velocity_gradient(cell_velocity)
@@ -984,6 +1143,39 @@ class NeutralABLMomentum:
             cell_velocity,
             viscosity,
             gradient=gradient,
+            wall_stress=self.wall_stress(
+                cell_velocity,
+                wall_velocity=wall_velocity,
+            ),
+        )
+
+    def vertical_sgs_stress_flux(
+        self,
+        cell_velocity: Array,
+        lasd_coefficient: Array | None = None,
+        *,
+        gradient: Array | None = None,
+        wall_velocity: Array | None = None,
+    ) -> Array:
+        """Return SGS momentum stress on every vertical face.
+
+        Its discrete divergence is exactly the wall-normal part of
+        :meth:`sgs_tendency`, including the modeled lower-wall traction.
+        """
+        if gradient is None:
+            gradient = self.velocity_gradient(cell_velocity)
+        stress = self._sgs_stress_from_gradient(
+            gradient,
+            lasd_coefficient,
+        )
+        faces = self._vertical_stress_faces_from_cell_stress(
+            stress[..., :, 2]
+        )
+        return faces.at[0].add(
+            self.wall_stress(
+                cell_velocity,
+                wall_velocity=wall_velocity,
+            )
         )
 
     def mp5_dissipation(
@@ -1037,13 +1229,90 @@ class NeutralABLMomentum:
             result -= (dissipative_flux - previous_flux) / spacing
         return result
 
-    def wall_ustar(self, cell_velocity: Array) -> Array:
-        horizontal = cell_velocity[0, ..., :2]
-        speed = jnp.linalg.norm(horizontal, axis=-1)
-        factor = self.config.von_karman / math.log(
-            (0.5 * self.dz) / self.config.roughness_length
+    @property
+    def wall_matching_height(self) -> float:
+        return (self.config.wall_matching_level + 0.5) * self.dz
+
+    def instantaneous_wall_velocity(self, cell_velocity: Array) -> Array:
+        """Sample and spatially filter the wall-model matching velocity."""
+        horizontal = cell_velocity[
+            self.config.wall_matching_level,
+            ...,
+            :2,
+        ]
+        width = self.config.wall_filter_width
+        if width is None:
+            return horizontal
+        return physical_top_hat_filter(
+            horizontal,
+            width,
+            axes=(-3, -2),
+            boundaries=("periodic", "periodic"),
         )
-        return factor * speed
+
+    def wall_velocity(
+        self,
+        cell_velocity: Array,
+        *,
+        filtered_velocity: Array | None = None,
+    ) -> Array:
+        """Return the horizontal velocity supplied to the wall law."""
+        if filtered_velocity is not None:
+            return filtered_velocity
+        if (
+            self.config.wall_temporal_filter_timescale is not None
+            and self._wall_model_state is not None
+        ):
+            return self._wall_model_state.filtered_velocity
+        return self.instantaneous_wall_velocity(cell_velocity)
+
+    def wall_ustar(
+        self,
+        cell_velocity: Array,
+        *,
+        wall_velocity: Array | None = None,
+    ) -> Array:
+        horizontal = self.wall_velocity(
+            cell_velocity,
+            filtered_velocity=wall_velocity,
+        )
+        return self.wall_law.friction_velocity(
+            horizontal,
+            self.wall_matching_height,
+        )
+
+    def wall_fluxes(
+        self,
+        cell_velocity: Array,
+        *,
+        wall_velocity: Array | None = None,
+    ) -> SurfaceLayerFluxes:
+        """Evaluate the closure independently of its conservative coupling."""
+        horizontal = self.wall_velocity(
+            cell_velocity,
+            filtered_velocity=wall_velocity,
+        )
+        return self.wall_law.surface_fluxes(
+            horizontal,
+            self.wall_matching_height,
+        )
+
+    def wall_stress(
+        self,
+        cell_velocity: Array,
+        *,
+        wall_velocity: Array | None = None,
+    ) -> Array:
+        """Return positive inward-normal SGS stress on the lower wall face."""
+        fluxes = self.wall_fluxes(
+            cell_velocity,
+            wall_velocity=wall_velocity,
+        )
+        tangential = fluxes.momentum_stress
+        return jnp.concatenate(
+            (tangential, jnp.zeros_like(tangential[..., :1])),
+            axis=-1,
+        )
 
     def forcing_tendency(self, cell_velocity: Array) -> Array:
         tendency = jnp.zeros_like(cell_velocity)
@@ -1062,29 +1331,24 @@ class NeutralABLMomentum:
                 -vertical * (u - geostrophic_u)
             )
             tendency = tendency.at[..., 2].add(horizontal * u)
-        horizontal = cell_velocity[0, ..., :2]
-        speed = jnp.linalg.norm(horizontal, axis=-1)
-        safe_speed = jnp.where(speed > 0.0, speed, 1.0)
-        ustar = self.wall_ustar(cell_velocity)
-        wall_flux = -(ustar * ustar)[..., None] * horizontal / safe_speed[
-            ..., None
-        ]
-        tendency = tendency.at[0, ..., :2].add(wall_flux / self.dz)
         return tendency
 
     def cell_tendency(
         self,
         velocity: MACVelocity,
         lasd_coefficient: Array | None = None,
+        *,
+        wall_velocity: Array | None = None,
     ) -> Array:
         cells = _cell_velocity(velocity)
         gradient = self.velocity_gradient(cells)
         tendency = (
-            self.skew_advection(cells, gradient=gradient)
+            self.conservative_advection(velocity, cells)
             + self.sgs_tendency(
                 cells,
                 lasd_coefficient,
                 gradient=gradient,
+                wall_velocity=wall_velocity,
             )
             + self.forcing_tendency(cells)
         )
@@ -1096,6 +1360,7 @@ class NeutralABLMomentum:
         return self._compiled_tendency(
             velocity,
             self._active_lasd_coefficient(velocity),
+            self.active_wall_velocity(velocity),
         )
 
     def _active_lasd_coefficient(self, velocity: MACVelocity) -> Array:
@@ -1128,6 +1393,65 @@ class NeutralABLMomentum:
     @property
     def lasd_state(self) -> LASDState | None:
         return self._lasd_state
+
+    @property
+    def wall_model_state(self) -> WallModelState | None:
+        return self._wall_model_state
+
+    def reset_wall_model(self, velocity: MACVelocity) -> WallModelState | None:
+        """Initialize temporal wall-model memory from ``velocity``."""
+        if self.config.wall_temporal_filter_timescale is None:
+            self._wall_model_state = None
+            return None
+        self._wall_model_state = WallModelState(
+            self.instantaneous_wall_velocity(_cell_velocity(velocity))
+        )
+        return self._wall_model_state
+
+    def restore_wall_model(self, state: WallModelState) -> None:
+        expected = (
+            self.grid.shape[1],
+            self.grid.shape[2],
+            2,
+        )
+        if state.filtered_velocity.shape != expected:
+            raise ValueError("wall-model state shape does not match the grid")
+        self._wall_model_state = WallModelState(
+            jnp.asarray(
+                state.filtered_velocity,
+                dtype=self.pressure_solver.operator.dtype,
+            )
+        )
+
+    def active_wall_velocity(self, velocity: MACVelocity) -> Array:
+        """Return the frozen wall input to use throughout one time step."""
+        cells = _cell_velocity(velocity)
+        if self.config.wall_temporal_filter_timescale is None:
+            return self.instantaneous_wall_velocity(cells)
+        if self._wall_model_state is None:
+            return self.instantaneous_wall_velocity(cells)
+        return self._wall_model_state.filtered_velocity
+
+    def _advance_wall_model(
+        self,
+        velocity: MACVelocity,
+        timestep: float,
+    ) -> None:
+        timescale = self.config.wall_temporal_filter_timescale
+        if timescale is None:
+            return
+        if self._wall_model_state is None:
+            self.reset_wall_model(velocity)
+            return
+        epsilon = min(timestep / timescale, 1.0)
+        instantaneous = self.instantaneous_wall_velocity(
+            _cell_velocity(velocity)
+        )
+        filtered = (
+            (1.0 - epsilon) * self._wall_model_state.filtered_velocity
+            + epsilon * instantaneous
+        )
+        self._wall_model_state = WallModelState(filtered)
 
     @property
     def lasd_progress(self) -> tuple[int, float]:
@@ -1230,12 +1554,14 @@ class NeutralABLMomentum:
         timestep: float,
         time: float,
         lasd_coefficient: Array,
+        wall_velocity: Array,
     ) -> VelocityPressureProjection:
         """Advance ARS(2,3,3) with frozen vertical SGS diffusion implicit."""
         initial_explicit, initial_implicit, frozen_viscosity = (
             self._compiled_imex_initial_tendencies(
                 velocity,
                 lasd_coefficient,
+                wall_velocity,
             )
         )
         explicit_tendencies: list[MACVelocity] = [initial_explicit]
@@ -1246,6 +1572,7 @@ class NeutralABLMomentum:
                 stage_velocity,
                 frozen_viscosity,
                 lasd_coefficient,
+                wall_velocity,
             )
             explicit_tendencies.append(explicit)
             implicit_tendencies.append(implicit)
@@ -1509,7 +1836,13 @@ class NeutralABLMomentum:
     ) -> MACVelocity:
         if self.lasd_closure is not None and self._lasd_state is None:
             self.reset_lasd(velocity)
+        if (
+            self.config.wall_temporal_filter_timescale is not None
+            and self._wall_model_state is None
+        ):
+            self.reset_wall_model(velocity)
         coefficient = self._active_lasd_coefficient(velocity)
+        wall_velocity = self.active_wall_velocity(velocity)
 
         if self.config.sgs_time_integration == "imex_ark3":
             projected = self._imex_ark3_step(
@@ -1517,18 +1850,24 @@ class NeutralABLMomentum:
                 timestep=timestep,
                 time=time,
                 lasd_coefficient=coefficient,
+                wall_velocity=wall_velocity,
             )
             advanced = self.enforce_boundaries(projected.velocity)
             if self.config.projection_method == "fpj2":
                 self._accept_fpj2_pressure(projected.pressure, timestep)
             self._advance_lasd(advanced, timestep)
+            self._advance_wall_model(advanced, timestep)
             return advanced
 
         def stage_tendency(
             stage_velocity: MACVelocity,
             _stage_time: float,
         ) -> MACVelocity:
-            return self._compiled_tendency(stage_velocity, coefficient)
+            return self._compiled_tendency(
+                stage_velocity,
+                coefficient,
+                wall_velocity,
+            )
 
         if self.config.projection_method == "fpj2":
             history = self._fpj2_state
@@ -1578,6 +1917,7 @@ class NeutralABLMomentum:
             ).velocity
         advanced = self.enforce_boundaries(advanced)
         self._advance_lasd(advanced, timestep)
+        self._advance_wall_model(advanced, timestep)
         return advanced
 
     def diagnostic(
@@ -1598,6 +1938,7 @@ class NeutralABLMomentum:
             velocity,
             jnp.asarray(timestep, dtype=velocity.x.dtype),
             coefficient,
+            self.active_wall_velocity(velocity),
         )
         return NeutralABLDiagnostic(
             time,
@@ -1681,4 +2022,5 @@ __all__ = [
     "NeutralABLConfig",
     "NeutralABLDiagnostic",
     "NeutralABLMomentum",
+    "WallModelState",
 ]

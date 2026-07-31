@@ -29,6 +29,9 @@ def _solver(
     projection_method: str = "full",
     sgs_time_integration: str = "explicit",
     molecular_viscosity: float = 0.0,
+    wall_matching_level: int = 0,
+    wall_filter_width: float | None = None,
+    wall_temporal_filter_timescale: float | None = None,
 ) -> NeutralABLMomentum:
     grid = RectilinearGrid.uniform(
         nx,
@@ -66,6 +69,9 @@ def _solver(
         NeutralABLConfig(
             friction_velocity=0.1,
             roughness_length=1.0e-3,
+            wall_matching_level=wall_matching_level,
+            wall_filter_width=wall_filter_width,
+            wall_temporal_filter_timescale=wall_temporal_filter_timescale,
             amd=AMDModel(
                 coefficient=0.212,
                 molecular_viscosity=molecular_viscosity,
@@ -74,6 +80,14 @@ def _solver(
             projection_method=projection_method,
         ),
     )
+
+
+def test_uniform_spacing_accepts_float32_inexact_domain_ratio() -> None:
+    faces = tuple(2.0 * math.pi * index / 64 for index in range(65))
+
+    spacing = neutral_abl._uniform_spacing(faces, "x spacing")
+
+    assert spacing == (2.0 * math.pi) / 64
 
 
 def test_filter_free_amd_is_nonnegative_and_switches_off_for_uniform_flow() -> None:
@@ -115,6 +129,18 @@ def test_horizontal_skew_advection_has_zero_resolved_energy_work() -> None:
     work = jnp.sum(cells * tendency)
 
     assert float(jnp.abs(work)) < 2.0e-5
+
+
+def test_mac_conservative_advection_preserves_momentum_and_energy() -> None:
+    solver = _solver(nx=8, ny=8, nz=8)
+    velocity = solver.initial_log_profile(perturbation_amplitude=0.1)
+    cells = solver.cell_centered_velocity(velocity)
+    tendency = solver.conservative_advection(velocity, cells)
+    mean_tendency = jnp.mean(tendency, axis=(0, 1, 2))
+    energy_work = jnp.mean(cells * tendency)
+
+    assert jnp.max(jnp.abs(mean_tendency)) < 1.0e-7
+    assert jnp.abs(energy_work) < 1.0e-6
 
 
 def test_shared_gradient_paths_match_standalone_sgs_and_advection() -> None:
@@ -194,6 +220,7 @@ def test_imex_initial_tendency_reuses_gradient_for_frozen_viscosity() -> None:
         solver._compiled_imex_initial_tendencies(
             velocity,
             coefficient,
+            solver.active_wall_velocity(velocity),
         )
     )
     jnp.asarray(explicit.x).block_until_ready()
@@ -291,10 +318,125 @@ def test_log_wall_and_pressure_force_balance_initial_bulk_momentum() -> None:
         ),
         axis=-1,
     )
-    forcing = solver.forcing_tendency(cells)
+    forcing = solver.forcing_tendency(cells) + solver.sgs_tendency(cells)
 
     assert float(jnp.abs(jnp.mean(forcing[..., 0]))) < 2.0e-6
-    assert float(jnp.max(jnp.abs(forcing[..., 1:]))) == 0.0
+    assert float(jnp.max(jnp.abs(forcing[..., 1:]))) < 1.0e-7
+
+
+def test_filtered_log_wall_uses_periodic_physical_top_hat_velocity() -> None:
+    solver = _solver(wall_filter_width=2.0)
+    cells = jnp.zeros(solver.grid.shape + (3,), dtype=jnp.float32)
+    alternating = jnp.where(
+        jnp.arange(solver.grid.shape[2]) % 2 == 0,
+        1.0,
+        3.0,
+    )
+    cells = cells.at[0, ..., 0].set(alternating[None, :])
+
+    filtered = solver.wall_velocity(cells)
+    ustar = solver.wall_ustar(cells)
+    expected_factor = solver.config.von_karman / math.log(
+        (0.5 * solver.dz) / solver.config.roughness_length
+    )
+
+    assert jnp.allclose(filtered[..., 0], 2.0)
+    assert jnp.allclose(filtered[..., 1], 0.0)
+    assert jnp.allclose(ustar, 2.0 * expected_factor)
+
+
+def test_log_wall_uses_configured_matching_level_and_height() -> None:
+    solver = _solver(wall_matching_level=2)
+    cells = jnp.zeros(solver.grid.shape + (3,), dtype=jnp.float32)
+    cells = cells.at[0, ..., 0].set(1.0)
+    cells = cells.at[2, ..., 0].set(3.0)
+
+    sampled = solver.wall_velocity(cells)
+    ustar = solver.wall_ustar(cells)
+    expected_factor = solver.config.von_karman / math.log(
+        (2.5 * solver.dz) / solver.config.roughness_length
+    )
+
+    assert solver.wall_matching_height == 2.5 * solver.dz
+    assert jnp.allclose(sampled[..., 0], 3.0)
+    assert jnp.allclose(ustar, 3.0 * expected_factor)
+
+
+def test_temporal_wall_filter_advances_once_per_accepted_state() -> None:
+    solver = _solver(wall_temporal_filter_timescale=2.0)
+    velocity = solver.initial_log_profile(perturbation_amplitude=0.0)
+    initial = solver.reset_wall_model(velocity)
+    assert initial is not None
+    cells = solver.cell_centered_velocity(velocity)
+    changed = cells.at[0, ..., 0].add(2.0)
+    changed_velocity = solver.enforce_boundaries(
+        neutral_abl._cells_to_faces(changed)
+    )
+    instantaneous = solver.instantaneous_wall_velocity(changed)
+
+    solver._advance_wall_model(changed_velocity, 0.5)
+    state = solver.wall_model_state
+
+    assert state is not None
+    assert jnp.allclose(
+        state.filtered_velocity,
+        0.75 * initial.filtered_velocity + 0.25 * instantaneous,
+    )
+
+
+def test_vertical_sgs_face_flux_is_exact_telescope_with_wall_boundary() -> None:
+    solver = _solver()
+    velocity = solver.initial_log_profile(perturbation_amplitude=0.05)
+    cells = solver.cell_centered_velocity(velocity)
+    wall_velocity = solver.active_wall_velocity(velocity)
+    tendency = solver.sgs_tendency(
+        cells,
+        wall_velocity=wall_velocity,
+    )
+    faces = solver.vertical_sgs_stress_flux(
+        cells,
+        wall_velocity=wall_velocity,
+    )
+    plane_tendency = jnp.mean(tendency, axis=(1, 2))
+    plane_face_divergence = jnp.mean(
+        (faces[1:] - faces[:-1]) / solver.dz,
+        axis=(1, 2),
+    )
+    expected_wall = jnp.mean(
+        solver.wall_stress(cells, wall_velocity=wall_velocity),
+        axis=(0, 1),
+    )
+
+    assert jnp.allclose(plane_tendency, plane_face_divergence, atol=2.0e-6)
+    assert jnp.allclose(jnp.mean(faces[0], axis=(0, 1)), expected_wall)
+    assert jnp.max(jnp.abs(faces[-1])) < 2.0e-6
+
+
+def test_wall_filter_width_must_be_positive_and_finite() -> None:
+    for invalid in (0.0, -1.0, math.inf, math.nan):
+        try:
+            NeutralABLConfig(wall_filter_width=invalid)
+        except ValueError as error:
+            assert "wall filter width" in str(error)
+        else:
+            raise AssertionError(f"accepted invalid wall filter width {invalid}")
+
+
+def test_wall_matching_and_temporal_filter_controls_are_validated() -> None:
+    for invalid in (-1, 0.5, True):
+        try:
+            NeutralABLConfig(wall_matching_level=invalid)
+        except ValueError as error:
+            assert "wall matching level" in str(error)
+        else:
+            raise AssertionError(f"accepted invalid matching level {invalid}")
+    for invalid in (0.0, -1.0, math.inf, math.nan):
+        try:
+            NeutralABLConfig(wall_temporal_filter_timescale=invalid)
+        except ValueError as error:
+            assert "temporal filter timescale" in str(error)
+        else:
+            raise AssertionError(f"accepted invalid timescale {invalid}")
 
 
 def test_short_neutral_abl_run_remains_projected_and_finite() -> None:
