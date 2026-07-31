@@ -53,11 +53,11 @@ def test_quick_mode_is_explicitly_noncanonical() -> None:
     assert solver.average_start_hours == 0.0
 
 
-def test_lasd_fifth_model_uses_safe_trajectory_cadence() -> None:
+def test_lasd_fifth_model_updates_every_accepted_step() -> None:
     args = run_lasd.parse_args([])
     assert (args.nx, args.ny, args.nz) == (40, 40, 40)
     assert args.dt == 0.8
-    assert args.lasd_update_interval == 5
+    assert args.lasd_update_interval == 1
     assert math.isclose(args.hours * 3600.0 * run.F_CORIOLIS, 10.0)
 
 

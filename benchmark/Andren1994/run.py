@@ -1,397 +1,630 @@
 #!/usr/bin/env python3
-"""Run the Andrén et al. (1994) neutral Ekman intercomparison case."""
+"""Reproduce the neutral Ekman-layer intercomparison of Andren et al. (1994)."""
 
 from __future__ import annotations
 
 import argparse
 import csv
+from dataclasses import asdict
 import json
-import math
+import os
 from pathlib import Path
-import sys
-
-import numpy as np
+import time
 
 
-ROOT = Path(__file__).resolve().parents[2]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
-from benchmark.NeutralEkman import run as neutral_runner  # noqa: E402
-
-import jax  # noqa: E402
-import jax.numpy as jnp  # noqa: E402
-
-from jaxwind.domain import (  # noqa: E402
-    AddressableField,
-    Candidate,
-    Cell,
-    VerticalVelocity,
-    XVelocity,
-    YVelocity,
-    ZFace,
+INITIAL_U = (
+    4.44, 5.92, 6.91, 7.73, 8.43, 9.02, 9.52, 9.93, 10.25, 10.47,
+    10.62, 10.70, 10.71, 10.67, 10.59, 10.48, 10.36, 10.24, 10.13, 10.04,
+    9.99, 9.96, 9.95, 9.96, 9.98, 9.99, 10.00, 9.99, 9.99, 9.99,
+    10.00, 10.00, 10.00, 10.00, 10.00, 10.00, 10.00, 10.00, 10.00, 10.00,
 )
-from jaxwind.interpreters.jax_zslab import ZFaceFieldContext  # noqa: E402
-from jaxwind.operators import VelocityVector  # noqa: E402
+INITIAL_V = (
+    2.18, 2.67, 2.83, 2.84, 2.75, 2.57, 2.34, 2.06, 1.75, 1.44,
+    1.12, 0.82, 0.55, 0.31, 0.12, -0.02, -0.11, -0.16, -0.17, -0.15,
+    -0.11, -0.06, -0.02, 0.01, 0.02, 0.02, 0.02, 0.02, 0.02, 0.01,
+    0.01, 0.01, 0.01, 0.00, 0.00, 0.00, 0.00, 0.00, 0.00, 0.00,
+)
+INITIAL_TKE = (
+    0.365, 0.295, 0.245, 0.205, 0.175, 0.145, 0.120, 0.100, 0.085,
+    0.070, 0.055, 0.045, 0.035, 0.025, 0.020, 0.015, 0.010, 0.010,
+    0.005, 0.005, 0.005, 0.000, 0.000, 0.000, 0.000, 0.000, 0.000,
+    0.000, 0.000, 0.000, 0.000, 0.000, 0.000, 0.000, 0.000, 0.000,
+    0.000, 0.000, 0.000, 0.000,
+)
 
 
-HERE = Path(__file__).resolve().parent
-INITIAL_PROFILE = HERE / "reference" / "initial_profiles.csv"
-REFERENCE_RESULTS = HERE / "reference" / "reference_results.json"
-F_CORIOLIS = 1.0e-4
-GEOSTROPHIC_SPEED = 10.0
-CANONICAL_HOURS = 10.0 / F_CORIOLIS / 3600.0
-STATISTICS_START_HOURS = 7.0 / F_CORIOLIS / 3600.0
-STATISTICS_WINDOW_HOURS = 3.0 / F_CORIOLIS / 3600.0
-
-
-def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--nx", type=int, default=40)
-    parser.add_argument("--ny", type=int, default=40)
-    parser.add_argument("--nz", type=int, default=40)
-    parser.add_argument("--dt", type=float, default=1.0)
-    parser.add_argument("--hours", type=float)
-    parser.add_argument("--dtype", choices=("float32", "float64"), default="float32")
-    parser.add_argument("--smagorinsky", type=float, default=0.17)
-    parser.add_argument("--seed", type=int, default=1994)
-    parser.add_argument("--sample-every", type=int, default=300)
-    parser.add_argument("--log-every", type=int, default=600)
-    parser.add_argument("--max-cfl-warning", type=float, default=0.25)
-    parser.add_argument("--method", choices=("transpose", "spike"), default="spike")
-    parser.add_argument("--restart", type=Path)
-    parser.add_argument("--output", type=Path)
+    parser.add_argument("--end-ft", type=float, default=0.1)
+    parser.add_argument("--sample-start-ft", type=float, default=0.05)
+    parser.add_argument("--sample-every", type=int, default=5)
+    parser.add_argument("--log-every", type=int, default=20)
+    parser.add_argument("--target-cfl", type=float, default=0.8)
+    parser.add_argument("--target-diffusive-cfl", type=float, default=0.5)
+    parser.add_argument("--lasd-update-interval", type=int, default=1)
+    parser.add_argument("--lasd-filter-grid-ratio", type=float, default=1.0)
+    parser.add_argument("--lasd-maximum-coefficient", type=float, default=0.81)
+    parser.add_argument("--mp5-strength", type=float, default=1.0)
     parser.add_argument(
-        "--quick",
-        action="store_true",
-        help="run an 8^3, 8-step end-to-end smoke case instead of the paper case",
+        "--sgs-time-integration",
+        choices=("imex_ark3", "explicit"),
+        default="imex_ark3",
     )
-    args = parser.parse_args(argv)
-    if args.quick:
-        args.nx = args.ny = args.nz = 8
-        args.dt = 0.25
-        args.hours = 8.0 * args.dt / 3600.0
-        args.sample_every = 1
-        args.log_every = 4
-    elif args.hours is None:
-        args.hours = CANONICAL_HOURS
-    if args.output is None:
-        suffix = "quick" if args.quick else "static_smag_40x40x40"
-        args.output = HERE / "results" / suffix
-    if min(args.nx, args.ny, args.nz) <= 1:
-        parser.error("all grid dimensions must exceed one")
-    if args.dt <= 0.0 or args.hours <= 0.0:
-        parser.error("dt and hours must be positive")
-    if args.sample_every <= 0 or args.log_every <= 0:
-        parser.error("sampling and logging intervals must be positive")
-    return args
-
-
-def paper_initial_profiles() -> np.ndarray:
-    data = np.genfromtxt(INITIAL_PROFILE, delimiter=",", names=True)
-    if data.shape != (40,):
-        raise ValueError("Andrén Table A.1 must contain exactly 40 levels")
-    if not np.allclose(np.diff(data["z_m"]), 37.5):
-        raise ValueError("Andrén Table A.1 heights must use the 37.5 m grid")
-    return data
-
-
-def _unit_plane_noise(key, shape, dtype):
-    noise = jax.random.uniform(key, shape, dtype, minval=-0.5, maxval=0.5)
-    noise -= jnp.mean(noise, axis=(-2, -1), keepdims=True)
-    rms = jnp.sqrt(jnp.mean(noise * noise, axis=(-2, -1), keepdims=True))
-    return noise / jnp.maximum(rms, jnp.finfo(dtype).tiny)
-
-
-def andren_initial_velocity(
-    physical_grid,
-    decomposition,
-    scales,
-    dtype,
-    args,
-) -> VelocityVector:
-    """Interpret the paper's Table A.1 and uniform random perturbation law."""
-    table = paper_initial_profiles()
-    z = (jnp.arange(physical_grid.nz, dtype=dtype) + 0.5) * physical_grid.dz
-    upper_z = (jnp.arange(physical_grid.nz, dtype=dtype) + 1.0) * physical_grid.dz
-    table_z = jnp.asarray(table["z_m"], dtype=dtype)
-    table_u = jnp.asarray(table["u_m_s"], dtype=dtype)
-    table_v = jnp.asarray(table["v_m_s"], dtype=dtype)
-    table_tke = jnp.asarray(table["tke_m2_s2"], dtype=dtype)
-    mean_u = jnp.interp(z, table_z, table_u, left=table_u[0], right=table_u[-1])
-    mean_v = jnp.interp(z, table_z, table_v, left=table_v[0], right=table_v[-1])
-    cell_tke = jnp.interp(z, table_z, table_tke, left=table_tke[0], right=0.0)
-    face_tke = jnp.interp(
-        upper_z,
-        table_z,
-        table_tke,
-        left=table_tke[0],
-        right=0.0,
+    parser.add_argument("--pressure-rtol", type=float, default=1.0e-4)
+    parser.add_argument("--pressure-max-iterations", type=int, default=20)
+    parser.add_argument("--pressure-restart", type=int, default=10)
+    parser.add_argument(
+        "--linear-solver",
+        choices=("pcg", "gmres"),
+        default="pcg",
     )
-    shape = (1, physical_grid.nz, physical_grid.ny, physical_grid.nx)
-    keys = jax.random.split(jax.random.PRNGKey(args.seed), 3)
-    component_rms = jnp.sqrt((2.0 / 3.0) * cell_tke)[None, :, None, None]
-    face_rms = jnp.sqrt((2.0 / 3.0) * face_tke)[None, :, None, None]
-    u = mean_u[None, :, None, None] + component_rms * _unit_plane_noise(
-        keys[0], shape, dtype
+    parser.add_argument(
+        "--projection-method",
+        choices=("full", "fpj2"),
+        default="fpj2",
     )
-    v = mean_v[None, :, None, None] + component_rms * _unit_plane_noise(
-        keys[1], shape, dtype
+    parser.add_argument(
+        "--fpj2-timestep-ratio-limit",
+        type=float,
+        default=2.0,
     )
-    w = face_rms * _unit_plane_noise(keys[2], shape, dtype)
-    w = w.at[:, -1].set(0.0)
-    lower = jnp.zeros((physical_grid.ny, physical_grid.nx), dtype=dtype)
-    return VelocityVector(
-        AddressableField(
-            XVelocity,
-            Cell,
-            decomposition.regions(Cell),
-            Candidate,
-            scales.to_execution_velocity(u).astype(dtype),
-        ),
-        AddressableField(
-            YVelocity,
-            Cell,
-            decomposition.regions(Cell),
-            Candidate,
-            scales.to_execution_velocity(v).astype(dtype),
-        ),
-        ZFaceFieldContext(
-            AddressableField(
-                VerticalVelocity,
-                ZFace,
-                decomposition.regions(ZFace),
-                Candidate,
-                scales.to_execution_velocity(w).astype(dtype),
-            ),
-            lower,
-        ),
+    parser.add_argument(
+        "--krylov-execution",
+        choices=("jax", "python"),
+        default="jax",
+    )
+    parser.add_argument("--seed", type=int, default=1994)
+    parser.add_argument("--single", action="store_true")
+    parser.add_argument("--restart", type=Path)
+    parser.add_argument("--checkpoint-every", type=int, default=500)
+    parser.add_argument(
+        "--max-run-seconds",
+        type=float,
+        help="pause cleanly at a checkpoint after this much stepping wall time",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path("benchmark_results/andren1994_40cubed"),
+    )
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+    if args.end_ft <= 0.0:
+        raise SystemExit("end-ft must be positive")
+    if not 0.0 <= args.sample_start_ft < args.end_ft:
+        raise SystemExit("sample-start-ft must lie in [0, end-ft)")
+    if min(args.sample_every, args.log_every) <= 0:
+        raise SystemExit("sampling intervals must be positive")
+    if args.lasd_update_interval <= 0:
+        raise SystemExit("LASD update interval must be positive")
+    if args.checkpoint_every <= 0:
+        raise SystemExit("checkpoint interval must be positive")
+    if args.fpj2_timestep_ratio_limit < 1.0:
+        raise SystemExit("FPJ-2 timestep ratio limit must be at least one")
+    if args.max_run_seconds is not None and args.max_run_seconds <= 0.0:
+        raise SystemExit("max-run-seconds must be positive")
+
+    from jax import config as jax_config
+
+    if not args.single:
+        jax_config.update("jax_enable_x64", True)
+
+    import jax
+    import jax.numpy as jnp
+    import numpy as np
+
+    from jaxwind.momentum import (
+        FPJ2State,
+        LASDModel,
+        LASDState,
+        NeutralABLConfig,
+        NeutralABLMomentum,
+    )
+    from jaxwind.pressure import (
+        BoundaryCondition,
+        FGMRESConfig,
+        GMGConfig,
+        MACVelocity,
+        MatrixFreePoissonSolver,
+        PCGConfig,
+        PoissonBoundaryConditions,
+        RectilinearGrid,
     )
 
+    nx = ny = nz = 40
+    lx, ly, height = 4000.0, 2000.0, 1500.0
+    roughness = 0.1
+    geostrophic = (10.0, 0.0)
+    coriolis = 1.0e-4
+    expected_ustar = 0.425
+    dtype = jnp.float32 if args.single else jnp.float64
 
-def solver_namespace(args: argparse.Namespace) -> argparse.Namespace:
-    statistics_start = 0.0 if args.quick else STATISTICS_START_HOURS
-    statistics_window = args.hours if args.quick else STATISTICS_WINDOW_HOURS
-    return argparse.Namespace(
-        nx=args.nx,
-        ny=args.ny,
-        nz=args.nz,
-        lx=4000.0,
-        ly=2000.0,
-        lz=1500.0,
-        dt=args.dt,
-        hours=args.hours,
-        dtype=args.dtype,
-        geostrophic_u=10.0,
-        geostrophic_v=0.0,
-        coriolis=F_CORIOLIS,
-        horizontal_coriolis=F_CORIOLIS,
-        roughness=0.1,
-        von_karman=0.4,
-        smagorinsky=args.smagorinsky,
-        length_scale=1500.0,
-        velocity_scale=10.0,
-        perturbation=0.0,
-        perturbation_depth=0.0,
-        seed=args.seed,
-        sample_every=args.sample_every,
-        log_every=args.log_every,
-        average_start_hours=statistics_start,
-        average_window_hours=statistics_window,
-        convergence_window_hours=max(statistics_window / 3.0, args.dt / 3600.0),
-        convergence_tolerance=0.01,
-        profile_convergence_tolerance=0.005,
-        minimum_development_hours=statistics_start,
-        jet_speed_ratio=1.0,
-        require_supergeostrophic=False,
-        stop_on_convergence=False,
-        max_cfl_warning=args.max_cfl_warning,
-        method=args.method,
-        output=args.output,
-        restart=args.restart,
+    grid = RectilinearGrid.uniform(
+        nx,
+        ny,
+        nz,
+        lx=lx,
+        ly=ly,
+        lz=height,
     )
-
-
-def _read_history(path: Path) -> dict[str, np.ndarray]:
-    with path.open(newline="") as stream:
-        rows = list(csv.DictReader(stream))
-    return {name: np.asarray([float(row[name]) for row in rows]) for name in rows[0]}
-
-
-def write_normalized_profiles(output: Path, statistics_ustar: float) -> None:
-    profile = np.genfromtxt(output / "profiles.csv", delimiter=",", names=True)
-    ustar2 = statistics_ustar**2
-    columns = np.column_stack(
-        (
-            profile["z_m"] * F_CORIOLIS / statistics_ustar,
-            profile["u_m_s"] / GEOSTROPHIC_SPEED,
-            profile["v_m_s"] / GEOSTROPHIC_SPEED,
-            profile["u_std_m_s"] ** 2 / ustar2,
-            profile["v_std_m_s"] ** 2 / ustar2,
-            profile["w_std_m_s"] ** 2 / ustar2,
-            profile["resolved_tke_m2_s2"] / ustar2,
-            profile["resolved_uw_m2_s2"] / ustar2,
-            profile["resolved_vw_m2_s2"] / ustar2,
-            profile["sgs_uw_m2_s2"] / ustar2,
-            profile["sgs_vw_m2_s2"] / ustar2,
-            profile["total_uw_m2_s2"] / ustar2,
-            profile["total_vw_m2_s2"] / ustar2,
+    periodic = BoundaryCondition("periodic")
+    neumann = BoundaryCondition("neumann")
+    krylov = (
+        PCGConfig(
+            max_iterations=args.pressure_max_iterations,
+            relative_tolerance=args.pressure_rtol,
+            execution=args.krylov_execution,
+        )
+        if args.linear_solver == "pcg"
+        else FGMRESConfig(
+            restart=args.pressure_restart,
+            max_iterations=args.pressure_max_iterations,
+            relative_tolerance=args.pressure_rtol,
+            reorthogonalize=False,
+            execution=args.krylov_execution,
         )
     )
-    np.savetxt(
-        output / "normalized_profiles.csv",
-        columns,
-        delimiter=",",
-        header=(
-            "z_f_over_ustar,u_over_ug,v_over_ug,resolved_u_variance_over_ustar2,"
-            "resolved_v_variance_over_ustar2,resolved_w_variance_over_ustar2,"
-            "resolved_tke_over_ustar2,resolved_uw_over_ustar2,"
-            "resolved_vw_over_ustar2,sgs_uw_over_ustar2,sgs_vw_over_ustar2,"
-            "total_uw_over_ustar2,total_vw_over_ustar2"
+    pressure = MatrixFreePoissonSolver(
+        grid,
+        PoissonBoundaryConditions(
+            periodic,
+            periodic,
+            periodic,
+            periodic,
+            neumann,
+            neumann,
         ),
-        comments="",
+        dtype=dtype,
+        gmg=GMGConfig(
+            smoother="auto",
+            coarsening="auto",
+            coarse_smooth=20,
+        ),
+        krylov=krylov,
+    )
+    solver = NeutralABLMomentum(
+        grid,
+        pressure,
+        NeutralABLConfig(
+            friction_velocity=expected_ustar,
+            roughness_length=roughness,
+            geostrophic_wind=geostrophic,
+            coriolis_vertical=coriolis,
+            coriolis_horizontal=coriolis,
+            mp5_dissipation_strength=args.mp5_strength,
+            sgs_time_integration=args.sgs_time_integration,
+            projection_method=args.projection_method,
+            fpj2_timestep_ratio_limit=args.fpj2_timestep_ratio_limit,
+            lasd=LASDModel(
+                filter_grid_ratio=args.lasd_filter_grid_ratio,
+                update_interval=args.lasd_update_interval,
+                maximum_coefficient=args.lasd_maximum_coefficient,
+                x_boundary="periodic",
+                y_boundary="periodic",
+            ),
+        ),
     )
 
+    def sample_profiles_kernel(sample_velocity, lasd_coefficient):
+        cells = solver.cell_centered_velocity(sample_velocity)
+        mean = jnp.mean(cells, axis=(1, 2))
+        fluctuation = cells - mean[:, None, None, :]
+        variances = jnp.mean(fluctuation * fluctuation, axis=(1, 2))
+        resolved_uw = jnp.mean(
+            fluctuation[..., 0] * fluctuation[..., 2],
+            axis=(1, 2),
+        )
+        resolved_vw = jnp.mean(
+            fluctuation[..., 1] * fluctuation[..., 2],
+            axis=(1, 2),
+        )
+        stress = solver.sgs_stress(cells, lasd_coefficient)
+        sgs_uw = -jnp.mean(stress[..., 0, 2], axis=(1, 2))
+        sgs_vw = -jnp.mean(stress[..., 1, 2], axis=(1, 2))
+        return mean, variances, resolved_uw, resolved_vw, sgs_uw, sgs_vw
 
-def plot_comparison(
-    output: Path,
-    history: dict[str, np.ndarray],
-    statistics_ustar: float,
-    reference: dict,
-) -> None:
+    compiled_sample_profiles = jax.jit(sample_profiles_kernel)
+
+    if args.restart is None:
+        velocity = solver.initial_profile(
+            jnp.asarray(INITIAL_U, dtype=dtype),
+            jnp.asarray(INITIAL_V, dtype=dtype),
+            perturbation_tke=jnp.asarray(INITIAL_TKE, dtype=dtype),
+            seed=args.seed,
+        )
+        solver.reset_lasd(velocity)
+        samples: list[tuple[np.ndarray, ...]] = []
+        timesteps: list[float] = []
+        simulation_time = 0.0
+        step = 0
+    else:
+        checkpoint = np.load(args.restart)
+        velocity = MACVelocity(
+            jnp.asarray(checkpoint["velocity_x"], dtype=dtype),
+            jnp.asarray(checkpoint["velocity_y"], dtype=dtype),
+            jnp.asarray(checkpoint["velocity_z"], dtype=dtype),
+        )
+        lasd_state = LASDState(
+            *(jnp.asarray(checkpoint[f"lasd_{name}"], dtype=dtype) for name in (
+                "coefficient",
+                "lm",
+                "mm",
+                "qn",
+                "nn",
+                "trajectory_x",
+                "trajectory_y",
+                "trajectory_z",
+            ))
+        )
+        step = int(checkpoint["step"])
+        simulation_time = float(checkpoint["simulation_time"])
+        solver.restore_lasd(
+            lasd_state,
+            accepted_step=int(checkpoint["lasd_step"]),
+            interval_time=float(checkpoint["lasd_interval_time"]),
+        )
+        if (
+            args.projection_method == "fpj2"
+            and "fpj2_current_pressure" in checkpoint.files
+        ):
+            solver.restore_fpj2(
+                FPJ2State(
+                    jnp.asarray(
+                        checkpoint["fpj2_current_pressure"],
+                        dtype=dtype,
+                    ),
+                    jnp.asarray(
+                        checkpoint["fpj2_previous_pressure"],
+                        dtype=dtype,
+                    ),
+                    float(checkpoint["fpj2_current_timestep"]),
+                    float(checkpoint["fpj2_previous_timestep"]),
+                    int(checkpoint["fpj2_history_count"]),
+                )
+            )
+        timesteps = list(np.asarray(checkpoint["timesteps"], dtype=float))
+        sample_arrays = tuple(
+            np.asarray(checkpoint[f"sample_{index}"]) for index in range(6)
+        )
+        samples = [
+            tuple(array[index] for array in sample_arrays)
+            for index in range(sample_arrays[0].shape[0])
+        ]
+
+    saved_lasd = solver.lasd_state
+    saved_lasd_step, saved_interval_time = solver.lasd_progress
+    saved_fpj2 = solver.fpj2_state
+    compile_start = time.perf_counter()
+    warmup_timestep = solver.timestep_for_cfl(
+        velocity,
+        args.target_cfl,
+        args.target_diffusive_cfl,
+    )
+    compiled_velocity = velocity
+    warmup_steps = max(
+        args.lasd_update_interval,
+        3 if args.projection_method == "fpj2" else 1,
+    )
+    for warmup_step in range(warmup_steps):
+        compiled_velocity = solver.step(
+            compiled_velocity,
+            timestep=warmup_timestep,
+            time=warmup_step * warmup_timestep,
+        )
+    jax.block_until_ready(compiled_velocity.x)
+    if args.restart is None:
+        solver.reset_lasd(velocity)
+        solver.reset_fpj2()
+    else:
+        solver.restore_lasd(
+            saved_lasd,
+            accepted_step=saved_lasd_step,
+            interval_time=saved_interval_time,
+        )
+        if saved_fpj2 is None:
+            solver.reset_fpj2()
+        else:
+            solver.restore_fpj2(saved_fpj2)
+    compiled_samples = compiled_sample_profiles(
+        velocity,
+        solver.lasd_state.coefficient,
+    )
+    jax.block_until_ready(compiled_samples[0])
+    solver.diagnostic(
+        velocity,
+        timestep=warmup_timestep,
+        time=0.0,
+    )
+    compilation_elapsed = time.perf_counter() - compile_start
+    print(f"[compile] kernels ready in {compilation_elapsed:.3f}s")
+
+    diagnostics = []
+    final_time = args.end_ft / coriolis
+    sample_start = args.sample_start_ft / coriolis
+    start = time.perf_counter()
+
+    def sample_profiles() -> tuple[np.ndarray, ...]:
+        return tuple(
+            np.asarray(value)
+            for value in compiled_sample_profiles(
+                velocity,
+                solver.lasd_state.coefficient,
+            )
+        )
+
+    def save_checkpoint() -> None:
+        args.output_dir.mkdir(parents=True, exist_ok=True)
+        lasd = solver.lasd_state
+        lasd_step, interval_time = solver.lasd_progress
+        if samples:
+            stacked_samples = tuple(
+                np.stack([sample[index] for sample in samples])
+                for index in range(6)
+            )
+        else:
+            shapes = ((nz, 3), (nz, 3), (nz,), (nz,), (nz,), (nz,))
+            stacked_samples = tuple(
+                np.empty((0, *shape), dtype=np.float32) for shape in shapes
+            )
+        payload = {
+            "velocity_x": np.asarray(velocity.x),
+            "velocity_y": np.asarray(velocity.y),
+            "velocity_z": np.asarray(velocity.z),
+            "step": step,
+            "simulation_time": simulation_time,
+            "lasd_step": lasd_step,
+            "lasd_interval_time": interval_time,
+            "timesteps": np.asarray(timesteps),
+        }
+        payload.update(
+            {
+                f"lasd_{name}": np.asarray(value)
+                for name, value in zip(
+                    LASDState._fields,
+                    lasd,
+                    strict=True,
+                )
+            }
+        )
+        fpj2 = solver.fpj2_state
+        if fpj2 is not None:
+            payload.update(
+                {
+                    "fpj2_current_pressure": np.asarray(
+                        fpj2.current_pressure
+                    ),
+                    "fpj2_previous_pressure": np.asarray(
+                        fpj2.previous_pressure
+                    ),
+                    "fpj2_current_timestep": fpj2.current_timestep,
+                    "fpj2_previous_timestep": fpj2.previous_timestep,
+                    "fpj2_history_count": fpj2.history_count,
+                }
+            )
+        payload.update(
+            {
+                f"sample_{index}": values
+                for index, values in enumerate(stacked_samples)
+            }
+        )
+        np.savez_compressed(args.output_dir / "checkpoint.npz", **payload)
+
+    while simulation_time < final_time:
+        timestep = solver.timestep_for_cfl(
+            velocity,
+            args.target_cfl,
+            args.target_diffusive_cfl,
+        )
+        timestep = min(timestep, final_time - simulation_time)
+        step_lasd_coefficient = solver.lasd_state.coefficient
+        velocity = solver.step(
+            velocity,
+            timestep=timestep,
+            time=simulation_time,
+        )
+        simulation_time += timestep
+        timesteps.append(timestep)
+        step += 1
+        if (
+            simulation_time >= sample_start
+            and (step % args.sample_every == 0 or simulation_time >= final_time)
+        ):
+            samples.append(sample_profiles())
+        if step % args.log_every == 0 or simulation_time >= final_time:
+            diagnostic = solver.diagnostic(
+                velocity,
+                timestep=timestep,
+                time=simulation_time,
+            )
+            step_diagnostic = solver.diagnostic(
+                velocity,
+                timestep=timestep,
+                time=simulation_time,
+                lasd_coefficient=step_lasd_coefficient,
+            )
+            diagnostics.append(diagnostic)
+            print(
+                f"step={step} ft={coriolis * simulation_time:.4f}/"
+                f"{args.end_ft:g} CFL={diagnostic.maximum_cfl:.4f} "
+                f"CFLnu_step={step_diagnostic.maximum_diffusive_cfl:.4f} "
+                f"CFLnu_next={diagnostic.maximum_diffusive_cfl:.4f} "
+                f"ustar/Ug={diagnostic.mean_wall_ustar / geostrophic[0]:.5f} "
+                f"divL2={diagnostic.divergence_norm:.3e} "
+                f"nu_lasd_max={diagnostic.maximum_sgs_viscosity:.3e} "
+                f"Cs2_mean/max={diagnostic.mean_sgs_coefficient:.3e}/"
+                f"{diagnostic.maximum_sgs_coefficient:.3e} "
+                f"clipped={diagnostic.clipped_sgs_coefficient_fraction:.3f}"
+            )
+        if step % args.checkpoint_every == 0:
+            save_checkpoint()
+            if (
+                args.max_run_seconds is not None
+                and time.perf_counter() - start >= args.max_run_seconds
+            ):
+                print(
+                    f"[paused] checkpointed step={step} "
+                    f"ft={coriolis * simulation_time:.4f}",
+                    flush=True,
+                )
+                return
+    jax.block_until_ready(velocity.x)
+    save_checkpoint()
+    elapsed = time.perf_counter() - start
+
+    averaged = [
+        np.mean([sample[index] for sample in samples], axis=0)
+        for index in range(len(samples[0]))
+    ]
+    mean, variances, resolved_uw, resolved_vw, sgs_uw, sgs_vw = averaged
+    total_uw = resolved_uw + sgs_uw
+    total_vw = resolved_vw + sgs_vw
+    z = (np.arange(nz) + 0.5) * height / nz
+    speed = np.linalg.norm(mean[:, :2], axis=-1)
+    ustar = diagnostics[-1].mean_wall_ustar
+    normalized_height = z * coriolis / ustar
+    phi_m = 0.4 * z / ustar * np.gradient(speed, z)
+    resolved_tke = 0.5 * np.sum(variances, axis=-1)
+    integrated_tke = float(
+        coriolis * np.trapezoid(resolved_tke, z) / ustar**3
+    )
+
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    profile_path = args.output_dir / "andren1994_profiles.csv"
+    with profile_path.open("w", newline="", encoding="utf-8") as stream:
+        writer = csv.writer(stream)
+        writer.writerow(
+            (
+                "z_m",
+                "zf_over_ustar",
+                "mean_u_m_s",
+                "mean_v_m_s",
+                "var_u_m2_s2",
+                "var_v_m2_s2",
+                "var_w_m2_s2",
+                "resolved_uw_m2_s2",
+                "resolved_vw_m2_s2",
+                "sgs_uw_m2_s2",
+                "sgs_vw_m2_s2",
+                "total_uw_m2_s2",
+                "total_vw_m2_s2",
+                "phi_m",
+            )
+        )
+        writer.writerows(
+            zip(
+                z,
+                normalized_height,
+                mean[:, 0],
+                mean[:, 1],
+                variances[:, 0],
+                variances[:, 1],
+                variances[:, 2],
+                resolved_uw,
+                resolved_vw,
+                sgs_uw,
+                sgs_vw,
+                total_uw,
+                total_vw,
+                phi_m,
+            )
+        )
+
+    summary = {
+        "reference": "Andren et al. (1994), QJRMS 120, 1457-1484",
+        "backend": jax.default_backend(),
+        "dtype": str(dtype),
+        "shape_zyx": grid.shape,
+        "domain_m": [lx, ly, height],
+        "roughness_length_m": roughness,
+        "geostrophic_wind_m_s": geostrophic,
+        "coriolis_vertical_s-1": coriolis,
+        "coriolis_horizontal_s-1": coriolis,
+        "end_ft": coriolis * simulation_time,
+        "sample_start_ft": args.sample_start_ft,
+        "steps": step,
+        "minimum_dt_seconds": min(timesteps),
+        "maximum_dt_seconds": max(timesteps),
+        "elapsed_seconds": elapsed,
+        "compilation_seconds": compilation_elapsed,
+        "sgs_model": "physical-space LASD",
+        "lasd_update_interval": args.lasd_update_interval,
+        "lasd_filter_grid_ratio": args.lasd_filter_grid_ratio,
+        "lasd_sgs_delta_scale": args.lasd_filter_grid_ratio,
+        "lasd_maximum_coefficient": args.lasd_maximum_coefficient,
+        "lasd_filter": "three-dimensional compact top-hat convolution",
+        "lasd_clipped_beta_fallback": True,
+        "mp5_dissipation_strength": args.mp5_strength,
+        "sgs_time_integration": args.sgs_time_integration,
+        "vertical_sgs_diffusion_is_implicit": (
+            args.sgs_time_integration == "imex_ark3"
+        ),
+        "horizontal_sgs_diffusion_is_explicit": True,
+        "target_advective_cfl": args.target_cfl,
+        "target_diffusive_cfl": args.target_diffusive_cfl,
+        "linear_solver": args.linear_solver,
+        "pressure_relative_tolerance": args.pressure_rtol,
+        "pressure_max_iterations": args.pressure_max_iterations,
+        "pressure_restart": args.pressure_restart,
+        "krylov_execution": args.krylov_execution,
+        "projection_method": args.projection_method,
+        "fpj2_timestep_ratio_limit": args.fpj2_timestep_ratio_limit,
+        "elapsed_seconds_scope": "final invocation after restart",
+        "friction_velocity_m_s": ustar,
+        "friction_velocity_over_geostrophic": ustar / geostrophic[0],
+        "reference_friction_velocity_ratio_range": [0.0402, 0.0448],
+        "normalized_integrated_resolved_tke": integrated_tke,
+        "reference_normalized_integrated_total_tke": 0.7,
+        "final": asdict(diagnostics[-1]),
+    }
+    summary_path = args.output_dir / "summary.json"
+    summary_path.write_text(json.dumps(summary, indent=2) + "\n")
+
+    os.environ.setdefault(
+        "MPLCONFIGDIR",
+        str(args.output_dir / ".matplotlib"),
+    )
     import matplotlib
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    profile = np.genfromtxt(
-        output / "normalized_profiles.csv", delimiter=",", names=True
-    )
-    tf = history["time_seconds"] * F_CORIOLIS
-    ratios = np.asarray(tuple(reference["ustar_over_ug"].values()))
-    figure, axes = plt.subplots(2, 2, figsize=(11, 9), constrained_layout=True)
-    axes[0, 0].plot(tf, history["ustar"] / GEOSTROPHIC_SPEED, label="JAX-Wind")
-    axes[0, 0].axhspan(
-        ratios.min(), ratios.max(), color="0.7", alpha=0.35, label="1994 code envelope"
-    )
-    axes[0, 0].set(xlabel=r"$tf$", ylabel=r"$u_*/U_g$", title="Surface stress")
+    figure, axes = plt.subplots(2, 2, figsize=(10.5, 8.5), sharey=True)
+    axes[0, 0].plot(mean[:, 0] / geostrophic[0], normalized_height, label="U/Ug")
+    axes[0, 0].plot(mean[:, 1] / geostrophic[0], normalized_height, label="V/Ug")
+    axes[0, 0].set_xlabel("mean velocity / Ug")
     axes[0, 0].legend()
-
-    axes[0, 1].plot(
-        tf,
-        F_CORIOLIS * history["integrated_resolved_tke_m3_s2"] / statistics_ustar**3,
-        label="JAX-Wind resolved",
-    )
-    axes[0, 1].axhline(
-        reference["normalized_integrated_total_tke_plateau"],
-        color="black",
-        linestyle="--",
-        label="1994 resolved + SGS",
-    )
-    axes[0, 1].set(
-        xlabel=r"$tf$",
-        ylabel=r"$f\int e_{res}\,dz/u_*^3$",
-        title="Integrated TKE (different decompositions)",
-    )
+    for component, label in enumerate(("u", "v", "w")):
+        axes[0, 1].plot(
+            variances[:, component] / ustar**2,
+            normalized_height,
+            label=label,
+        )
+    axes[0, 1].set_xlabel("resolved variance / u*²")
     axes[0, 1].legend()
-
-    height = profile["z_f_over_ustar"]
-    axes[1, 0].plot(profile["resolved_u_variance_over_ustar2"], height, label="u")
-    axes[1, 0].plot(profile["resolved_v_variance_over_ustar2"], height, label="v")
-    axes[1, 0].plot(profile["resolved_w_variance_over_ustar2"], height, label="w")
-    axes[1, 0].set(
-        xlabel=r"resolved variance/$u_*^2$",
-        ylabel=r"$zf/u_*$",
-        title="Resolved velocity variances",
-    )
+    axes[1, 0].plot(total_uw / ustar**2, normalized_height, label="total uw")
+    axes[1, 0].plot(total_vw / ustar**2, normalized_height, label="total vw")
+    axes[1, 0].set_xlabel("momentum flux / u*²")
     axes[1, 0].legend()
-
-    axes[1, 1].plot(profile["resolved_uw_over_ustar2"], height, label="uw")
-    axes[1, 1].plot(profile["resolved_vw_over_ustar2"], height, label="vw")
-    axes[1, 1].axvline(0.0, color="0.7", linewidth=0.8)
-    axes[1, 1].set(
-        xlabel=r"resolved momentum flux/$u_*^2$",
-        ylabel=r"$zf/u_*$",
-        title="Resolved momentum fluxes",
+    axes[1, 1].plot(phi_m, normalized_height)
+    axes[1, 1].axvline(1.0, color="black", linestyle="--", linewidth=1.0)
+    axes[1, 1].set_xlabel("Phi_M")
+    for panel in axes.flat:
+        panel.set_ylabel("z f / u*")
+        panel.grid(True, alpha=0.25)
+        panel.set_ylim(0.0, 0.36)
+    figure.suptitle(
+        f"Andren 1994 with physical-space LASD: "
+        f"ft={coriolis * simulation_time:.3f}, "
+        f"u*/Ug={ustar / geostrophic[0]:.4f}"
     )
-    axes[1, 1].legend()
-    figure.suptitle(f"Andrén et al. (1994); statistics u*={statistics_ustar:.4f} m/s")
-    figure.savefig(output / "andren1994_comparison.png", dpi=180)
+    figure.tight_layout()
+    figure.savefig(args.output_dir / "andren1994_profiles.png", dpi=180)
     plt.close(figure)
-
-
-def finalize_comparison(args: argparse.Namespace, summary: dict) -> dict:
-    reference = json.loads(REFERENCE_RESULTS.read_text())
-    history = _read_history(args.output / "history.csv")
-    start_seconds = 0.0 if args.quick else 7.0 / F_CORIOLIS
-    selected = history["time_seconds"] >= start_seconds
-    if not np.any(selected):
-        selected = np.ones_like(history["time_seconds"], dtype=bool)
-    statistics_ustar = float(np.mean(history["ustar"][selected]))
-    ratio = statistics_ustar / GEOSTROPHIC_SPEED
-    normalized_resolved_tke = (
-        F_CORIOLIS * history["integrated_resolved_tke_m3_s2"] / statistics_ustar**3
-    )
-    published = np.asarray(tuple(reference["ustar_over_ug"].values()))
-    write_normalized_profiles(args.output, statistics_ustar)
-    plot_comparison(args.output, history, statistics_ustar, reference)
-    canonical_configuration = (
-        not args.quick
-        and (args.nx, args.ny, args.nz) == (40, 40, 40)
-        and math.isclose(args.dt, 1.0)
-        and math.isclose(args.hours, CANONICAL_HOURS)
-    )
-    summary["reference"] = reference
-    summary["comparison"] = {
-        "canonical_configuration": canonical_configuration,
-        "reference_acceptance_evaluated": canonical_configuration,
-        "statistics_ustar_m_s": statistics_ustar,
-        "ustar_over_ug": ratio,
-        "published_ustar_over_ug_min": float(published.min()),
-        "published_ustar_over_ug_max": float(published.max()),
-        "mean_normalized_integrated_resolved_tke": float(
-            np.mean(normalized_resolved_tke[selected])
-        ),
-        "ustar_over_ug_inside_published_envelope": (
-            bool(published.min() <= ratio <= published.max())
-            if canonical_configuration
-            else None
-        ),
-        "integrated_tke_comparison": "JAX-Wind resolved only; paper value includes SGS",
-    }
-    summary["acceptance"]["canonical_configuration"] = canonical_configuration
-    summary["acceptance"]["ustar_over_ug_inside_published_envelope"] = (
-        bool(published.min() <= ratio <= published.max())
-        if canonical_configuration
-        else None
-    )
-    (args.output / "summary.json").write_text(
-        json.dumps(summary, indent=2, sort_keys=True) + "\n"
-    )
-    return summary
-
-
-def main(argv: list[str] | None = None) -> int:
-    args = parse_args(argv)
-    solver_args = solver_namespace(args)
-    summary = neutral_runner.run_case(
-        solver_args,
-        initial_velocity_factory=andren_initial_velocity,
-        schema="jaxwind.andren1994.static-smag.v1",
-        case_metadata={
-            "citation": "Andren et al. (1994)",
-            "doi": "10.1002/qj.49712052003",
-            "latitude_degrees_north": 45.0,
-            "statistics_interval_tf": [7.0, 10.0],
-            "passive_scalar_included": False,
-            "sgs_correspondence": "static Smagorinsky, Mason no-backscatter Cs=0.17",
-        },
-        emit_summary=False,
-    )
-    summary = finalize_comparison(args, summary)
-    print(json.dumps(summary, indent=2, sort_keys=True))
-    return 0
+    print(f"[done] elapsed={elapsed:.3f}s summary={summary_path}")
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()

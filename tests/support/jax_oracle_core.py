@@ -375,17 +375,25 @@ def _tensor_magnitude(tensor):
 
 
 def _lasd_filter(values, *, grid, filter_width: float):
-    spectrum = jnp.fft.rfftn(values, axes=(-2, -1))
-    x_mode = jnp.arange(grid.nx // 2 + 1)
-    y_mode = jnp.abs(jnp.fft.fftfreq(grid.ny) * grid.ny)
-    cutoff_x = jnp.floor(grid.nx / (2.0 * filter_width) + 0.5)
-    cutoff_y = jnp.floor(grid.ny / (2.0 * filter_width) + 0.5)
-    mask = (y_mode[:, None] < cutoff_y) & (x_mode[None, :] < cutoff_x)
-    return jnp.fft.irfftn(
-        spectrum * mask,
-        s=(grid.ny, grid.nx),
-        axes=(-2, -1),
-    ).astype(values.dtype)
+    radius = int(math.ceil(0.5 * filter_width + 0.5))
+    half_width = 0.5 * filter_width
+    stencil = []
+    for offset in range(-radius, radius + 1):
+        overlap = max(
+            0.0,
+            min(offset + 0.5, half_width)
+            - max(offset - 0.5, -half_width),
+        )
+        if overlap > 0.0:
+            stencil.append((offset, overlap / filter_width))
+    total = sum(weight for _, weight in stencil)
+    filtered = values
+    for axis in (-2, -1):
+        filtered = sum(
+            (weight / total) * jnp.roll(filtered, -offset, axis=axis)
+            for offset, weight in stencil
+        )
+    return filtered.astype(values.dtype)
 
 
 def _lasd_filter_components(values, *, grid, filter_width: float):

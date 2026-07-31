@@ -849,6 +849,7 @@ def build_zslab_interpreter(
             None,
             None,
         ),
+        static_broadcasted_argnums=(15, 16, 21, 25),
     )
     lasd_diagnostics = mapped(
         lasd_diagnostics_local,

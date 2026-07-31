@@ -13,7 +13,7 @@ class LagrangianScaleDependentDynamic:
 
     filter_grid_ratio: float = 1.5
     test_filter_ratio: float = 2.0
-    update_interval: int = 10
+    update_interval: int = 1
     timescale_coefficient: float = 1.5
     initial_coefficient: float = 0.03
     minimum_coefficient: float = 1.0e-6

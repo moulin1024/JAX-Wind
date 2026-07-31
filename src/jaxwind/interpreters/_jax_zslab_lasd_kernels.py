@@ -6,6 +6,8 @@ import jax
 import jax.numpy as jnp
 from jax import lax
 
+from jaxwind.momentum.physical_filter import physical_top_hat_filter
+
 
 def build_lasd_kernels(
     *,
@@ -272,17 +274,12 @@ def build_lasd_kernels(
         )
 
     def lasd_filter_local(values, filter_width):
-        spectrum = jnp.fft.rfftn(values, axes=(-2, -1))
-        x_mode = jnp.arange(grid.nx // 2 + 1)
-        y_mode = jnp.abs(jnp.fft.fftfreq(grid.ny) * grid.ny)
-        cutoff_x = jnp.floor(grid.nx / (2.0 * filter_width) + 0.5)
-        cutoff_y = jnp.floor(grid.ny / (2.0 * filter_width) + 0.5)
-        mask = (y_mode[:, None] < cutoff_y) & (x_mode[None, :] < cutoff_x)
-        return jnp.fft.irfftn(
-            spectrum * mask[None, ...],
-            s=(grid.ny, grid.nx),
+        return physical_top_hat_filter(
+            values,
+            filter_width,
             axes=(-2, -1),
-        ).astype(values.dtype)
+            boundaries=("periodic", "periodic"),
+        )
 
     def lasd_filter_components_local(values, filter_width):
         return jnp.moveaxis(

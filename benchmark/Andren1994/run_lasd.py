@@ -102,7 +102,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--sample-every", type=int, default=300)
     parser.add_argument("--log-every", type=int, default=600)
     parser.add_argument("--checkpoint-every", type=int, default=6000)
-    parser.add_argument("--lasd-update-interval", type=int, default=5)
+    parser.add_argument("--lasd-update-interval", type=int, default=1)
     parser.add_argument("--max-cfl-warning", type=float, default=0.25)
     parser.add_argument("--method", choices=("transpose", "spike"), default="spike")
     parser.add_argument("--restart", type=Path)

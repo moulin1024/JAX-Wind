@@ -9,22 +9,42 @@ Run the canonical `40 × 40 × 40` case from the repository root:
 python benchmark/Andren1994/run.py
 ```
 
-This advances through `tf=10` (`27.7778 h`) and averages the final `3/f`. The
-default one-second step follows the Andrén--Moeng entry in the paper's runtime
-table. Float32 and the communication-reducing SPIKE pressure method are used by
-default.
+The current runner uses the MAC finite-volume momentum path, a matrix-free
+symmetric-GMG/PCG pressure solver, and momentum LASD. The restriction is the
+volume-weighted adjoint of prolongation. Use `--linear-solver gmres` for the
+restarted GMRES reference path.
+The stiff vertical part of LASD principal diffusion defaults to the
+third-order ARS(2,3,3) IMEX path and is solved directly along each vertical
+column. `CFLnu` therefore diagnoses the complete SGS operator; timestep
+selection retains only the explicit horizontal diffusion limit. Use
+`--sgs-time-integration explicit` for the fully explicit projected SSPRK3 path.
+Its two Germano test filters are three-dimensional compact physical-space
+top-hat convolutions; they do not call FFTs. Horizontal filter boundaries are
+explicit (`periodic` for this Andrén case and `reflect` for a nonperiodic
+homogeneous-Neumann boundary). The rigid lower/upper boundaries use even
+reflection for tangential velocity and odd reflection for wall-normal
+velocity. LASD memory is updated after every accepted flow step so that its
+trajectory CFL follows the enlarged momentum timestep. The width-two and
+width-four overlap filters use exact compact `reduce_window` forms rather than
+materializing every shifted field. Their first separable pass shares one
+radius-two padding and one three-point box sum. Accepted-step LASD work is
+split into two JIT executables: local gradient/Germano statistics and
+Lagrangian history/coefficient finalization. This prevents the filter graph
+from being fused into the complete momentum/projection timestep and avoids a
+field-sized 21-component intermediate between executables. The default
+advances to `ft=0.1`; use
+`--end-ft 10 --sample-start-ft 7` for the canonical final averaging window.
 
-Run momentum/scalar LASD as an external fifth SGS model:
+The default projection mode is the third-order FPJ-2 fast projection. The
+first two accepted steps use the full three-PPE SSPRK3 startup, after which
+intermediate stages use variable-step extrapolated pseudo-pressure and only
+the final stage solves a PPE. Pressure history and its two actual timesteps are
+checkpointed. Use `--projection-method full` for the three-PPE reference path;
+an abrupt timestep change beyond `--fpj2-timestep-ratio-limit` also triggers
+one exact fallback step automatically.
 
-```bash
-python benchmark/Andren1994/run_lasd.py
-```
-
-This path transports the paper's passive scalar with the prescribed
-`1e-3 kg m-2 s-1` surface flux and zero upper flux. It uses `dt=0.8 s` and a
-five-step LASD update interval so the total-CFL warning target (`0.2`) and the
-one-halo trajectory target (`CFL × interval < 1`) remain credible. These are
-warnings, not solution clips.
+`run_lasd.py` is retained as the legacy coupled momentum/scalar z-slab
+implementation for reference. New benchmark work should use `run.py`.
 
 Collect the complete resolved vertical scalar-flux budget for paper Fig. 13 by
 continuing the developed `tf=10` state over another `3/f` window:
