@@ -1,0 +1,6 @@
+[compile] GABLS1 kernels ready in 6.238s
+step=300 time=0.0829/9h CFL=0.7018 CFLnu=0.1417 divL2=1.912e-04 Q0=-4.559e-04 theta_budget=4.547e-08
+step=600 time=0.1549/9h CFL=0.7001 CFLnu=0.1134 divL2=1.891e-04 Q0=-9.297e-04 theta_budget=2.177e-08
+step=900 time=0.2176/9h CFL=0.6992 CFLnu=0.1051 divL2=1.859e-04 Q0=-1.474e-03 theta_budget=7.390e-08
+step=1200 time=0.2784/9h CFL=0.6979 CFLnu=0.0842 divL2=1.772e-04 Q0=-1.774e-03 theta_budget=2.667e-08
+step=1500 time=0.3432/9h CFL=0.7002 CFLnu=0.0838 divL2=1.692e-04 Q0=-2.054e-03 theta_budget=1.590e-07

@@ -82,10 +82,20 @@ class YSlabMatrixFreePoissonSolver:
         selected = tuple(jax.local_devices()) if devices is None else tuple(devices)
         if not selected:
             raise ValueError("at least one device is required")
-        if grid.shape[1] % len(selected):
+        process_count = jax.process_count()
+        if process_count > 1 and devices is not None:
+            expected = tuple(jax.local_devices())
+            if selected != expected:
+                raise ValueError(
+                    "multi-process pmap must use every local JAX device"
+                )
+        self.local_device_count = len(selected)
+        self.device_count = (
+            jax.device_count() if process_count > 1 else len(selected)
+        )
+        if grid.shape[1] % self.device_count:
             raise ValueError("finest-grid y cells must divide across devices")
         self.devices = selected
-        self.device_count = len(selected)
         self.distribution = distribution
         self.operator = MatrixFreePoissonOperator(
             grid,
@@ -96,10 +106,13 @@ class YSlabMatrixFreePoissonSolver:
         self.krylov = replace(krylov, jit_kernels=False)
         self.replication_level = self._choose_replication_level()
         self._validate_sharded_levels()
-        mapped = dict(
+        mapped: dict[str, object] = dict(
             axis_name=distribution.axis_name,
-            devices=self.devices,
+            axis_size=self.device_count,
         )
+        if process_count == 1:
+            mapped["devices"] = self.devices
+        self.pmap_options = mapped
         self._mapped_apply = jax.pmap(self._apply_local, **mapped)
         self._mapped_precondition = jax.pmap(
             self._precondition_local,
@@ -656,7 +669,12 @@ class YSlabMatrixFreePoissonSolver:
 
     def _check_sharded_shape(self, field: Array) -> None:
         nz, ny, nx = self.operator.shape
-        expected = (self.device_count, nz, ny // self.device_count, nx)
+        expected = (
+            self.local_device_count,
+            nz,
+            ny // self.device_count,
+            nx,
+        )
         if tuple(field.shape) != expected:
             raise ValueError(f"expected y-slab shape {expected}, got {field.shape}")
 

@@ -6,19 +6,26 @@ configuration of Andrén et al. (1994) as an independent active case.
 Run the canonical `40 × 40 × 40` case from the repository root:
 
 ```bash
-python benchmark/Andren1994/run.py
+python benchmark/Andren1994/run.py \
+  --sgs amd --end-ft 10 --sample-start-ft 7 \
+  --output-dir benchmark_results/andren1994_amd_40cubed_complete
 ```
 
 The current runner uses the MAC finite-volume momentum path, a matrix-free
-symmetric-GMG/PCG pressure solver, and momentum LASD. The restriction is the
-volume-weighted adjoint of prolongation. Use `--linear-solver gmres` for the
-restarted GMRES reference path.
-The stiff vertical part of LASD principal diffusion defaults to the
+symmetric-GMG/PCG pressure solver, and filter-free AMD by default. The AMD run
+also advances the paper's passive scalar with a conservative AMD flux and a
+prescribed lower surface flux of `1e-3`; use `--no-passive-scalar` only for a
+momentum-only diagnostic run. `--scalar-amd-coefficient` defaults to the
+momentum `--amd-coefficient`. Use `--sgs lasd` for the physical-space LASD
+momentum closure (the scalar is then off by default). The restriction is the volume-weighted
+adjoint of prolongation. Use `--linear-solver gmres` for the restarted GMRES
+reference path.
+The stiff vertical part of the SGS principal diffusion defaults to the
 third-order ARS(2,3,3) IMEX path and is solved directly along each vertical
 column. `CFLnu` therefore diagnoses the complete SGS operator; timestep
 selection retains only the explicit horizontal diffusion limit. Use
 `--sgs-time-integration explicit` for the fully explicit projected SSPRK3 path.
-Its two Germano test filters are three-dimensional compact physical-space
+LASD's two Germano test filters are three-dimensional compact physical-space
 top-hat convolutions; they do not call FFTs. Horizontal filter boundaries are
 explicit (`periodic` for this Andrén case and `reflect` for a nonperiodic
 homogeneous-Neumann boundary). The rigid lower/upper boundaries use even
@@ -44,59 +51,55 @@ an abrupt timestep change beyond `--fpj2-timestep-ratio-limit` also triggers
 one exact fallback step automatically.
 
 `run_lasd.py` is retained as the legacy coupled momentum/scalar z-slab
-implementation for reference. New benchmark work should use `run.py`.
+implementation for reference. New AMD benchmark work should use `run.py`.
 
-Collect the complete resolved vertical scalar-flux budget for paper Fig. 13 by
-continuing the developed `tf=10` state over another `3/f` window:
-
-```bash
-python benchmark/Andren1994/run_lasd.py \
-  --restart benchmark/Andren1994/results/lasd_40x40x40/checkpoint.npz \
-  --output benchmark/Andren1994/results/lasd_40x40x40_fig13_budget \
-  --hours 36.1111111111 --fig13-budget
-```
-
-This observer writes restartable `fig13_budget_samples.npz` and the normalized
-`fig13_budget_profiles.csv`. It forms production, SGS, transport, pressure,
-Coriolis, and tendency from the solver's actual discrete tendencies. The
+The AMD runner observes the complete resolved momentum- and scalar-flux
+budgets online over the configured averaging window and writes
+`fig12_budget_profiles.csv` and `fig13_budget_profiles.csv`. It forms
+production, SGS, transport, pressure, Coriolis, and tendency from the solver's
+actual discrete tendencies. The
 projection Lagrange multiplier is already the modified pressure
 `p_r/rho + 2 e_sgs/3`, because isotropic SGS stress is not separately applied
 to momentum; adding diagnostic SGS energy to it again would double count that
 term. The raw samples retain the implied diagnostic isotropic-SGS split for
 auditing.
 
-Run the end-to-end smoke case:
+Run a short AMD smoke case on the canonical grid:
 
 ```bash
-python benchmark/Andren1994/run.py --quick
+python benchmark/Andren1994/run.py \
+  --sgs amd --end-ft 0.001 --sample-start-ft 0 \
+  --output-dir benchmark_results/andren1994_amd_smoke
 ```
 
 Continue a canonical checkpoint to the paper's final time:
 
 ```bash
 python benchmark/Andren1994/run.py \
-  --restart benchmark/Andren1994/results/static_smag_40x40x40/checkpoint.npz
+  --sgs amd --end-ft 10 --sample-start-ft 7 \
+  --restart benchmark_results/andren1994_amd_40cubed/checkpoint.npz \
+  --output-dir benchmark_results/andren1994_amd_40cubed
 ```
 
-Outputs are written below `benchmark/Andren1994/results/`:
+Outputs are written below `--output-dir`:
 
 - `checkpoint.npz`, `history.csv`, `profiles.csv`, and `summary.json` retain the
   common accepted-step/restart contract;
 - `normalized_profiles.csv` uses the paper's `zf/u*` and variance/flux scaling;
-- `ekman_diagnostics.png` shows dimensional solver diagnostics;
-- `andren1994_comparison.png` compares `u*/Ug` with the published multi-code
-  envelope and explicitly distinguishes resolved-only JAX-Wind TKE from the
-  paper's resolved-plus-SGS quantity.
+- `spectra.csv` contains the four resolved discrete-mode spectra at the level
+  nearest `zf/u*=0.1`; `mode E_mode` is the discrete counterpart of the scaled
+  ordinate printed in paper Fig. 15 (the caption factor is not applied twice);
+- `fig12_budget_profiles.csv` and `fig13_budget_profiles.csv` contain all five
+  RHS terms, tendency, and a reported closure residual;
+- `andren1994_profiles.png` is a compact run diagnostic.
 
-The LASD run additionally writes all 13 closure-memory fields, the scalar
-quantity marker, closure fingerprint, and both AB2 tendency histories in
-checkpoint schema v2. `statistics_samples.npz` preserves the averaging history
-across restart. `profiles.csv` retains resolved, diagnostic SGS, and total
-velocity/scalar variance and flux, while `spectra.csv` contains x spectra at
-the level nearest `zf/u*=0.1`.
+The AMD checkpoint contains velocity, passive scalar, FPJ-2 pressure history,
+profile/budget samples, and TKE/non-stationarity history. A checkpoint made by
+the earlier resolved-only runner is intentionally rejected for a complete
+comparison: the missing scalar history cannot be reconstructed after the fact.
 
 The SGS energy and scalar variance are explicitly diagnostic local-equilibrium
-quantities. LASD predicts deviatoric stress and scalar flux; it does not evolve
+quantities. AMD predicts deviatoric stress and scalar flux; it does not evolve
 the stress trace or scalar variance. Plots therefore keep resolved,
 `diagnostic SGS`, and total contributions distinguishable. At the first cell,
 the equilibrium energy uses the same neutral log-wall shear as the wall
@@ -116,11 +119,7 @@ drift is not turbulent variance.
 
 Both paths use the complete 45°N rotation vector (`fh=f`), the tabulated 40-level
 initial mean/TKE profiles, an impermeable stress-free top, and no Rayleigh
-damping. The dry static path omits the passive scalar because it has no momentum
-feedback; the LASD path advances it with `NoBuoyancy`. The static Smagorinsky
-closure (`Cs=0.17`) corresponds most
-closely to Mason--Brown without backscatter; it is assessed against the
-intercomparison envelope rather than labeled as one of the original codes.
+damping. The scalar is passive and therefore has no momentum feedback.
 
 The compact public specification and extracted factual data are under
 [`reference/`](reference/Andren1994.md). The original article is linked there
@@ -132,13 +131,13 @@ redistributing the article itself, download the linked PDF and run:
 ```bash
 python benchmark/Andren1994/overlay_paper_figures.py \
   --paper-pdf /path/to/qj-1457-1994.pdf \
-  --results benchmark/Andren1994/results/lasd_40x40x40
+  --results benchmark_results/andren1994_amd_40cubed_complete
 ```
 
 This produces one sheet, `andren1994_all_figures_jaxwind_overlay.png`, containing
-all 19 numbered paper figures in order. For LASD, curves are registered on
-Figs. 2, 4(a,b), 5, 6, 7, 8, 13(a-d), 14(a,b), and 15(a-d) when the corresponding
-diagnostics exist. Fig. 13 overlays the same six colored JAX-Wind budget terms
-on all four original code panels; other plots use red for a resolved/total
-JAX-Wind curve and blue for a diagnostic SGS contribution. Paper-only tiles
-remain explicit rather than receiving a misleading substitute quantity.
+all 19 numbered paper figures in order. A complete AMD run registers directly
+comparable curves on Figs. 2–15. Figs. 12 and 13 overlay the same six colored
+JAX-Wind budget terms on each original-code panel; other plots use red for a
+resolved/total JAX-Wind curve and blue for the diagnostic SGS contribution.
+Figs. 16–19 are from the paper's separate fixed-diffusivity experiment and
+remain explicitly paper-only rather than receiving a misleading substitute.

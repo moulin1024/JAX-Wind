@@ -342,7 +342,7 @@ def compose_figures(figures: list[Image.Image]) -> Image.Image:
     draw = ImageDraw.Draw(composite)
     draw.text(
         (COMPOSITE_GAP, 10),
-        "Nieuwstadt et al. (1993): paper figures + new semantic JAX-Wind LASD",
+        "Nieuwstadt et al. (1993): paper figures + JAX-Wind diagnostics",
         font=composite_font(34),
         fill=(20, 25, 32),
     )

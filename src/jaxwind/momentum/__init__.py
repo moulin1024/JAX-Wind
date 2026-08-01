@@ -1,7 +1,15 @@
 """Face-staggered momentum solvers."""
 
+from .convective_abl import (
+    AMDBoussinesq,
+    AMDBoussinesqConfig,
+    AMDBoussinesqDiagnosticFields,
+    AMDBoussinesqState,
+)
 from .neutral_abl import (
     AMDModel,
+    AMDPassiveScalar,
+    AMDPassiveScalarModel,
     FPJ2State,
     NeutralABLConfig,
     NeutralABLDiagnostic,
@@ -21,7 +29,13 @@ from .surface_layer import (
 )
 
 __all__ = [
+    "AMDBoussinesq",
+    "AMDBoussinesqConfig",
+    "AMDBoussinesqDiagnosticFields",
+    "AMDBoussinesqState",
     "AMDModel",
+    "AMDPassiveScalar",
+    "AMDPassiveScalarModel",
     "FPJ2State",
     "LASDModel",
     "LASDState",

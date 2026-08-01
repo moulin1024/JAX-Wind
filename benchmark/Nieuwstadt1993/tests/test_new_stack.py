@@ -7,14 +7,16 @@ ROOT = Path(__file__).resolve().parents[3]
 BENCHMARK = ROOT / "benchmark" / "Nieuwstadt1993"
 
 
-def test_default_benchmark_runner_selects_the_new_semantic_stack() -> None:
+def test_default_benchmark_runner_selects_the_nonspectral_amd_stack() -> None:
     orchestration = (BENCHMARK / "run.py").read_text()
-    driver = (BENCHMARK / "run_new.py").read_text()
-    assert "run_new.py" in orchestration
+    driver = (BENCHMARK / "run_amd.py").read_text()
+    assert 'default="amd-nonspectral"' in orchestration
+    assert "run_amd.py" in orchestration
     assert "legacy/jax" not in orchestration
     assert "solve.py" not in orchestration
-    assert "from jaxwind." in driver
-    assert "from spectral_fd" in driver
+    assert "MatrixFreePoissonSolver" in driver
+    assert "AMDBoussinesq" in driver
+    assert "spectral_fd" not in driver
     assert "wireles_jax" not in driver
     assert "legacy/jax" not in driver
 

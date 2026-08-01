@@ -53,6 +53,20 @@ class FigureSpec:
 # Pixel registration of the actual Fig. 7 plot frame on rendered PDF page 13.
 # Its printed abscissa ends at 8.0; caption/legend whitespace is not axis area.
 FIGURE7_AXIS = Axis(324, 832, 736, 1243, 0.0, 8.0, 0.0, 0.35)
+FIGURE3_AXES = (
+    Axis(332, 139, 741, 551, 0.0, 14.0, 0.0, 2.0),
+    Axis(333, 795, 742, 1208, 0.0, 14.0, 0.0, 3.0),
+)
+FIGURE9_AXIS = Axis(332, 140, 742, 551, -0.3, 0.1, 0.0, 0.35)
+FIGURE10_AXIS = Axis(325, 811, 735, 1224, 0.0, 3.0, 0.0, 0.35)
+FIGURE11_AXIS = Axis(349, 135, 757, 550, -150.0, 0.0, 0.0, 0.35)
+FIGURE12_AXES = (
+    Axis(190, 136, 482, 433, -50.0, 50.0, 0.0, 0.35),
+    Axis(566, 135, 860, 432, -50.0, 50.0, 0.0, 0.35),
+    Axis(189, 543, 481, 840, -50.0, 50.0, 0.0, 0.35),
+    Axis(565, 543, 859, 840, -50.0, 50.0, 0.0, 0.35),
+    Axis(194, 947, 487, 1244, -50.0, 50.0, 0.0, 0.35),
+)
 FIGURE14_AXES = (
     Axis(332, 138, 740, 551, 0.0, 10.0, 0.0, 0.35),
     Axis(327, 806, 735, 1217, 0.0, 15.0, 0.0, 0.35),
@@ -88,7 +102,7 @@ FIGURES = (
     FigureSpec(11, 17, (220, 90, 815, 690)),
     FigureSpec(12, 18, (125, 90, 905, 1370)),
     FigureSpec(13, 19, (115, 90, 905, 985), "JAX-Wind complete scalar-flux budget"),
-    FigureSpec(14, 20, (240, 90, 810, 1350), "JAX-Wind LASD diffusivities"),
+    FigureSpec(14, 20, (240, 90, 810, 1350), "JAX-Wind SGS diffusivities"),
     FigureSpec(15, 21, (105, 450, 905, 1370), "JAX-Wind spectra"),
     FigureSpec(16, 23, (195, 90, 815, 1340)),
     FigureSpec(17, 24, (205, 90, 815, 700)),
@@ -232,10 +246,51 @@ def _crop(image: Image.Image, box: tuple[int, int, int, int]) -> Image.Image:
 
 
 def _profile_data(results: Path, statistics_ustar: float) -> dict[str, np.ndarray]:
+    current_path = results / "andren1994_profiles.csv"
+    normalized_path = results / "normalized_profiles.csv"
+    dimensional_path = results / "profiles.csv"
+    if current_path.exists() and not normalized_path.exists():
+        profile = np.genfromtxt(current_path, delimiter=",", names=True)
+        ustar2 = statistics_ustar**2
+        data = {
+            "height": np.asarray(profile["zf_over_ustar"]),
+            "phi_m": np.asarray(profile["phi_m"]),
+            "phi_c": None,
+            "u_variance": np.asarray(profile["var_u_m2_s2"]) / ustar2,
+            "v_variance": np.asarray(profile["var_v_m2_s2"]) / ustar2,
+            "w_variance": np.asarray(profile["var_w_m2_s2"]) / ustar2,
+            "uw": np.asarray(profile["resolved_uw_m2_s2"]) / ustar2,
+            "vw": np.asarray(profile["resolved_vw_m2_s2"]) / ustar2,
+            "total_uw": np.asarray(profile["total_uw_m2_s2"]) / ustar2,
+            "total_vw": np.asarray(profile["total_vw_m2_s2"]) / ustar2,
+            "sgs_component_variance": (
+                np.asarray(profile["diagnostic_sgs_component_variance_m2_s2"])
+                / ustar2
+                if "diagnostic_sgs_component_variance_m2_s2"
+                in set(profile.dtype.names or ())
+                else None
+            ),
+            "sgs_uw": np.asarray(profile["sgs_uw_m2_s2"]) / ustar2,
+            "sgs_vw": np.asarray(profile["sgs_vw_m2_s2"]) / ustar2,
+        }
+        for name in (
+            "sgs_scalar_variance_over_cstar2",
+            "total_scalar_variance_over_cstar2",
+            "sgs_wc_over_ustar_cstar",
+            "total_wc_over_ustar_cstar",
+            "momentum_diffusivity_m2_s",
+            "scalar_diffusivity_m2_s",
+            "wp_modified_pressure_over_ustar3",
+            "modified_pressure_std_over_ustar2",
+            "resolved_tke_sgs_dissipation_over_f_ustar2",
+        ):
+            data[name] = None
+        return data
+
     profile = np.genfromtxt(
-        results / "normalized_profiles.csv", delimiter=",", names=True
+        normalized_path, delimiter=",", names=True
     )
-    dimensional = np.genfromtxt(results / "profiles.csv", delimiter=",", names=True)
+    dimensional = np.genfromtxt(dimensional_path, delimiter=",", names=True)
     height = np.asarray(profile["z_f_over_ustar"])
     z = np.asarray(dimensional["z_m"])
     du_dz = np.gradient(dimensional["u_m_s"], z)
@@ -245,7 +300,7 @@ def _profile_data(results: Path, statistics_ustar: float) -> dict[str, np.ndarra
     # neutral log wall gives kappa*z*|dU/dz|/u*=1 exactly at that boundary point.
     phi_m[0] = 1.0
     names = set(profile.dtype.names or ())
-    has_lasd = "total_u_variance_over_ustar2" in names
+    has_total = "total_u_variance_over_ustar2" in names
     data = {
         "height": height,
         "phi_m": phi_m,
@@ -253,21 +308,21 @@ def _profile_data(results: Path, statistics_ustar: float) -> dict[str, np.ndarra
         "u_variance": np.asarray(
             profile[
                 "total_u_variance_over_ustar2"
-                if has_lasd
+                if has_total
                 else "resolved_u_variance_over_ustar2"
             ]
         ),
         "v_variance": np.asarray(
             profile[
                 "total_v_variance_over_ustar2"
-                if has_lasd
+                if has_total
                 else "resolved_v_variance_over_ustar2"
             ]
         ),
         "w_variance": np.asarray(
             profile[
                 "total_w_variance_over_ustar2"
-                if has_lasd
+                if has_total
                 else "resolved_w_variance_over_ustar2"
             ]
         ),
@@ -275,6 +330,13 @@ def _profile_data(results: Path, statistics_ustar: float) -> dict[str, np.ndarra
         "vw": np.asarray(profile["resolved_vw_over_ustar2"]),
         "total_uw": np.asarray(profile["total_uw_over_ustar2"]),
         "total_vw": np.asarray(profile["total_vw_over_ustar2"]),
+        "sgs_component_variance": (
+            np.asarray(profile["sgs_component_variance_over_ustar2"])
+            if "sgs_component_variance_over_ustar2" in names
+            else None
+        ),
+        "sgs_uw": np.asarray(profile["sgs_uw_over_ustar2"]),
+        "sgs_vw": np.asarray(profile["sgs_vw_over_ustar2"]),
     }
     optional = (
         "sgs_scalar_variance_over_cstar2",
@@ -283,24 +345,50 @@ def _profile_data(results: Path, statistics_ustar: float) -> dict[str, np.ndarra
         "total_wc_over_ustar_cstar",
         "momentum_diffusivity_m2_s",
         "scalar_diffusivity_m2_s",
+        "wp_modified_pressure_over_ustar3",
+        "modified_pressure_std_over_ustar2",
+        "resolved_tke_sgs_dissipation_over_f_ustar2",
     )
     for name in optional:
         data[name] = np.asarray(profile[name]) if name in names else None
     return data
 
 
-def _history_data(results: Path, statistics_ustar: float) -> dict[str, np.ndarray]:
-    history = np.genfromtxt(results / "history.csv", delimiter=",", names=True)
+def _history_data(
+    results: Path,
+    statistics_ustar: float,
+) -> dict[str, np.ndarray] | None:
+    path = results / "history.csv"
+    if not path.exists():
+        return None
+    history = np.genfromtxt(path, delimiter=",", names=True)
     names = set(history.dtype.names or ())
-    tke_name = (
-        "integrated_total_tke_m3_s2"
-        if "integrated_total_tke_m3_s2" in names
-        else "integrated_resolved_tke_m3_s2"
-    )
-    return {
+    scale = 1.0e-4 / statistics_ustar**3
+    data = {
         "tf": np.asarray(history["time_seconds"]) * 1.0e-4,
-        "total_tke": 1.0e-4 * np.asarray(history[tke_name]) / statistics_ustar**3,
+        "total_tke": scale
+        * np.asarray(
+            history[
+                "integrated_total_tke_m3_s2"
+                if "integrated_total_tke_m3_s2" in names
+                else "integrated_resolved_tke_m3_s2"
+            ]
+        ),
     }
+    for output_name, column in (
+        ("resolved_tke", "integrated_resolved_tke_m3_s2"),
+        ("sgs_tke", "integrated_sgs_tke_m3_s2"),
+        ("cu", "cu"),
+        ("cv", "cv"),
+    ):
+        data[output_name] = (
+            np.asarray(history[column]) * scale
+            if column in names and output_name.endswith("tke")
+            else np.asarray(history[column])
+            if column in names
+            else None
+        )
+    return data
 
 
 def _spectra_data(results: Path) -> dict[str, np.ndarray] | None:
@@ -321,8 +409,11 @@ FIGURE13_COLORS = {
 }
 
 
-def _budget_data(results: Path) -> dict[str, np.ndarray] | None:
-    path = results / "fig13_budget_profiles.csv"
+def _budget_data(
+    results: Path,
+    figure: int = 13,
+) -> dict[str, np.ndarray] | None:
+    path = results / f"fig{figure}_budget_profiles.csv"
     if not path.exists():
         return None
     budget = np.genfromtxt(path, delimiter=",", names=True)
@@ -378,7 +469,8 @@ def _make_montage(images: list[tuple[str, Image.Image]]) -> Image.Image:
 def _make_all_figure_montage(
     images: list[tuple[FigureSpec, Image.Image]],
     *,
-    is_lasd: bool,
+    model_label: str,
+    legend_text: str,
     active_comparisons: dict[int, str],
 ) -> Image.Image:
     """Lay all numbered figures out in paper order on one readable sheet."""
@@ -421,10 +513,7 @@ def _make_all_figure_montage(
     draw = ImageDraw.Draw(montage)
     draw.text(
         (outer_gap, outer_gap),
-        (
-            "Andrén et al. (1994): paper figures + JAX-Wind "
-            + ("LASD" if is_lasd else "static Smagorinsky")
-        ),
+        f"Andrén et al. (1994): paper figures + JAX-Wind {model_label}",
         font=header_font,
         fill=(20, 25, 32),
     )
@@ -441,11 +530,7 @@ def _make_all_figure_montage(
     )
     draw.text(
         (outer_gap + 112, legend_y),
-        (
-            "JAX-Wind LASD: red = total/resolved; blue = diagnostic SGS contribution"
-            if is_lasd
-            else "JAX-Wind static Smagorinsky: red = available resolved/total diagnostic"
-        ),
+        legend_text,
         font=legend_font,
         fill=(40, 46, 54),
     )
@@ -497,34 +582,92 @@ def main() -> None:
     output = args.output or args.results / "paper_overlays"
     output.mkdir(parents=True, exist_ok=True)
     summary = json.loads((args.results / "summary.json").read_text())
-    statistics_ustar = summary["comparison"]["statistics_ustar_m_s"]
+    statistics_ustar = (
+        summary["comparison"]["statistics_ustar_m_s"]
+        if "comparison" in summary
+        else summary["friction_velocity_m_s"]
+    )
     history = _history_data(args.results, statistics_ustar)
     profile = _profile_data(args.results, statistics_ustar)
     spectra = _spectra_data(args.results)
-    budget = _budget_data(args.results)
-    is_lasd = profile["total_scalar_variance_over_cstar2"] is not None
+    uw_budget = _budget_data(args.results, 12)
+    budget = _budget_data(args.results, 13)
+    sgs_model = str(summary.get("sgs_model", "")).lower()
+    is_amd = sgs_model == "amd"
+    is_lasd = (
+        "lasd" in sgs_model
+    )
+    has_complete_sgs = profile["sgs_component_variance"] is not None
+    has_scalar = profile["total_scalar_variance_over_cstar2"] is not None
+    if is_amd:
+        model_label = f"AMD (C={summary['amd_coefficient']:g})"
+        legend_text = (
+            "JAX-Wind AMD: red = total/resolved; blue = diagnostic SGS; "
+            "averaged over ft=7–10"
+        )
+    elif is_lasd:
+        model_label = "LASD"
+        legend_text = (
+            "JAX-Wind LASD: red = total/resolved; "
+            "blue = diagnostic SGS contribution"
+        )
+    else:
+        model_label = "static Smagorinsky"
+        legend_text = (
+            "JAX-Wind static Smagorinsky: "
+            "red = available resolved/total diagnostic"
+        )
     active_comparisons = {
-        2: "JAX-Wind total TKE" if is_lasd else "JAX-Wind resolved TKE",
-        4: "JAX-Wind on panels (a,b)" if is_lasd else "JAX-Wind on panel (a)",
-        5: "JAX-Wind total variances" if is_lasd else "JAX-Wind resolved variances",
+        4: "JAX-Wind on panels (a,b)" if has_scalar else "JAX-Wind on panel (a)",
+        5: (
+            "JAX-Wind total + diagnostic SGS variances"
+            if has_complete_sgs
+            else "JAX-Wind resolved variances"
+        ),
         6: "JAX-Wind total flux",
     }
+    if history is not None:
+        active_comparisons[2] = (
+            "JAX-Wind total TKE" if history["sgs_tke"] is not None
+            else "JAX-Wind resolved TKE"
+        )
 
     pages = {spec.page: _render_page(args.paper_pdf, spec.page) for spec in FIGURES}
 
-    figure2 = pages[8]
-    _draw_curve(
-        figure2,
-        Axis(316, 128, 724, 541, 0.0, 14.0, 0.0, 1.5),
-        history["tf"],
-        history["total_tke"],
-    )
-    _label(
-        figure2,
-        (510, 505),
-        "JAX-Wind LASD total" if is_lasd else "JAX-Wind resolved",
-    )
-    figure2 = _crop(figure2, (100, 90, 900, 675))
+    figure2 = None
+    if history is not None:
+        figure2 = pages[8]
+        _draw_curve(
+            figure2,
+            Axis(316, 128, 724, 541, 0.0, 14.0, 0.0, 1.5),
+            history["tf"],
+            history["total_tke"],
+        )
+        if history["sgs_tke"] is not None:
+            _draw_curve(
+                figure2,
+                Axis(316, 128, 724, 541, 0.0, 14.0, 0.0, 1.5),
+                history["tf"],
+                history["sgs_tke"],
+                color=SGS_COLOR,
+            )
+        _label(
+            figure2,
+            (510, 505),
+            "red total; blue diagnostic SGS"
+            if history["sgs_tke"] is not None
+            else "JAX-Wind resolved",
+        )
+        figure2 = _crop(figure2, (100, 90, 900, 675))
+
+    figure3 = None
+    if history is not None and history["cu"] is not None:
+        figure3 = pages[9]
+        _draw_curve(figure3, FIGURE3_AXES[0], history["tf"], history["cu"])
+        _draw_curve(figure3, FIGURE3_AXES[1], history["tf"], history["cv"])
+        _label(figure3, (525, 690), f"JAX-Wind {model_label}")
+        figure3 = _crop(figure3, (205, 90, 830, 1365))
+        active_comparisons[3] = "JAX-Wind non-stationarity measures"
 
     figure4 = pages[10]
     _draw_curve(
@@ -543,7 +686,7 @@ def main() -> None:
     _label(
         figure4,
         (555, 500),
-        "JAX-Wind LASD" if is_lasd else "JAX-Wind static Smag.",
+        f"JAX-Wind {model_label}",
     )
     figure4 = _crop(figure4, (250, 90, 820, 1360))
 
@@ -559,10 +702,20 @@ def main() -> None:
         strict=True,
     ):
         _draw_curve(figure5, axis, quantity, profile["height"])
+        if profile["sgs_component_variance"] is not None:
+            _draw_curve(
+                figure5,
+                axis,
+                profile["sgs_component_variance"],
+                profile["height"],
+                color=SGS_COLOR,
+            )
     _label(
         figure5,
         (560, 660),
-        "JAX-Wind total (diagnostic SGS)" if is_lasd else "JAX-Wind resolved",
+        "red total; blue diagnostic SGS"
+        if has_complete_sgs
+        else "JAX-Wind resolved",
     )
     figure5 = _crop(figure5, (100, 90, 900, 900))
 
@@ -579,10 +732,91 @@ def main() -> None:
         profile["total_vw"],
         profile["height"],
     )
-    _label(figure6, (390, 690), "JAX-Wind total")
+    _draw_curve(
+        figure6,
+        Axis(310, 137, 718, 550, -1.0, 0.2, 0.0, 0.35),
+        profile["sgs_uw"],
+        profile["height"],
+        color=SGS_COLOR,
+    )
+    _draw_curve(
+        figure6,
+        Axis(310, 811, 718, 1223, -0.7, 0.3, 0.0, 0.35),
+        profile["sgs_vw"],
+        profile["height"],
+        color=SGS_COLOR,
+    )
+    _label(figure6, (390, 690), "red total; blue SGS flux")
     figure6 = _crop(figure6, (100, 90, 900, 1335))
 
     scalar_outputs = []
+    if profile["wp_modified_pressure_over_ustar3"] is not None:
+        figure9 = pages[15]
+        _draw_curve(
+            figure9,
+            FIGURE9_AXIS,
+            profile["wp_modified_pressure_over_ustar3"],
+            profile["height"],
+        )
+        _label(figure9, (500, 515), f"JAX-Wind {model_label}")
+        figure9 = _crop(figure9, (215, 90, 815, 700))
+        scalar_outputs.append(
+            ("Figure 9 - pressure flux", "fig09_jaxwind_overlay.png", figure9)
+        )
+
+        figure10 = pages[15]
+        _draw_curve(
+            figure10,
+            FIGURE10_AXIS,
+            profile["modified_pressure_std_over_ustar2"],
+            profile["height"],
+        )
+        _label(figure10, (495, 1170), f"JAX-Wind {model_label}")
+        figure10 = _crop(figure10, (215, 730, 815, 1365))
+        scalar_outputs.append(
+            ("Figure 10 - pressure standard deviation", "fig10_jaxwind_overlay.png", figure10)
+        )
+        active_comparisons.update(
+            {
+                9: "JAX-Wind modified-pressure flux",
+                10: "JAX-Wind modified-pressure deviation",
+            }
+        )
+
+    if profile["resolved_tke_sgs_dissipation_over_f_ustar2"] is not None:
+        figure11 = pages[17]
+        _draw_curve(
+            figure11,
+            FIGURE11_AXIS,
+            profile["resolved_tke_sgs_dissipation_over_f_ustar2"],
+            profile["height"],
+        )
+        _label(figure11, (505, 510), f"JAX-Wind {model_label}")
+        figure11 = _crop(figure11, (220, 90, 815, 690))
+        scalar_outputs.append(
+            ("Figure 11 - resolved-TKE SGS dissipation", "fig11_jaxwind_overlay.png", figure11)
+        )
+        active_comparisons[11] = "JAX-Wind resolved-TKE SGS dissipation"
+
+    if uw_budget is not None:
+        figure12 = pages[18]
+        for axis in FIGURE12_AXES:
+            for name, color in FIGURE13_COLORS.items():
+                _draw_curve(
+                    figure12,
+                    axis,
+                    np.clip(uw_budget[name], axis.xmin, axis.xmax),
+                    uw_budget["height"],
+                    color=color,
+                    width=3,
+                    underlay_width=5,
+                )
+        figure12 = _crop(figure12, (125, 90, 905, 1370))
+        scalar_outputs.append(
+            ("Figure 12 - resolved momentum-flux budget", "fig12_jaxwind_overlay.png", figure12)
+        )
+        active_comparisons[12] = "JAX-Wind complete momentum-flux budget"
+
     if profile["total_scalar_variance_over_cstar2"] is not None:
         figure7 = pages[13]
         _draw_curve(
@@ -638,7 +872,7 @@ def main() -> None:
             profile["scalar_diffusivity_m2_s"],
             profile["height"],
         )
-        _label(figure14, (500, 745), "JAX-Wind LASD")
+        _label(figure14, (500, 745), f"JAX-Wind {model_label}")
         figure14 = _crop(figure14, (240, 90, 810, 1350))
         scalar_outputs.append(
             ("Figure 14 - SGS diffusivities", "fig14_jaxwind_overlay.png", figure14)
@@ -647,7 +881,7 @@ def main() -> None:
             {
                 7: "JAX-Wind scalar variance",
                 8: "JAX-Wind scalar flux",
-                14: "JAX-Wind LASD diffusivities",
+                14: "JAX-Wind SGS diffusivities",
             }
         )
 
@@ -687,21 +921,22 @@ def main() -> None:
             ),
             strict=True,
         ):
+            if name not in spectra:
+                continue
             _draw_curve(
                 figure15,
                 axis,
                 spectra["k_ustar_over_f"],
                 spectra[name],
             )
-        _label(figure15, (640, 470), "JAX-Wind LASD")
+        _label(figure15, (640, 470), f"JAX-Wind {model_label}")
         figure15 = _crop(figure15, (105, 450, 905, 1370))
         scalar_outputs.append(
             ("Figure 15 - spectra", "fig15_jaxwind_overlay.png", figure15)
         )
         active_comparisons[15] = "JAX-Wind spectra"
 
-    outputs = (
-        ("Figure 2 - integrated TKE", "fig02_jaxwind_overlay.png", figure2),
+    outputs = [
         (
             "Figure 4 - mean velocity/scalar gradients",
             "fig04_jaxwind_overlay.png",
@@ -709,7 +944,18 @@ def main() -> None:
         ),
         ("Figure 5 - velocity variances", "fig05_jaxwind_overlay.png", figure5),
         ("Figure 6 - momentum fluxes", "fig06_jaxwind_overlay.png", figure6),
-    ) + tuple(scalar_outputs)
+    ]
+    if figure2 is not None:
+        outputs.insert(
+            0,
+            ("Figure 2 - integrated TKE", "fig02_jaxwind_overlay.png", figure2),
+        )
+    if figure3 is not None:
+        outputs.insert(
+            1 if figure2 is not None else 0,
+            ("Figure 3 - non-stationarity", "fig03_jaxwind_overlay.png", figure3),
+        )
+    outputs.extend(scalar_outputs)
     for _, filename, image in outputs:
         image.save(output / filename, dpi=(180, 180))
     montage = _make_montage([(title, image) for title, _, image in outputs])
@@ -718,7 +964,8 @@ def main() -> None:
     all_figures = [(spec, _crop(pages[spec.page], spec.crop)) for spec in FIGURES]
     all_montage = _make_all_figure_montage(
         all_figures,
-        is_lasd=is_lasd,
+        model_label=model_label,
+        legend_text=legend_text,
         active_comparisons=active_comparisons,
     )
     all_output = output / "andren1994_all_figures_jaxwind_overlay.png"

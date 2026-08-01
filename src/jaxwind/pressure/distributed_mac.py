@@ -95,10 +95,7 @@ class YSlabMACProjector:
 
     def __init__(self, solver: YSlabMatrixFreePoissonSolver) -> None:
         self.solver = solver
-        mapped = dict(
-            axis_name=solver.distribution.axis_name,
-            devices=solver.devices,
-        )
+        mapped = solver.pmap_options
         self._mapped_divergence = jax.pmap(
             self._divergence_local,
             **mapped,
@@ -214,13 +211,14 @@ class YSlabMACProjector:
         return YSlabMACVelocity(x_gradient, gradient, z_gradient)
 
     def _check_velocity(self, velocity: YSlabMACVelocity) -> None:
+        local_devices = self.solver.local_device_count
         devices = self.solver.device_count
         nz, ny, nx = self.solver.operator.shape
         local_y = ny // devices
         expected = (
-            (devices, nz, local_y, nx + 1),
-            (devices, nz, local_y + 1, nx),
-            (devices, nz + 1, local_y, nx),
+            (local_devices, nz, local_y, nx + 1),
+            (local_devices, nz, local_y + 1, nx),
+            (local_devices, nz + 1, local_y, nx),
         )
         actual = tuple(tuple(component.shape) for component in velocity)
         if actual != expected:

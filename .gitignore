@@ -93,6 +93,12 @@ tmp
 !/benchmark/Nieuwstadt1993/Nieuwstadt1993_LASD_complete_overlay.png
 !/benchmark/Nieuwstadt1993/reference/Nieuwstadt1993.md
 
+# Versioned GABLS1 runner and pinned official 12.5 m comparison data.
+!/benchmark/GABLS1/
+!/benchmark/GABLS1/**
+/benchmark/GABLS1/**/__pycache__/
+/benchmark/GABLS1/**/*.pyc
+
 # Versioned Lin & Porte-Agel yawed-wake benchmark specification.
 !/benchmark/LinPorteAgel2019/
 !/benchmark/LinPorteAgel2019/**

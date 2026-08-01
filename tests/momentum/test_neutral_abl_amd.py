@@ -7,6 +7,8 @@ import jax.numpy as jnp
 import jaxwind.momentum.neutral_abl as neutral_abl
 from jaxwind.momentum import (
     AMDModel,
+    AMDPassiveScalar,
+    AMDPassiveScalarModel,
     LASDModel,
     NeutralABLConfig,
     NeutralABLMomentum,
@@ -111,6 +113,65 @@ def test_filter_free_amd_is_nonnegative_and_switches_off_for_uniform_flow() -> N
     assert float(jnp.max(jnp.abs(zero_viscosity))) == 0.0
     assert float(jnp.min(viscosity)) >= 0.0
     assert float(jnp.max(viscosity)) > 0.0
+
+
+def test_diagnostic_sgs_tke_is_finite_nonnegative_and_not_prognostic() -> None:
+    solver = _solver()
+    velocity = solver.initial_log_profile(perturbation_amplitude=0.05)
+    cells = solver.cell_centered_velocity(velocity)
+
+    sgs_tke = solver.diagnostic_sgs_tke(cells)
+    dissipation = solver.resolved_tke_sgs_dissipation(cells)
+
+    assert sgs_tke.shape == solver.grid.shape
+    assert jnp.all(jnp.isfinite(sgs_tke))
+    assert float(jnp.min(sgs_tke)) >= 0.0
+    assert jnp.all(jnp.isfinite(dissipation))
+
+
+def test_passive_scalar_surface_flux_has_exact_finite_volume_balance() -> None:
+    solver = _solver()
+    scalar_solver = AMDPassiveScalar(
+        solver.grid,
+        AMDPassiveScalarModel(
+            coefficient=0.0,
+            lower_surface_flux=1.0e-3,
+            upper_surface_flux=2.0e-4,
+            mp5_dissipation_strength=0.0,
+        ),
+    )
+    scalar = jnp.zeros(solver.grid.shape, dtype=jnp.float32)
+    velocity = MACVelocity(
+        jnp.zeros((8, 8, 9), dtype=jnp.float32),
+        jnp.zeros((8, 9, 8), dtype=jnp.float32),
+        jnp.zeros((9, 8, 8), dtype=jnp.float32),
+    )
+
+    tendency = scalar_solver.tendency(scalar, velocity)
+    volume_integral = (
+        jnp.sum(tendency) * scalar_solver.dx * scalar_solver.dy * scalar_solver.dz
+    )
+    expected = (
+        scalar_solver.model.lower_surface_flux
+        - scalar_solver.model.upper_surface_flux
+    ) * (2.0 * 1.0)
+
+    assert jnp.isclose(volume_integral, expected, rtol=2.0e-6, atol=1.0e-8)
+
+
+def test_passive_scalar_step_is_finite_and_increases_domain_mean() -> None:
+    solver = _solver()
+    scalar_solver = AMDPassiveScalar(
+        solver.grid,
+        AMDPassiveScalarModel(lower_surface_flux=1.0e-3),
+    )
+    scalar = jnp.zeros(solver.grid.shape, dtype=jnp.float32)
+    velocity = solver.initial_log_profile(perturbation_amplitude=0.05)
+
+    advanced = scalar_solver.step(scalar, velocity, timestep=0.01)
+
+    assert jnp.all(jnp.isfinite(advanced))
+    assert float(jnp.mean(advanced)) > 0.0
 
 
 def test_horizontal_skew_advection_has_zero_resolved_energy_work() -> None:

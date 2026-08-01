@@ -56,29 +56,32 @@ published values.
 
 ## Mapping to the current JAX benchmark
 
-`run_new.py` keeps the paper's physical domain, grid, forcing, initial
-condition, and averaging interval while using the new semantic JAX-Wind
-implementation:
+`run.py` selects `run_amd.py` by default.  This path keeps the paper's physical
+domain, grid, forcing, initial condition, and averaging interval while testing
+the new non-spectral JAX-Wind implementation:
 
-- JAX/CUDA execution in FP32;
-- accepted-boundary AB2 integration, `dt = 1.25 s`, 9646 steps;
-- conservative, horizontally dealiased momentum and scalar transport;
-- the external `spectral_fd` cell-centred pressure API with a compatible
-  impermeable top boundary;
-- locally averaged scale-dependent dynamic (LASD) SGS closure for momentum
-  and potential temperature;
-- a stable-stratification scalar diffusivity correction with beta 30 and
-  power 2, expressed through the execution-scale buoyancy coefficient;
-- LASD coefficients updated every eight steps, keeping
-  `cs_count * max(CFLx, CFLy, CFLz) < 1` in the reference GPU run.
+- face-staggered MAC velocity and cell-centred potential temperature;
+- matrix-free GMG-preconditioned PCG pressure projection with periodic
+  horizontal and impermeable vertical boundaries;
+- filter-free anisotropic minimum-dissipation (AMD) closures for momentum and
+  potential temperature;
+- active Boussinesq buoyancy coupled by a symmetric scalar-half / projected
+  momentum / scalar-half step;
+- conservative centred transport with separately diagnosed MP5/Rusanov
+  dissipation;
+- an adaptive explicit step capped at `dt = 1.25 s`;
+- a full pressure solve after every SSPRK3 momentum stage.
 
-`run.py` selects `run_new.py` by default and does not put `legacy/jax` on the
-module path. `run_new.py` writes the complete diagnostic record: scalar and momentum
-profiles, time histories, conditional averages, kinetic-energy budget terms,
-spectra, summary statistics, and standalone plots. `overlay_figures.py` maps
-those diagnostics onto paper Figs. 1--17. The official scan is registered by
-`extract_paper_figures.py` after PDF pages 8--20 have been rendered at 200 dpi.
+The former semantic LASD comparison remains available through
+`run.py --solver lasd-semantic`.  Both paths write the complete diagnostic
+record: scalar and momentum profiles, time histories, conditional averages,
+kinetic-energy budget terms, spectra, summary statistics, and standalone
+plots. `overlay_figures.py` maps those diagnostics onto paper Figs. 1--17. The
+official scan is registered by `extract_paper_figures.py` after PDF pages
+8--20 have been rendered at 200 dpi.
 
 The primary automated acceptance criteria are the three bulk targets above,
-finite/non-negative SGS diagnostics where required, valid spectrum sampling
-heights, and production of every required diagnostic file.
+finite/non-negative SGS diagnostics where required, scalar integral-budget
+closure, projected divergence, valid spectrum sampling heights, explicit
+separation of AMD and MP5 dissipation, and production of every required
+diagnostic file.

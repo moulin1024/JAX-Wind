@@ -1,0 +1,542 @@
+#!/usr/bin/env python3
+"""Run the GABLS1 stable-boundary-layer benchmark with MAC+AMD."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import os
+from pathlib import Path
+import sys
+import time
+
+import numpy as np
+
+
+ROOT = Path(__file__).resolve().parents[2]
+SOURCE = ROOT / "src"
+for source in (ROOT, SOURCE):
+    if str(source) not in sys.path:
+        sys.path.insert(0, str(source))
+
+
+from benchmark.GABLS1 import diagnostics  # noqa: E402
+
+
+HERE = Path(__file__).resolve().parent
+CHECKPOINT_SCHEMA = "jaxwind.gabls1.nonspectral-amd.v1"
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--nx", type=int, default=32)
+    parser.add_argument("--ny", type=int, default=32)
+    parser.add_argument("--nz", type=int, default=32)
+    parser.add_argument("--end-hours", type=float, default=9.0)
+    parser.add_argument("--sample-start-hours", type=float, default=8.0)
+    parser.add_argument("--sample-interval-seconds", type=float, default=60.0)
+    parser.add_argument("--dt-max", type=float, default=1.0)
+    parser.add_argument("--target-cfl", type=float, default=0.7)
+    parser.add_argument("--target-diffusive-cfl", type=float, default=0.5)
+    parser.add_argument("--amd-coefficient", type=float, default=0.212)
+    parser.add_argument("--scalar-amd-coefficient", type=float)
+    parser.add_argument("--mp5-strength", type=float, default=1.0)
+    parser.add_argument("--pressure-rtol", type=float, default=1.0e-5)
+    parser.add_argument("--pressure-max-iterations", type=int, default=40)
+    parser.add_argument("--pressure-coarse-smooth", type=int, default=20)
+    parser.add_argument("--checkpoint-every", type=int, default=1000)
+    parser.add_argument("--log-every", type=int, default=300)
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--dtype", choices=("float32", "float64"), default="float32")
+    parser.add_argument("--max-steps", type=int)
+    parser.add_argument("--max-run-seconds", type=float)
+    parser.add_argument("--restart", type=Path)
+    parser.add_argument(
+        "--reference-dir",
+        type=Path,
+        default=HERE / "reference" / "official_12p5m",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=ROOT / "benchmark_results" / "gabls1_amd_32cubed",
+    )
+    parser.add_argument("--quick", action="store_true")
+    parser.add_argument("--smoke", action="store_true")
+    args = parser.parse_args(argv)
+    if args.scalar_amd_coefficient is None:
+        args.scalar_amd_coefficient = args.amd_coefficient
+    if args.quick and args.smoke:
+        parser.error("--quick and --smoke are mutually exclusive")
+    if args.quick:
+        args.nx = args.ny = args.nz = 8
+        args.end_hours = 1.0 / 3600.0
+        args.sample_start_hours = 0.0
+        args.sample_interval_seconds = 0.25
+        args.dt_max = 0.25
+        args.max_steps = 4 if args.max_steps is None else args.max_steps
+        args.checkpoint_every = 2
+        args.log_every = 1
+    if args.smoke:
+        args.nx = args.ny = args.nz = 16
+        args.end_hours = 0.02
+        args.sample_start_hours = 0.0
+        args.sample_interval_seconds = 10.0
+        args.dt_max = min(args.dt_max, 0.5)
+        args.checkpoint_every = min(args.checkpoint_every, 50)
+        args.log_every = min(args.log_every, 20)
+    if min(args.nx, args.ny, args.nz) < 4:
+        parser.error("all grid dimensions must be at least four")
+    positive = {
+        "end-hours": args.end_hours,
+        "sample-interval-seconds": args.sample_interval_seconds,
+        "dt-max": args.dt_max,
+        "target-cfl": args.target_cfl,
+        "target-diffusive-cfl": args.target_diffusive_cfl,
+        "pressure-rtol": args.pressure_rtol,
+    }
+    if any(not math.isfinite(value) or value <= 0.0 for value in positive.values()):
+        parser.error("time, CFL, and pressure controls must be positive and finite")
+    if not 0.0 <= args.sample_start_hours < args.end_hours:
+        parser.error("sample-start-hours must lie in [0, end-hours)")
+    for name in ("amd_coefficient", "scalar_amd_coefficient", "mp5_strength"):
+        value = getattr(args, name)
+        if not math.isfinite(value) or value < 0.0:
+            parser.error(f"{name.replace('_', '-')} must be finite and nonnegative")
+    if min(
+        args.pressure_max_iterations,
+        args.pressure_coarse_smooth,
+        args.checkpoint_every,
+        args.log_every,
+    ) <= 0:
+        parser.error("iteration and output intervals must be positive")
+    if args.max_steps is not None and args.max_steps <= 0:
+        parser.error("max-steps must be positive")
+    if args.max_run_seconds is not None and args.max_run_seconds <= 0.0:
+        parser.error("max-run-seconds must be positive")
+    return args
+
+
+def _initial_state(args, coupled, case, dtype):
+    import jax
+    import jax.numpy as jnp
+    from jaxwind.pressure import MACVelocity
+
+    nz, ny, nx = coupled.grid.shape
+    z = (jnp.arange(nz, dtype=dtype) + 0.5) * coupled.scalar.dz
+    profile = jnp.where(
+        z <= case.inversion_base,
+        case.theta_initial,
+        case.theta_initial
+        + case.inversion_gradient * (z - case.inversion_base),
+    )
+    perturbation = jax.random.uniform(
+        jax.random.PRNGKey(args.seed),
+        (nz, ny, nx),
+        dtype=dtype,
+        minval=-0.1,
+        maxval=0.1,
+    )
+    perturbation -= jnp.mean(perturbation, axis=(1, 2), keepdims=True)
+    perturbation *= (z < 50.0)[:, None, None]
+    theta = profile[:, None, None] + perturbation
+    velocity = MACVelocity(
+        jnp.full((nz, ny, nx + 1), case.geostrophic_u, dtype=dtype),
+        jnp.full((nz, ny + 1, nx), case.geostrophic_v, dtype=dtype),
+        jnp.zeros((nz + 1, ny, nx), dtype=dtype),
+    )
+    projected = coupled.momentum.projector.project_velocity_and_pressure(
+        coupled.momentum.enforce_boundaries(velocity),
+        timestep=1.0,
+    )
+    return coupled.initial_state(
+        projected.velocity,
+        theta,
+        pressure=projected.pressure,
+    )
+
+
+def _pack_records(payload: dict[str, object], prefix: str, records: list[dict]):
+    keys = tuple(records[0]) if records else ()
+    payload[f"{prefix}_keys"] = np.asarray(keys)
+    payload[f"{prefix}_count"] = len(records)
+    for key in keys:
+        payload[f"{prefix}_{key}"] = np.stack(
+            [np.asarray(record[key]) for record in records]
+        )
+
+
+def _unpack_records(checkpoint, prefix: str) -> list[dict]:
+    keys = tuple(str(value) for value in checkpoint[f"{prefix}_keys"])
+    count = int(checkpoint[f"{prefix}_count"])
+    return [
+        {
+            key: np.asarray(checkpoint[f"{prefix}_{key}"][index])
+            for key in keys
+        }
+        for index in range(count)
+    ]
+
+
+def _restore_checkpoint(args, coupled, dtype):
+    import jax.numpy as jnp
+    from jaxwind.pressure import MACVelocity
+
+    checkpoint = np.load(args.restart, allow_pickle=False)
+    if str(checkpoint["checkpoint_schema"]) != CHECKPOINT_SCHEMA:
+        raise SystemExit("restart checkpoint schema is not supported")
+    if not np.array_equal(checkpoint["shape_zyx"], coupled.grid.shape):
+        raise SystemExit("restart grid shape does not match")
+    for key in ("amd_coefficient", "scalar_amd_coefficient", "mp5_strength"):
+        if not np.isclose(float(checkpoint[key]), getattr(args, key)):
+            raise SystemExit(f"restart {key} does not match")
+    state = coupled.initial_state(
+        MACVelocity(
+            jnp.asarray(checkpoint["velocity_x"], dtype=dtype),
+            jnp.asarray(checkpoint["velocity_y"], dtype=dtype),
+            jnp.asarray(checkpoint["velocity_z"], dtype=dtype),
+        ),
+        jnp.asarray(checkpoint["potential_temperature"], dtype=dtype),
+        pressure=jnp.asarray(checkpoint["pressure"], dtype=dtype),
+        time=float(checkpoint["time"]),
+        step=int(checkpoint["step"]),
+    )
+    return {
+        "state": state,
+        "samples": _unpack_records(checkpoint, "samples"),
+        "time_rows": _unpack_records(checkpoint, "time_rows"),
+        "timesteps": list(np.asarray(checkpoint["timesteps"], dtype=float)),
+        "max_cfl": float(checkpoint["max_cfl"]),
+        "max_diffusive_cfl": float(checkpoint["max_diffusive_cfl"]),
+        "max_divergence": float(checkpoint["max_divergence"]),
+        "max_scalar_budget_residual": float(
+            checkpoint["max_scalar_budget_residual"]
+        ),
+    }
+
+
+def run(args: argparse.Namespace) -> dict[str, float | int | str]:
+    from jax import config as jax_config
+
+    if args.dtype == "float64":
+        jax_config.update("jax_enable_x64", True)
+    import jax
+    import jax.numpy as jnp
+
+    from jaxwind.momentum import (
+        AMDBoussinesq,
+        AMDBoussinesqConfig,
+        AMDModel,
+        AMDPassiveScalar,
+        AMDPassiveScalarModel,
+        NeutralABLConfig,
+        NeutralABLMomentum,
+    )
+    from jaxwind.pressure import (
+        BoundaryCondition,
+        GMGConfig,
+        MatrixFreePoissonSolver,
+        PCGConfig,
+        PoissonBoundaryConditions,
+        RectilinearGrid,
+        mac_divergence,
+    )
+
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    case = diagnostics.GABLS1Case()
+    dtype = jnp.float32 if args.dtype == "float32" else jnp.float64
+    grid = RectilinearGrid.uniform(
+        args.nx,
+        args.ny,
+        args.nz,
+        lx=case.domain,
+        ly=case.domain,
+        lz=case.domain,
+    )
+    periodic = BoundaryCondition("periodic")
+    neumann = BoundaryCondition("neumann")
+    pressure_solver = MatrixFreePoissonSolver(
+        grid,
+        PoissonBoundaryConditions(
+            periodic,
+            periodic,
+            periodic,
+            periodic,
+            neumann,
+            neumann,
+        ),
+        dtype=dtype,
+        gmg=GMGConfig(
+            smoother="auto",
+            coarsening="auto",
+            coarse_smooth=args.pressure_coarse_smooth,
+        ),
+        krylov=PCGConfig(
+            max_iterations=args.pressure_max_iterations,
+            relative_tolerance=args.pressure_rtol,
+            execution="jax",
+        ),
+    )
+    momentum = NeutralABLMomentum(
+        grid,
+        pressure_solver,
+        NeutralABLConfig(
+            friction_velocity=0.3,
+            roughness_length=case.roughness_length,
+            pressure_acceleration=0.0,
+            geostrophic_wind=(case.geostrophic_u, case.geostrophic_v),
+            coriolis_vertical=case.coriolis,
+            coriolis_horizontal=0.0,
+            mp5_dissipation_strength=args.mp5_strength,
+            amd=AMDModel(coefficient=args.amd_coefficient),
+            sgs_time_integration="explicit",
+            projection_method="full",
+        ),
+    )
+    scalar = AMDPassiveScalar(
+        grid,
+        AMDPassiveScalarModel(
+            coefficient=args.scalar_amd_coefficient,
+            lower_surface_flux=0.0,
+            upper_surface_flux=0.0,
+            mp5_dissipation_strength=args.mp5_strength,
+        ),
+    )
+    coupled = AMDBoussinesq(
+        momentum,
+        scalar,
+        AMDBoussinesqConfig(
+            gravity=case.gravity,
+            reference_potential_temperature=case.theta_reference,
+            surface_potential_temperature=case.theta_initial,
+            surface_temperature_tendency=case.surface_cooling_rate,
+            thermal_roughness_length=case.roughness_length,
+        ),
+    )
+
+    if args.restart is None:
+        state = _initial_state(args, coupled, case, dtype)
+        samples: list[dict] = []
+        time_rows: list[dict] = []
+        timesteps: list[float] = []
+        max_cfl = 0.0
+        max_diffusive_cfl = 0.0
+        max_divergence = 0.0
+        max_scalar_budget_residual = 0.0
+    else:
+        restored = _restore_checkpoint(args, coupled, dtype)
+        state = restored["state"]
+        samples = restored["samples"]
+        time_rows = restored["time_rows"]
+        timesteps = restored["timesteps"]
+        max_cfl = restored["max_cfl"]
+        max_diffusive_cfl = restored["max_diffusive_cfl"]
+        max_divergence = restored["max_divergence"]
+        max_scalar_budget_residual = restored["max_scalar_budget_residual"]
+
+    diagnostic_kernel = jax.jit(coupled.diagnostic_fields)
+    compile_start = time.perf_counter()
+    compiled_state = coupled.step(state, timestep=min(args.dt_max, 0.25))
+    compiled_fields = diagnostic_kernel(state)
+    jax.block_until_ready(compiled_state.velocity.x)
+    jax.block_until_ready(compiled_fields.surface_heat_flux)
+    compilation_s = time.perf_counter() - compile_start
+    print(f"[compile] GABLS1 kernels ready in {compilation_s:.3f}s", flush=True)
+
+    final_time = args.end_hours * 3600.0
+    sample_start_time = args.sample_start_hours * 3600.0
+    next_sample_time = (
+        math.floor(state.time / args.sample_interval_seconds) + 1
+    ) * args.sample_interval_seconds
+    start = time.perf_counter()
+    stopped_early = False
+
+    def save_checkpoint() -> None:
+        payload: dict[str, object] = {
+            "checkpoint_schema": CHECKPOINT_SCHEMA,
+            "shape_zyx": np.asarray(grid.shape),
+            "velocity_x": np.asarray(state.velocity.x),
+            "velocity_y": np.asarray(state.velocity.y),
+            "velocity_z": np.asarray(state.velocity.z),
+            "potential_temperature": np.asarray(state.potential_temperature),
+            "pressure": np.asarray(state.pressure),
+            "time": state.time,
+            "step": state.step,
+            "timesteps": np.asarray(timesteps),
+            "amd_coefficient": args.amd_coefficient,
+            "scalar_amd_coefficient": args.scalar_amd_coefficient,
+            "mp5_strength": args.mp5_strength,
+            "max_cfl": max_cfl,
+            "max_diffusive_cfl": max_diffusive_cfl,
+            "max_divergence": max_divergence,
+            "max_scalar_budget_residual": max_scalar_budget_residual,
+        }
+        _pack_records(payload, "samples", samples)
+        _pack_records(payload, "time_rows", time_rows)
+        destination = args.output_dir / "checkpoint.npz"
+        temporary = destination.with_name(f".{destination.name}.tmp-{os.getpid()}")
+        with temporary.open("wb") as stream:
+            np.savez_compressed(stream, **payload)
+        os.replace(temporary, destination)
+
+    def append_diagnostics() -> None:
+        statistics = diagnostics.snapshot_statistics(coupled, state)
+        nonfinite = [
+            key
+            for key, value in statistics.items()
+            if not np.all(np.isfinite(value)) and key != "obukhov_length"
+        ]
+        if nonfinite:
+            raise FloatingPointError("non-finite diagnostic: " + ", ".join(nonfinite))
+        time_rows.append(
+            {
+                "step": float(state.step),
+                "time_s": state.time,
+                "time_hours": state.time / 3600.0,
+                "boundary_layer_height": float(
+                    statistics["boundary_layer_height"]
+                ),
+                "surface_temperature": case.surface_temperature(state.time),
+                "surface_heat_flux": float(statistics["surface_heat_flux"]),
+                "friction_velocity": float(statistics["friction_velocity"]),
+                "obukhov_length": float(statistics["obukhov_length"]),
+                "maximum_abs_w": float(statistics["maximum_abs_w"]),
+                "jet_speed": float(statistics["jet_speed"]),
+                "jet_height": float(statistics["jet_height"]),
+            }
+        )
+        if state.time >= sample_start_time:
+            samples.append(statistics)
+
+    while state.time < final_time:
+        timestep = min(
+            coupled.timestep_for_cfl(
+                state,
+                args.target_cfl,
+                args.target_diffusive_cfl,
+            ),
+            args.dt_max,
+            final_time - state.time,
+        )
+        theta_before = float(
+            np.mean(np.asarray(state.potential_temperature), dtype=np.float64)
+        )
+        heat_flux_before = float(
+            jnp.mean(coupled.surface_layer_fluxes(state).heat_flux)
+        )
+        state = coupled.step(state, timestep=timestep)
+        heat_flux_after = float(
+            jnp.mean(coupled.surface_layer_fluxes(state).heat_flux)
+        )
+        theta_after = float(
+            np.mean(np.asarray(state.potential_temperature), dtype=np.float64)
+        )
+        budget_residual = abs(
+            theta_after
+            - theta_before
+            - 0.5
+            * timestep
+            * (heat_flux_before + heat_flux_after)
+            / case.domain
+        )
+        timesteps.append(timestep)
+        cfl = float(timestep * momentum.cfl_rate(state.velocity))
+        momentum_diffusive = float(
+            timestep
+            * 2.0
+            * jnp.max(momentum.sgs_viscosity(momentum.cell_centered_velocity(state.velocity)))
+            * (1.0 / momentum.dx**2 + 1.0 / momentum.dy**2 + 1.0 / momentum.dz**2)
+        )
+        scalar_diffusive = float(
+            timestep * scalar.diffusive_rate(state.potential_temperature, state.velocity)
+        )
+        diffusive_cfl = max(momentum_diffusive, scalar_diffusive)
+        divergence = float(
+            pressure_solver.operator.norm(mac_divergence(state.velocity, grid))
+        )
+        max_cfl = max(max_cfl, cfl)
+        max_diffusive_cfl = max(max_diffusive_cfl, diffusive_cfl)
+        max_divergence = max(max_divergence, divergence)
+        max_scalar_budget_residual = max(
+            max_scalar_budget_residual,
+            budget_residual,
+        )
+        final = state.time >= final_time
+        if state.time + 1.0e-9 >= next_sample_time or final:
+            append_diagnostics()
+            while next_sample_time <= state.time + 1.0e-9:
+                next_sample_time += args.sample_interval_seconds
+        if state.step % args.log_every == 0 or final:
+            fluxes = coupled.surface_layer_fluxes(state)
+            print(
+                f"step={state.step} time={state.time / 3600.0:.4f}/"
+                f"{args.end_hours:g}h CFL={cfl:.4f} CFLnu={diffusive_cfl:.4f} "
+                f"divL2={divergence:.3e} "
+                f"Q0={float(jnp.mean(fluxes.heat_flux)):.3e} "
+                f"theta_budget={budget_residual:.3e}",
+                flush=True,
+            )
+        if state.step % args.checkpoint_every == 0 or final:
+            save_checkpoint()
+        if args.max_steps is not None and state.step >= args.max_steps:
+            stopped_early = state.time < final_time
+            if not time_rows or time_rows[-1]["step"] != float(state.step):
+                append_diagnostics()
+            save_checkpoint()
+            break
+        if (
+            args.max_run_seconds is not None
+            and time.perf_counter() - start >= args.max_run_seconds
+        ):
+            stopped_early = True
+            save_checkpoint()
+            break
+
+    if not samples:
+        samples.append(diagnostics.snapshot_statistics(coupled, state))
+    runtime_s = time.perf_counter() - start
+    reference_dir = args.reference_dir if args.reference_dir.exists() else None
+    summary = diagnostics.save_outputs(
+        args.output_dir,
+        samples=samples,
+        time_rows=time_rows,
+        reference_dir=reference_dir,
+        metadata={
+            "solver": "non-spectral MAC + matrix-free GMG/PCG",
+            "sgs_model": "AMD",
+            "nx": args.nx,
+            "ny": args.ny,
+            "nz": args.nz,
+            "end_time_hours": state.time / 3600.0,
+            "runtime_s": runtime_s,
+            "compilation_s": compilation_s,
+            "stopped_early": str(stopped_early).lower(),
+            "max_cfl": max_cfl,
+            "max_diffusive_cfl": max_diffusive_cfl,
+            "max_divergence": max_divergence,
+            "max_scalar_budget_residual": max_scalar_budget_residual,
+            "amd_coefficient": args.amd_coefficient,
+            "scalar_amd_coefficient": args.scalar_amd_coefficient,
+            "mp5_dissipation_strength": args.mp5_strength,
+        },
+    )
+    resolved = {
+        key: str(value) if isinstance(value, Path) else value
+        for key, value in vars(args).items()
+    }
+    (args.output_dir / "resolved_config.json").write_text(
+        json.dumps(resolved, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    print(json.dumps(summary, indent=2, sort_keys=True), flush=True)
+    return summary
+
+
+def main(argv: list[str] | None = None) -> int:
+    run(parse_args(argv))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
