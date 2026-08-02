@@ -14,6 +14,7 @@ from jaxwind.momentum import (
     AMDModel,
     AMDPassiveScalar,
     AMDPassiveScalarModel,
+    FPJ2State,
     MoninObukhovWallLaw,
     NeutralABLConfig,
     NeutralABLMomentum,
@@ -22,6 +23,7 @@ from jaxwind.momentum import (
 from jaxwind.momentum.neutral_abl import _cell_velocity, _cells_to_faces
 from jaxwind.pressure import (
     BoundaryCondition,
+    fpj2_pressure_prediction,
     MatrixFreePoissonSolver,
     PCGConfig,
     PoissonBoundaryConditions,
@@ -50,8 +52,9 @@ class YSlabAMDBoussinesq:
 
     The pressure backend owns the global y-slab topology. Each process holds
     only its local ``ny / process_count`` cells. Momentum and scalar kernels
-    exchange the three rows required by MP5 through the same global pmap axis;
-    the complete vertical column remains local on every rank.
+    exchange one three-row halo shared by KEP4/KO6 momentum, scalar MP5, and
+    AMD through the same global pmap axis; the complete vertical column
+    remains local on every rank.
     """
 
     halo_width = 3
@@ -71,7 +74,13 @@ class YSlabAMDBoussinesq:
         amd_coefficient: float,
         scalar_amd_coefficient: float,
         mp5_strength: float,
+        ko6_strength: float = 1.0,
+        momentum_advection: str = "kep4",
+        momentum_regularization: str = "ko6",
+        scalar_advection: str = "mp5",
         coupling_integrator: str = "strang",
+        projection_method: str = "full",
+        fpj2_timestep_ratio_limit: float = 2.0,
     ) -> None:
         if pressure_solver.operator.grid != grid:
             raise ValueError("distributed pressure and physical grids must match")
@@ -97,10 +106,17 @@ class YSlabAMDBoussinesq:
         self.surface_initial_temperature = surface_potential_temperature
         self.surface_temperature_tendency = surface_temperature_tendency
         if coupling_integrator not in ("strang", "coupled-ssprk3"):
-            raise ValueError(
-                "coupling integrator must be 'strang' or 'coupled-ssprk3'"
-            )
+            raise ValueError("coupling integrator must be 'strang' or 'coupled-ssprk3'")
         self.coupling_integrator = coupling_integrator
+        if projection_method not in {"full", "fpj2"}:
+            raise ValueError("projection method must be 'full' or 'fpj2'")
+        if projection_method == "fpj2" and coupling_integrator != "coupled-ssprk3":
+            raise ValueError("distributed FPJ2 requires coupled-ssprk3")
+        if fpj2_timestep_ratio_limit < 1.0:
+            raise ValueError("FPJ2 timestep ratio limit must be at least one")
+        self.projection_method = projection_method
+        self.fpj2_timestep_ratio_limit = fpj2_timestep_ratio_limit
+        self._fpj2_state: FPJ2State | None = None
         self._last_surface_heat_flux_quadrature: Array | None = None
 
         padded_y = self.local_y + 2 * self.halo_width
@@ -138,6 +154,9 @@ class YSlabAMDBoussinesq:
                 coriolis_vertical=coriolis,
                 coriolis_horizontal=0.0,
                 mp5_dissipation_strength=mp5_strength,
+                advection_scheme=momentum_advection,
+                regularization_scheme=momentum_regularization,
+                ko6_dissipation_strength=ko6_strength,
                 amd=AMDModel(coefficient=amd_coefficient),
                 sgs_time_integration="explicit",
                 projection_method="full",
@@ -150,6 +169,7 @@ class YSlabAMDBoussinesq:
                 lower_surface_flux=0.0,
                 upper_surface_flux=0.0,
                 mp5_dissipation_strength=mp5_strength,
+                advection_scheme=scalar_advection,
             ),
         )
         self.surface_law = MoninObukhovWallLaw(
@@ -250,6 +270,73 @@ class YSlabAMDBoussinesq:
             self._pad_cell_rows(velocity.z),
         )
 
+    def _pad_velocity_and_scalar(
+        self,
+        velocity: YSlabMACVelocity,
+        theta: Array,
+    ):
+        """Exchange one packed halo message per neighbor for all stage fields."""
+        from jaxwind.pressure import MACVelocity
+
+        width = self.halo_width
+
+        def pack(x_rows, y_rows, z_rows, theta_rows):
+            return jnp.concatenate(
+                tuple(
+                    value.reshape(-1) for value in (x_rows, y_rows, z_rows, theta_rows)
+                )
+            )
+
+        send_right = pack(
+            velocity.x[:, -width:],
+            velocity.y[:, -width - 1 : -1],
+            velocity.z[:, -width:],
+            theta[:, -width:],
+        )
+        send_left = pack(
+            velocity.x[:, :width],
+            velocity.y[:, 1 : width + 1],
+            velocity.z[:, :width],
+            theta[:, :width],
+        )
+        left = lax.ppermute(
+            send_right,
+            self.axis_name,
+            self._send_right(),
+        )
+        right = lax.ppermute(
+            send_left,
+            self.axis_name,
+            self._send_left(),
+        )
+
+        shapes = (
+            (self.nz, width, self.nx + 1),
+            (self.nz, width, self.nx),
+            (self.nz + 1, width, self.nx),
+            (self.nz, width, self.nx),
+        )
+
+        def unpack(payload):
+            fields = []
+            start = 0
+            for shape in shapes:
+                size = math.prod(shape)
+                fields.append(payload[start : start + size].reshape(shape))
+                start += size
+            return tuple(fields)
+
+        left_x, left_y, left_z, left_theta = unpack(left)
+        right_x, right_y, right_z, right_theta = unpack(right)
+        return (
+            MACVelocity(
+                jnp.concatenate((left_x, velocity.x, right_x), axis=1),
+                jnp.concatenate((left_y, velocity.y, right_y), axis=1),
+                jnp.concatenate((left_z, velocity.z, right_z), axis=1),
+            ),
+            jnp.concatenate((left_theta, theta, right_theta), axis=1),
+        )
+
     def _crop_cell_rows(self, field: Array) -> Array:
         start = self.halo_width
         return field[:, start : start + self.local_y]
@@ -283,8 +370,10 @@ class YSlabAMDBoussinesq:
         theta: Array,
         time: Array,
     ) -> SurfaceLayerFluxes:
-        padded_velocity = self._pad_velocity(velocity)
-        padded_theta = self._pad_cell_rows(theta)
+        padded_velocity, padded_theta = self._pad_velocity_and_scalar(
+            velocity,
+            theta,
+        )
         fluxes = self._surface_fluxes_padded_local(
             padded_velocity,
             padded_theta,
@@ -304,8 +393,10 @@ class YSlabAMDBoussinesq:
         theta: Array,
         time: Array,
     ) -> YSlabMACVelocity:
-        padded_velocity = self._pad_velocity(velocity)
-        padded_theta = self._pad_cell_rows(theta)
+        padded_velocity, padded_theta = self._pad_velocity_and_scalar(
+            velocity,
+            theta,
+        )
         surface = self._surface_fluxes_padded_local(
             padded_velocity,
             padded_theta,
@@ -340,8 +431,10 @@ class YSlabAMDBoussinesq:
         velocity: YSlabMACVelocity,
         time: Array,
     ) -> Array:
-        padded_velocity = self._pad_velocity(velocity)
-        padded_theta = self._pad_cell_rows(theta)
+        padded_velocity, padded_theta = self._pad_velocity_and_scalar(
+            velocity,
+            theta,
+        )
         surface = self._surface_fluxes_padded_local(
             padded_velocity,
             padded_theta,
@@ -360,8 +453,10 @@ class YSlabAMDBoussinesq:
         theta: Array,
         time: Array,
     ) -> tuple[YSlabMACVelocity, Array, Array]:
-        padded_velocity = self._pad_velocity(velocity)
-        padded_theta = self._pad_cell_rows(theta)
+        padded_velocity, padded_theta = self._pad_velocity_and_scalar(
+            velocity,
+            theta,
+        )
         surface = self._surface_fluxes_padded_local(
             padded_velocity,
             padded_theta,
@@ -399,9 +494,7 @@ class YSlabAMDBoussinesq:
         scalar_advection = self._crop_cell_rows(scalar_advection)
         # Keep scalar transport constant-preserving on pressure-predicted
         # stages while retaining global conservation across every y slab.
-        divergence_correction = (
-            theta * self.projector._divergence_local(velocity)
-        )
+        divergence_correction = theta * self.projector._divergence_local(velocity)
         correction_mean = lax.pmean(
             jnp.mean(divergence_correction),
             self.axis_name,
@@ -437,12 +530,8 @@ class YSlabAMDBoussinesq:
             self.axis_name,
             self._send_left(),
         )
-        y = velocity.y.at[:, 0].set(
-            0.5 * (velocity.y[:, 0] + left_upper)
-        )
-        y = y.at[:, -1].set(
-            0.5 * (velocity.y[:, -1] + right_lower)
-        )
+        y = velocity.y.at[:, 0].set(0.5 * (velocity.y[:, 0] + left_upper))
+        y = y.at[:, -1].set(0.5 * (velocity.y[:, -1] + right_lower))
         z = velocity.z.at[0].set(0.0).at[-1].set(0.0)
         return YSlabMACVelocity(x, y, z)
 
@@ -461,6 +550,59 @@ class YSlabAMDBoussinesq:
             sum(weight * value.y for weight, value in terms),
             sum(weight * value.z for weight, value in terms),
         )
+
+    @property
+    def fpj2_state(self) -> FPJ2State | None:
+        return self._fpj2_state
+
+    def reset_fpj2(self) -> None:
+        self._fpj2_state = None
+
+    def restore_fpj2(self, state: FPJ2State) -> None:
+        expected = (
+            self.local_device_count,
+            self.nz,
+            self.local_y,
+            self.nx,
+        )
+        if (
+            tuple(state.current_pressure.shape) != expected
+            or tuple(state.previous_pressure.shape) != expected
+        ):
+            raise ValueError("distributed FPJ2 pressure shape does not match")
+        if min(state.current_timestep, state.previous_timestep) <= 0.0:
+            raise ValueError("FPJ2 checkpoint timesteps must be positive")
+        if state.history_count not in {1, 2}:
+            raise ValueError("FPJ2 history count must be one or two")
+        self._fpj2_state = state
+
+    def _accept_fpj2_pressure(self, pressure: Array, timestep: float) -> None:
+        pressure = self.pressure_solver.project_nullspace(pressure)
+        if self._fpj2_state is None:
+            self._fpj2_state = FPJ2State(
+                pressure,
+                pressure,
+                timestep,
+                timestep,
+                1,
+            )
+            return
+        old = self._fpj2_state
+        self._fpj2_state = FPJ2State(
+            pressure,
+            old.current_pressure,
+            timestep,
+            old.current_timestep,
+            2,
+        )
+
+    def _fpj2_history_is_usable(self, timestep: float) -> bool:
+        state = self._fpj2_state
+        if state is None or state.history_count < 2:
+            return False
+        ratio = timestep / state.current_timestep
+        limit = self.fpj2_timestep_ratio_limit
+        return 1.0 / limit <= ratio <= limit
 
     def _project(
         self,
@@ -547,18 +689,14 @@ class YSlabAMDBoussinesq:
             velocity,
             time + timestep,
         )
-        second = scalar + 0.25 * timestep * (
-            first_tendency + second_tendency
-        )
+        second = scalar + 0.25 * timestep * (first_tendency + second_tendency)
         third_tendency = self._mapped_scalar_tendency(
             second,
             velocity,
             time + 0.5 * timestep,
         )
         return scalar + timestep * (
-            first_tendency / 6.0
-            + second_tendency / 6.0
-            + (2.0 / 3.0) * third_tendency
+            first_tendency / 6.0 + second_tendency / 6.0 + (2.0 / 3.0) * third_tendency
         )
 
     def step(
@@ -571,49 +709,90 @@ class YSlabAMDBoussinesq:
             raise ValueError("timestep must be positive and finite")
         self._last_surface_heat_flux_quadrature = None
         if self.coupling_integrator == "coupled-ssprk3":
-            first_momentum, first_scalar, first_heat = (
-                self._mapped_coupled_tendency(
-                    state.velocity,
-                    state.potential_temperature,
-                    state.time,
+            history = self._fpj2_state
+            use_fpj2 = (
+                self.projection_method == "fpj2"
+                and self._fpj2_history_is_usable(timestep)
+            )
+            if use_fpj2:
+                second_pressure = fpj2_pressure_prediction(
+                    history.current_pressure,
+                    history.previous_pressure,
+                    current_timestep=history.current_timestep,
+                    previous_timestep=history.previous_timestep,
+                    next_timestep=timestep,
+                    stage_abscissa=1.0,
                 )
-            )
-            second = self._project(
-                self._velocity_sum(
-                    (1.0, state.velocity),
-                    (timestep, first_momentum),
-                ),
-                timestep,
-                state.pressure,
-            )
-            second_theta = (
-                state.potential_temperature + timestep * first_scalar
-            )
-            second_momentum, second_scalar, second_heat = (
-                self._mapped_coupled_tendency(
-                    second.velocity,
-                    second_theta,
-                    state.time + timestep,
+                third_pressure = fpj2_pressure_prediction(
+                    history.current_pressure,
+                    history.previous_pressure,
+                    current_timestep=history.current_timestep,
+                    previous_timestep=history.previous_timestep,
+                    next_timestep=timestep,
+                    stage_abscissa=0.5,
                 )
+            first_momentum, first_scalar, first_heat = self._mapped_coupled_tendency(
+                state.velocity,
+                state.potential_temperature,
+                state.time,
             )
-            third = self._project(
-                self._velocity_sum(
-                    (1.0, state.velocity),
-                    (0.25 * timestep, first_momentum),
-                    (0.25 * timestep, second_momentum),
-                ),
-                0.5 * timestep,
-                second.pressure_correction,
+            second_unprojected = self._velocity_sum(
+                (1.0, state.velocity),
+                (timestep, first_momentum),
             )
+            if use_fpj2:
+                second_gradient = self.projector.gradient(second_pressure)
+                second_velocity = self.enforce_boundaries(
+                    self._velocity_sum(
+                        (1.0, second_unprojected),
+                        (-timestep, second_gradient),
+                    )
+                )
+            else:
+                initial_pressure = (
+                    state.pressure if history is None else history.current_pressure
+                )
+                second = self._project(
+                    second_unprojected,
+                    timestep,
+                    initial_pressure,
+                )
+                second_velocity = second.velocity
+                second_pressure = second.pressure_correction
+            second_theta = state.potential_temperature + timestep * first_scalar
+            second_momentum, second_scalar, second_heat = self._mapped_coupled_tendency(
+                second_velocity,
+                second_theta,
+                state.time + timestep,
+            )
+            third_unprojected = self._velocity_sum(
+                (1.0, state.velocity),
+                (0.25 * timestep, first_momentum),
+                (0.25 * timestep, second_momentum),
+            )
+            if use_fpj2:
+                third_gradient = self.projector.gradient(third_pressure)
+                third_velocity = self.enforce_boundaries(
+                    self._velocity_sum(
+                        (1.0, third_unprojected),
+                        (-0.5 * timestep, third_gradient),
+                    )
+                )
+            else:
+                third = self._project(
+                    third_unprojected,
+                    0.5 * timestep,
+                    second_pressure,
+                )
+                third_velocity = third.velocity
+                third_pressure = third.pressure_correction
             third_theta = state.potential_temperature + 0.25 * timestep * (
                 first_scalar + second_scalar
             )
-            third_momentum, third_scalar, third_heat = (
-                self._mapped_coupled_tendency(
-                    third.velocity,
-                    third_theta,
-                    state.time + 0.5 * timestep,
-                )
+            third_momentum, third_scalar, third_heat = self._mapped_coupled_tendency(
+                third_velocity,
+                third_theta,
+                state.time + 0.5 * timestep,
             )
             final = self._project(
                 self._velocity_sum(
@@ -623,18 +802,19 @@ class YSlabAMDBoussinesq:
                     (2.0 * timestep / 3.0, third_momentum),
                 ),
                 timestep,
-                third.pressure_correction,
+                second_pressure if use_fpj2 else third_pressure,
             )
             theta = state.potential_temperature + timestep * (
-                first_scalar / 6.0
-                + second_scalar / 6.0
-                + (2.0 / 3.0) * third_scalar
+                first_scalar / 6.0 + second_scalar / 6.0 + (2.0 / 3.0) * third_scalar
             )
             self._last_surface_heat_flux_quadrature = (
-                first_heat / 6.0
-                + second_heat / 6.0
-                + (2.0 / 3.0) * third_heat
+                first_heat / 6.0 + second_heat / 6.0 + (2.0 / 3.0) * third_heat
             )
+            if self.projection_method == "fpj2":
+                self._accept_fpj2_pressure(
+                    final.pressure_correction,
+                    timestep,
+                )
             return YSlabAMDBoussinesqState(
                 final.velocity,
                 theta,
@@ -715,8 +895,10 @@ class YSlabAMDBoussinesq:
         velocity: YSlabMACVelocity,
         theta: Array,
     ) -> tuple[Array, Array, Array]:
-        padded_velocity = self._pad_velocity(velocity)
-        padded_theta = self._pad_cell_rows(theta)
+        padded_velocity, padded_theta = self._pad_velocity_and_scalar(
+            velocity,
+            theta,
+        )
         cells = _cell_velocity(padded_velocity)
         gradient = self.momentum_kernel.velocity_gradient(cells)
         viscosity = self.momentum_kernel.sgs_viscosity(
@@ -747,17 +929,9 @@ class YSlabAMDBoussinesq:
             / self.dz
         )
         advective = jnp.max(local_advective)
-        inverse_spacing_squared = (
-            1.0 / self.dx**2
-            + 1.0 / self.dy**2
-            + 1.0 / self.dz**2
-        )
-        momentum_diffusive = (
-            2.0 * jnp.max(viscosity) * inverse_spacing_squared
-        )
-        scalar_diffusive = (
-            2.0 * jnp.max(scalar_diffusivity) * inverse_spacing_squared
-        )
+        inverse_spacing_squared = 1.0 / self.dx**2 + 1.0 / self.dy**2 + 1.0 / self.dz**2
+        momentum_diffusive = 2.0 * jnp.max(viscosity) * inverse_spacing_squared
+        scalar_diffusive = 2.0 * jnp.max(scalar_diffusivity) * inverse_spacing_squared
         return tuple(
             lax.pmax(value, self.axis_name)
             for value in (advective, momentum_diffusive, scalar_diffusive)

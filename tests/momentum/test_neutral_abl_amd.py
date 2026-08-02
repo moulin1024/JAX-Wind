@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 
+import jax
 import jax.numpy as jnp
 
 import jaxwind.momentum.neutral_abl as neutral_abl
@@ -34,6 +35,9 @@ def _solver(
     wall_matching_level: int = 0,
     wall_filter_width: float | None = None,
     wall_temporal_filter_timescale: float | None = None,
+    advection_scheme: str = "kep4",
+    regularization_scheme: str = "ko6",
+    ko6_dissipation_strength: float = 1.0,
 ) -> NeutralABLMomentum:
     grid = RectilinearGrid.uniform(
         nx,
@@ -60,9 +64,7 @@ def _solver(
             restart=20,
             max_iterations=60,
             relative_tolerance=2.0e-6,
-            execution=(
-                "jax" if sgs_time_integration == "imex_ark3" else "python"
-            ),
+            execution=("jax" if sgs_time_integration == "imex_ark3" else "python"),
         ),
     )
     return NeutralABLMomentum(
@@ -74,6 +76,9 @@ def _solver(
             wall_matching_level=wall_matching_level,
             wall_filter_width=wall_filter_width,
             wall_temporal_filter_timescale=wall_temporal_filter_timescale,
+            advection_scheme=advection_scheme,
+            regularization_scheme=regularization_scheme,
+            ko6_dissipation_strength=ko6_dissipation_strength,
             amd=AMDModel(
                 coefficient=0.212,
                 molecular_viscosity=molecular_viscosity,
@@ -152,8 +157,7 @@ def test_passive_scalar_surface_flux_has_exact_finite_volume_balance() -> None:
         jnp.sum(tendency) * scalar_solver.dx * scalar_solver.dy * scalar_solver.dz
     )
     expected = (
-        scalar_solver.model.lower_surface_flux
-        - scalar_solver.model.upper_surface_flux
+        scalar_solver.model.lower_surface_flux - scalar_solver.model.upper_surface_flux
     ) * (2.0 * 1.0)
 
     assert jnp.isclose(volume_integral, expected, rtol=2.0e-6, atol=1.0e-8)
@@ -174,22 +178,86 @@ def test_passive_scalar_step_is_finite_and_increases_domain_mean() -> None:
     assert float(jnp.mean(advanced)) > 0.0
 
 
+def test_full_mp5_scalar_flux_is_conservative_and_constant_consistent() -> None:
+    solver = _solver(nx=8, ny=8, nz=8)
+    scalar_solver = AMDPassiveScalar(
+        solver.grid,
+        AMDPassiveScalarModel(
+            coefficient=0.0,
+            lower_surface_flux=0.0,
+            upper_surface_flux=0.0,
+            advection_scheme="mp5",
+        ),
+    )
+    velocity = solver.initial_log_profile(perturbation_amplitude=0.1)
+    scalar = jnp.full(solver.grid.shape, 3.25, dtype=jnp.float32)
+
+    tendency = scalar_solver.mp5_advective_tendency(scalar, velocity)
+    divergence = neutral_abl.mac_divergence(velocity, solver.grid)
+
+    assert jnp.allclose(tendency, -scalar * divergence, atol=2.0e-6)
+    assert float(jnp.abs(jnp.sum(tendency))) < 2.0e-5
+
+
 def test_horizontal_skew_advection_has_zero_resolved_energy_work() -> None:
     solver = _solver(nz=2)
     nz, ny, nx = solver.grid.shape
     x = 2.0 * jnp.pi * jnp.arange(nx, dtype=jnp.float32) / nx
     y = 2.0 * jnp.pi * jnp.arange(ny, dtype=jnp.float32) / ny
     cells = jnp.zeros((nz, ny, nx, 3), dtype=jnp.float32)
-    cells = cells.at[..., 0].set(
-        jnp.sin(x)[None, None, :] * jnp.cos(y)[None, :, None]
-    )
-    cells = cells.at[..., 1].set(
-        -jnp.cos(x)[None, None, :] * jnp.sin(y)[None, :, None]
-    )
+    cells = cells.at[..., 0].set(jnp.sin(x)[None, None, :] * jnp.cos(y)[None, :, None])
+    cells = cells.at[..., 1].set(-jnp.cos(x)[None, None, :] * jnp.sin(y)[None, :, None])
     tendency = solver.skew_advection(cells)
     work = jnp.sum(cells * tendency)
 
     assert float(jnp.abs(work)) < 2.0e-5
+
+
+def test_kep4_advection_has_zero_discrete_energy_work() -> None:
+    solver = _solver(nx=8, ny=8, nz=8)
+    cells = jax.random.normal(
+        jax.random.PRNGKey(1994),
+        solver.grid.shape + (3,),
+    )
+
+    tendency = solver.kep4_advection(cells)
+    work = jnp.sum(cells * tendency)
+    scale = jnp.sum(jnp.abs(cells * tendency))
+
+    assert float(jnp.abs(work)) < 2.0e-6 * float(scale)
+
+
+def test_ko6_is_conservative_and_energy_dissipative() -> None:
+    solver = _solver(nx=8, ny=8, nz=8)
+    key_x, key_y, key_z = jax.random.split(jax.random.PRNGKey(6), 3)
+    velocity = MACVelocity(
+        jax.random.normal(key_x, (8, 8, 9)),
+        jax.random.normal(key_y, (8, 9, 8)),
+        jax.random.normal(key_z, (9, 8, 8)),
+    )
+    velocity = solver.enforce_boundaries(velocity)
+    cells = solver.cell_centered_velocity(velocity)
+
+    tendency = solver.ko6_dissipation(velocity, cells)
+    work = jnp.sum(cells * tendency)
+    mean = jnp.mean(tendency, axis=(0, 1, 2))
+
+    assert float(work) <= 1.0e-6
+    assert float(jnp.max(jnp.abs(mean))) < 2.0e-7
+
+
+def test_ko6_annihilates_constant_fields() -> None:
+    solver = _solver(nx=8, ny=8, nz=8)
+    velocity = MACVelocity(
+        jnp.ones((8, 8, 9)),
+        jnp.zeros((8, 9, 8)),
+        jnp.zeros((9, 8, 8)),
+    )
+    cells = solver.cell_centered_velocity(velocity)
+
+    tendency = solver.ko6_dissipation(velocity, cells)
+
+    assert float(jnp.max(jnp.abs(tendency))) == 0.0
 
 
 def test_mac_conservative_advection_preserves_momentum_and_energy() -> None:
@@ -277,12 +345,10 @@ def test_imex_initial_tendency_reuses_gradient_for_frozen_viscosity() -> None:
         return original(cells)
 
     solver.velocity_gradient = counted_gradient
-    explicit, implicit, frozen = (
-        solver._compiled_imex_initial_tendencies(
-            velocity,
-            coefficient,
-            solver.active_wall_velocity(velocity),
-        )
+    explicit, implicit, frozen = solver._compiled_imex_initial_tendencies(
+        velocity,
+        coefficient,
+        solver.active_wall_velocity(velocity),
     )
     jnp.asarray(explicit.x).block_until_ready()
 
@@ -449,9 +515,7 @@ def test_temporal_wall_filter_advances_once_per_accepted_state() -> None:
     assert initial is not None
     cells = solver.cell_centered_velocity(velocity)
     changed = cells.at[0, ..., 0].add(2.0)
-    changed_velocity = solver.enforce_boundaries(
-        neutral_abl._cells_to_faces(changed)
-    )
+    changed_velocity = solver.enforce_boundaries(neutral_abl._cells_to_faces(changed))
     instantaneous = solver.instantaneous_wall_velocity(changed)
 
     solver._advance_wall_model(changed_velocity, 0.5)
@@ -595,9 +659,7 @@ def test_cfl_rate_uses_cell_local_face_envelopes() -> None:
         velocity.z.at[2, 2, 2].set(2.0),
     )
     expected = max(4.0 / solver.dx, 3.0 / solver.dy, 2.0 / solver.dz)
-    old_global_sum = (
-        4.0 / solver.dx + 3.0 / solver.dy + 2.0 / solver.dz
-    )
+    old_global_sum = 4.0 / solver.dx + 3.0 / solver.dy + 2.0 / solver.dz
 
     actual = float(solver.cfl_rate(velocity))
 
@@ -646,11 +708,7 @@ def test_implicit_sgs_diffusion_damps_beyond_explicit_cfl_limit() -> None:
         timestep
         * 2.0
         * 5.0
-        * (
-            1.0 / solver.dx**2
-            + 1.0 / solver.dy**2
-            + 1.0 / solver.dz**2
-        )
+        * (1.0 / solver.dx**2 + 1.0 / solver.dy**2 + 1.0 / solver.dz**2)
     )
     advanced = solver.implicit_diffusion_solve(
         velocity,
@@ -685,10 +743,7 @@ def test_imex_timestep_removes_vertical_sgs_diffusion_limit() -> None:
     assert imex_dt > 10.0 * explicit_dt
     assert diagnostic.maximum_diffusive_cfl > 0.5
     horizontal_diffusive_cfl = (
-        imex_dt
-        * 2.0
-        * 10.0
-        * (1.0 / imex.dx**2 + 1.0 / imex.dy**2)
+        imex_dt * 2.0 * 10.0 * (1.0 / imex.dx**2 + 1.0 / imex.dy**2)
     )
     assert abs(horizontal_diffusive_cfl - 0.5) < 2.0e-6
 
@@ -747,9 +802,7 @@ def test_ars233_has_third_order_for_general_additive_split() -> None:
                         * neutral_abl._ARK3_IMPLICIT_A[stage_index][previous]
                         * implicit[previous]
                     )
-                diagonal = neutral_abl._ARK3_IMPLICIT_A[stage_index][
-                    stage_index
-                ]
+                diagonal = neutral_abl._ARK3_IMPLICIT_A[stage_index][stage_index]
                 stage = rhs / (1.0 - timestep * diagonal * implicit_rate)
                 stages.append(stage)
                 explicit.append(explicit_rate * stage)
@@ -763,10 +816,7 @@ def test_ars233_has_third_order_for_general_additive_split() -> None:
 
     exact = math.exp((explicit_rate + implicit_rate) * final_time)
     errors = [abs(integrate(steps) - exact) for steps in (10, 20, 40)]
-    orders = [
-        math.log(errors[index] / errors[index + 1], 2.0)
-        for index in range(2)
-    ]
+    orders = [math.log(errors[index] / errors[index + 1], 2.0) for index in range(2)]
 
     assert min(orders) > 2.8
 

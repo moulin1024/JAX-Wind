@@ -26,6 +26,7 @@ def _coupled_solver(
     *,
     lower_flux: float = 0.01,
     mp5_strength: float = 1.0,
+    scalar_advection: str = "mp5",
     coupling_integrator: str = "strang",
 ) -> AMDBoussinesq:
     grid = RectilinearGrid.uniform(8, 8, 8, lx=2.0, ly=2.0, lz=1.0)
@@ -68,6 +69,7 @@ def _coupled_solver(
             lower_surface_flux=lower_flux,
             upper_surface_flux=0.0,
             mp5_dissipation_strength=mp5_strength,
+            advection_scheme=scalar_advection,
         ),
     )
     return AMDBoussinesq(
@@ -284,12 +286,13 @@ def test_cbl_sgs_energy_includes_prescribed_surface_buoyancy_flux() -> None:
     assert jnp.all(jnp.isfinite(fields.sgs_tke))
     assert float(jnp.mean(fields.sgs_tke[0])) > 0.0
     assert float(jnp.max(jnp.abs(fields.sgs_tke[1:]))) == 0.0
+    assert float(jnp.max(jnp.abs(fields.ko6_energy_dissipation))) == 0.0
     assert float(jnp.max(jnp.abs(fields.mp5_energy_dissipation))) == 0.0
     assert float(jnp.max(jnp.abs(fields.mp5_scalar_dissipation))) == 0.0
 
 
 def test_scalar_advection_split_exposes_mp5_without_changing_tendency() -> None:
-    coupled = _coupled_solver()
+    coupled = _coupled_solver(scalar_advection="centered_mp5")
     velocity = coupled.momentum.initial_log_profile(perturbation_amplitude=0.05)
     x = jnp.arange(coupled.grid.shape[2], dtype=jnp.float32)[None, None, :]
     scalar = jnp.broadcast_to(jnp.sin(0.8 * x), coupled.grid.shape)

@@ -83,12 +83,8 @@ def main(argv: list[str] | None = None) -> None:
             args.target_diffusive_cfl,
         )
     )
-    timings["pre_step_metrics_s"], _ = measure(
-        coupled.pre_step_metrics
-    )
-    timings["accepted_state_metrics_s"], _ = measure(
-        coupled.accepted_state_metrics
-    )
+    timings["pre_step_metrics_s"], _ = measure(coupled.pre_step_metrics)
+    timings["accepted_state_metrics_s"], _ = measure(coupled.accepted_state_metrics)
     timings["surface_fluxes_s"], _ = measure(
         lambda current: coupled.surface_layer_fluxes(current)
     )
@@ -118,9 +114,9 @@ def main(argv: list[str] | None = None) -> None:
     timings["velocity_gradient_s"], _ = measure(
         jax.jit(lambda _: coupled.momentum.velocity_gradient(cells))
     )
-    timings["momentum_centered_advection_s"], _ = measure(
+    timings["momentum_advection_s"], _ = measure(
         jax.jit(
-            lambda _: coupled.momentum.conservative_advection(
+            lambda _: coupled.momentum.advection_tendency(
                 state.velocity,
                 cells,
             )
@@ -135,17 +131,17 @@ def main(argv: list[str] | None = None) -> None:
             )
         )
     )
-    timings["momentum_mp5_s"], _ = measure(
+    timings["momentum_regularization_s"], _ = measure(
         jax.jit(
-            lambda _: coupled.momentum.mp5_dissipation(
+            lambda _: coupled.momentum.regularization_tendency(
                 state.velocity,
                 cells,
             )
         )
     )
-    timings["scalar_centered_advection_s"], _ = measure(
+    timings["scalar_advection_s"], _ = measure(
         jax.jit(
-            lambda _: coupled.scalar.centered_advective_tendency(
+            lambda _: coupled.scalar.advective_tendency(
                 state.potential_temperature,
                 state.velocity,
             )
@@ -186,12 +182,8 @@ def main(argv: list[str] | None = None) -> None:
     for _ in range(profile.profile_repeats):
         advanced = coupled.step(advanced, timestep=0.5)
         ready(advanced)
-    timings["full_step_s"] = (
-        time.perf_counter() - start
-    ) / profile.profile_repeats
-    timings["diagnostic_fields_s"], _ = measure(
-        jax.jit(coupled.diagnostic_fields)
-    )
+    timings["full_step_s"] = (time.perf_counter() - start) / profile.profile_repeats
+    timings["diagnostic_fields_s"], _ = measure(jax.jit(coupled.diagnostic_fields))
 
     pressure = coupled.momentum.pressure_solver
     operator = pressure.operator
@@ -246,6 +238,10 @@ def main(argv: list[str] | None = None) -> None:
         "pressure_execution": pressure.krylov.execution,
         "projection_method": args.projection_method,
         "coupling_integrator": args.coupling_integrator,
+        "momentum_advection": args.momentum_advection,
+        "momentum_regularization": args.momentum_regularization,
+        "ko6_dissipation_strength": args.ko6_strength,
+        "scalar_advection": args.scalar_advection,
         "scalar_rhs_calls_per_step": (
             3 if args.coupling_integrator == "coupled-ssprk3" else 6
         ),

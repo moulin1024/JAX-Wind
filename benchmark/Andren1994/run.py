@@ -22,23 +22,130 @@ for source in (ROOT, SOURCE):
 
 
 INITIAL_U = (
-    4.44, 5.92, 6.91, 7.73, 8.43, 9.02, 9.52, 9.93, 10.25, 10.47,
-    10.62, 10.70, 10.71, 10.67, 10.59, 10.48, 10.36, 10.24, 10.13, 10.04,
-    9.99, 9.96, 9.95, 9.96, 9.98, 9.99, 10.00, 9.99, 9.99, 9.99,
-    10.00, 10.00, 10.00, 10.00, 10.00, 10.00, 10.00, 10.00, 10.00, 10.00,
+    4.44,
+    5.92,
+    6.91,
+    7.73,
+    8.43,
+    9.02,
+    9.52,
+    9.93,
+    10.25,
+    10.47,
+    10.62,
+    10.70,
+    10.71,
+    10.67,
+    10.59,
+    10.48,
+    10.36,
+    10.24,
+    10.13,
+    10.04,
+    9.99,
+    9.96,
+    9.95,
+    9.96,
+    9.98,
+    9.99,
+    10.00,
+    9.99,
+    9.99,
+    9.99,
+    10.00,
+    10.00,
+    10.00,
+    10.00,
+    10.00,
+    10.00,
+    10.00,
+    10.00,
+    10.00,
+    10.00,
 )
 INITIAL_V = (
-    2.18, 2.67, 2.83, 2.84, 2.75, 2.57, 2.34, 2.06, 1.75, 1.44,
-    1.12, 0.82, 0.55, 0.31, 0.12, -0.02, -0.11, -0.16, -0.17, -0.15,
-    -0.11, -0.06, -0.02, 0.01, 0.02, 0.02, 0.02, 0.02, 0.02, 0.01,
-    0.01, 0.01, 0.01, 0.00, 0.00, 0.00, 0.00, 0.00, 0.00, 0.00,
+    2.18,
+    2.67,
+    2.83,
+    2.84,
+    2.75,
+    2.57,
+    2.34,
+    2.06,
+    1.75,
+    1.44,
+    1.12,
+    0.82,
+    0.55,
+    0.31,
+    0.12,
+    -0.02,
+    -0.11,
+    -0.16,
+    -0.17,
+    -0.15,
+    -0.11,
+    -0.06,
+    -0.02,
+    0.01,
+    0.02,
+    0.02,
+    0.02,
+    0.02,
+    0.02,
+    0.01,
+    0.01,
+    0.01,
+    0.01,
+    0.00,
+    0.00,
+    0.00,
+    0.00,
+    0.00,
+    0.00,
+    0.00,
 )
 INITIAL_TKE = (
-    0.365, 0.295, 0.245, 0.205, 0.175, 0.145, 0.120, 0.100, 0.085,
-    0.070, 0.055, 0.045, 0.035, 0.025, 0.020, 0.015, 0.010, 0.010,
-    0.005, 0.005, 0.005, 0.000, 0.000, 0.000, 0.000, 0.000, 0.000,
-    0.000, 0.000, 0.000, 0.000, 0.000, 0.000, 0.000, 0.000, 0.000,
-    0.000, 0.000, 0.000, 0.000,
+    0.365,
+    0.295,
+    0.245,
+    0.205,
+    0.175,
+    0.145,
+    0.120,
+    0.100,
+    0.085,
+    0.070,
+    0.055,
+    0.045,
+    0.035,
+    0.025,
+    0.020,
+    0.015,
+    0.010,
+    0.010,
+    0.005,
+    0.005,
+    0.005,
+    0.000,
+    0.000,
+    0.000,
+    0.000,
+    0.000,
+    0.000,
+    0.000,
+    0.000,
+    0.000,
+    0.000,
+    0.000,
+    0.000,
+    0.000,
+    0.000,
+    0.000,
+    0.000,
+    0.000,
+    0.000,
+    0.000,
 )
 
 
@@ -74,6 +181,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--lasd-filter-grid-ratio", type=float, default=1.0)
     parser.add_argument("--lasd-maximum-coefficient", type=float, default=0.81)
     parser.add_argument("--mp5-strength", type=float, default=1.0)
+    parser.add_argument(
+        "--momentum-advection",
+        choices=("centered2", "kep4"),
+        default="kep4",
+    )
+    parser.add_argument(
+        "--momentum-regularization",
+        choices=("none", "mp5", "ko6"),
+        default="ko6",
+    )
+    parser.add_argument("--ko6-strength", type=float, default=1.0)
+    parser.add_argument(
+        "--scalar-advection",
+        choices=("centered_mp5", "mp5"),
+        default="mp5",
+    )
     parser.add_argument(
         "--sgs-time-integration",
         choices=("imex_ark3", "explicit"),
@@ -131,6 +254,8 @@ def main() -> None:
         raise SystemExit("AMD coefficient must be finite and nonnegative")
     if not math.isfinite(args.mp5_strength) or args.mp5_strength < 0.0:
         raise SystemExit("MP5 strength must be finite and nonnegative")
+    if not math.isfinite(args.ko6_strength) or args.ko6_strength < 0.0:
+        raise SystemExit("KO6 strength must be finite and nonnegative")
     if args.passive_scalar is None:
         args.passive_scalar = args.sgs == "amd"
     if args.scalar_amd_coefficient is None:
@@ -254,6 +379,9 @@ def main() -> None:
             coriolis_vertical=coriolis,
             coriolis_horizontal=coriolis,
             mp5_dissipation_strength=args.mp5_strength,
+            advection_scheme=args.momentum_advection,
+            regularization_scheme=args.momentum_regularization,
+            ko6_dissipation_strength=args.ko6_strength,
             amd=AMDModel(coefficient=args.amd_coefficient),
             sgs_time_integration=args.sgs_time_integration,
             projection_method=args.projection_method,
@@ -278,17 +406,14 @@ def main() -> None:
             coefficient=args.scalar_amd_coefficient,
             lower_surface_flux=args.scalar_surface_flux,
             mp5_dissipation_strength=args.mp5_strength,
+            advection_scheme=args.scalar_advection,
         ),
     )
 
     nominal_spectrum_level = int(
         np.argmin(
             np.abs(
-                (np.arange(nz) + 0.5)
-                * (height / nz)
-                * coriolis
-                / expected_ustar
-                - 0.1
+                (np.arange(nz) + 0.5) * (height / nz) * coriolis / expected_ustar - 0.1
             )
         )
     )
@@ -347,16 +472,14 @@ def main() -> None:
         if args.passive_scalar and (
             "checkpoint_schema" not in checkpoint
             or str(checkpoint["checkpoint_schema"])
-            != "jaxwind.andren1994.amd-passive-scalar.v2"
+            != "jaxwind.andren1994.kep4-ko6-mp5.v3"
         ):
             raise SystemExit(
                 "restart predates passive-scalar/complete-SGS statistics; "
                 "a true paper comparison must start a fresh run"
             )
         checkpoint_sgs = (
-            str(checkpoint["sgs_model"])
-            if "sgs_model" in checkpoint
-            else "lasd"
+            str(checkpoint["sgs_model"]) if "sgs_model" in checkpoint else "lasd"
         )
         if checkpoint_sgs != args.sgs:
             raise SystemExit("restart SGS model does not match this run")
@@ -368,13 +491,9 @@ def main() -> None:
                 rtol=0.0,
                 atol=1.0e-12,
             ):
-                raise SystemExit(
-                    "restart AMD coefficient does not match this run"
-                )
+                raise SystemExit("restart AMD coefficient does not match this run")
         checkpoint_mp5_strength = (
-            float(checkpoint["mp5_strength"])
-            if "mp5_strength" in checkpoint
-            else 1.0
+            float(checkpoint["mp5_strength"]) if "mp5_strength" in checkpoint else 1.0
         )
         if not np.isclose(
             checkpoint_mp5_strength,
@@ -383,6 +502,21 @@ def main() -> None:
             atol=1.0e-12,
         ):
             raise SystemExit("restart MP5 strength does not match this run")
+        for name, expected in (("ko6_strength", args.ko6_strength),):
+            if name not in checkpoint or not np.isclose(
+                float(checkpoint[name]),
+                expected,
+                rtol=0.0,
+                atol=1.0e-12,
+            ):
+                raise SystemExit(f"restart {name} does not match this run")
+        for name, expected in (
+            ("momentum_advection", args.momentum_advection),
+            ("momentum_regularization", args.momentum_regularization),
+            ("scalar_advection", args.scalar_advection),
+        ):
+            if name not in checkpoint or str(checkpoint[name]) != expected:
+                raise SystemExit(f"restart {name} does not match this run")
         for name, expected in (
             ("scalar_amd_coefficient", args.scalar_amd_coefficient),
             ("scalar_surface_flux", args.scalar_surface_flux),
@@ -412,9 +546,7 @@ def main() -> None:
         step = int(checkpoint["step"])
         simulation_time = float(checkpoint["simulation_time"])
         if args.sgs == "lasd":
-            required_lasd_fields = tuple(
-                f"lasd_{name}" for name in LASDState._fields
-            )
+            required_lasd_fields = tuple(f"lasd_{name}" for name in LASDState._fields)
             if not all(name in checkpoint for name in required_lasd_fields):
                 raise SystemExit("LASD restart is missing closure memory")
             solver.restore_lasd(
@@ -640,7 +772,7 @@ def main() -> None:
                 for _ in amd_diagnostics.BUDGET_NAMES
             )
         payload = {
-            "checkpoint_schema": "jaxwind.andren1994.amd-passive-scalar.v2",
+            "checkpoint_schema": "jaxwind.andren1994.kep4-ko6-mp5.v3",
             "velocity_x": np.asarray(velocity.x),
             "velocity_y": np.asarray(velocity.y),
             "velocity_z": np.asarray(velocity.z),
@@ -654,6 +786,10 @@ def main() -> None:
             "scalar_amd_coefficient": args.scalar_amd_coefficient,
             "scalar_surface_flux": args.scalar_surface_flux,
             "mp5_strength": args.mp5_strength,
+            "ko6_strength": args.ko6_strength,
+            "momentum_advection": args.momentum_advection,
+            "momentum_regularization": args.momentum_regularization,
+            "scalar_advection": args.scalar_advection,
             "sample_times": np.asarray(sample_times),
             "budget_times": np.asarray(budget_times),
         }
@@ -694,33 +830,21 @@ def main() -> None:
         if fpj2 is not None:
             payload.update(
                 {
-                    "fpj2_current_pressure": np.asarray(
-                        fpj2.current_pressure
-                    ),
-                    "fpj2_previous_pressure": np.asarray(
-                        fpj2.previous_pressure
-                    ),
+                    "fpj2_current_pressure": np.asarray(fpj2.current_pressure),
+                    "fpj2_previous_pressure": np.asarray(fpj2.previous_pressure),
                     "fpj2_current_timestep": fpj2.current_timestep,
                     "fpj2_previous_timestep": fpj2.previous_timestep,
                     "fpj2_history_count": fpj2.history_count,
                 }
             )
         payload.update(
-            {
-                f"sample_{index}": values
-                for index, values in enumerate(stacked_samples)
-            }
+            {f"sample_{index}": values for index, values in enumerate(stacked_samples)}
         )
         payload.update(
-            {
-                f"budget_{index}": values
-                for index, values in enumerate(stacked_budgets)
-            }
+            {f"budget_{index}": values for index, values in enumerate(stacked_budgets)}
         )
         destination = args.output_dir / "checkpoint.npz"
-        temporary = destination.with_name(
-            f".{destination.name}.tmp-{os.getpid()}"
-        )
+        temporary = destination.with_name(f".{destination.name}.tmp-{os.getpid()}")
         with temporary.open("wb") as stream:
             np.savez_compressed(stream, **payload)
         os.replace(temporary, destination)
@@ -765,9 +889,8 @@ def main() -> None:
         simulation_time += timestep
         timesteps.append(timestep)
         step += 1
-        if (
-            simulation_time >= sample_start
-            and (step % args.sample_every == 0 or simulation_time >= final_time)
+        if simulation_time >= sample_start and (
+            step % args.sample_every == 0 or simulation_time >= final_time
         ):
             samples.append(sample_profiles())
             sample_times.append(simulation_time)
@@ -826,9 +949,7 @@ def main() -> None:
         )
 
     averaged = amd_diagnostics.average_samples(samples)
-    mean = np.column_stack(
-        (averaged["u"], averaged["v"], averaged["w"])
-    )
+    mean = np.column_stack((averaged["u"], averaged["v"], averaged["w"]))
     variances = np.column_stack(
         (
             averaged["resolved_u_variance"],
@@ -888,15 +1009,12 @@ def main() -> None:
         "resolved_v_variance_over_ustar2": variances[:, 1] / ustar2,
         "resolved_w_variance_over_ustar2": variances[:, 2] / ustar2,
         "sgs_component_variance_over_ustar2": component_sgs_variance / ustar2,
-        "total_u_variance_over_ustar2": (
-            variances[:, 0] + component_sgs_variance
-        ) / ustar2,
-        "total_v_variance_over_ustar2": (
-            variances[:, 1] + component_sgs_variance
-        ) / ustar2,
-        "total_w_variance_over_ustar2": (
-            variances[:, 2] + component_sgs_variance
-        ) / ustar2,
+        "total_u_variance_over_ustar2": (variances[:, 0] + component_sgs_variance)
+        / ustar2,
+        "total_v_variance_over_ustar2": (variances[:, 1] + component_sgs_variance)
+        / ustar2,
+        "total_w_variance_over_ustar2": (variances[:, 2] + component_sgs_variance)
+        / ustar2,
         "resolved_tke_over_ustar2": resolved_tke / ustar2,
         "sgs_tke_over_ustar2": sgs_tke / ustar2,
         "total_tke_over_ustar2": (resolved_tke + sgs_tke) / ustar2,
@@ -912,13 +1030,12 @@ def main() -> None:
         "sgs_scalar_variance_over_cstar2": scalar_sgs_variance / cstar**2,
         "total_scalar_variance_over_cstar2": (
             averaged["resolved_scalar_variance"] + scalar_sgs_variance
-        ) / cstar**2,
-        "resolved_wc_over_ustar_cstar": averaged["resolved_wc"]
-        / scalar_flux_scale,
+        )
+        / cstar**2,
+        "resolved_wc_over_ustar_cstar": averaged["resolved_wc"] / scalar_flux_scale,
         "sgs_wc_over_ustar_cstar": averaged["sgs_wc"] / scalar_flux_scale,
-        "total_wc_over_ustar_cstar": (
-            averaged["resolved_wc"] + averaged["sgs_wc"]
-        ) / scalar_flux_scale,
+        "total_wc_over_ustar_cstar": (averaged["resolved_wc"] + averaged["sgs_wc"])
+        / scalar_flux_scale,
         "momentum_diffusivity_m2_s": averaged["momentum_diffusivity"],
         "scalar_diffusivity_m2_s": averaged["scalar_diffusivity"],
         "wp_modified_pressure_over_ustar3": (
@@ -1071,9 +1188,7 @@ def main() -> None:
         "elapsed_seconds": elapsed,
         "compilation_seconds": compilation_elapsed,
         "sgs_model": args.sgs,
-        "amd_coefficient": (
-            args.amd_coefficient if args.sgs == "amd" else None
-        ),
+        "amd_coefficient": (args.amd_coefficient if args.sgs == "amd" else None),
         "passive_scalar": args.passive_scalar,
         "scalar_amd_coefficient": args.scalar_amd_coefficient,
         "scalar_surface_flux": args.scalar_surface_flux,
@@ -1101,6 +1216,10 @@ def main() -> None:
             else None
         ),
         "mp5_dissipation_strength": args.mp5_strength,
+        "ko6_dissipation_strength": args.ko6_strength,
+        "momentum_advection": args.momentum_advection,
+        "momentum_regularization": args.momentum_regularization,
+        "scalar_advection": args.scalar_advection,
         "sgs_time_integration": args.sgs_time_integration,
         "vertical_sgs_diffusion_is_implicit": (
             args.sgs_time_integration == "imex_ark3"

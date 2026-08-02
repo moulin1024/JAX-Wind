@@ -55,12 +55,14 @@ BUDGET_NAMES = (
     "uw_transport",
     "uw_pressure",
     "uw_coriolis",
+    "uw_numerical",
     "uw_resolved_flux",
     "wc_production",
     "wc_subgrid",
     "wc_transport",
     "wc_pressure",
     "wc_coriolis",
+    "wc_numerical",
     "wc_resolved_flux",
 )
 
@@ -127,8 +129,7 @@ def build_profile_kernel(
         )
         if solver.lasd_closure is None:
             momentum_diffusivity = jnp.maximum(
-                momentum_diffusivity
-                - solver.config.amd.molecular_viscosity,
+                momentum_diffusivity - solver.config.amd.molecular_viscosity,
                 0.0,
             )
         sgs_tke = solver.diagnostic_sgs_tke(
@@ -178,17 +179,13 @@ def build_profile_kernel(
             ),
             axis=0,
         )
-        diagnostic_scalar_gradient_z = 0.5 * (
-            lower_gradient + upper_gradient
-        )
+        diagnostic_scalar_gradient_z = 0.5 * (lower_gradient + upper_gradient)
         scalar_dissipation = -(
             scalar_flux_x * scalar_gradient[..., 0]
             + scalar_flux_y * scalar_gradient[..., 1]
             + scalar_flux_at_cells * diagnostic_scalar_gradient_z
         )
-        strain = 0.5 * (
-            velocity_gradient + jnp.swapaxes(velocity_gradient, -1, -2)
-        )
+        strain = 0.5 * (velocity_gradient + jnp.swapaxes(velocity_gradient, -1, -2))
         strain_magnitude = jnp.sqrt(
             2.0 * jnp.einsum("...ij,...ij->...", strain, strain)
         )
@@ -196,9 +193,7 @@ def build_profile_kernel(
             delta**2 * strain_magnitude,
             jnp.finfo(scalar.dtype).tiny,
         )
-        scalar_length = delta * jnp.sqrt(
-            jnp.maximum(effective_scalar_coefficient, 0.0)
-        )
+        scalar_length = delta * jnp.sqrt(jnp.maximum(effective_scalar_coefficient, 0.0))
         scalar_variance_numerator = (
             2.0 * scalar_length * scalar_dissipation / diagnostic_cc
         )
@@ -273,12 +268,16 @@ def build_history_kernel(solver, *, diagnostic_ce: float):
         integrated_resolved = jnp.sum(resolved_tke) * solver.dz
         integrated_sgs = jnp.sum(sgs_tke) * solver.dz
         tiny = jnp.finfo(cells.dtype).eps
-        cu = -solver.config.coriolis_vertical * (
-            jnp.sum(mean[:, 1] - solver.config.geostrophic_wind[1]) * solver.dz
-        ) / jnp.where(jnp.abs(wall_flux[0]) > tiny, wall_flux[0], jnp.nan)
-        cv = solver.config.coriolis_vertical * (
-            jnp.sum(mean[:, 0] - solver.config.geostrophic_wind[0]) * solver.dz
-        ) / jnp.where(jnp.abs(wall_flux[1]) > tiny, wall_flux[1], jnp.nan)
+        cu = (
+            -solver.config.coriolis_vertical
+            * (jnp.sum(mean[:, 1] - solver.config.geostrophic_wind[1]) * solver.dz)
+            / jnp.where(jnp.abs(wall_flux[0]) > tiny, wall_flux[0], jnp.nan)
+        )
+        cv = (
+            solver.config.coriolis_vertical
+            * (jnp.sum(mean[:, 0] - solver.config.geostrophic_wind[0]) * solver.dz)
+            / jnp.where(jnp.abs(wall_flux[1]) > tiny, wall_flux[1], jnp.nan)
+        )
         return ustar, integrated_resolved, integrated_sgs, cu, cv
 
     return jax.jit(kernel)
@@ -295,9 +294,8 @@ def build_budget_kernel(solver, scalar_solver):
         scalar_fluctuation = scalar - scalar_mean[:, None, None]
         velocity_gradient = solver.velocity_gradient(cells)
 
-        advection = solver.conservative_advection(velocity, cells)
-        if solver.config.mp5_dissipation_strength > 0.0:
-            advection += solver.mp5_dissipation(velocity, cells)
+        advection = solver.advection_tendency(velocity, cells)
+        regularization = solver.regularization_tendency(velocity, cells)
         momentum_sgs = solver.sgs_tendency(
             cells,
             sgs_coefficient,
@@ -331,35 +329,44 @@ def build_budget_kernel(solver, scalar_solver):
             fluctuation[..., 0] * forcing[..., 2]
             + fluctuation[..., 2] * forcing[..., 0]
         )
+        uw_numerical = _plane(
+            fluctuation[..., 0] * regularization[..., 2]
+            + fluctuation[..., 2] * regularization[..., 0]
+        )
 
         scalar_advection = scalar_solver.advective_tendency(scalar, velocity)
+        scalar_regularization = scalar_solver.mp5_dissipation(scalar, velocity)
+        scalar_transport = scalar_advection - scalar_regularization
         scalar_sgs = scalar_solver.sgs_tendency(scalar, velocity_gradient)
         wc_advective = _plane(
             scalar_fluctuation * advection[..., 2]
-            + fluctuation[..., 2] * scalar_advection
+            + fluctuation[..., 2] * scalar_transport
         )
         wc_production = -w_variance * jnp.gradient(scalar_mean, solver.dz)
         wc_transport = wc_advective - wc_production
         wc_subgrid = _plane(
-            scalar_fluctuation * momentum_sgs[..., 2]
-            + fluctuation[..., 2] * scalar_sgs
+            scalar_fluctuation * momentum_sgs[..., 2] + fluctuation[..., 2] * scalar_sgs
         )
-        wc_pressure = _plane(
-            scalar_fluctuation * pressure_tendency[..., 2]
-        )
+        wc_pressure = _plane(scalar_fluctuation * pressure_tendency[..., 2])
         wc_coriolis = _plane(scalar_fluctuation * forcing[..., 2])
+        wc_numerical = _plane(
+            scalar_fluctuation * regularization[..., 2]
+            + fluctuation[..., 2] * scalar_regularization
+        )
         return (
             uw_production,
             uw_subgrid,
             uw_transport,
             uw_pressure,
             uw_coriolis,
+            uw_numerical,
             _plane(fluctuation[..., 0] * fluctuation[..., 2]),
             wc_production,
             wc_subgrid,
             wc_transport,
             wc_pressure,
             wc_coriolis,
+            wc_numerical,
             _plane(fluctuation[..., 2] * scalar_fluctuation),
         )
 
@@ -420,7 +427,14 @@ def averaged_budget(
     def finish(prefix: str, flux_scale: float):
         terms = {
             name: raw[f"{prefix}_{name}"]
-            for name in ("production", "subgrid", "transport", "pressure", "coriolis")
+            for name in (
+                "production",
+                "subgrid",
+                "transport",
+                "pressure",
+                "coriolis",
+                "numerical",
+            )
         }
         tendency = (
             samples[-1][BUDGET_NAMES.index(f"{prefix}_resolved_flux")]
@@ -449,6 +463,7 @@ def write_budget(path: Path, budget: dict[str, np.ndarray]) -> None:
         "transport",
         "pressure",
         "coriolis",
+        "numerical",
         "tendency",
         "closure_residual",
     )

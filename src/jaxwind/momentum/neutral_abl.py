@@ -46,9 +46,7 @@ class AMDModel:
             not math.isfinite(self.molecular_viscosity)
             or self.molecular_viscosity < 0.0
         ):
-            raise ValueError(
-                "molecular viscosity must be finite and nonnegative"
-            )
+            raise ValueError("molecular viscosity must be finite and nonnegative")
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,6 +58,7 @@ class AMDPassiveScalarModel:
     lower_surface_flux: float = 1.0e-3
     upper_surface_flux: float = 0.0
     mp5_dissipation_strength: float = 1.0
+    advection_scheme: Literal["centered_mp5", "mp5"] = "mp5"
 
     def __post_init__(self) -> None:
         nonnegative = {
@@ -76,6 +75,8 @@ class AMDPassiveScalarModel:
         ):
             if not math.isfinite(value):
                 raise ValueError(f"{name} must be finite")
+        if self.advection_scheme not in {"centered_mp5", "mp5"}:
+            raise ValueError("scalar advection scheme must be 'centered_mp5' or 'mp5'")
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,6 +90,9 @@ class NeutralABLConfig:
     wall_filter_width: float | None = None
     wall_temporal_filter_timescale: float | None = None
     mp5_dissipation_strength: float = 1.0
+    advection_scheme: Literal["centered2", "kep4"] = "kep4"
+    regularization_scheme: Literal["none", "mp5", "ko6"] = "ko6"
+    ko6_dissipation_strength: float = 1.0
     pressure_acceleration: float | None = None
     geostrophic_wind: tuple[float, float] | None = None
     coriolis_vertical: float = 0.0
@@ -113,8 +117,7 @@ class NeutralABLConfig:
         ):
             raise ValueError("wall matching level must be a nonnegative integer")
         if self.wall_filter_width is not None and (
-            not math.isfinite(self.wall_filter_width)
-            or self.wall_filter_width <= 0.0
+            not math.isfinite(self.wall_filter_width) or self.wall_filter_width <= 0.0
         ):
             raise ValueError("wall filter width must be positive and finite")
         if self.wall_temporal_filter_timescale is not None and (
@@ -128,9 +131,18 @@ class NeutralABLConfig:
             not math.isfinite(self.mp5_dissipation_strength)
             or self.mp5_dissipation_strength < 0.0
         ):
+            raise ValueError("MP5 dissipation strength must be finite and nonnegative")
+        if self.advection_scheme not in {"centered2", "kep4"}:
+            raise ValueError("momentum advection scheme must be 'centered2' or 'kep4'")
+        if self.regularization_scheme not in {"none", "mp5", "ko6"}:
             raise ValueError(
-                "MP5 dissipation strength must be finite and nonnegative"
+                "momentum regularization scheme must be 'none', 'mp5', or 'ko6'"
             )
+        if (
+            not math.isfinite(self.ko6_dissipation_strength)
+            or self.ko6_dissipation_strength < 0.0
+        ):
+            raise ValueError("KO6 dissipation strength must be finite and nonnegative")
         if self.pressure_acceleration is not None and not math.isfinite(
             self.pressure_acceleration
         ):
@@ -146,9 +158,7 @@ class NeutralABLConfig:
         if self.projection_method not in {"full", "fpj2"}:
             raise ValueError("projection method must be 'full' or 'fpj2'")
         if self.sgs_time_integration not in {"explicit", "imex_ark3"}:
-            raise ValueError(
-                "SGS time integration must be 'explicit' or 'imex_ark3'"
-            )
+            raise ValueError("SGS time integration must be 'explicit' or 'imex_ark3'")
         if (
             not math.isfinite(self.fpj2_timestep_ratio_limit)
             or self.fpj2_timestep_ratio_limit < 1.0
@@ -227,13 +237,9 @@ def _wall_normal_derivative(field: Array, spacing: float) -> Array:
         return jnp.zeros_like(field)
     derivative = jnp.zeros_like(field)
     if field.shape[0] > 2:
-        derivative = derivative.at[1:-1].set(
-            (field[2:] - field[:-2]) / (2.0 * spacing)
-        )
+        derivative = derivative.at[1:-1].set((field[2:] - field[:-2]) / (2.0 * spacing))
     derivative = derivative.at[0].set((field[1] - field[0]) / spacing)
-    derivative = derivative.at[-1].set(
-        (field[-1] - field[-2]) / spacing
-    )
+    derivative = derivative.at[-1].set((field[-1] - field[-2]) / spacing)
     return derivative
 
 
@@ -253,6 +259,158 @@ def _wall_normal_derivative_transpose(
     result = result.at[-2].add(-field[-1] / spacing)
     result = result.at[-1].add(field[-1] / spacing)
     return result
+
+
+def _wall_normal_d4(field: Array, spacing: float) -> Array:
+    """Fourth-order wall-normal derivative with one-sided wall closures."""
+    if field.shape[0] < 5:
+        return _wall_normal_derivative(field, spacing)
+    scale = 1.0 / (12.0 * spacing)
+    derivative = jnp.zeros_like(field)
+    derivative = derivative.at[0].set(
+        scale
+        * (
+            -25.0 * field[0]
+            + 48.0 * field[1]
+            - 36.0 * field[2]
+            + 16.0 * field[3]
+            - 3.0 * field[4]
+        )
+    )
+    derivative = derivative.at[1].set(
+        scale
+        * (
+            -3.0 * field[0]
+            - 10.0 * field[1]
+            + 18.0 * field[2]
+            - 6.0 * field[3]
+            + field[4]
+        )
+    )
+    derivative = derivative.at[2:-2].set(
+        scale * (field[:-4] - 8.0 * field[1:-3] + 8.0 * field[3:-1] - field[4:])
+    )
+    derivative = derivative.at[-2].set(
+        scale
+        * (
+            -field[-5]
+            + 6.0 * field[-4]
+            - 18.0 * field[-3]
+            + 10.0 * field[-2]
+            + 3.0 * field[-1]
+        )
+    )
+    return derivative.at[-1].set(
+        scale
+        * (
+            3.0 * field[-5]
+            - 16.0 * field[-4]
+            + 36.0 * field[-3]
+            - 48.0 * field[-2]
+            + 25.0 * field[-1]
+        )
+    )
+
+
+def _wall_normal_d4_transpose(field: Array, spacing: float) -> Array:
+    """Euclidean transpose of :func:`_wall_normal_d4`."""
+    if field.shape[0] < 5:
+        return _wall_normal_derivative_transpose(field, spacing)
+    scale = 1.0 / (12.0 * spacing)
+    result = jnp.zeros_like(field)
+    interior = field[2:-2]
+    result = result.at[:-4].add(interior)
+    result = result.at[1:-3].add(-8.0 * interior)
+    result = result.at[3:-1].add(8.0 * interior)
+    result = result.at[4:].add(-interior)
+    result = result.at[:5].add(
+        field[0]
+        * jnp.asarray(
+            (-25.0, 48.0, -36.0, 16.0, -3.0),
+            dtype=field.dtype,
+        )[
+            (...,) + (None,) * (field.ndim - 1)
+        ]
+    )
+    result = result.at[:5].add(
+        field[1]
+        * jnp.asarray(
+            (-3.0, -10.0, 18.0, -6.0, 1.0),
+            dtype=field.dtype,
+        )[
+            (...,) + (None,) * (field.ndim - 1)
+        ]
+    )
+    result = result.at[-5:].add(
+        field[-2]
+        * jnp.asarray(
+            (-1.0, 6.0, -18.0, 10.0, 3.0),
+            dtype=field.dtype,
+        )[
+            (...,) + (None,) * (field.ndim - 1)
+        ]
+    )
+    result = result.at[-5:].add(
+        field[-1]
+        * jnp.asarray(
+            (3.0, -16.0, 36.0, -48.0, 25.0),
+            dtype=field.dtype,
+        )[
+            (...,) + (None,) * (field.ndim - 1)
+        ]
+    )
+    return scale * result
+
+
+def _periodic_ko6(
+    field: Array,
+    speed: Array,
+    spacing: float,
+    axis: int,
+) -> Array:
+    """Return ``-B.T speed B field / (64 dx)`` for periodic third difference B."""
+    forward = (
+        -field
+        + 3.0 * jnp.roll(field, -1, axis=axis)
+        - 3.0 * jnp.roll(field, -2, axis=axis)
+        + jnp.roll(field, -3, axis=axis)
+    )
+    coefficient = speed
+    for offset in (1, 2, 3):
+        coefficient = jnp.maximum(
+            coefficient,
+            jnp.roll(speed, -offset, axis=axis),
+        )
+    weighted = coefficient * forward
+    transpose = (
+        -weighted
+        + 3.0 * jnp.roll(weighted, 1, axis=axis)
+        - 3.0 * jnp.roll(weighted, 2, axis=axis)
+        + jnp.roll(weighted, 3, axis=axis)
+    )
+    return -transpose / (64.0 * spacing)
+
+
+def _wall_normal_ko6(
+    field: Array,
+    speed: Array,
+    spacing: float,
+) -> Array:
+    """Energy-stable nonperiodic sixth-order high-pass dissipation."""
+    if field.shape[0] < 4:
+        return jnp.zeros_like(field)
+    forward = -field[:-3] + 3.0 * field[1:-2] - 3.0 * field[2:-1] + field[3:]
+    coefficient = jnp.maximum(
+        jnp.maximum(speed[:-3], speed[1:-2]),
+        jnp.maximum(speed[2:-1], speed[3:]),
+    )
+    weighted = coefficient * forward
+    transpose = jnp.zeros_like(field)
+    transpose = transpose.at[:-3].add(-weighted)
+    transpose = transpose.at[1:-2].add(3.0 * weighted)
+    transpose = transpose.at[2:-1].add(-3.0 * weighted)
+    transpose = transpose.at[3:].add(weighted)
+    return -transpose / (64.0 * spacing)
 
 
 def _minmod(*values: Array) -> Array:
@@ -280,13 +438,7 @@ def _mp5_reconstruct(
     vp2: Array,
 ) -> Array:
     """Suresh-Huynh MP5 value on the face to the right of ``value``."""
-    unlimited = (
-        2.0 * vm2
-        - 13.0 * vm1
-        + 47.0 * value
-        + 27.0 * vp1
-        - 3.0 * vp2
-    ) / 60.0
+    unlimited = (2.0 * vm2 - 13.0 * vm1 + 47.0 * value + 27.0 * vp1 - 3.0 * vp2) / 60.0
     alpha = 4.0
     monotone = value + _minmod(
         vp1 - value,
@@ -311,9 +463,7 @@ def _mp5_reconstruct(
     upper_left = value + alpha * (value - vm1)
     average = 0.5 * (value + vp1)
     median = average - 0.5 * curvature_plus
-    large_curvature = (
-        value + 0.5 * (value - vm1) + (4.0 / 3.0) * curvature_minus
-    )
+    large_curvature = value + 0.5 * (value - vm1) + (4.0 / 3.0) * curvature_minus
     lower = jnp.maximum(
         jnp.minimum(jnp.minimum(value, vp1), median),
         jnp.minimum(jnp.minimum(value, upper_left), large_curvature),
@@ -326,13 +476,15 @@ def _mp5_reconstruct(
         lower - unlimited,
         upper - unlimited,
     )
-    tolerance = 10.0 * jnp.finfo(value.dtype).eps * jnp.maximum(
-        1.0,
-        jnp.maximum(jnp.abs(value), jnp.abs(unlimited)),
+    tolerance = (
+        10.0
+        * jnp.finfo(value.dtype).eps
+        * jnp.maximum(
+            1.0,
+            jnp.maximum(jnp.abs(value), jnp.abs(unlimited)),
+        )
     )
-    admissible = (
-        (unlimited - value) * (unlimited - monotone) <= tolerance
-    )
+    admissible = (unlimited - value) * (unlimited - monotone) <= tolerance
     return jnp.where(admissible, unlimited, limited)
 
 
@@ -396,30 +548,20 @@ def _cell_velocity(velocity: MACVelocity) -> Array:
 def _cells_to_faces(tendency: Array) -> MACVelocity:
     nz, ny, nx, _ = tendency.shape
     x = jnp.zeros((nz, ny, nx + 1), dtype=tendency.dtype)
-    x = x.at[..., 1:-1].set(
-        0.5 * (tendency[..., :-1, 0] + tendency[..., 1:, 0])
-    )
-    x_boundary = 0.5 * (
-        tendency[..., -1, 0] + tendency[..., 0, 0]
-    )
+    x = x.at[..., 1:-1].set(0.5 * (tendency[..., :-1, 0] + tendency[..., 1:, 0]))
+    x_boundary = 0.5 * (tendency[..., -1, 0] + tendency[..., 0, 0])
     x = x.at[..., 0].set(x_boundary)
     x = x.at[..., -1].set(x_boundary)
 
     y = jnp.zeros((nz, ny + 1, nx), dtype=tendency.dtype)
-    y = y.at[:, 1:-1, :].set(
-        0.5 * (tendency[:, :-1, :, 1] + tendency[:, 1:, :, 1])
-    )
-    y_boundary = 0.5 * (
-        tendency[:, -1, :, 1] + tendency[:, 0, :, 1]
-    )
+    y = y.at[:, 1:-1, :].set(0.5 * (tendency[:, :-1, :, 1] + tendency[:, 1:, :, 1]))
+    y_boundary = 0.5 * (tendency[:, -1, :, 1] + tendency[:, 0, :, 1])
     y = y.at[:, 0, :].set(y_boundary)
     y = y.at[:, -1, :].set(y_boundary)
 
     z = jnp.zeros((nz + 1, ny, nx), dtype=tendency.dtype)
     if nz > 1:
-        z = z.at[1:-1].set(
-            0.5 * (tendency[:-1, ..., 2] + tendency[1:, ..., 2])
-        )
+        z = z.at[1:-1].set(0.5 * (tendency[:-1, ..., 2] + tendency[1:, ..., 2]))
     return MACVelocity(x, y, z)
 
 
@@ -559,12 +701,11 @@ class NeutralABLMomentum:
                 wall_velocity=wall_velocity,
             )
             explicit = (
-                self.conservative_advection(velocity, cells)
+                self.advection_tendency(velocity, cells)
                 + cross
                 + self.forcing_tendency(cells)
             )
-            if self.config.mp5_dissipation_strength > 0.0:
-                explicit += self.mp5_dissipation(velocity, cells)
+            explicit += self.regularization_tendency(velocity, cells)
             return _cells_to_faces(explicit), _cells_to_faces(principal)
 
         def compiled_imex_initial_tendencies(
@@ -609,9 +750,7 @@ class NeutralABLMomentum:
                 wall_velocity,
             )
 
-        self._compiled_imex_tendencies = jax.jit(
-            compiled_imex_tendencies
-        )
+        self._compiled_imex_tendencies = jax.jit(compiled_imex_tendencies)
 
         def compiled_implicit_diffusion(
             velocity: MACVelocity,
@@ -632,9 +771,7 @@ class NeutralABLMomentum:
                 )
             )
 
-        self._compiled_implicit_diffusion = jax.jit(
-            compiled_implicit_diffusion
-        )
+        self._compiled_implicit_diffusion = jax.jit(compiled_implicit_diffusion)
 
         def compiled_diagnostic(
             velocity: MACVelocity,
@@ -644,9 +781,7 @@ class NeutralABLMomentum:
         ) -> tuple[Array, ...]:
             cells = _cell_velocity(velocity)
             viscosity = self.sgs_viscosity(cells, lasd_coefficient)
-            energy = 0.5 * jnp.mean(
-                jnp.sum(cells * cells, axis=-1)
-            )
+            energy = 0.5 * jnp.mean(jnp.sum(cells * cells, axis=-1))
             divergence = mac_divergence(velocity, self.grid)
             if self.lasd_closure is None:
                 mean_coefficient = jnp.asarray(
@@ -659,8 +794,7 @@ class NeutralABLMomentum:
                 mean_coefficient = jnp.mean(lasd_coefficient)
                 maximum_coefficient = jnp.max(lasd_coefficient)
                 clipped_fraction = jnp.mean(
-                    lasd_coefficient
-                    >= 0.999 * self.config.lasd.maximum_coefficient
+                    lasd_coefficient >= 0.999 * self.config.lasd.maximum_coefficient
                 )
             return (
                 energy,
@@ -668,15 +802,9 @@ class NeutralABLMomentum:
                 timestep
                 * 2.0
                 * jnp.max(viscosity)
-                * (
-                    1.0 / self.dx**2
-                    + 1.0 / self.dy**2
-                    + 1.0 / self.dz**2
-                ),
+                * (1.0 / self.dx**2 + 1.0 / self.dy**2 + 1.0 / self.dz**2),
                 self.pressure_solver.operator.norm(divergence),
-                jnp.mean(
-                    self.wall_ustar(cells, wall_velocity=wall_velocity)
-                ),
+                jnp.mean(self.wall_ustar(cells, wall_velocity=wall_velocity)),
                 jnp.mean(viscosity),
                 jnp.max(viscosity),
                 mean_coefficient,
@@ -696,11 +824,7 @@ class NeutralABLMomentum:
             diffusion_rate = (
                 2.0
                 * jnp.max(viscosity)
-                * (
-                    1.0 / self.dx**2
-                    + 1.0 / self.dy**2
-                    + 1.0 / self.dz**2
-                )
+                * (1.0 / self.dx**2 + 1.0 / self.dy**2 + 1.0 / self.dz**2)
             )
             return self.cfl_rate(velocity), diffusion_rate
 
@@ -713,15 +837,11 @@ class NeutralABLMomentum:
             cells = _cell_velocity(velocity)
             viscosity = self.sgs_viscosity(cells, lasd_coefficient)
             explicit_horizontal_diffusion_rate = (
-                2.0
-                * jnp.max(viscosity)
-                * (1.0 / self.dx**2 + 1.0 / self.dy**2)
+                2.0 * jnp.max(viscosity) * (1.0 / self.dx**2 + 1.0 / self.dy**2)
             )
             return self.cfl_rate(velocity), explicit_horizontal_diffusion_rate
 
-        self._compiled_imex_timestep_rates = jax.jit(
-            compiled_imex_timestep_rates
-        )
+        self._compiled_imex_timestep_rates = jax.jit(compiled_imex_timestep_rates)
         if self.lasd_closure is not None:
             self._compiled_lasd_accumulate = jax.jit(
                 self.lasd_closure.accumulate,
@@ -810,9 +930,7 @@ class NeutralABLMomentum:
         """Return conservative vertical principal SGS diffusion."""
         if cell_velocity.shape[0] == 1:
             return jnp.zeros_like(cell_velocity)
-        face_viscosity = 0.5 * (
-            frozen_viscosity[:-1] + frozen_viscosity[1:]
-        )
+        face_viscosity = 0.5 * (frozen_viscosity[:-1] + frozen_viscosity[1:])
         flux = (
             face_viscosity[..., None]
             * (cell_velocity[1:] - cell_velocity[:-1])
@@ -865,9 +983,7 @@ class NeutralABLMomentum:
         stress = frozen_viscosity[..., None, None] * (
             gradient + jnp.swapaxes(gradient, -1, -2)
         )
-        vertical_faces = self._vertical_stress_faces_from_cell_stress(
-            stress[..., :, 2]
-        )
+        vertical_faces = self._vertical_stress_faces_from_cell_stress(stress[..., :, 2])
         if wall_stress is not None:
             vertical_faces = vertical_faces.at[0].add(wall_stress)
         vertical = self._vertical_stress_divergence(vertical_faces)
@@ -923,9 +1039,7 @@ class NeutralABLMomentum:
         if rhs.shape[0] == 1:
             return rhs
         factor = implicit_timestep / (self.dz * self.dz)
-        face_viscosity = 0.5 * (
-            frozen_viscosity[:-1] + frozen_viscosity[1:]
-        )
+        face_viscosity = 0.5 * (frozen_viscosity[:-1] + frozen_viscosity[1:])
         lower = jnp.zeros_like(frozen_viscosity)
         upper = jnp.zeros_like(frozen_viscosity)
         lower = lower.at[1:].set(-factor * face_viscosity)
@@ -999,10 +1113,14 @@ class NeutralABLMomentum:
         )
         denominator = jnp.einsum("...ij,...ij->...", gradient, gradient)
         epsilon = jnp.finfo(gradient.dtype).eps
-        eddy = self.config.amd.coefficient * jnp.maximum(
-            production,
-            0.0,
-        ) / jnp.maximum(denominator, epsilon)
+        eddy = (
+            self.config.amd.coefficient
+            * jnp.maximum(
+                production,
+                0.0,
+            )
+            / jnp.maximum(denominator, epsilon)
+        )
         return eddy + self.config.amd.molecular_viscosity
 
     def _amd_stress_from_gradient(self, gradient: Array) -> Array:
@@ -1011,9 +1129,7 @@ class NeutralABLMomentum:
         return 2.0 * viscosity[..., None, None] * strain
 
     def amd_viscosity(self, cell_velocity: Array) -> Array:
-        return self._amd_viscosity_from_gradient(
-            self.velocity_gradient(cell_velocity)
-        )
+        return self._amd_viscosity_from_gradient(self.velocity_gradient(cell_velocity))
 
     def skew_advection(
         self,
@@ -1051,6 +1167,56 @@ class NeutralABLMomentum:
             )
             tendency.append(-total)
         return jnp.stack(tendency, axis=-1)
+
+    def kep4_advection(self, cell_velocity: Array) -> Array:
+        """Return fourth-order skew/adjoint-paired kinetic-energy transport.
+
+        The periodic operators are skew symmetric.  In the wall-normal
+        direction the advective and conservative halves use an explicit
+        derivative/negative-transpose pair, so their discrete velocity work
+        cancels even with one-sided wall closures.
+        """
+
+        def derivative(value: Array, direction: int) -> Array:
+            if direction == 0:
+                return _periodic_d4(value, self.dx, -1)
+            if direction == 1:
+                return _periodic_d4(value, self.dy, -2)
+            return _wall_normal_d4(value, self.dz)
+
+        def negative_transpose(value: Array, direction: int) -> Array:
+            if direction == 0:
+                return _periodic_d4(value, self.dx, -1)
+            if direction == 1:
+                return _periodic_d4(value, self.dy, -2)
+            return -_wall_normal_d4_transpose(value, self.dz)
+
+        tendency = []
+        for component in range(3):
+            transported = cell_velocity[..., component]
+            total = jnp.zeros_like(transported)
+            for direction in range(3):
+                advector = cell_velocity[..., direction]
+                total += 0.5 * (
+                    advector * derivative(transported, direction)
+                    + negative_transpose(
+                        advector * transported,
+                        direction,
+                    )
+                )
+            tendency.append(-total)
+        return jnp.stack(tendency, axis=-1)
+
+    def advection_tendency(
+        self,
+        velocity: MACVelocity,
+        cell_velocity: Array | None = None,
+    ) -> Array:
+        """Dispatch the configured nondissipative momentum transport."""
+        cells = _cell_velocity(velocity) if cell_velocity is None else cell_velocity
+        if self.config.advection_scheme == "kep4":
+            return self.kep4_advection(cells)
+        return self.conservative_advection(velocity, cells)
 
     def conservative_advection(
         self,
@@ -1107,9 +1273,7 @@ class NeutralABLMomentum:
             dtype=cells.dtype,
         )
         return flux.at[1:-1].set(
-            velocity.z[1:-1, ..., None]
-            * 0.5
-            * (cells[:-1] + cells[1:])
+            velocity.z[1:-1, ..., None] * 0.5 * (cells[:-1] + cells[1:])
         )
 
     def amd_tendency(self, cell_velocity: Array) -> Array:
@@ -1238,9 +1402,7 @@ class NeutralABLMomentum:
             gradient,
             lasd_coefficient,
         )
-        faces = self._vertical_stress_faces_from_cell_stress(
-            stress[..., :, 2]
-        )
+        faces = self._vertical_stress_faces_from_cell_stress(stress[..., :, 2])
         return faces.at[0].add(
             self.wall_stress(
                 cell_velocity,
@@ -1279,10 +1441,7 @@ class NeutralABLMomentum:
                 periodic=periodic,
             )
             dissipative_flux = (
-                -0.5
-                * strength
-                * jnp.abs(face_speed)[..., None]
-                * (right - left)
+                -0.5 * strength * jnp.abs(face_speed)[..., None] * (right - left)
             )
             if periodic:
                 previous_flux = jnp.roll(
@@ -1300,6 +1459,49 @@ class NeutralABLMomentum:
                 )
             result -= (dissipative_flux - previous_flux) / spacing
         return result
+
+    def ko6_dissipation(
+        self,
+        velocity: MACVelocity,
+        cell_velocity: Array | None = None,
+    ) -> Array:
+        """Return conservative, energy-stable sixth-order cutoff damping."""
+        cells = _cell_velocity(velocity) if cell_velocity is None else cell_velocity
+        strength = self.config.ko6_dissipation_strength
+        if strength <= 0.0:
+            return jnp.zeros_like(cells)
+        speeds = (
+            jnp.maximum(
+                jnp.abs(velocity.x[..., :-1]),
+                jnp.abs(velocity.x[..., 1:]),
+            )[..., None],
+            jnp.maximum(
+                jnp.abs(velocity.y[:, :-1, :]),
+                jnp.abs(velocity.y[:, 1:, :]),
+            )[..., None],
+            jnp.maximum(
+                jnp.abs(velocity.z[:-1]),
+                jnp.abs(velocity.z[1:]),
+            )[..., None],
+        )
+        return strength * (
+            _periodic_ko6(cells, speeds[0], self.dx, -2)
+            + _periodic_ko6(cells, speeds[1], self.dy, -3)
+            + _wall_normal_ko6(cells, speeds[2], self.dz)
+        )
+
+    def regularization_tendency(
+        self,
+        velocity: MACVelocity,
+        cell_velocity: Array | None = None,
+    ) -> Array:
+        """Return the configured grid-cutoff momentum regularization."""
+        cells = _cell_velocity(velocity) if cell_velocity is None else cell_velocity
+        if self.config.regularization_scheme == "ko6":
+            return self.ko6_dissipation(velocity, cells)
+        if self.config.regularization_scheme == "mp5":
+            return self.mp5_dissipation(velocity, cells)
+        return jnp.zeros_like(cells)
 
     @property
     def wall_matching_height(self) -> float:
@@ -1399,9 +1601,7 @@ class NeutralABLMomentum:
             tendency = tendency.at[..., 0].add(
                 vertical * (v - geostrophic_v) - horizontal * w
             )
-            tendency = tendency.at[..., 1].add(
-                -vertical * (u - geostrophic_u)
-            )
+            tendency = tendency.at[..., 1].add(-vertical * (u - geostrophic_u))
             tendency = tendency.at[..., 2].add(horizontal * u)
         return tendency
 
@@ -1415,15 +1615,11 @@ class NeutralABLMomentum:
         wall_velocity: Array | None = None,
         wall_stress: Array | None = None,
     ) -> Array:
-        cells = (
-            _cell_velocity(velocity)
-            if cell_velocity is None
-            else cell_velocity
-        )
+        cells = _cell_velocity(velocity) if cell_velocity is None else cell_velocity
         if gradient is None:
             gradient = self.velocity_gradient(cells)
         tendency = (
-            self.conservative_advection(velocity, cells)
+            self.advection_tendency(velocity, cells)
             + self.sgs_tendency(
                 cells,
                 lasd_coefficient,
@@ -1433,9 +1629,7 @@ class NeutralABLMomentum:
             )
             + self.forcing_tendency(cells)
         )
-        if self.config.mp5_dissipation_strength > 0.0:
-            tendency += self.mp5_dissipation(velocity, cells)
-        return tendency
+        return tendency + self.regularization_tendency(velocity, cells)
 
     def tendency(self, velocity: MACVelocity, _time: float) -> MACVelocity:
         return self._compiled_tendency(
@@ -1453,8 +1647,7 @@ class NeutralABLMomentum:
         expected = (*self.grid.shape[1:], 3)
         if tuple(wall_stress.shape) != expected:
             raise ValueError(
-                f"expected wall stress shape {expected}, "
-                f"got {tuple(wall_stress.shape)}"
+                f"expected wall stress shape {expected}, got {tuple(wall_stress.shape)}"
             )
         return self._compiled_tendency_with_wall_stress(
             velocity,
@@ -1482,9 +1675,7 @@ class NeutralABLMomentum:
         """Initialize accepted-step LASD memory from ``velocity``."""
         if self.lasd_closure is None:
             return None
-        self._lasd_state = self.lasd_closure.initialize(
-            _cell_velocity(velocity)
-        )
+        self._lasd_state = self.lasd_closure.initialize(_cell_velocity(velocity))
         self._lasd_step = 0
         self._lasd_interval_time = 0.0
         return self._lasd_state
@@ -1543,13 +1734,10 @@ class NeutralABLMomentum:
             self.reset_wall_model(velocity)
             return
         epsilon = min(timestep / timescale, 1.0)
-        instantaneous = self.instantaneous_wall_velocity(
-            _cell_velocity(velocity)
-        )
+        instantaneous = self.instantaneous_wall_velocity(_cell_velocity(velocity))
         filtered = (
-            (1.0 - epsilon) * self._wall_model_state.filtered_velocity
-            + epsilon * instantaneous
-        )
+            1.0 - epsilon
+        ) * self._wall_model_state.filtered_velocity + epsilon * instantaneous
         self._wall_model_state = WallModelState(filtered)
 
     @property
@@ -1696,21 +1884,13 @@ class NeutralABLMomentum:
             if use_fast_projection and history is not None
             else ()
         )
-        pressure_guess = (
-            None if history is None else history.current_pressure
-        )
+        pressure_guess = None if history is None else history.current_pressure
 
         for stage_index in range(1, len(_ARK3_C)):
             terms: list[tuple[float, MACVelocity]] = [(1.0, velocity)]
             for previous in range(stage_index):
-                explicit_weight = (
-                    timestep
-                    * _ARK3_EXPLICIT_A[stage_index][previous]
-                )
-                implicit_weight = (
-                    timestep
-                    * _ARK3_IMPLICIT_A[stage_index][previous]
-                )
+                explicit_weight = timestep * _ARK3_EXPLICIT_A[stage_index][previous]
+                implicit_weight = timestep * _ARK3_IMPLICIT_A[stage_index][previous]
                 if explicit_weight != 0.0:
                     terms.append(
                         (
@@ -1768,9 +1948,7 @@ class NeutralABLMomentum:
                 )
             )
         initial_pressure = (
-            predicted_pressures[-1]
-            if use_fast_projection
-            else pressure_guess
+            predicted_pressures[-1] if use_fast_projection else pressure_guess
         )
         return self.projector.project_velocity_and_pressure(
             _velocity_sum(*final_terms),
@@ -1817,12 +1995,8 @@ class NeutralABLMomentum:
         x_boundary = 0.5 * (velocity.x[..., 0] + velocity.x[..., -1])
         y_boundary = 0.5 * (velocity.y[:, 0, :] + velocity.y[:, -1, :])
         return MACVelocity(
-            velocity.x.at[..., 0].set(x_boundary).at[..., -1].set(
-                x_boundary
-            ),
-            velocity.y.at[:, 0, :].set(y_boundary).at[:, -1, :].set(
-                y_boundary
-            ),
+            velocity.x.at[..., 0].set(x_boundary).at[..., -1].set(x_boundary),
+            velocity.y.at[:, 0, :].set(y_boundary).at[:, -1, :].set(y_boundary),
             velocity.z.at[0].set(0.0).at[-1].set(0.0),
         )
 
@@ -1832,20 +2006,14 @@ class NeutralABLMomentum:
         perturbation_amplitude: float = 0.05,
     ) -> MACVelocity:
         nz, ny, nx = self.grid.shape
-        z = (
-            jnp.arange(nz, dtype=self.pressure_solver.operator.dtype) + 0.5
-        ) * self.dz
+        z = (jnp.arange(nz, dtype=self.pressure_solver.operator.dtype) + 0.5) * self.dz
         mean_u = (
             self.config.friction_velocity
             / self.config.von_karman
             * jnp.log(z / self.config.roughness_length)
         )
-        xx = 2.0 * jnp.pi * (
-            jnp.arange(nx, dtype=z.dtype) + 0.5
-        ) / nx
-        yy = 2.0 * jnp.pi * (
-            jnp.arange(ny, dtype=z.dtype) + 0.5
-        ) / ny
+        xx = 2.0 * jnp.pi * (jnp.arange(nx, dtype=z.dtype) + 0.5) / nx
+        yy = 2.0 * jnp.pi * (jnp.arange(ny, dtype=z.dtype) + 0.5) / ny
         envelope = jnp.sin(jnp.pi * z / self.height)
         perturbation = (
             perturbation_amplitude
@@ -1860,9 +2028,7 @@ class NeutralABLMomentum:
             * jnp.cos(xx)[None, None, :]
         )
         cells = cells.at[..., 1].set(
-            perturbation
-            * jnp.cos(yy)[None, :, None]
-            * jnp.sin(2.0 * xx)[None, None, :]
+            perturbation * jnp.cos(yy)[None, :, None] * jnp.sin(2.0 * xx)[None, None, :]
         )
         velocity = self.enforce_boundaries(_cells_to_faces(cells))
         if self.pressure_solver.krylov.execution == "jax":
@@ -1890,9 +2056,7 @@ class NeutralABLMomentum:
         if perturbation_tke is not None:
             target_tke = jnp.asarray(perturbation_tke, dtype=dtype)
             if target_tke.shape != (nz,):
-                raise ValueError(
-                    "perturbation TKE must contain one value per z cell"
-                )
+                raise ValueError("perturbation TKE must contain one value per z cell")
             if bool(jnp.any(target_tke < 0.0)):
                 raise ValueError("perturbation TKE must be nonnegative")
             random = jax.random.uniform(
@@ -1936,15 +2100,9 @@ class NeutralABLMomentum:
         if gradient is None:
             gradient = self.velocity_gradient(cell_velocity)
         height = 0.5 * self.dz
-        factor = 1.0 / (
-            height * math.log(height / self.config.roughness_length)
-        )
-        gradient = gradient.at[0, ..., 0, 2].set(
-            cell_velocity[0, ..., 0] * factor
-        )
-        return gradient.at[0, ..., 1, 2].set(
-            cell_velocity[0, ..., 1] * factor
-        )
+        factor = 1.0 / (height * math.log(height / self.config.roughness_length))
+        gradient = gradient.at[0, ..., 0, 2].set(cell_velocity[0, ..., 0] * factor)
+        return gradient.at[0, ..., 1, 2].set(cell_velocity[0, ..., 1] * factor)
 
     def diagnostic_sgs_tke(
         self,
@@ -1960,10 +2118,7 @@ class NeutralABLMomentum:
         energy.  The same labeled diagnostic is used for like-for-like Andrén
         resolved-plus-SGS statistics in the LASD benchmark path.
         """
-        if (
-            not math.isfinite(dissipation_coefficient)
-            or dissipation_coefficient <= 0.0
-        ):
+        if not math.isfinite(dissipation_coefficient) or dissipation_coefficient <= 0.0:
             raise ValueError("SGS dissipation coefficient must be positive")
         if gradient is None:
             gradient = self.velocity_gradient(cell_velocity)
@@ -1971,10 +2126,7 @@ class NeutralABLMomentum:
             cell_velocity,
             gradient=gradient,
         )
-        strain = 0.5 * (
-            diagnostic_gradient
-            + jnp.swapaxes(diagnostic_gradient, -1, -2)
-        )
+        strain = 0.5 * (diagnostic_gradient + jnp.swapaxes(diagnostic_gradient, -1, -2))
         strain_magnitude_squared = 2.0 * jnp.einsum(
             "...ij,...ij->...",
             strain,
@@ -1991,8 +2143,7 @@ class NeutralABLMomentum:
             )
         delta = (self.dx * self.dy * self.dz) ** (1.0 / 3.0)
         return jnp.maximum(
-            viscosity * strain_magnitude_squared * delta
-            / dissipation_coefficient,
+            viscosity * strain_magnitude_squared * delta / dissipation_coefficient,
             0.0,
         ) ** (2.0 / 3.0)
 
@@ -2074,11 +2225,7 @@ class NeutralABLMomentum:
                     time=time,
                 )
             else:
-                initial_pressure = (
-                    None
-                    if history is None
-                    else history.current_pressure
-                )
+                initial_pressure = None if history is None else history.current_pressure
                 projected = projected_ssprk3_velocity_pressure_step(
                     velocity,
                     tendency=stage_tendency,
@@ -2171,17 +2318,12 @@ class NeutralABLMomentum:
         """Choose a step satisfying active explicit stability limits."""
         if not math.isfinite(target_cfl) or target_cfl <= 0.0:
             raise ValueError("target CFL must be positive and finite")
-        if (
-            not math.isfinite(target_diffusive_cfl)
-            or target_diffusive_cfl <= 0.0
-        ):
+        if not math.isfinite(target_diffusive_cfl) or target_diffusive_cfl <= 0.0:
             raise ValueError("target diffusive CFL must be positive and finite")
         if self.config.sgs_time_integration == "imex_ark3":
-            advective_rate, diffusive_rate = (
-                self._compiled_imex_timestep_rates(
-                    velocity,
-                    self._active_lasd_coefficient(velocity),
-                )
+            advective_rate, diffusive_rate = self._compiled_imex_timestep_rates(
+                velocity,
+                self._active_lasd_coefficient(velocity),
             )
             advective_rate = float(advective_rate)
             diffusive_rate = float(diffusive_rate)
@@ -2301,11 +2443,47 @@ class AMDPassiveScalar:
         scalar: Array,
         velocity: MACVelocity,
     ) -> Array:
-        """Return conservative centered advection plus MP5 dissipation."""
+        """Return the configured conservative scalar transport."""
+        if self.model.advection_scheme == "mp5":
+            return self.mp5_advective_tendency(scalar, velocity)
         return self.centered_advective_tendency(
             scalar,
             velocity,
         ) + self.mp5_dissipation(scalar, velocity)
+
+    def mp5_advective_tendency(
+        self,
+        scalar: Array,
+        velocity: MACVelocity,
+    ) -> Array:
+        """Return a complete local-Lax-Friedrichs MP5 flux divergence."""
+        self._validate_scalar(scalar)
+        strength = self.model.mp5_dissipation_strength
+        tendency = jnp.zeros_like(scalar)
+        directions = (
+            (velocity.x[..., 1:], -1, self.dx, True),
+            (velocity.y[:, 1:, :], -2, self.dy, True),
+            (velocity.z[1:], 0, self.dz, False),
+        )
+        for face_speed, axis, spacing, periodic in directions:
+            left, right = _mp5_interface_states(
+                scalar,
+                axis=axis,
+                periodic=periodic,
+            )
+            flux = 0.5 * (
+                face_speed * (left + right)
+                - strength * jnp.abs(face_speed) * (right - left)
+            )
+            if periodic:
+                previous_flux = jnp.roll(flux, 1, axis=axis)
+            else:
+                previous_flux = jnp.concatenate(
+                    (jnp.zeros_like(flux[:1]), flux[:-1]),
+                    axis=0,
+                )
+            tendency -= (flux - previous_flux) / spacing
+        return tendency
 
     def centered_advective_tendency(
         self,
@@ -2336,19 +2514,19 @@ class AMDPassiveScalar:
             (scalar.shape[0] + 1, *scalar.shape[1:]),
             dtype=scalar.dtype,
         )
-        z_faces = z_faces.at[1:-1].set(
-            0.5 * (scalar[:-1] + scalar[1:])
-        )
+        z_faces = z_faces.at[1:-1].set(0.5 * (scalar[:-1] + scalar[1:]))
         return -(
-            (velocity.x[..., 1:] * x_faces[..., 1:]
-             - velocity.x[..., :-1] * x_faces[..., :-1])
+            (
+                velocity.x[..., 1:] * x_faces[..., 1:]
+                - velocity.x[..., :-1] * x_faces[..., :-1]
+            )
             / self.dx
-            + (velocity.y[:, 1:, :] * y_faces[:, 1:, :]
-               - velocity.y[:, :-1, :] * y_faces[:, :-1, :])
+            + (
+                velocity.y[:, 1:, :] * y_faces[:, 1:, :]
+                - velocity.y[:, :-1, :] * y_faces[:, :-1, :]
+            )
             / self.dy
-            + (velocity.z[1:] * z_faces[1:]
-               - velocity.z[:-1] * z_faces[:-1])
-            / self.dz
+            + (velocity.z[1:] * z_faces[1:] - velocity.z[:-1] * z_faces[:-1]) / self.dz
         )
 
     def mp5_dissipation(
@@ -2373,9 +2551,7 @@ class AMDPassiveScalar:
                 axis=axis,
                 periodic=periodic,
             )
-            dissipative_flux = (
-                -0.5 * strength * jnp.abs(face_speed) * (right - left)
-            )
+            dissipative_flux = -0.5 * strength * jnp.abs(face_speed) * (right - left)
             if periodic:
                 previous_flux = jnp.roll(dissipative_flux, 1, axis=axis)
             else:
@@ -2414,9 +2590,7 @@ class AMDPassiveScalar:
         face_diffusivity = face_diffusivity.at[-1].set(diffusivity[-1])
         flux_z = jnp.zeros_like(face_diffusivity)
         flux_z = flux_z.at[1:-1].set(
-            -face_diffusivity[1:-1]
-            * (scalar[1:] - scalar[:-1])
-            / self.dz
+            -face_diffusivity[1:-1] * (scalar[1:] - scalar[:-1]) / self.dz
         )
         lower_flux = (
             self.model.lower_surface_flux
@@ -2497,14 +2671,10 @@ class AMDPassiveScalar:
         first_tendency = self.tendency(scalar, velocity)
         first = scalar + timestep * first_tendency
         second_tendency = self.tendency(first, velocity)
-        second = scalar + 0.25 * timestep * (
-            first_tendency + second_tendency
-        )
+        second = scalar + 0.25 * timestep * (first_tendency + second_tendency)
         third_tendency = self.tendency(second, velocity)
         return scalar + timestep * (
-            first_tendency / 6.0
-            + second_tendency / 6.0
-            + (2.0 / 3.0) * third_tendency
+            first_tendency / 6.0 + second_tendency / 6.0 + (2.0 / 3.0) * third_tendency
         )
 
     def step(
@@ -2543,11 +2713,7 @@ class AMDPassiveScalar:
         return (
             2.0
             * jnp.max(diffusivity)
-            * (
-                1.0 / self.dx**2
-                + 1.0 / self.dy**2
-                + 1.0 / self.dz**2
-            )
+            * (1.0 / self.dx**2 + 1.0 / self.dy**2 + 1.0 / self.dz**2)
         )
 
     def timestep_for_diffusive_cfl(
@@ -2556,10 +2722,7 @@ class AMDPassiveScalar:
         velocity: MACVelocity,
         target_diffusive_cfl: float,
     ) -> float:
-        if (
-            not math.isfinite(target_diffusive_cfl)
-            or target_diffusive_cfl <= 0.0
-        ):
+        if not math.isfinite(target_diffusive_cfl) or target_diffusive_cfl <= 0.0:
             raise ValueError("scalar diffusive CFL target must be positive")
         rate = float(self._compiled_diffusive_rate(scalar, velocity))
         return math.inf if rate <= 0.0 else target_diffusive_cfl / rate

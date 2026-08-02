@@ -11,12 +11,15 @@ python benchmark/Andren1994/run.py \
   --output-dir benchmark_results/andren1994_amd_40cubed_complete
 ```
 
-The current runner uses the MAC finite-volume momentum path, a matrix-free
-symmetric-GMG/PCG pressure solver, and filter-free AMD by default. The AMD run
-also advances the paper's passive scalar with a conservative AMD flux and a
+The current runner defaults to fourth-order skew/adjoint-paired KEP momentum,
+conservative KO6 cutoff damping, a matrix-free symmetric-GMG/PCG pressure
+solver, and filter-free AMD. The AMD run also advances the paper's passive
+scalar with a complete MP5 transport flux, conservative AMD flux, and a
 prescribed lower surface flux of `1e-3`; use `--no-passive-scalar` only for a
 momentum-only diagnostic run. `--scalar-amd-coefficient` defaults to the
-momentum `--amd-coefficient`. Use `--sgs lasd` for the physical-space LASD
+momentum `--amd-coefficient`. The previous transport is selectable with
+`--momentum-advection centered2 --momentum-regularization mp5
+--scalar-advection centered_mp5`. Use `--sgs lasd` for the physical-space LASD
 momentum closure (the scalar is then off by default). The restriction is the volume-weighted
 adjoint of prolongation. Use `--linear-solver gmres` for the restarted GMRES
 reference path.

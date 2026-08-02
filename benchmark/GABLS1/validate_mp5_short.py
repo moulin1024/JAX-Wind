@@ -71,19 +71,28 @@ def _build_continuation(
     nz, ny, nx = (int(value) for value in checkpoint["shape_zyx"])
     runner_args = run.parse_args(
         [
-            "--nx", str(nx),
-            "--ny", str(ny),
-            "--nz", str(nz),
-            "--amd-coefficient", str(float(checkpoint["amd_coefficient"])),
+            "--nx",
+            str(nx),
+            "--ny",
+            str(ny),
+            "--nz",
+            str(nz),
+            "--amd-coefficient",
+            str(float(checkpoint["amd_coefficient"])),
             "--scalar-amd-coefficient",
             str(float(checkpoint["scalar_amd_coefficient"])),
-            "--mp5-strength", str(mp5_strength),
-            "--projection-method", "fpj2",
-            "--coupling-integrator", "coupled-ssprk3",
-            "--pressure-rtol", str(validation.pressure_rtol),
+            "--mp5-strength",
+            str(mp5_strength),
+            "--projection-method",
+            "fpj2",
+            "--coupling-integrator",
+            "coupled-ssprk3",
+            "--pressure-rtol",
+            str(validation.pressure_rtol),
             "--pressure-max-iterations",
             str(validation.pressure_max_iterations),
-            "--pressure-smooth", str(validation.pressure_smooth),
+            "--pressure-smooth",
+            str(validation.pressure_smooth),
             "--pressure-coarse-smooth",
             str(validation.pressure_coarse_smooth),
         ]
@@ -127,8 +136,7 @@ def _advance(
         mp5_strength,
     )
     initial_theta = jnp.mean(
-        state.potential_temperature
-        - coupled.config.reference_potential_temperature
+        state.potential_temperature - coupled.config.reference_potential_temperature
     )
     integrated_heat_flux = jnp.asarray(
         0.0,
@@ -172,9 +180,7 @@ def _advance(
     initial_advective = float(initial_rates[0])
     final_advective = float(final_rates[0])
     budget_residual = abs(
-        theta_after
-        - initial_theta
-        - integrated_heat_flux / case.domain
+        theta_after - initial_theta - integrated_heat_flux / case.domain
     )
     result: dict[str, object] = {
         "mp5_strength": mp5_strength,
@@ -219,25 +225,30 @@ def main(argv: list[str] | None = None) -> int:
         for key in profile_keys
     }
     mp5_off_dissipation_max = float(
-        np.max(np.abs(candidate_statistics["dissipation_mp5"]))
+        np.max(np.abs(candidate_statistics["scalar_dissipation_mp5"]))
     )
-    safe_cfl = max(
-        float(baseline["initial_cfl"]),
-        float(baseline["final_cfl"]),
-        float(candidate["initial_cfl"]),
-        float(candidate["final_cfl"]),
-    ) <= 0.9
+    safe_cfl = (
+        max(
+            float(baseline["initial_cfl"]),
+            float(baseline["final_cfl"]),
+            float(candidate["initial_cfl"]),
+            float(candidate["final_cfl"]),
+        )
+        <= 0.9
+    )
     checks = {
         "both_states_finite": bool(baseline["finite"] and candidate["finite"]),
         "face_envelope_cfl_at_most_0p9": safe_cfl,
         "divergence_below_5e-4": max(
             float(baseline["divergence_l2"]),
             float(candidate["divergence_l2"]),
-        ) < 5.0e-4,
+        )
+        < 5.0e-4,
         "theta_budget_below_5e-5": max(
             float(baseline["theta_budget_residual"]),
             float(candidate["theta_budget_residual"]),
-        ) < 5.0e-5,
+        )
+        < 5.0e-5,
         "mp5_off_dissipation_is_zero": mp5_off_dissipation_max < 1.0e-12,
     }
     report = {

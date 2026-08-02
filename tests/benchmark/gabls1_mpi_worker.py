@@ -79,6 +79,7 @@ def main() -> None:
         scalar_amd_coefficient=0.212,
         mp5_strength=1.0,
         coupling_integrator="coupled-ssprk3",
+        projection_method="fpj2",
     )
     local_y = count // size
     start = rank * local_y
@@ -91,9 +92,7 @@ def main() -> None:
         maxval=0.1,
     )
     random -= jnp.mean(random, axis=(1, 2), keepdims=True)
-    global_theta = theta_profile[:, None, None] + random * (
-        z < 50.0
-    )[:, None, None]
+    global_theta = theta_profile[:, None, None] + random * (z < 50.0)[:, None, None]
     theta = global_theta[:, start : start + local_y, :][None]
     velocity = YSlabMACVelocity(
         jnp.full((1, count, local_y, count + 1), 8.0, dtype=jnp.float32),
@@ -101,7 +100,18 @@ def main() -> None:
         jnp.zeros((1, count + 1, local_y, count), dtype=jnp.float32),
     )
     state = coupled.initial_state(velocity, theta)
-    advanced = coupled.step(state, timestep=0.25)
+    projection_calls = 0
+    project = coupled._project
+
+    def counted_project(*args, **kwargs):
+        nonlocal projection_calls
+        projection_calls += 1
+        return project(*args, **kwargs)
+
+    coupled._project = counted_project
+    advanced = state
+    for _ in range(3):
+        advanced = coupled.step(advanced, timestep=0.25)
     rates = coupled.rates(advanced)
     fluxes = coupled.surface_layer_fluxes(advanced)
     local_finite = int(
@@ -128,13 +138,13 @@ def main() -> None:
                     "finite": bool(finite),
                     "step": advanced.step,
                     "time": advanced.time,
-                    "divergence_norm": coupled.divergence_norm(
-                        advanced.velocity
-                    ),
+                    "divergence_norm": coupled.divergence_norm(advanced.velocity),
                     "advective_rate": rates[0],
                     "momentum_diffusive_rate": rates[1],
                     "scalar_diffusive_rate": rates[2],
                     "surface_heat_flux": heat_flux_sum / (count * count),
+                    "projection_calls": projection_calls,
+                    "fpj2_history_count": coupled.fpj2_state.history_count,
                 }
             ),
             flush=True,

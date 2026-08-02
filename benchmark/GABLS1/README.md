@@ -8,6 +8,14 @@ wind `(8, 0) m/s`, Coriolis parameter `1.39e-4 s^-1`, `265 K` mixed layer to
 rate of `0.25 K/h`. Momentum and heat use the coupled stable Monin--Obukhov
 wall law with `z0 = z0h = 0.1 m`.
 
+The default transport path is fourth-order skew/adjoint-paired KEP momentum,
+AMD, conservative KO6 cutoff damping, and a complete MP5 potential-temperature
+flux.  The former second-order centered-plus-MP5 path remains available with
+`--momentum-advection centered2 --momentum-regularization mp5
+--scalar-advection centered_mp5`.  The KEP4 conservation qualification and
+operator identities are recorded in
+`doc/design/decisions/0012-kep4-ko6-mp5-transport.md`.
+
 The canonical public low-resolution comparison is `32³` (`12.5 m`) for nine
 hours, with statistics accumulated over hours 8--9:
 
@@ -32,12 +40,12 @@ mpiexec -n 4 env \
 ```
 
 The layout is `1 × 4` in `y`: every rank owns `32 × 8 × 32` cells and keeps
-complete ground-to-top vertical columns. AMD and MP5 exchange three periodic
-halo rows with multi-host `ppermute`; stable MOST and vertical SGS fluxes stay
-local. The matrix-free GMG/PCG pressure solve uses the same y slabs on fine
-levels and globally replicates only its coarse level. Rank 0 reconstructs the
-ordinary full-domain checkpoint and diagnostics, so serial and MPI runs can
-restart each other's checkpoints.
+complete ground-to-top vertical columns. KEP4, KO6, AMD, and scalar MP5 share
+one packed three-row halo message per neighbor and stage; stable MOST and
+vertical SGS fluxes stay local. The matrix-free GMG/PCG pressure solve uses
+the same y slabs on fine levels and globally replicates only its coarse level.
+Rank 0 reconstructs the ordinary full-domain checkpoint and diagnostics, so
+serial and MPI runs can restart each other's checkpoints.
 
 Before committing a long run, exercise both short paths:
 
@@ -76,8 +84,17 @@ least three y cells:
 
 ```bash
 mpiexec -n 4 python benchmark/GABLS1/run_mpi.py --quick \
+  --projection-method fpj2 \
+  --coupling-integrator coupled-ssprk3 \
   --output-dir benchmark_results/gabls1_amd_mpi_quick
 ```
+
+The distributed FPJ2 path uses three PPEs for each of its first two accepted
+steps, then one PPE per step while the timestep ratio remains within
+`--fpj2-timestep-ratio-limit`. Its checkpoint stores both distributed
+pressure histories, so a restart continues directly on the one-PPE path.
+Momentum and temperature share one packed three-row halo exchange per
+direction and explicit stage.
 
 ## Performance profiling
 

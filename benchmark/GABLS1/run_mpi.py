@@ -31,9 +31,12 @@ CHECKPOINT_SCHEMA = serial_run.CHECKPOINT_SCHEMA
 
 def parse_args(argv: list[str] | None = None):
     args = serial_run.parse_args(argv)
-    if args.projection_method != "full":
+    if (
+        args.projection_method == "fpj2"
+        and args.coupling_integrator != "coupled-ssprk3"
+    ):
         raise SystemExit(
-            "the y-slab runner currently supports --projection-method full"
+            "the y-slab FPJ2 path requires --coupling-integrator coupled-ssprk3"
         )
     if args.quick:
         # Four MP5 ranks require at least three owned y cells per rank.
@@ -135,7 +138,13 @@ def _build_distributed(args, jax):
         amd_coefficient=args.amd_coefficient,
         scalar_amd_coefficient=args.scalar_amd_coefficient,
         mp5_strength=args.mp5_strength,
+        ko6_strength=args.ko6_strength,
+        momentum_advection=args.momentum_advection,
+        momentum_regularization=args.momentum_regularization,
+        scalar_advection=args.scalar_advection,
         coupling_integrator=args.coupling_integrator,
+        projection_method=args.projection_method,
+        fpj2_timestep_ratio_limit=args.fpj2_timestep_ratio_limit,
     )
     return coupled, case, dtype
 
@@ -204,9 +213,13 @@ def _build_serial_observer(args, case, dtype):
             coriolis_vertical=case.coriolis,
             coriolis_horizontal=0.0,
             mp5_dissipation_strength=args.mp5_strength,
+            advection_scheme=args.momentum_advection,
+            regularization_scheme=args.momentum_regularization,
+            ko6_dissipation_strength=args.ko6_strength,
             amd=AMDModel(coefficient=args.amd_coefficient),
             sgs_time_integration="explicit",
             projection_method=args.projection_method,
+            fpj2_timestep_ratio_limit=args.fpj2_timestep_ratio_limit,
         ),
     )
     scalar = AMDPassiveScalar(
@@ -216,6 +229,7 @@ def _build_serial_observer(args, case, dtype):
             lower_surface_flux=0.0,
             upper_surface_flux=0.0,
             mp5_dissipation_strength=args.mp5_strength,
+            advection_scheme=args.scalar_advection,
         ),
     )
     return AMDBoussinesq(
@@ -244,8 +258,7 @@ def _local_initial_state(args, coupled, case, dtype, rank: int):
     profile = jnp.where(
         z <= case.inversion_base,
         case.theta_initial,
-        case.theta_initial
-        + case.inversion_gradient * (z - case.inversion_base),
+        case.theta_initial + case.inversion_gradient * (z - case.inversion_base),
     )
     perturbation = jax.random.uniform(
         jax.random.PRNGKey(args.seed),
@@ -256,9 +269,7 @@ def _local_initial_state(args, coupled, case, dtype, rank: int):
     )
     perturbation -= jnp.mean(perturbation, axis=(1, 2), keepdims=True)
     perturbation *= (z < 50.0)[:, None, None]
-    theta = (
-        profile[:, None, None] + perturbation
-    )[:, start : start + local_y, :][None]
+    theta = (profile[:, None, None] + perturbation)[:, start : start + local_y, :][None]
     velocity = YSlabMACVelocity(
         jnp.full(
             (1, args.nz, local_y, args.nx + 1),
@@ -283,14 +294,27 @@ def _validate_checkpoint(args, checkpoint, coupled) -> None:
         raise SystemExit("restart checkpoint schema is not supported")
     if not np.array_equal(checkpoint["shape_zyx"], coupled.grid.shape):
         raise SystemExit("restart grid shape does not match")
-    for key in ("amd_coefficient", "scalar_amd_coefficient", "mp5_strength"):
+    for key in (
+        "amd_coefficient",
+        "scalar_amd_coefficient",
+        "mp5_strength",
+        "ko6_strength",
+    ):
         if not np.isclose(float(checkpoint[key]), getattr(args, key)):
+            raise SystemExit(f"restart {key} does not match")
+    for key in (
+        "momentum_advection",
+        "momentum_regularization",
+        "scalar_advection",
+    ):
+        if str(checkpoint[key]) != getattr(args, key):
             raise SystemExit(f"restart {key} does not match")
 
 
 def _local_restart_state(args, coupled, dtype, rank: int):
     import jax.numpy as jnp
 
+    from jaxwind.momentum import FPJ2State
     from jaxwind.pressure import YSlabMACVelocity
 
     checkpoint = np.load(args.restart, allow_pickle=False)
@@ -309,18 +333,35 @@ def _local_restart_state(args, coupled, dtype, rank: int):
             checkpoint["potential_temperature"][:, start:end, :],
             dtype=dtype,
         )[None],
-        pressure=jnp.asarray(checkpoint["pressure"][:, start:end, :], dtype=dtype)[None],
+        pressure=jnp.asarray(checkpoint["pressure"][:, start:end, :], dtype=dtype)[
+            None
+        ],
         time=float(checkpoint["time"]),
         step=int(checkpoint["step"]),
         project=False,
     )
+    if args.projection_method == "fpj2" and "fpj2_current_pressure" in checkpoint:
+        coupled.restore_fpj2(
+            FPJ2State(
+                jnp.asarray(
+                    checkpoint["fpj2_current_pressure"][:, start:end, :],
+                    dtype=dtype,
+                )[None],
+                jnp.asarray(
+                    checkpoint["fpj2_previous_pressure"][:, start:end, :],
+                    dtype=dtype,
+                )[None],
+                float(checkpoint["fpj2_current_timestep"]),
+                float(checkpoint["fpj2_previous_timestep"]),
+                int(checkpoint["fpj2_history_count"]),
+            )
+        )
     return state, checkpoint
 
 
 def _assemble_y_faces(pieces: list[np.ndarray]) -> np.ndarray:
     return np.concatenate(
-        tuple(piece[:, :-1, :] for piece in pieces[:-1])
-        + (pieces[-1],),
+        tuple(piece[:, :-1, :] for piece in pieces[:-1]) + (pieces[-1],),
         axis=1,
     )
 
@@ -353,6 +394,13 @@ def _gather_global_state(communicator, state, observer):
         time=state.time,
         step=state.step,
     )
+
+
+def _gather_global_cell_field(communicator, field):
+    parts = communicator.gather(np.asarray(field[0]), root=0)
+    if communicator.Get_rank() != 0:
+        return None
+    return np.concatenate(parts, axis=1)
 
 
 def run(args) -> dict[str, float | int | str] | None:
@@ -392,9 +440,7 @@ def run(args) -> dict[str, float | int | str] | None:
             max_cfl = float(checkpoint["max_cfl"])
             max_diffusive_cfl = float(checkpoint["max_diffusive_cfl"])
             max_divergence = float(checkpoint["max_divergence"])
-            max_scalar_budget_residual = float(
-                checkpoint["max_scalar_budget_residual"]
-            )
+            max_scalar_budget_residual = float(checkpoint["max_scalar_budget_residual"])
         else:
             samples = []
             time_rows = []
@@ -403,8 +449,18 @@ def run(args) -> dict[str, float | int | str] | None:
             max_scalar_budget_residual = 0.0
 
     compile_start = time.perf_counter()
+    saved_fpj2 = coupled.fpj2_state
+    if args.projection_method == "fpj2":
+        coupled.reset_fpj2()
     compiled = coupled.step(state, timestep=min(args.dt_max, 0.25))
+    if args.projection_method == "fpj2":
+        compiled = coupled.step(compiled, timestep=min(args.dt_max, 0.25))
+        compiled = coupled.step(compiled, timestep=min(args.dt_max, 0.25))
     jax.block_until_ready(compiled.velocity.x)
+    if saved_fpj2 is None:
+        coupled.reset_fpj2()
+    else:
+        coupled.restore_fpj2(saved_fpj2)
     compilation_s = time.perf_counter() - compile_start
     if rank == 0:
         print(
@@ -436,6 +492,17 @@ def run(args) -> dict[str, float | int | str] | None:
 
     def save_checkpoint() -> None:
         observed = global_state()
+        fpj2 = coupled.fpj2_state
+        fpj2_current = (
+            _gather_global_cell_field(communicator, fpj2.current_pressure)
+            if fpj2 is not None
+            else None
+        )
+        fpj2_previous = (
+            _gather_global_cell_field(communicator, fpj2.previous_pressure)
+            if fpj2 is not None
+            else None
+        )
         if rank != 0:
             return
         payload: dict[str, object] = {
@@ -446,9 +513,7 @@ def run(args) -> dict[str, float | int | str] | None:
             "velocity_x": np.asarray(observed.velocity.x),
             "velocity_y": np.asarray(observed.velocity.y),
             "velocity_z": np.asarray(observed.velocity.z),
-            "potential_temperature": np.asarray(
-                observed.potential_temperature
-            ),
+            "potential_temperature": np.asarray(observed.potential_temperature),
             "pressure": np.asarray(observed.pressure),
             "time": observed.time,
             "step": observed.step,
@@ -456,11 +521,25 @@ def run(args) -> dict[str, float | int | str] | None:
             "amd_coefficient": args.amd_coefficient,
             "scalar_amd_coefficient": args.scalar_amd_coefficient,
             "mp5_strength": args.mp5_strength,
+            "ko6_strength": args.ko6_strength,
+            "momentum_advection": args.momentum_advection,
+            "momentum_regularization": args.momentum_regularization,
+            "scalar_advection": args.scalar_advection,
             "max_cfl": max_cfl,
             "max_diffusive_cfl": max_diffusive_cfl,
             "max_divergence": max_divergence,
             "max_scalar_budget_residual": max_scalar_budget_residual,
         }
+        if fpj2 is not None:
+            payload.update(
+                {
+                    "fpj2_current_pressure": fpj2_current,
+                    "fpj2_previous_pressure": fpj2_previous,
+                    "fpj2_current_timestep": fpj2.current_timestep,
+                    "fpj2_previous_timestep": fpj2.previous_timestep,
+                    "fpj2_history_count": fpj2.history_count,
+                }
+            )
         serial_run._pack_records(payload, "samples", samples)
         serial_run._pack_records(payload, "time_rows", time_rows)
         destination = args.output_dir / "checkpoint.npz"
@@ -480,17 +559,13 @@ def run(args) -> dict[str, float | int | str] | None:
             if not np.all(np.isfinite(value)) and key != "obukhov_length"
         ]
         if nonfinite:
-            raise FloatingPointError(
-                "non-finite diagnostic: " + ", ".join(nonfinite)
-            )
+            raise FloatingPointError("non-finite diagnostic: " + ", ".join(nonfinite))
         time_rows.append(
             {
                 "step": float(state.step),
                 "time_s": state.time,
                 "time_hours": state.time / 3600.0,
-                "boundary_layer_height": float(
-                    statistics["boundary_layer_height"]
-                ),
+                "boundary_layer_height": float(statistics["boundary_layer_height"]),
                 "surface_temperature": case.surface_temperature(state.time),
                 "surface_heat_flux": float(statistics["surface_heat_flux"]),
                 "friction_velocity": float(statistics["friction_velocity"]),
@@ -566,16 +641,10 @@ def run(args) -> dict[str, float | int | str] | None:
             heat_flux_after = heat_sum_after / (args.nx * args.ny)
             if coupled.last_surface_heat_flux_quadrature is None:
                 heat_flux_before = heat_sum_before / (args.nx * args.ny)
-                integrated_heat_flux = 0.5 * (
-                    heat_flux_before + heat_flux_after
-                )
+                integrated_heat_flux = 0.5 * (heat_flux_before + heat_flux_after)
             else:
                 integrated_heat_flux = float(
-                    np.mean(
-                        np.asarray(
-                            coupled.last_surface_heat_flux_quadrature
-                        )
-                    )
+                    np.mean(np.asarray(coupled.last_surface_heat_flux_quadrature))
                 )
             budget_residual = abs(
                 theta_after
@@ -620,9 +689,8 @@ def run(args) -> dict[str, float | int | str] | None:
         if args.max_steps is not None and state.step >= args.max_steps:
             stopped_early = state.time < final_time
             if rank == 0:
-                need_diagnostic = (
-                    not time_rows
-                    or time_rows[-1]["step"] != float(state.step)
+                need_diagnostic = not time_rows or time_rows[-1]["step"] != float(
+                    state.step
                 )
             else:
                 need_diagnostic = None
@@ -652,9 +720,7 @@ def run(args) -> dict[str, float | int | str] | None:
     runtime_s = time.perf_counter() - start_wall
     summary = None
     if rank == 0:
-        reference_dir = (
-            args.reference_dir if args.reference_dir.exists() else None
-        )
+        reference_dir = args.reference_dir if args.reference_dir.exists() else None
         summary = diagnostics.save_outputs(
             args.output_dir,
             samples=samples,
@@ -681,7 +747,11 @@ def run(args) -> dict[str, float | int | str] | None:
                 "amd_coefficient": args.amd_coefficient,
                 "scalar_amd_coefficient": args.scalar_amd_coefficient,
                 "mp5_dissipation_strength": args.mp5_strength,
-                "projection_method": "full",
+                "ko6_dissipation_strength": args.ko6_strength,
+                "momentum_advection": args.momentum_advection,
+                "momentum_regularization": args.momentum_regularization,
+                "scalar_advection": args.scalar_advection,
+                "projection_method": args.projection_method,
                 "coupling_integrator": args.coupling_integrator,
                 "pressure_smooth": args.pressure_smooth,
             },

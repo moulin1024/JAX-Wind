@@ -26,7 +26,7 @@ from benchmark.GABLS1 import diagnostics  # noqa: E402
 
 
 HERE = Path(__file__).resolve().parent
-CHECKPOINT_SCHEMA = "jaxwind.gabls1.nonspectral-amd.v1"
+CHECKPOINT_SCHEMA = "jaxwind.gabls1.kep4-ko6-mp5.v2"
 
 
 def _format_duration(seconds: float) -> str:
@@ -84,9 +84,30 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--scalar-amd-coefficient", type=float)
     parser.add_argument("--mp5-strength", type=float, default=1.0)
     parser.add_argument(
+        "--momentum-advection",
+        choices=("centered2", "kep4"),
+        default="kep4",
+    )
+    parser.add_argument(
+        "--momentum-regularization",
+        choices=("none", "mp5", "ko6"),
+        default="ko6",
+    )
+    parser.add_argument("--ko6-strength", type=float, default=1.0)
+    parser.add_argument(
+        "--scalar-advection",
+        choices=("centered_mp5", "mp5"),
+        default="mp5",
+    )
+    parser.add_argument(
         "--projection-method",
         choices=("full", "fpj2"),
         default="full",
+    )
+    parser.add_argument(
+        "--fpj2-timestep-ratio-limit",
+        type=float,
+        default=2.0,
     )
     parser.add_argument(
         "--coupling-integrator",
@@ -154,20 +175,33 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     }
     if any(not math.isfinite(value) or value <= 0.0 for value in positive.values()):
         parser.error("time, CFL, and pressure controls must be positive and finite")
+    if (
+        not math.isfinite(args.fpj2_timestep_ratio_limit)
+        or args.fpj2_timestep_ratio_limit < 1.0
+    ):
+        parser.error("fpj2-timestep-ratio-limit must be finite and at least one")
     if not 0.0 <= args.sample_start_hours < args.end_hours:
         parser.error("sample-start-hours must lie in [0, end-hours)")
-    for name in ("amd_coefficient", "scalar_amd_coefficient", "mp5_strength"):
+    for name in (
+        "amd_coefficient",
+        "scalar_amd_coefficient",
+        "mp5_strength",
+        "ko6_strength",
+    ):
         value = getattr(args, name)
         if not math.isfinite(value) or value < 0.0:
             parser.error(f"{name.replace('_', '-')} must be finite and nonnegative")
-    if min(
-        args.pressure_max_iterations,
-        args.pressure_coarse_smooth,
-        args.y_slab_coarse_cells_per_rank,
-        args.checkpoint_every,
-        args.log_every,
-        args.metrics_every,
-    ) <= 0:
+    if (
+        min(
+            args.pressure_max_iterations,
+            args.pressure_coarse_smooth,
+            args.y_slab_coarse_cells_per_rank,
+            args.checkpoint_every,
+            args.log_every,
+            args.metrics_every,
+        )
+        <= 0
+    ):
         parser.error("iteration and output intervals must be positive")
     if args.pressure_smooth < 0:
         parser.error("pressure-smooth must be nonnegative")
@@ -188,8 +222,7 @@ def _initial_state(args, coupled, case, dtype):
     profile = jnp.where(
         z <= case.inversion_base,
         case.theta_initial,
-        case.theta_initial
-        + case.inversion_gradient * (z - case.inversion_base),
+        case.theta_initial + case.inversion_gradient * (z - case.inversion_base),
     )
     perturbation = jax.random.uniform(
         jax.random.PRNGKey(args.seed),
@@ -231,10 +264,7 @@ def _unpack_records(checkpoint, prefix: str) -> list[dict]:
     keys = tuple(str(value) for value in checkpoint[f"{prefix}_keys"])
     count = int(checkpoint[f"{prefix}_count"])
     return [
-        {
-            key: np.asarray(checkpoint[f"{prefix}_{key}"][index])
-            for key in keys
-        }
+        {key: np.asarray(checkpoint[f"{prefix}_{key}"][index]) for key in keys}
         for index in range(count)
     ]
 
@@ -249,8 +279,20 @@ def _restore_checkpoint(args, coupled, dtype):
         raise SystemExit("restart checkpoint schema is not supported")
     if not np.array_equal(checkpoint["shape_zyx"], coupled.grid.shape):
         raise SystemExit("restart grid shape does not match")
-    for key in ("amd_coefficient", "scalar_amd_coefficient", "mp5_strength"):
+    for key in (
+        "amd_coefficient",
+        "scalar_amd_coefficient",
+        "mp5_strength",
+        "ko6_strength",
+    ):
         if not np.isclose(float(checkpoint[key]), getattr(args, key)):
+            raise SystemExit(f"restart {key} does not match")
+    for key in (
+        "momentum_advection",
+        "momentum_regularization",
+        "scalar_advection",
+    ):
+        if str(checkpoint[key]) != getattr(args, key):
             raise SystemExit(f"restart {key} does not match")
     state = coupled.initial_state(
         MACVelocity(
@@ -281,9 +323,7 @@ def _restore_checkpoint(args, coupled, dtype):
         "max_cfl": float(checkpoint["max_cfl"]),
         "max_diffusive_cfl": float(checkpoint["max_diffusive_cfl"]),
         "max_divergence": float(checkpoint["max_divergence"]),
-        "max_scalar_budget_residual": float(
-            checkpoint["max_scalar_budget_residual"]
-        ),
+        "max_scalar_budget_residual": float(checkpoint["max_scalar_budget_residual"]),
     }
 
 
@@ -355,9 +395,13 @@ def _build_coupled(args: argparse.Namespace):
             coriolis_vertical=case.coriolis,
             coriolis_horizontal=0.0,
             mp5_dissipation_strength=args.mp5_strength,
+            advection_scheme=args.momentum_advection,
+            regularization_scheme=args.momentum_regularization,
+            ko6_dissipation_strength=args.ko6_strength,
             amd=AMDModel(coefficient=args.amd_coefficient),
             sgs_time_integration="explicit",
             projection_method=args.projection_method,
+            fpj2_timestep_ratio_limit=args.fpj2_timestep_ratio_limit,
         ),
     )
     scalar = AMDPassiveScalar(
@@ -367,6 +411,7 @@ def _build_coupled(args: argparse.Namespace):
             lower_surface_flux=0.0,
             upper_surface_flux=0.0,
             mp5_dissipation_strength=args.mp5_strength,
+            advection_scheme=args.scalar_advection,
         ),
     )
     coupled = AMDBoussinesq(
@@ -434,9 +479,7 @@ def run(args: argparse.Namespace) -> dict[str, float | int | str]:
         )
     compiled_fields = diagnostic_kernel(state)
     compiled_rates = coupled.stability_rates(state)
-    compiled_accepted_metrics = coupled.accepted_state_metrics(
-        compiled_state
-    )
+    compiled_accepted_metrics = coupled.accepted_state_metrics(compiled_state)
     jax.block_until_ready(compiled_state.velocity.x)
     jax.block_until_ready(compiled_fields.surface_heat_flux)
     jax.block_until_ready(compiled_rates)
@@ -472,6 +515,10 @@ def run(args: argparse.Namespace) -> dict[str, float | int | str]:
             "amd_coefficient": args.amd_coefficient,
             "scalar_amd_coefficient": args.scalar_amd_coefficient,
             "mp5_strength": args.mp5_strength,
+            "ko6_strength": args.ko6_strength,
+            "momentum_advection": args.momentum_advection,
+            "momentum_regularization": args.momentum_regularization,
+            "scalar_advection": args.scalar_advection,
             "max_cfl": max_cfl,
             "max_diffusive_cfl": max_diffusive_cfl,
             "max_divergence": max_divergence,
@@ -481,12 +528,8 @@ def run(args: argparse.Namespace) -> dict[str, float | int | str]:
         if fpj2 is not None:
             payload.update(
                 {
-                    "fpj2_current_pressure": np.asarray(
-                        fpj2.current_pressure
-                    ),
-                    "fpj2_previous_pressure": np.asarray(
-                        fpj2.previous_pressure
-                    ),
+                    "fpj2_current_pressure": np.asarray(fpj2.current_pressure),
+                    "fpj2_previous_pressure": np.asarray(fpj2.previous_pressure),
                     "fpj2_current_timestep": fpj2.current_timestep,
                     "fpj2_previous_timestep": fpj2.previous_timestep,
                     "fpj2_history_count": fpj2.history_count,
@@ -514,9 +557,7 @@ def run(args: argparse.Namespace) -> dict[str, float | int | str]:
                 "step": float(state.step),
                 "time_s": state.time,
                 "time_hours": state.time / 3600.0,
-                "boundary_layer_height": float(
-                    statistics["boundary_layer_height"]
-                ),
+                "boundary_layer_height": float(statistics["boundary_layer_height"]),
                 "surface_temperature": case.surface_temperature(state.time),
                 "surface_heat_flux": float(statistics["surface_heat_flux"]),
                 "friction_velocity": float(statistics["friction_velocity"]),
@@ -663,6 +704,10 @@ def run(args: argparse.Namespace) -> dict[str, float | int | str]:
             "amd_coefficient": args.amd_coefficient,
             "scalar_amd_coefficient": args.scalar_amd_coefficient,
             "mp5_dissipation_strength": args.mp5_strength,
+            "ko6_dissipation_strength": args.ko6_strength,
+            "momentum_advection": args.momentum_advection,
+            "momentum_regularization": args.momentum_regularization,
+            "scalar_advection": args.scalar_advection,
             "projection_method": args.projection_method,
             "coupling_integrator": args.coupling_integrator,
             "pressure_smooth": args.pressure_smooth,
