@@ -102,7 +102,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--projection-method",
         choices=("full", "fpj2"),
-        default="full",
+        default="fpj2",
     )
     parser.add_argument(
         "--fpj2-timestep-ratio-limit",
@@ -112,7 +112,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--coupling-integrator",
         choices=("strang", "coupled-ssprk3"),
-        default="strang",
+        default="coupled-ssprk3",
     )
     parser.add_argument("--pressure-rtol", type=float, default=1.0e-5)
     parser.add_argument("--pressure-max-iterations", type=int, default=40)

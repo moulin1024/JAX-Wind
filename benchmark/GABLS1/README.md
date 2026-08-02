@@ -61,9 +61,9 @@ python benchmark/GABLS1/run.py --smoke \
 Both retain the same active scalar, MOST wall coupling, AMD closures,
 projection, diagnostics, and output path as the canonical case.
 
-The default `strang` coupling advances two scalar SSPRK3 half-steps. The
-alternative coupled integrator advances momentum and temperature on the same
-three SSPRK3 stages, reducing scalar RHS evaluations from six to three:
+The default coupled integrator advances momentum and temperature on the same
+three SSPRK3 stages, reducing scalar RHS evaluations from six to three. The
+legacy `strang` option retains two scalar SSPRK3 half-steps for comparisons:
 
 ```bash
 python benchmark/GABLS1/run.py \
@@ -118,8 +118,8 @@ python benchmark/GABLS1/profile_serial.py \
 
 `full` performs a pressure Poisson solve after every SSPRK3 momentum stage.
 `fpj2` uses two exact startup steps and then two pressure predictions plus one
-final Poisson solve. Choose `strang` for the original two scalar half-steps or
-`coupled-ssprk3` for three shared momentum-temperature stages.
+final Poisson solve. Choose `coupled-ssprk3` for the default three shared
+momentum-temperature stages or `strang` for the original two scalar half-steps.
 
 On the development CPU, the measured `64³` kernel time decreased from about
 `0.604 s/step` (`full`, two GMG pre/post smooths) to about
@@ -153,8 +153,9 @@ the FPJ2 step from `0.376 s` (`strang`) to `0.340 s`
 (`coupled-ssprk3`), about 9%. An equal-time 239-step fork remained stable with
 final divergence `8.30e-8`; boundary-layer height, friction velocity, and
 surface heat flux agreed with the Strang fork to better than 0.01%. Complete
-runner time was within measurement noise on the development CPU, so
-`coupled-ssprk3` remains opt-in rather than the benchmark default.
+runner time was within measurement noise on the development CPU. The coupled
+path is nevertheless the default here because it halves scalar RHS evaluations
+and has the more favorable multi-GPU communication pattern.
 
 The first two accepted steps after switching from a full-PPE checkpoint use
 the exact three-PPE startup path to build the variable-step pressure history.
