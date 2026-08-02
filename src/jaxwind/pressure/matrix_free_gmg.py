@@ -288,6 +288,11 @@ class MatrixFreePoissonOperator:
         self.boundaries = boundaries
         self.dtype = jnp.dtype(dtype)
         self._level = _make_level(grid, boundaries, self.dtype)
+        # Cache the *discrete* volume sum.  Using the analytic domain volume
+        # here is slightly different in float32 because the cell widths have
+        # already been rounded; projection must use the same discrete weights
+        # as the weighted inner product.
+        self._inverse_total_volume = jnp.reciprocal(jnp.sum(self._level.volume))
 
     @property
     def shape(self) -> tuple[int, int, int]:
@@ -300,6 +305,10 @@ class MatrixFreePoissonOperator:
     @property
     def diagonal(self) -> Array:
         return self._level.diagonal
+
+    @property
+    def inverse_total_volume(self) -> Array:
+        return self._inverse_total_volume
 
     @property
     def has_constant_nullspace(self) -> bool:
@@ -376,7 +385,7 @@ class MatrixFreePoissonOperator:
 
     def volume_mean(self, field: Array) -> Array:
         self._check_shape(field)
-        return jnp.sum(field * self.volume) / jnp.sum(self.volume)
+        return jnp.sum(field * self.volume) * self.inverse_total_volume
 
     def project_nullspace(self, field: Array) -> Array:
         if not self.has_constant_nullspace:
@@ -867,7 +876,10 @@ class MatrixFreeGMG:
                 solution = solution + (
                     self.config.jacobi_omega * residual / operator.diagonal
                 )
-            solution = operator.project_nullspace(solution)
+            # A constant pressure offset is annihilated by the operator and
+            # therefore cannot affect subsequent smoothing residuals.  Defer
+            # gauge fixing until the V-cycle exits instead of reducing over
+            # the complete level after every smoothing update.
         return solution
 
     def _cycle(self, level: int, solution: Array, rhs: Array) -> Array:
@@ -892,7 +904,6 @@ class MatrixFreeGMG:
         coarse_error = jnp.zeros_like(coarse_rhs)
         coarse_error = self._cycle(level + 1, coarse_error, coarse_rhs)
         solution = solution + _prolong(coarse_error, self.transfers[level])
-        solution = operator.project_nullspace(solution)
         return self._smooth(
             level,
             solution,
@@ -907,8 +918,8 @@ class MatrixFreeGMG:
                 f"expected preconditioner RHS shape {self.operators[0].shape}, "
                 f"got {tuple(rhs.shape)}"
             )
-        rhs = self.operators[0].project_nullspace(rhs)
-        return self._cycle(0, jnp.zeros_like(rhs), rhs)
+        result = self._cycle(0, jnp.zeros_like(rhs), rhs)
+        return self.operators[0].project_nullspace(result)
 
 
 class MatrixFreePoissonSolver:

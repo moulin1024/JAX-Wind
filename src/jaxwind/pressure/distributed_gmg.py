@@ -104,6 +104,13 @@ class YSlabMatrixFreePoissonSolver:
         )
         self.serial_gmg = MatrixFreeGMG(self.operator, gmg)
         self.krylov = replace(krylov, jit_kernels=False)
+        if (
+            self.krylov.execution == "jax"
+            and not isinstance(self.krylov, PCGConfig)
+        ):
+            raise ValueError(
+                "device-resident y-slab solves currently require PCG"
+            )
         self.replication_level = self._choose_replication_level()
         self._validate_sharded_levels()
         mapped: dict[str, object] = dict(
@@ -126,6 +133,15 @@ class YSlabMatrixFreePoissonSolver:
         self._mapped_prepare_rhs = jax.pmap(
             self._prepare_rhs_local,
             **mapped,
+        )
+        self._mapped_device_solve = (
+            jax.pmap(
+                self._device_pcg_local,
+                in_axes=(0, 0),
+                **mapped,
+            )
+            if self.krylov.execution == "jax"
+            else None
         )
 
     @property
@@ -310,8 +326,7 @@ class YSlabMatrixFreePoissonSolver:
             jnp.sum(volume * field),
             self.distribution.axis_name,
         )
-        weight = lax.psum(jnp.sum(volume), self.distribution.axis_name)
-        return field - total / weight
+        return field - total * operator.inverse_total_volume
 
     def _project_finest_local(self, field: Array) -> Array:
         return self._project_local(field, 0)
@@ -422,7 +437,9 @@ class YSlabMatrixFreePoissonSolver:
                     * residual
                     / diagonal
                 )
-            solution = self._project_local(solution, level)
+            # Constant pressure offsets do not change the operator residual.
+            # Fix the gauge once at the preconditioner exit instead of issuing
+            # a cross-rank reduction after every smoothing update.
         return solution
 
     def _restrict_local(self, field: Array, level: int) -> Array:
@@ -602,8 +619,6 @@ class YSlabMatrixFreePoissonSolver:
             axis=1,
             tiled=True,
         )
-        operator = self.serial_gmg.operators[level]
-        global_rhs = operator.project_nullspace(global_rhs)
         error = self.serial_gmg._cycle(
             level,
             jnp.zeros_like(global_rhs),
@@ -632,10 +647,7 @@ class YSlabMatrixFreePoissonSolver:
             jnp.zeros_like(coarse_rhs),
             coarse_rhs,
         )
-        solution = self._project_local(
-            solution + self._prolong_local(coarse_error, level),
-            level,
-        )
+        solution += self._prolong_local(coarse_error, level)
         return self._smooth_local(
             level,
             solution,
@@ -644,8 +656,8 @@ class YSlabMatrixFreePoissonSolver:
         )
 
     def _precondition_local(self, rhs: Array) -> Array:
-        rhs = self._project_local(rhs, 0)
-        return self._cycle_local(0, jnp.zeros_like(rhs), rhs)
+        result = self._cycle_local(0, jnp.zeros_like(rhs), rhs)
+        return self._project_local(result, 0)
 
     def _prepare_rhs_local(self, physical_rhs: Array) -> tuple[Array, Array]:
         effective = physical_rhs + self._slice_y(
@@ -659,13 +671,130 @@ class YSlabMatrixFreePoissonSolver:
                 jnp.sum(volume * effective),
                 self.distribution.axis_name,
             )
-            weight = lax.psum(
-                jnp.sum(volume),
-                self.distribution.axis_name,
-            )
-            shift = total / weight
+            shift = total * self.operator.inverse_total_volume
             effective -= shift
         return effective, shift
+
+    def _device_pcg_local(
+        self,
+        physical_rhs: Array,
+        initial: Array,
+    ) -> tuple[Array, Array, Array, Array, Array, Array]:
+        """Run one complete PCG solve inside the global pmap program.
+
+        Keeping the Krylov loop on device is particularly important for a
+        multi-process CPU pmap: a Python loop otherwise performs several host
+        synchronizations and launches several cross-rank collectives for every
+        Krylov iteration.
+        """
+        if not isinstance(self.krylov, PCGConfig):
+            raise TypeError("device y-slab PCG requires a PCG configuration")
+
+        rhs, compatibility_shift = self._prepare_rhs_local(physical_rhs)
+
+        def inner(left: Array, right: Array) -> Array:
+            return self._inner_finest_local(left, right)
+
+        def norm(value: Array) -> Array:
+            return jnp.sqrt(jnp.maximum(inner(value, value), 0.0))
+
+        solution = self._project_finest_local(initial)
+        rhs_norm = norm(rhs)
+        target = jnp.maximum(
+            self.krylov.absolute_tolerance,
+            self.krylov.relative_tolerance * rhs_norm,
+        )
+        residual = rhs - self._apply_local(solution)
+        residual_norm = norm(residual)
+        preconditioned = self._precondition_local(residual)
+        residual_dot_preconditioned = inner(residual, preconditioned)
+        active = (
+            jnp.isfinite(residual_norm)
+            & (residual_norm > target)
+            & jnp.isfinite(residual_dot_preconditioned)
+            & (residual_dot_preconditioned > 0.0)
+        )
+        iteration = jnp.asarray(0, dtype=jnp.int32)
+
+        def condition(state) -> Array:
+            current_iteration = state[0]
+            current_active = state[-1]
+            return (
+                current_iteration < self.krylov.max_iterations
+            ) & current_active
+
+        def body(state):
+            (
+                current_iteration,
+                current_solution,
+                current_residual,
+                direction,
+                current_dot,
+                _,
+                _,
+            ) = state
+            action = self._apply_local(direction)
+            curvature = inner(direction, action)
+            valid_curvature = jnp.isfinite(curvature) & (curvature > 0.0)
+            safe_curvature = jnp.where(valid_curvature, curvature, 1.0)
+            step = jnp.where(
+                valid_curvature,
+                current_dot / safe_curvature,
+                0.0,
+            )
+            next_solution = current_solution + step * direction
+            next_residual = current_residual - step * action
+            next_residual_norm = norm(next_residual)
+            next_preconditioned = self._precondition_local(next_residual)
+            next_dot = inner(next_residual, next_preconditioned)
+            valid_next = (
+                valid_curvature
+                & jnp.isfinite(next_residual_norm)
+                & jnp.isfinite(next_dot)
+                & (next_dot > 0.0)
+            )
+            safe_dot = jnp.where(current_dot > 0.0, current_dot, 1.0)
+            direction = (
+                next_preconditioned
+                + (next_dot / safe_dot) * direction
+            )
+            next_active = valid_next & (next_residual_norm > target)
+            return (
+                current_iteration + 1,
+                next_solution,
+                next_residual,
+                direction,
+                next_dot,
+                next_residual_norm,
+                next_active,
+            )
+
+        state = lax.while_loop(
+            condition,
+            body,
+            (
+                iteration,
+                solution,
+                residual,
+                preconditioned,
+                residual_dot_preconditioned,
+                residual_norm,
+                active,
+            ),
+        )
+        iterations, solution, _, _, _, residual_norm, active = state
+        solution = self._project_finest_local(solution)
+        converged = (~active) & jnp.isfinite(residual_norm) & (
+            residual_norm <= target
+        )
+        return (
+            solution,
+            compatibility_shift,
+            iterations,
+            residual_norm,
+            rhs_norm,
+            converged,
+        )
 
     def _check_sharded_shape(self, field: Array) -> None:
         nz, ny, nx = self.operator.shape
@@ -702,6 +831,37 @@ class YSlabMatrixFreePoissonSolver:
         initial: Array | None = None,
     ) -> FGMRESResult | PCGResult:
         self._check_sharded_shape(physical_rhs)
+        if self.krylov.execution == "jax":
+            if self._mapped_device_solve is None:
+                raise RuntimeError("device y-slab solver was not initialized")
+            starting_value = (
+                jnp.zeros_like(physical_rhs)
+                if initial is None
+                else jnp.asarray(initial, dtype=self.operator.dtype)
+            )
+            self._check_sharded_shape(starting_value)
+            (
+                solution,
+                shifts,
+                iterations,
+                residual_norms,
+                rhs_norms,
+                converged,
+            ) = self._mapped_device_solve(physical_rhs, starting_value)
+            residual_norm = float(residual_norms[0])
+            rhs_norm = float(rhs_norms[0])
+            relative_residual = (
+                0.0 if rhs_norm == 0.0 else residual_norm / rhs_norm
+            )
+            return PCGResult(
+                solution,
+                bool(converged[0]),
+                int(iterations[0]),
+                residual_norm,
+                relative_residual,
+                (residual_norm,),
+                float(shifts[0]),
+            )
         effective_rhs, shifts = self._mapped_prepare_rhs(physical_rhs)
         solve = pcg if isinstance(self.krylov, PCGConfig) else fgmres
         result = solve(
@@ -714,6 +874,30 @@ class YSlabMatrixFreePoissonSolver:
             config=self.krylov,
         )
         return replace(result, compatibility_shift=float(shifts[0]))
+
+    def solve_array(
+        self,
+        physical_rhs: Array,
+        *,
+        initial: Array | None = None,
+    ) -> Array:
+        """Solve without transferring convergence scalars to the host."""
+        if self.krylov.execution != "jax":
+            return self.solve(physical_rhs, initial=initial).solution
+        self._check_sharded_shape(physical_rhs)
+        if self._mapped_device_solve is None:
+            raise RuntimeError("device y-slab solver was not initialized")
+        starting_value = (
+            jnp.zeros_like(physical_rhs)
+            if initial is None
+            else jnp.asarray(initial, dtype=self.operator.dtype)
+        )
+        self._check_sharded_shape(starting_value)
+        solution, *_ = self._mapped_device_solve(
+            physical_rhs,
+            starting_value,
+        )
+        return solution
 
 
 __all__ = [

@@ -333,6 +333,25 @@ def test_segmented_lasd_update_matches_independent_scale_reference() -> None:
         )
 
 
+def test_pairwise_minmod_matches_stacked_reduction() -> None:
+    coordinate = jnp.arange(35, dtype=jnp.float32).reshape(5, 7)
+    values = (
+        jnp.sin(0.37 * coordinate),
+        jnp.cos(0.23 * coordinate),
+        jnp.sin(0.11 * coordinate - 0.4),
+        jnp.cos(0.29 * coordinate + 0.7),
+    )
+    stacked = jnp.stack(values)
+    magnitude = jnp.min(jnp.abs(stacked), axis=0)
+    expected = jnp.where(
+        jnp.all(stacked > 0.0, axis=0),
+        magnitude,
+        jnp.where(jnp.all(stacked < 0.0, axis=0), -magnitude, 0.0),
+    )
+
+    assert jnp.array_equal(neutral_abl._minmod(*values), expected)
+
+
 def test_local_mp5_dissipation_preserves_constant_momentum() -> None:
     solver = _solver()
     velocity = solver.initial_log_profile(perturbation_amplitude=0.0)

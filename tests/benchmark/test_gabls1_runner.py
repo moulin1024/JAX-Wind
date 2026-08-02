@@ -30,6 +30,10 @@ def test_gabls1_defaults_are_the_official_coarse_case() -> None:
     assert args.sample_start_hours == 8.0
     assert args.amd_coefficient == 0.212
     assert args.scalar_amd_coefficient == 0.212
+    assert args.target_cfl == 0.9
+    assert args.projection_method == "full"
+    assert args.coupling_integrator == "strang"
+    assert args.pressure_smooth == 1
     assert args.reference_dir == REFERENCE
 
 
@@ -43,6 +47,14 @@ def test_gabls1_short_modes_keep_bounded_end_to_end_scope() -> None:
     assert (smoke.nx, smoke.ny, smoke.nz) == (16, 16, 16)
     assert smoke.end_hours == 0.02
     assert smoke.sample_start_hours == 0.0
+
+
+def test_gabls1_accepts_coupled_ssprk3() -> None:
+    args = run.parse_args(
+        ["--coupling-integrator", "coupled-ssprk3"]
+    )
+
+    assert args.coupling_integrator == "coupled-ssprk3"
 
 
 def test_official_12p5m_archive_parses_all_sets_and_participants() -> None:
@@ -61,4 +73,3 @@ def test_reference_ensemble_interpolates_without_extrapolation() -> None:
 
     assert np.all(ensemble["u_mean"]["count"] >= 1)
     assert np.all(np.isfinite(ensemble["theta_mean"]["mean"]))
-

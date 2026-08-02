@@ -256,10 +256,15 @@ def _wall_normal_derivative_transpose(
 
 
 def _minmod(*values: Array) -> Array:
-    stacked = jnp.stack(values)
-    magnitude = jnp.min(jnp.abs(stacked), axis=0)
-    all_positive = jnp.all(stacked > 0.0, axis=0)
-    all_negative = jnp.all(stacked < 0.0, axis=0)
+    if not values:
+        raise ValueError("minmod requires at least one value")
+    magnitude = jnp.abs(values[0])
+    all_positive = values[0] > 0.0
+    all_negative = values[0] < 0.0
+    for value in values[1:]:
+        magnitude = jnp.minimum(magnitude, jnp.abs(value))
+        all_positive &= value > 0.0
+        all_negative &= value < 0.0
     return jnp.where(
         all_positive,
         magnitude,
@@ -354,19 +359,25 @@ def _mp5_interface_states(
     def sample(offset: int) -> Array:
         return _sample_offset(values, offset, periodic=periodic)
 
+    vm2 = sample(-2)
+    vm1 = sample(-1)
+    value = sample(0)
+    vp1 = sample(1)
+    vp2 = sample(2)
+    vp3 = sample(3)
     left = _mp5_reconstruct(
-        sample(-2),
-        sample(-1),
-        sample(0),
-        sample(1),
-        sample(2),
+        vm2,
+        vm1,
+        value,
+        vp1,
+        vp2,
     )
     right = _mp5_reconstruct(
-        sample(3),
-        sample(2),
-        sample(1),
-        sample(0),
-        sample(-1),
+        vp3,
+        vp2,
+        vp1,
+        value,
+        vm1,
     )
     return jnp.moveaxis(left, -1, axis), jnp.moveaxis(right, -1, axis)
 
@@ -1399,11 +1410,18 @@ class NeutralABLMomentum:
         velocity: MACVelocity,
         lasd_coefficient: Array | None = None,
         *,
+        cell_velocity: Array | None = None,
+        gradient: Array | None = None,
         wall_velocity: Array | None = None,
         wall_stress: Array | None = None,
     ) -> Array:
-        cells = _cell_velocity(velocity)
-        gradient = self.velocity_gradient(cells)
+        cells = (
+            _cell_velocity(velocity)
+            if cell_velocity is None
+            else cell_velocity
+        )
+        if gradient is None:
+            gradient = self.velocity_gradient(cells)
         tendency = (
             self.conservative_advection(velocity, cells)
             + self.sgs_tendency(

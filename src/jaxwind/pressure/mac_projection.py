@@ -262,6 +262,19 @@ class MACStageProjector:
         self._project_velocity_pressure_kernel = jax.jit(
             project_velocity_pressure_kernel
         )
+        self._pressure_gradient_kernel = jax.jit(
+            lambda pressure: mac_pressure_gradient(
+                pressure,
+                self.grid,
+                self.boundaries,
+            )
+        )
+
+    def pressure_gradient(self, pressure: Array) -> MACVelocity:
+        """Return a compiled pressure gradient for predicted-stage methods."""
+        if tuple(pressure.shape) != self.grid.shape:
+            raise ValueError("pressure shape does not match the projector grid")
+        return self._pressure_gradient_kernel(pressure)
 
     def project_velocity(
         self,
@@ -542,11 +555,7 @@ def fpj2_ssprk3_velocity_step(
         next_timestep=timestep,
         stage_abscissa=0.5,
     )
-    second_gradient = mac_pressure_gradient(
-        second_pressure,
-        projector.grid,
-        projector.boundaries,
-    )
+    second_gradient = projector.pressure_gradient(second_pressure)
     first_tendency = tendency(initial, time)
     second = _velocity_sum(
         (1.0, initial),
@@ -554,11 +563,7 @@ def fpj2_ssprk3_velocity_step(
         (-timestep, second_gradient),
     )
     second_tendency = tendency(second, time + timestep)
-    third_gradient = mac_pressure_gradient(
-        third_pressure,
-        projector.grid,
-        projector.boundaries,
-    )
+    third_gradient = projector.pressure_gradient(third_pressure)
     third = _velocity_sum(
         (1.0, initial),
         (0.25 * timestep, first_tendency),

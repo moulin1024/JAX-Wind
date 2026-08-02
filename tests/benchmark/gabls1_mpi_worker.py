@@ -78,6 +78,7 @@ def main() -> None:
         amd_coefficient=0.212,
         scalar_amd_coefficient=0.212,
         mp5_strength=1.0,
+        coupling_integrator="coupled-ssprk3",
     )
     local_y = count // size
     start = rank * local_y

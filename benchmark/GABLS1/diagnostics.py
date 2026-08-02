@@ -344,6 +344,7 @@ def _plot_comparison(
     mean: dict[str, np.ndarray | float],
     reference: dict,
     reference_dir: Path | None,
+    model_resolution_m: float,
 ) -> None:
     import matplotlib
 
@@ -365,7 +366,13 @@ def _plot_comparison(
                 label="official 12.5 m range",
             )
             axis.plot(ensemble["mean"], z, "k--", label="official mean")
-        axis.plot(np.asarray(model), z, color="crimson", lw=2, label="AMD")
+        axis.plot(
+            np.asarray(model),
+            z,
+            color="crimson",
+            lw=2,
+            label=f"AMD {model_resolution_m:g} m",
+        )
         axis.set(xlabel=xlabel, ylabel="z (m)", ylim=(0.0, 400.0))
         axis.grid(alpha=0.25)
 
@@ -405,7 +412,7 @@ def _plot_comparison(
             z_flux,
             "r",
             lw=2,
-            label="AMD total",
+            label=f"AMD {model_resolution_m:g} m total",
         )
         axis.plot(mean[resolved_name], z_flux, "r:", label="resolved")
         axis.plot(
@@ -438,7 +445,10 @@ def _plot_comparison(
     axes[0, 0].legend(fontsize=8)
     axes[2, 0].legend(fontsize=8)
     time_axis.legend(fontsize=8)
-    figure.suptitle("GABLS1 12.5 m: non-spectral JAX-Wind AMD vs official LES")
+    figure.suptitle(
+        f"GABLS1: non-spectral AMD {model_resolution_m:g} m "
+        "vs official 12.5 m LES"
+    )
     figure.savefig(output, dpi=180)
     plt.close(figure)
 
@@ -535,11 +545,20 @@ def save_outputs(
         output_dir / "benchmark_stats.npz",
         **{f"mean_{key}": np.asarray(value) for key, value in mean.items()},
     )
+    model_resolution_m = float(metadata.get("grid_spacing_m", 12.5))
+    if np.isclose(model_resolution_m, 12.5):
+        comparison_name = "GABLS1_AMD_12p5m_comparison.png"
+    else:
+        resolution_tag = f"{model_resolution_m:g}".replace(".", "p")
+        comparison_name = (
+            f"GABLS1_AMD_{resolution_tag}m_vs_official_12p5m_comparison.png"
+        )
     _plot_comparison(
-        output_dir / "GABLS1_AMD_12p5m_comparison.png",
+        output_dir / comparison_name,
         mean,
         reference,
         reference_dir,
+        model_resolution_m,
     )
     return summary
 

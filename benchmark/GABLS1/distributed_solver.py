@@ -71,6 +71,7 @@ class YSlabAMDBoussinesq:
         amd_coefficient: float,
         scalar_amd_coefficient: float,
         mp5_strength: float,
+        coupling_integrator: str = "strang",
     ) -> None:
         if pressure_solver.operator.grid != grid:
             raise ValueError("distributed pressure and physical grids must match")
@@ -95,6 +96,12 @@ class YSlabAMDBoussinesq:
         self.reference_potential_temperature = reference_potential_temperature
         self.surface_initial_temperature = surface_potential_temperature
         self.surface_temperature_tendency = surface_temperature_tendency
+        if coupling_integrator not in ("strang", "coupled-ssprk3"):
+            raise ValueError(
+                "coupling integrator must be 'strang' or 'coupled-ssprk3'"
+            )
+        self.coupling_integrator = coupling_integrator
+        self._last_surface_heat_flux_quadrature: Array | None = None
 
         padded_y = self.local_y + 2 * self.halo_width
         padded_grid = RectilinearGrid.uniform(
@@ -161,6 +168,11 @@ class YSlabAMDBoussinesq:
         )
         self._mapped_scalar_tendency = jax.pmap(
             self._scalar_tendency_local,
+            in_axes=(0, 0, None),
+            **mapped,
+        )
+        self._mapped_coupled_tendency = jax.pmap(
+            self._coupled_tendency_local,
             in_axes=(0, 0, None),
             **mapped,
         )
@@ -342,6 +354,72 @@ class YSlabAMDBoussinesq:
         )
         return self._crop_cell_rows(tendency)
 
+    def _coupled_tendency_local(
+        self,
+        velocity: YSlabMACVelocity,
+        theta: Array,
+        time: Array,
+    ) -> tuple[YSlabMACVelocity, Array, Array]:
+        padded_velocity = self._pad_velocity(velocity)
+        padded_theta = self._pad_cell_rows(theta)
+        surface = self._surface_fluxes_padded_local(
+            padded_velocity,
+            padded_theta,
+            time,
+        )
+        cells = _cell_velocity(padded_velocity)
+        velocity_gradient = self.momentum_kernel.velocity_gradient(cells)
+        wall_stress = jnp.concatenate(
+            (
+                surface.momentum_stress,
+                jnp.zeros_like(surface.momentum_stress[..., :1]),
+            ),
+            axis=-1,
+        )
+        momentum = self.momentum_kernel.cell_tendency(
+            padded_velocity,
+            cell_velocity=cells,
+            gradient=velocity_gradient,
+            wall_stress=wall_stress,
+        )
+        plane_sum = lax.psum(
+            jnp.sum(theta, axis=(1, 2)),
+            self.axis_name,
+        )
+        plane_mean = plane_sum / (self.nx * self.ny)
+        momentum = momentum.at[..., 2].add(
+            self.gravity
+            / self.reference_potential_temperature
+            * (padded_theta - plane_mean[:, None, None])
+        )
+        scalar_advection = self.scalar_kernel.advective_tendency(
+            padded_theta,
+            padded_velocity,
+        )
+        scalar_advection = self._crop_cell_rows(scalar_advection)
+        # Keep scalar transport constant-preserving on pressure-predicted
+        # stages while retaining global conservation across every y slab.
+        divergence_correction = (
+            theta * self.projector._divergence_local(velocity)
+        )
+        correction_mean = lax.pmean(
+            jnp.mean(divergence_correction),
+            self.axis_name,
+        )
+        scalar_advection += divergence_correction - correction_mean
+        scalar_sgs = self.scalar_kernel.sgs_tendency(
+            padded_theta,
+            velocity_gradient,
+            lower_surface_flux=surface.heat_flux,
+        )
+        local_heat = self._crop_cell_rows(surface.heat_flux[None])[0]
+        heat_mean = lax.pmean(jnp.mean(local_heat), self.axis_name)
+        return (
+            self._crop_velocity(_cells_to_faces(momentum)),
+            scalar_advection + self._crop_cell_rows(scalar_sgs),
+            heat_mean,
+        )
+
     def _enforce_local(
         self,
         velocity: YSlabMACVelocity,
@@ -390,6 +468,15 @@ class YSlabAMDBoussinesq:
         timestep: float,
         pressure: Array | None,
     ):
+        if self.pressure_solver.krylov.execution == "jax":
+            result = self.projector.project_velocity_and_pressure(
+                self.enforce_boundaries(velocity),
+                timestep=timestep,
+                initial_pressure=pressure,
+            )
+            return result._replace(
+                velocity=self.enforce_boundaries(result.velocity),
+            )
         result = self.projector.project(
             self.enforce_boundaries(velocity),
             timestep=timestep,
@@ -482,6 +569,79 @@ class YSlabAMDBoussinesq:
     ) -> YSlabAMDBoussinesqState:
         if not math.isfinite(timestep) or timestep <= 0.0:
             raise ValueError("timestep must be positive and finite")
+        self._last_surface_heat_flux_quadrature = None
+        if self.coupling_integrator == "coupled-ssprk3":
+            first_momentum, first_scalar, first_heat = (
+                self._mapped_coupled_tendency(
+                    state.velocity,
+                    state.potential_temperature,
+                    state.time,
+                )
+            )
+            second = self._project(
+                self._velocity_sum(
+                    (1.0, state.velocity),
+                    (timestep, first_momentum),
+                ),
+                timestep,
+                state.pressure,
+            )
+            second_theta = (
+                state.potential_temperature + timestep * first_scalar
+            )
+            second_momentum, second_scalar, second_heat = (
+                self._mapped_coupled_tendency(
+                    second.velocity,
+                    second_theta,
+                    state.time + timestep,
+                )
+            )
+            third = self._project(
+                self._velocity_sum(
+                    (1.0, state.velocity),
+                    (0.25 * timestep, first_momentum),
+                    (0.25 * timestep, second_momentum),
+                ),
+                0.5 * timestep,
+                second.pressure_correction,
+            )
+            third_theta = state.potential_temperature + 0.25 * timestep * (
+                first_scalar + second_scalar
+            )
+            third_momentum, third_scalar, third_heat = (
+                self._mapped_coupled_tendency(
+                    third.velocity,
+                    third_theta,
+                    state.time + 0.5 * timestep,
+                )
+            )
+            final = self._project(
+                self._velocity_sum(
+                    (1.0, state.velocity),
+                    (timestep / 6.0, first_momentum),
+                    (timestep / 6.0, second_momentum),
+                    (2.0 * timestep / 3.0, third_momentum),
+                ),
+                timestep,
+                third.pressure_correction,
+            )
+            theta = state.potential_temperature + timestep * (
+                first_scalar / 6.0
+                + second_scalar / 6.0
+                + (2.0 / 3.0) * third_scalar
+            )
+            self._last_surface_heat_flux_quadrature = (
+                first_heat / 6.0
+                + second_heat / 6.0
+                + (2.0 / 3.0) * third_heat
+            )
+            return YSlabAMDBoussinesqState(
+                final.velocity,
+                theta,
+                final.pressure_correction,
+                state.time + timestep,
+                state.step + 1,
+            )
         half = 0.5 * timestep
         midpoint_theta = self._surface_scalar_step(
             state.potential_temperature,
@@ -544,6 +704,11 @@ class YSlabAMDBoussinesq:
             state.time + timestep,
             state.step + 1,
         )
+
+    @property
+    def last_surface_heat_flux_quadrature(self) -> Array | None:
+        """Return the accepted step's RK-weighted global lower heat flux."""
+        return self._last_surface_heat_flux_quadrature
 
     def _rates_local(
         self,

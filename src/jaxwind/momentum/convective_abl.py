@@ -10,7 +10,10 @@ import jax
 import jax.numpy as jnp
 
 from jaxwind.pressure import (
+    fpj2_pressure_prediction,
+    fpj2_ssprk3_velocity_step,
     MACVelocity,
+    mac_divergence,
     projected_ssprk3_velocity_pressure_step,
 )
 
@@ -38,6 +41,7 @@ class AMDBoussinesqConfig:
     surface_potential_temperature: float | None = None
     surface_temperature_tendency: float = 0.0
     thermal_roughness_length: float | None = None
+    coupling_integrator: str = "strang"
 
     def __post_init__(self) -> None:
         positive = (
@@ -66,6 +70,10 @@ class AMDBoussinesqConfig:
             or self.thermal_roughness_length <= 0.0
         ):
             raise ValueError("thermal roughness length must be positive and finite")
+        if self.coupling_integrator not in ("strang", "coupled-ssprk3"):
+            raise ValueError(
+                "coupling integrator must be 'strang' or 'coupled-ssprk3'"
+            )
 
     @property
     def buoyancy_coefficient(self) -> float:
@@ -104,6 +112,13 @@ class AMDBoussinesqDiagnosticFields(NamedTuple):
     surface_obukhov_length: Array
 
 
+class _CoupledSSPRK3Result(NamedTuple):
+    velocity: MACVelocity
+    potential_temperature: Array
+    pressure: Array
+    surface_heat_flux_quadrature: Array
+
+
 class AMDBoussinesq:
     """Strang-coupled active scalar around the non-spectral AMD solver.
 
@@ -125,8 +140,6 @@ class AMDBoussinesq:
             raise ValueError("AMDBoussinesq requires the AMD momentum closure")
         if momentum.config.sgs_time_integration != "explicit":
             raise ValueError("the first coupled reference path requires explicit SGS")
-        if momentum.config.projection_method != "full":
-            raise ValueError("the first coupled reference path requires full projection")
         if momentum.config.wall_temporal_filter_timescale is not None:
             raise ValueError("coupled reference path requires a memoryless wall input")
         self.momentum = momentum
@@ -154,11 +167,68 @@ class AMDBoussinesq:
             raise ValueError(
                 "prescribed-temperature coupling requires zero fixed lower scalar flux"
             )
-        self._compiled_surface_scalar_step = jax.jit(
-            self._surface_scalar_step
+        self._compiled_surface_scalar_tendency = jax.jit(
+            self._surface_scalar_tendency
+        )
+        self._compiled_surface_scalar_step = (
+            self._dispatched_surface_scalar_step
         )
         self._compiled_surface_momentum_tendency = jax.jit(
             self._surface_momentum_tendency
+        )
+        self._compiled_coupled_surface_tendency = jax.jit(
+            self._coupled_surface_tendency
+        )
+        self._compiled_stability_rates = jax.jit(self._stability_rates)
+        self._last_surface_heat_flux_quadrature: Array | None = None
+
+        def pre_step_metrics(
+            velocity: MACVelocity,
+            potential_temperature: Array,
+            time: Array,
+        ) -> tuple[Array, Array, Array, Array, Array]:
+            advective, momentum_diffusive, scalar_diffusive = (
+                self._stability_rates(velocity, potential_temperature)
+            )
+            fluxes = self._surface_layer_fluxes(
+                velocity,
+                potential_temperature,
+                time,
+            )
+            return (
+                advective,
+                momentum_diffusive,
+                scalar_diffusive,
+                jnp.mean(
+                    potential_temperature
+                    - self.config.reference_potential_temperature
+                ),
+                jnp.mean(fluxes.heat_flux),
+            )
+
+        def accepted_state_metrics(
+            velocity: MACVelocity,
+            potential_temperature: Array,
+            time: Array,
+        ) -> tuple[Array, Array, Array]:
+            fluxes = self._surface_layer_fluxes(
+                velocity,
+                potential_temperature,
+                time,
+            )
+            divergence = mac_divergence(velocity, self.grid)
+            return (
+                jnp.mean(
+                    potential_temperature
+                    - self.config.reference_potential_temperature
+                ),
+                jnp.mean(fluxes.heat_flux),
+                self.momentum.pressure_solver.operator.norm(divergence),
+            )
+
+        self._compiled_pre_step_metrics = jax.jit(pre_step_metrics)
+        self._compiled_accepted_state_metrics = jax.jit(
+            accepted_state_metrics
         )
 
     def surface_potential_temperature(self, time: Array | float) -> Array:
@@ -266,11 +336,45 @@ class AMDBoussinesq:
             + (2.0 / 3.0) * third_tendency
         )
 
+    def _dispatched_surface_scalar_step(
+        self,
+        scalar: Array,
+        velocity: MACVelocity,
+        timestep: Array,
+        time: Array,
+    ) -> Array:
+        """SSPRK3 scalar step using bounded-size compiled stage kernels."""
+        first_tendency = self._compiled_surface_scalar_tendency(
+            scalar,
+            velocity,
+            time,
+        )
+        first = scalar + timestep * first_tendency
+        second_tendency = self._compiled_surface_scalar_tendency(
+            first,
+            velocity,
+            time + timestep,
+        )
+        second = scalar + 0.25 * timestep * (
+            first_tendency + second_tendency
+        )
+        third_tendency = self._compiled_surface_scalar_tendency(
+            second,
+            velocity,
+            time + 0.5 * timestep,
+        )
+        return scalar + timestep * (
+            first_tendency / 6.0
+            + second_tendency / 6.0
+            + (2.0 / 3.0) * third_tendency
+        )
+
     def _surface_momentum_tendency(
         self,
         velocity: MACVelocity,
         potential_temperature: Array,
         time: Array,
+        buoyancy: MACVelocity,
     ) -> MACVelocity:
         fluxes = self._surface_layer_fluxes(
             velocity,
@@ -283,8 +387,255 @@ class AMDBoussinesq:
         )
         return _velocity_sum(
             (1.0, momentum),
+            (1.0, buoyancy),
+        )
+
+    def _coupled_surface_tendency(
+        self,
+        velocity: MACVelocity,
+        potential_temperature: Array,
+        time: Array,
+    ) -> tuple[MACVelocity, Array, Array]:
+        """Return stage-consistent momentum, scalar, and wall-heat RHS data."""
+        cells = _cell_velocity(velocity)
+        velocity_gradient = self.momentum.velocity_gradient(cells)
+        fluxes = self._surface_layer_fluxes(
+            velocity,
+            potential_temperature,
+            time,
+        )
+        wall_stress = self._momentum_wall_stress(fluxes)
+        momentum_cells = self.momentum.cell_tendency(
+            velocity,
+            self.momentum._active_lasd_coefficient(velocity),
+            cell_velocity=cells,
+            gradient=velocity_gradient,
+            wall_stress=wall_stress,
+        )
+        momentum = _velocity_sum(
+            (1.0, _cells_to_faces(momentum_cells)),
             (1.0, self.buoyancy_tendency(potential_temperature)),
         )
+        scalar_advection = self.scalar.advective_tendency(
+            potential_temperature,
+            velocity,
+        )
+        # FPJ2 pressure-predicted stage velocities are not exactly solenoidal.
+        # Convert conservative transport to its constant-preserving advective
+        # equivalent at those stages, then remove the correction's mean so the
+        # accepted scalar remains globally conservative.
+        divergence_correction = (
+            potential_temperature
+            * mac_divergence(velocity, self.grid)
+        )
+        scalar_advection += divergence_correction - jnp.mean(
+            divergence_correction
+        )
+        scalar = scalar_advection + self.scalar.sgs_tendency(
+            potential_temperature,
+            velocity_gradient,
+            lower_surface_flux=fluxes.heat_flux,
+        )
+        return momentum, scalar, jnp.mean(fluxes.heat_flux)
+
+    def _full_coupled_ssprk3_step(
+        self,
+        state: AMDBoussinesqState,
+        timestep: float,
+        initial_pressure: Array,
+    ) -> _CoupledSSPRK3Result:
+        """Advance coupled SSPRK3 with a pressure solve at every stage."""
+        theta = state.potential_temperature
+        dtype = theta.dtype
+        first_momentum, first_scalar, first_heat = (
+            self._compiled_coupled_surface_tendency(
+                state.velocity,
+                theta,
+                jnp.asarray(state.time, dtype=dtype),
+            )
+        )
+        second = self.momentum.projector.project_velocity_and_pressure(
+            _velocity_sum(
+                (1.0, state.velocity),
+                (timestep, first_momentum),
+            ),
+            timestep=timestep,
+            initial_pressure=initial_pressure,
+        )
+        second_theta = theta + timestep * first_scalar
+        second_momentum, second_scalar, second_heat = (
+            self._compiled_coupled_surface_tendency(
+                second.velocity,
+                second_theta,
+                jnp.asarray(state.time + timestep, dtype=dtype),
+            )
+        )
+        third = self.momentum.projector.project_velocity_and_pressure(
+            _velocity_sum(
+                (1.0, state.velocity),
+                (0.25 * timestep, first_momentum),
+                (0.25 * timestep, second_momentum),
+            ),
+            timestep=0.5 * timestep,
+            initial_pressure=second.pressure,
+        )
+        third_theta = theta + 0.25 * timestep * (
+            first_scalar + second_scalar
+        )
+        third_momentum, third_scalar, third_heat = (
+            self._compiled_coupled_surface_tendency(
+                third.velocity,
+                third_theta,
+                jnp.asarray(state.time + 0.5 * timestep, dtype=dtype),
+            )
+        )
+        final = self.momentum.projector.project_velocity_and_pressure(
+            _velocity_sum(
+                (1.0, state.velocity),
+                (timestep / 6.0, first_momentum),
+                (timestep / 6.0, second_momentum),
+                (2.0 * timestep / 3.0, third_momentum),
+            ),
+            timestep=timestep,
+            initial_pressure=third.pressure,
+        )
+        final_theta = theta + timestep * (
+            first_scalar / 6.0
+            + second_scalar / 6.0
+            + (2.0 / 3.0) * third_scalar
+        )
+        heat_quadrature = (
+            first_heat / 6.0
+            + second_heat / 6.0
+            + (2.0 / 3.0) * third_heat
+        )
+        return _CoupledSSPRK3Result(
+            final.velocity,
+            final_theta,
+            final.pressure,
+            heat_quadrature,
+        )
+
+    def _fpj2_coupled_ssprk3_step(
+        self,
+        state: AMDBoussinesqState,
+        timestep: float,
+    ) -> _CoupledSSPRK3Result:
+        """Advance coupled SSPRK3 with FPJ2 stage-pressure predictions."""
+        history = self.momentum.fpj2_state
+        if history is None:
+            raise RuntimeError("FPJ2 pressure history is unavailable")
+        theta = state.potential_temperature
+        dtype = theta.dtype
+        second_pressure = fpj2_pressure_prediction(
+            history.current_pressure,
+            history.previous_pressure,
+            current_timestep=history.current_timestep,
+            previous_timestep=history.previous_timestep,
+            next_timestep=timestep,
+            stage_abscissa=1.0,
+        )
+        third_pressure = fpj2_pressure_prediction(
+            history.current_pressure,
+            history.previous_pressure,
+            current_timestep=history.current_timestep,
+            previous_timestep=history.previous_timestep,
+            next_timestep=timestep,
+            stage_abscissa=0.5,
+        )
+        first_momentum, first_scalar, first_heat = (
+            self._compiled_coupled_surface_tendency(
+                state.velocity,
+                theta,
+                jnp.asarray(state.time, dtype=dtype),
+            )
+        )
+        second_gradient = self.momentum.projector.pressure_gradient(
+            second_pressure
+        )
+        second_velocity = _velocity_sum(
+            (1.0, state.velocity),
+            (timestep, first_momentum),
+            (-timestep, second_gradient),
+        )
+        second_theta = theta + timestep * first_scalar
+        second_momentum, second_scalar, second_heat = (
+            self._compiled_coupled_surface_tendency(
+                second_velocity,
+                second_theta,
+                jnp.asarray(state.time + timestep, dtype=dtype),
+            )
+        )
+        third_gradient = self.momentum.projector.pressure_gradient(
+            third_pressure
+        )
+        third_velocity = _velocity_sum(
+            (1.0, state.velocity),
+            (0.25 * timestep, first_momentum),
+            (0.25 * timestep, second_momentum),
+            (-0.5 * timestep, third_gradient),
+        )
+        third_theta = theta + 0.25 * timestep * (
+            first_scalar + second_scalar
+        )
+        third_momentum, third_scalar, third_heat = (
+            self._compiled_coupled_surface_tendency(
+                third_velocity,
+                third_theta,
+                jnp.asarray(state.time + 0.5 * timestep, dtype=dtype),
+            )
+        )
+        final = self.momentum.projector.project_velocity_and_pressure(
+            _velocity_sum(
+                (1.0, state.velocity),
+                (timestep / 6.0, first_momentum),
+                (timestep / 6.0, second_momentum),
+                (2.0 * timestep / 3.0, third_momentum),
+            ),
+            timestep=timestep,
+            initial_pressure=second_pressure,
+        )
+        final_theta = theta + timestep * (
+            first_scalar / 6.0
+            + second_scalar / 6.0
+            + (2.0 / 3.0) * third_scalar
+        )
+        heat_quadrature = (
+            first_heat / 6.0
+            + second_heat / 6.0
+            + (2.0 / 3.0) * third_heat
+        )
+        return _CoupledSSPRK3Result(
+            final.velocity,
+            final_theta,
+            final.pressure,
+            heat_quadrature,
+        )
+
+    def _coupled_ssprk3_step(
+        self,
+        state: AMDBoussinesqState,
+        timestep: float,
+    ) -> _CoupledSSPRK3Result:
+        history = self.momentum.fpj2_state
+        if (
+            self.momentum.config.projection_method == "fpj2"
+            and self.momentum._fpj2_history_is_usable(timestep)
+        ):
+            return self._fpj2_coupled_ssprk3_step(state, timestep)
+        initial_pressure = (
+            state.pressure if history is None else history.current_pressure
+        )
+        return self._full_coupled_ssprk3_step(
+            state,
+            timestep,
+            initial_pressure,
+        )
+
+    @property
+    def last_surface_heat_flux_quadrature(self) -> Array | None:
+        """Return the accepted step's RK-weighted mean lower heat flux."""
+        return self._last_surface_heat_flux_quadrature
 
     def initial_state(
         self,
@@ -346,6 +697,24 @@ class AMDBoussinesq:
         """Advance one accepted active-scalar step with full stage projection."""
         if not math.isfinite(timestep) or timestep <= 0.0:
             raise ValueError("timestep must be positive and finite")
+        self._last_surface_heat_flux_quadrature = None
+        if self.config.coupling_integrator == "coupled-ssprk3":
+            result = self._coupled_ssprk3_step(state, timestep)
+            if self.momentum.config.projection_method == "fpj2":
+                self.momentum._accept_fpj2_pressure(
+                    result.pressure,
+                    timestep,
+                )
+            self._last_surface_heat_flux_quadrature = (
+                result.surface_heat_flux_quadrature
+            )
+            return AMDBoussinesqState(
+                self.momentum.enforce_boundaries(result.velocity),
+                result.potential_temperature,
+                result.pressure,
+                state.time + timestep,
+                state.step + 1,
+            )
         if self.surface_law is None:
             midpoint_temperature = self.scalar.step(
                 state.potential_temperature,
@@ -367,20 +736,48 @@ class AMDBoussinesq:
                     stage_velocity,
                     midpoint_temperature,
                     jnp.asarray(stage_time, dtype=midpoint_temperature.dtype),
+                    buoyancy,
                 )
             return _velocity_sum(
                 (1.0, self.momentum.tendency(stage_velocity, stage_time)),
                 (1.0, buoyancy),
             )
 
-        projected = projected_ssprk3_velocity_pressure_step(
-            state.velocity,
-            tendency=stage_tendency,
-            projector=self.momentum.projector,
-            timestep=timestep,
-            time=state.time,
-            initial_pressure=state.pressure,
-        )
+        history = self.momentum.fpj2_state
+        if (
+            self.momentum.config.projection_method == "fpj2"
+            and self.momentum._fpj2_history_is_usable(timestep)
+        ):
+            projected = fpj2_ssprk3_velocity_step(
+                state.velocity,
+                tendency=stage_tendency,
+                projector=self.momentum.projector,
+                timestep=timestep,
+                current_pressure=history.current_pressure,
+                previous_pressure=history.previous_pressure,
+                current_timestep=history.current_timestep,
+                previous_timestep=history.previous_timestep,
+                time=state.time,
+            )
+        else:
+            initial_pressure = (
+                state.pressure
+                if history is None
+                else history.current_pressure
+            )
+            projected = projected_ssprk3_velocity_pressure_step(
+                state.velocity,
+                tendency=stage_tendency,
+                projector=self.momentum.projector,
+                timestep=timestep,
+                time=state.time,
+                initial_pressure=initial_pressure,
+            )
+        if self.momentum.config.projection_method == "fpj2":
+            self.momentum._accept_fpj2_pressure(
+                projected.pressure,
+                timestep,
+            )
         velocity = self.momentum.enforce_boundaries(projected.velocity)
         if self.surface_law is None:
             potential_temperature = self.scalar.step(
@@ -413,17 +810,81 @@ class AMDBoussinesq:
         target_diffusive_cfl: float = 0.5,
     ) -> float:
         """Return the joint momentum/scalar explicit stability limit."""
-        momentum_step = self.momentum.timestep_for_cfl(
-            state.velocity,
-            target_cfl,
-            target_diffusive_cfl,
+        if not math.isfinite(target_cfl) or target_cfl <= 0.0:
+            raise ValueError("target CFL must be positive and finite")
+        if (
+            not math.isfinite(target_diffusive_cfl)
+            or target_diffusive_cfl <= 0.0
+        ):
+            raise ValueError("target diffusive CFL must be positive and finite")
+        advective, momentum_diffusive, scalar_diffusive = (
+            float(value) for value in self.stability_rates(state)
         )
-        scalar_step = self.scalar.timestep_for_diffusive_cfl(
+        if advective <= 0.0:
+            raise ValueError("cannot choose a CFL step for zero velocity")
+        candidates = [target_cfl / advective]
+        for rate in (momentum_diffusive, scalar_diffusive):
+            if rate > 0.0:
+                candidates.append(target_diffusive_cfl / rate)
+        return min(candidates)
+
+    def _stability_rates(
+        self,
+        velocity: MACVelocity,
+        potential_temperature: Array,
+    ) -> tuple[Array, Array, Array]:
+        cells = _cell_velocity(velocity)
+        gradient = self.momentum.velocity_gradient(cells)
+        momentum_diffusivity = self.momentum.sgs_viscosity(
+            cells,
+            gradient=gradient,
+        )
+        scalar_diffusivity = self.scalar.amd_diffusivity(
+            potential_temperature,
+            gradient,
+        )
+        inverse_spacing_squared = (
+            1.0 / self.momentum.dx**2
+            + 1.0 / self.momentum.dy**2
+            + 1.0 / self.momentum.dz**2
+        )
+        return (
+            self.momentum.cfl_rate(velocity),
+            2.0 * jnp.max(momentum_diffusivity) * inverse_spacing_squared,
+            2.0 * jnp.max(scalar_diffusivity) * inverse_spacing_squared,
+        )
+
+    def stability_rates(
+        self,
+        state: AMDBoussinesqState,
+    ) -> tuple[Array, Array, Array]:
+        """Return shared-gradient advective and AMD stability rates."""
+        return self._compiled_stability_rates(
+            state.velocity,
             state.potential_temperature,
-            state.velocity,
-            target_diffusive_cfl,
         )
-        return min(momentum_step, scalar_step)
+
+    def pre_step_metrics(
+        self,
+        state: AMDBoussinesqState,
+    ) -> tuple[Array, Array, Array, Array, Array]:
+        """Return rates, scalar mean, and heat flux in one device launch."""
+        return self._compiled_pre_step_metrics(
+            state.velocity,
+            state.potential_temperature,
+            jnp.asarray(state.time, dtype=state.potential_temperature.dtype),
+        )
+
+    def accepted_state_metrics(
+        self,
+        state: AMDBoussinesqState,
+    ) -> tuple[Array, Array, Array]:
+        """Return scalar mean, heat flux, and divergence after a step."""
+        return self._compiled_accepted_state_metrics(
+            state.velocity,
+            state.potential_temperature,
+            jnp.asarray(state.time, dtype=state.potential_temperature.dtype),
+        )
 
     def diagnostic_fields(
         self,

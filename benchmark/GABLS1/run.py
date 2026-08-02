@@ -37,14 +37,26 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--sample-start-hours", type=float, default=8.0)
     parser.add_argument("--sample-interval-seconds", type=float, default=60.0)
     parser.add_argument("--dt-max", type=float, default=1.0)
-    parser.add_argument("--target-cfl", type=float, default=0.7)
+    parser.add_argument("--target-cfl", type=float, default=0.9)
     parser.add_argument("--target-diffusive-cfl", type=float, default=0.5)
     parser.add_argument("--amd-coefficient", type=float, default=0.212)
     parser.add_argument("--scalar-amd-coefficient", type=float)
     parser.add_argument("--mp5-strength", type=float, default=1.0)
+    parser.add_argument(
+        "--projection-method",
+        choices=("full", "fpj2"),
+        default="full",
+    )
+    parser.add_argument(
+        "--coupling-integrator",
+        choices=("strang", "coupled-ssprk3"),
+        default="strang",
+    )
     parser.add_argument("--pressure-rtol", type=float, default=1.0e-5)
     parser.add_argument("--pressure-max-iterations", type=int, default=40)
+    parser.add_argument("--pressure-smooth", type=int, default=1)
     parser.add_argument("--pressure-coarse-smooth", type=int, default=20)
+    parser.add_argument("--y-slab-coarse-cells-per-rank", type=int, default=4)
     parser.add_argument("--checkpoint-every", type=int, default=1000)
     parser.add_argument("--log-every", type=int, default=300)
     parser.add_argument("--seed", type=int, default=0)
@@ -107,10 +119,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     if min(
         args.pressure_max_iterations,
         args.pressure_coarse_smooth,
+        args.y_slab_coarse_cells_per_rank,
         args.checkpoint_every,
         args.log_every,
     ) <= 0:
         parser.error("iteration and output intervals must be positive")
+    if args.pressure_smooth < 0:
+        parser.error("pressure-smooth must be nonnegative")
     if args.max_steps is not None and args.max_steps <= 0:
         parser.error("max-steps must be positive")
     if args.max_run_seconds is not None and args.max_run_seconds <= 0.0:
@@ -181,6 +196,7 @@ def _unpack_records(checkpoint, prefix: str) -> list[dict]:
 
 def _restore_checkpoint(args, coupled, dtype):
     import jax.numpy as jnp
+    from jaxwind.momentum import FPJ2State
     from jaxwind.pressure import MACVelocity
 
     checkpoint = np.load(args.restart, allow_pickle=False)
@@ -202,6 +218,16 @@ def _restore_checkpoint(args, coupled, dtype):
         time=float(checkpoint["time"]),
         step=int(checkpoint["step"]),
     )
+    if args.projection_method == "fpj2" and "fpj2_current_pressure" in checkpoint:
+        coupled.momentum.restore_fpj2(
+            FPJ2State(
+                jnp.asarray(checkpoint["fpj2_current_pressure"], dtype=dtype),
+                jnp.asarray(checkpoint["fpj2_previous_pressure"], dtype=dtype),
+                float(checkpoint["fpj2_current_timestep"]),
+                float(checkpoint["fpj2_previous_timestep"]),
+                int(checkpoint["fpj2_history_count"]),
+            )
+        )
     return {
         "state": state,
         "samples": _unpack_records(checkpoint, "samples"),
@@ -216,12 +242,7 @@ def _restore_checkpoint(args, coupled, dtype):
     }
 
 
-def run(args: argparse.Namespace) -> dict[str, float | int | str]:
-    from jax import config as jax_config
-
-    if args.dtype == "float64":
-        jax_config.update("jax_enable_x64", True)
-    import jax
+def _build_coupled(args: argparse.Namespace):
     import jax.numpy as jnp
 
     from jaxwind.momentum import (
@@ -240,10 +261,8 @@ def run(args: argparse.Namespace) -> dict[str, float | int | str]:
         PCGConfig,
         PoissonBoundaryConditions,
         RectilinearGrid,
-        mac_divergence,
     )
 
-    args.output_dir.mkdir(parents=True, exist_ok=True)
     case = diagnostics.GABLS1Case()
     dtype = jnp.float32 if args.dtype == "float32" else jnp.float64
     grid = RectilinearGrid.uniform(
@@ -270,6 +289,8 @@ def run(args: argparse.Namespace) -> dict[str, float | int | str]:
         gmg=GMGConfig(
             smoother="auto",
             coarsening="auto",
+            pre_smooth=args.pressure_smooth,
+            post_smooth=args.pressure_smooth,
             coarse_smooth=args.pressure_coarse_smooth,
         ),
         krylov=PCGConfig(
@@ -291,7 +312,7 @@ def run(args: argparse.Namespace) -> dict[str, float | int | str]:
             mp5_dissipation_strength=args.mp5_strength,
             amd=AMDModel(coefficient=args.amd_coefficient),
             sgs_time_integration="explicit",
-            projection_method="full",
+            projection_method=args.projection_method,
         ),
     )
     scalar = AMDPassiveScalar(
@@ -312,8 +333,23 @@ def run(args: argparse.Namespace) -> dict[str, float | int | str]:
             surface_potential_temperature=case.theta_initial,
             surface_temperature_tendency=case.surface_cooling_rate,
             thermal_roughness_length=case.roughness_length,
+            coupling_integrator=args.coupling_integrator,
         ),
     )
+    return coupled, case, dtype
+
+
+def run(args: argparse.Namespace) -> dict[str, float | int | str]:
+    from jax import config as jax_config
+
+    if args.dtype == "float64":
+        jax_config.update("jax_enable_x64", True)
+    import jax
+
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    coupled, case, dtype = _build_coupled(args)
+    grid = coupled.grid
+    momentum = coupled.momentum
 
     if args.restart is None:
         state = _initial_state(args, coupled, case, dtype)
@@ -337,10 +373,32 @@ def run(args: argparse.Namespace) -> dict[str, float | int | str]:
 
     diagnostic_kernel = jax.jit(coupled.diagnostic_fields)
     compile_start = time.perf_counter()
+    saved_fpj2 = momentum.fpj2_state
+    if args.projection_method == "fpj2":
+        momentum.reset_fpj2()
     compiled_state = coupled.step(state, timestep=min(args.dt_max, 0.25))
+    if args.projection_method == "fpj2":
+        compiled_state = coupled.step(
+            compiled_state,
+            timestep=min(args.dt_max, 0.25),
+        )
+        compiled_state = coupled.step(
+            compiled_state,
+            timestep=min(args.dt_max, 0.25),
+        )
     compiled_fields = diagnostic_kernel(state)
+    compiled_pre_metrics = coupled.pre_step_metrics(state)
+    compiled_accepted_metrics = coupled.accepted_state_metrics(
+        compiled_state
+    )
     jax.block_until_ready(compiled_state.velocity.x)
     jax.block_until_ready(compiled_fields.surface_heat_flux)
+    jax.block_until_ready(compiled_pre_metrics)
+    jax.block_until_ready(compiled_accepted_metrics)
+    if saved_fpj2 is None:
+        momentum.reset_fpj2()
+    else:
+        momentum.restore_fpj2(saved_fpj2)
     compilation_s = time.perf_counter() - compile_start
     print(f"[compile] GABLS1 kernels ready in {compilation_s:.3f}s", flush=True)
 
@@ -372,6 +430,21 @@ def run(args: argparse.Namespace) -> dict[str, float | int | str]:
             "max_divergence": max_divergence,
             "max_scalar_budget_residual": max_scalar_budget_residual,
         }
+        fpj2 = momentum.fpj2_state
+        if fpj2 is not None:
+            payload.update(
+                {
+                    "fpj2_current_pressure": np.asarray(
+                        fpj2.current_pressure
+                    ),
+                    "fpj2_previous_pressure": np.asarray(
+                        fpj2.previous_pressure
+                    ),
+                    "fpj2_current_timestep": fpj2.current_timestep,
+                    "fpj2_previous_timestep": fpj2.previous_timestep,
+                    "fpj2_history_count": fpj2.history_count,
+                }
+            )
         _pack_records(payload, "samples", samples)
         _pack_records(payload, "time_rows", time_rows)
         destination = args.output_dir / "checkpoint.npz"
@@ -410,51 +483,46 @@ def run(args: argparse.Namespace) -> dict[str, float | int | str]:
             samples.append(statistics)
 
     while state.time < final_time:
+        (
+            advective_rate,
+            momentum_rate,
+            scalar_rate,
+            theta_before,
+            heat_flux_before,
+        ) = (float(value) for value in coupled.pre_step_metrics(state))
         timestep = min(
-            coupled.timestep_for_cfl(
-                state,
-                args.target_cfl,
-                args.target_diffusive_cfl,
+            args.target_cfl / advective_rate,
+            (
+                args.target_diffusive_cfl / momentum_rate
+                if momentum_rate > 0.0
+                else math.inf
+            ),
+            (
+                args.target_diffusive_cfl / scalar_rate
+                if scalar_rate > 0.0
+                else math.inf
             ),
             args.dt_max,
             final_time - state.time,
         )
-        theta_before = float(
-            np.mean(np.asarray(state.potential_temperature), dtype=np.float64)
-        )
-        heat_flux_before = float(
-            jnp.mean(coupled.surface_layer_fluxes(state).heat_flux)
-        )
         state = coupled.step(state, timestep=timestep)
-        heat_flux_after = float(
-            jnp.mean(coupled.surface_layer_fluxes(state).heat_flux)
-        )
-        theta_after = float(
-            np.mean(np.asarray(state.potential_temperature), dtype=np.float64)
+        theta_after, heat_flux_after, divergence = (
+            float(value) for value in coupled.accepted_state_metrics(state)
         )
         budget_residual = abs(
             theta_after
             - theta_before
-            - 0.5
-            * timestep
-            * (heat_flux_before + heat_flux_after)
+            - timestep
+            * (
+                0.5 * (heat_flux_before + heat_flux_after)
+                if coupled.last_surface_heat_flux_quadrature is None
+                else float(coupled.last_surface_heat_flux_quadrature)
+            )
             / case.domain
         )
         timesteps.append(timestep)
-        cfl = float(timestep * momentum.cfl_rate(state.velocity))
-        momentum_diffusive = float(
-            timestep
-            * 2.0
-            * jnp.max(momentum.sgs_viscosity(momentum.cell_centered_velocity(state.velocity)))
-            * (1.0 / momentum.dx**2 + 1.0 / momentum.dy**2 + 1.0 / momentum.dz**2)
-        )
-        scalar_diffusive = float(
-            timestep * scalar.diffusive_rate(state.potential_temperature, state.velocity)
-        )
-        diffusive_cfl = max(momentum_diffusive, scalar_diffusive)
-        divergence = float(
-            pressure_solver.operator.norm(mac_divergence(state.velocity, grid))
-        )
+        cfl = timestep * advective_rate
+        diffusive_cfl = timestep * max(momentum_rate, scalar_rate)
         max_cfl = max(max_cfl, cfl)
         max_diffusive_cfl = max(max_diffusive_cfl, diffusive_cfl)
         max_divergence = max(max_divergence, divergence)
@@ -468,12 +536,11 @@ def run(args: argparse.Namespace) -> dict[str, float | int | str]:
             while next_sample_time <= state.time + 1.0e-9:
                 next_sample_time += args.sample_interval_seconds
         if state.step % args.log_every == 0 or final:
-            fluxes = coupled.surface_layer_fluxes(state)
             print(
                 f"step={state.step} time={state.time / 3600.0:.4f}/"
                 f"{args.end_hours:g}h CFL={cfl:.4f} CFLnu={diffusive_cfl:.4f} "
                 f"divL2={divergence:.3e} "
-                f"Q0={float(jnp.mean(fluxes.heat_flux)):.3e} "
+                f"Q0={heat_flux_after:.3e} "
                 f"theta_budget={budget_residual:.3e}",
                 flush=True,
             )
@@ -508,6 +575,7 @@ def run(args: argparse.Namespace) -> dict[str, float | int | str]:
             "nx": args.nx,
             "ny": args.ny,
             "nz": args.nz,
+            "grid_spacing_m": case.domain / args.nx,
             "end_time_hours": state.time / 3600.0,
             "runtime_s": runtime_s,
             "compilation_s": compilation_s,
@@ -519,6 +587,9 @@ def run(args: argparse.Namespace) -> dict[str, float | int | str]:
             "amd_coefficient": args.amd_coefficient,
             "scalar_amd_coefficient": args.scalar_amd_coefficient,
             "mp5_dissipation_strength": args.mp5_strength,
+            "projection_method": args.projection_method,
+            "coupling_integrator": args.coupling_integrator,
+            "pressure_smooth": args.pressure_smooth,
         },
     )
     resolved = {

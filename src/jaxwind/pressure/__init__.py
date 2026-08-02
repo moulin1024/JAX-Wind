@@ -10,6 +10,7 @@ from .distributed_mac import (
     YSlabMACProjectionResult,
     YSlabMACProjector,
     YSlabMACVelocity,
+    YSlabVelocityPressureProjection,
     gather_y_mac_velocity,
     shard_y_mac_velocity,
 )
@@ -67,6 +68,7 @@ __all__ = [
     "YSlabMACProjector",
     "YSlabMACVelocity",
     "YSlabMatrixFreePoissonSolver",
+    "YSlabVelocityPressureProjection",
     "build_spectral_fd_pressure_adapter",
     "fgmres",
     "pcg",

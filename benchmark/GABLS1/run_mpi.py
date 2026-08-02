@@ -31,6 +31,10 @@ CHECKPOINT_SCHEMA = serial_run.CHECKPOINT_SCHEMA
 
 def parse_args(argv: list[str] | None = None):
     args = serial_run.parse_args(argv)
+    if args.projection_method != "full":
+        raise SystemExit(
+            "the y-slab runner currently supports --projection-method full"
+        )
     if args.quick:
         # Four MP5 ranks require at least three owned y cells per rank.
         args.nx = args.ny = args.nz = 16
@@ -105,13 +109,18 @@ def _build_distributed(args, jax):
         gmg=GMGConfig(
             smoother="auto",
             coarsening="auto",
+            pre_smooth=args.pressure_smooth,
+            post_smooth=args.pressure_smooth,
             coarse_smooth=args.pressure_coarse_smooth,
         ),
         krylov=PCGConfig(
             max_iterations=args.pressure_max_iterations,
             relative_tolerance=args.pressure_rtol,
+            execution="jax",
         ),
-        distribution=YSlabConfig(coarse_cells_per_device=1),
+        distribution=YSlabConfig(
+            coarse_cells_per_device=args.y_slab_coarse_cells_per_rank
+        ),
     )
     coupled = YSlabAMDBoussinesq(
         grid,
@@ -126,6 +135,7 @@ def _build_distributed(args, jax):
         amd_coefficient=args.amd_coefficient,
         scalar_amd_coefficient=args.scalar_amd_coefficient,
         mp5_strength=args.mp5_strength,
+        coupling_integrator=args.coupling_integrator,
     )
     return coupled, case, dtype
 
@@ -173,6 +183,8 @@ def _build_serial_observer(args, case, dtype):
         gmg=GMGConfig(
             smoother="auto",
             coarsening="auto",
+            pre_smooth=args.pressure_smooth,
+            post_smooth=args.pressure_smooth,
             coarse_smooth=args.pressure_coarse_smooth,
         ),
         krylov=PCGConfig(
@@ -194,7 +206,7 @@ def _build_serial_observer(args, case, dtype):
             mp5_dissipation_strength=args.mp5_strength,
             amd=AMDModel(coefficient=args.amd_coefficient),
             sgs_time_integration="explicit",
-            projection_method="full",
+            projection_method=args.projection_method,
         ),
     )
     scalar = AMDPassiveScalar(
@@ -215,6 +227,7 @@ def _build_serial_observer(args, case, dtype):
             surface_potential_temperature=case.theta_initial,
             surface_temperature_tendency=case.surface_cooling_rate,
             thermal_roughness_length=case.roughness_length,
+            coupling_integrator=args.coupling_integrator,
         ),
     )
 
@@ -539,9 +552,18 @@ def run(args) -> dict[str, float | int | str] | None:
         budget_residual = abs(
             theta_after
             - theta_before
-            - 0.5
-            * timestep
-            * (heat_flux_before + heat_flux_after)
+            - timestep
+            * (
+                0.5 * (heat_flux_before + heat_flux_after)
+                if coupled.last_surface_heat_flux_quadrature is None
+                else float(
+                    np.mean(
+                        np.asarray(
+                            coupled.last_surface_heat_flux_quadrature
+                        )
+                    )
+                )
+            )
             / case.domain
         )
         cfl = timestep * advective_rate
@@ -623,6 +645,7 @@ def run(args) -> dict[str, float | int | str] | None:
                 "nx": args.nx,
                 "ny": args.ny,
                 "nz": args.nz,
+                "grid_spacing_m": case.domain / args.nx,
                 "end_time_hours": state.time / 3600.0,
                 "runtime_s": runtime_s,
                 "compilation_s": compilation_s,
@@ -634,6 +657,9 @@ def run(args) -> dict[str, float | int | str] | None:
                 "amd_coefficient": args.amd_coefficient,
                 "scalar_amd_coefficient": args.scalar_amd_coefficient,
                 "mp5_dissipation_strength": args.mp5_strength,
+                "projection_method": "full",
+                "coupling_integrator": args.coupling_integrator,
+                "pressure_smooth": args.pressure_smooth,
             },
         )
         resolved = {

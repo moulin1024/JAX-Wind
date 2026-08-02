@@ -29,7 +29,11 @@ def build_device_pcg_solver(
         return square_root_volume * field
 
     def to_physical(field: Array) -> Array:
-        return project(field / square_root_volume)
+        # The prepared RHS, initial guess, operator range, and V-cycle output
+        # all lie in the compatible subspace.  PCG linear combinations keep
+        # that invariant, so projecting at every operator conversion only
+        # repeats a global reduction.  The solve boundaries still fix gauge.
+        return field / square_root_volume
 
     def transformed_apply(field: Array) -> Array:
         return to_euclidean(apply(to_physical(field)))
@@ -47,7 +51,7 @@ def build_device_pcg_solver(
             maxiter=max_iterations,
             M=transformed_preconditioner,
         )
-        return to_physical(transformed_solution)
+        return project(to_physical(transformed_solution))
 
     return jax.jit(solve)
 

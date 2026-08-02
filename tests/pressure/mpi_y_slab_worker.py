@@ -51,6 +51,7 @@ def main() -> None:
         krylov=PCGConfig(
             max_iterations=60,
             relative_tolerance=2.0e-6,
+            execution="jax",
         ),
         distribution=YSlabConfig(coarse_cells_per_device=1),
     )
@@ -71,7 +72,11 @@ def main() -> None:
     result = solver.solve(local_rhs)
     local_error_squared = jnp.sum((result.solution - local_exact) ** 2)
     local_exact_squared = jnp.sum(local_exact**2)
-    values = np.asarray((local_error_squared, local_exact_squared))
+    local_volume = solver.operator.volume[:, start : start + local_y, :]
+    local_weighted_sum = jnp.sum(local_volume * result.solution[0])
+    values = np.asarray(
+        (local_error_squared, local_exact_squared, local_weighted_sum)
+    )
     totals = np.empty_like(values)
     communicator.Allreduce(values, totals, op=MPI.SUM)
     if rank == 0:
@@ -83,6 +88,9 @@ def main() -> None:
                     "local_devices": jax.local_device_count(),
                     "apply_error": float(apply_error),
                     "relative_error": float(np.sqrt(totals[0] / totals[1])),
+                    "solution_weighted_mean": float(
+                        totals[2] * solver.operator.inverse_total_volume
+                    ),
                     "converged": result.converged,
                     "relative_residual": result.relative_residual,
                 }

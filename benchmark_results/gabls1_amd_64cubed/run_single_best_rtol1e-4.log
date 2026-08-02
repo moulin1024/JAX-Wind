@@ -1,0 +1,2 @@
+[compile] GABLS1 kernels ready in 18.292s
+step=31200 time=3.1555/9h CFL=0.9000 CFLnu=0.0666 divL2=3.270e-02 Q0=-7.363e-03 theta_budget=2.024e-06

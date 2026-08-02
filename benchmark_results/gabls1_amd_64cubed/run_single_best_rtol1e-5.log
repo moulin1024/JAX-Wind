@@ -1,0 +1,247 @@
+[compile] GABLS1 kernels ready in 17.324s
+step=31200 time=3.1555/9h CFL=0.9000 CFLnu=0.0669 divL2=1.582e-03 Q0=-7.363e-03 theta_budget=1.619e-06
+step=31500 time=3.1882/9h CFL=0.9000 CFLnu=0.0737 divL2=6.755e-04 Q0=-7.314e-03 theta_budget=6.832e-07
+step=31800 time=3.2213/9h CFL=0.9000 CFLnu=0.0742 divL2=4.451e-04 Q0=-7.906e-03 theta_budget=6.283e-07
+step=32100 time=3.2547/9h CFL=0.9000 CFLnu=0.0671 divL2=6.521e-04 Q0=-7.836e-03 theta_budget=1.070e-06
+step=32400 time=3.2867/9h CFL=0.9000 CFLnu=0.0733 divL2=3.398e-04 Q0=-7.515e-03 theta_budget=1.187e-06
+step=32700 time=3.3202/9h CFL=0.9000 CFLnu=0.0752 divL2=4.520e-04 Q0=-7.077e-03 theta_budget=2.333e-06
+step=33000 time=3.3529/9h CFL=0.9000 CFLnu=0.0785 divL2=4.764e-04 Q0=-7.677e-03 theta_budget=1.586e-06
+step=33300 time=3.3855/9h CFL=0.9000 CFLnu=0.0729 divL2=3.948e-04 Q0=-8.238e-03 theta_budget=3.016e-07
+step=33600 time=3.4180/9h CFL=0.9000 CFLnu=0.0845 divL2=5.528e-04 Q0=-8.749e-03 theta_budget=1.468e-06
+step=33900 time=3.4504/9h CFL=0.9000 CFLnu=0.0744 divL2=6.720e-04 Q0=-9.153e-03 theta_budget=2.251e-07
+step=34200 time=3.4827/9h CFL=0.9000 CFLnu=0.0686 divL2=5.413e-04 Q0=-8.725e-03 theta_budget=1.203e-06
+step=34500 time=3.5148/9h CFL=0.9000 CFLnu=0.0737 divL2=5.114e-04 Q0=-8.584e-03 theta_budget=1.136e-07
+step=34800 time=3.5469/9h CFL=0.9000 CFLnu=0.0770 divL2=6.248e-04 Q0=-8.515e-03 theta_budget=8.400e-08
+step=35100 time=3.5773/9h CFL=0.9000 CFLnu=0.0754 divL2=4.247e-04 Q0=-8.466e-03 theta_budget=1.261e-06
+step=35400 time=3.6076/9h CFL=0.9000 CFLnu=0.0701 divL2=3.970e-04 Q0=-8.796e-03 theta_budget=1.232e-08
+step=35700 time=3.6377/9h CFL=0.9000 CFLnu=0.0749 divL2=4.271e-04 Q0=-8.575e-03 theta_budget=1.412e-06
+step=36000 time=3.6674/9h CFL=0.9000 CFLnu=0.0698 divL2=4.245e-04 Q0=-8.922e-03 theta_budget=2.171e-06
+step=36300 time=3.6970/9h CFL=0.9000 CFLnu=0.0663 divL2=4.139e-04 Q0=-8.333e-03 theta_budget=4.159e-07
+step=36600 time=3.7271/9h CFL=0.9000 CFLnu=0.0737 divL2=4.330e-04 Q0=-8.689e-03 theta_budget=7.252e-08
+step=36900 time=3.7569/9h CFL=0.9000 CFLnu=0.0722 divL2=4.036e-04 Q0=-8.574e-03 theta_budget=1.250e-07
+step=37200 time=3.7863/9h CFL=0.9000 CFLnu=0.0710 divL2=3.820e-04 Q0=-8.312e-03 theta_budget=5.099e-07
+step=37500 time=3.8173/9h CFL=0.9000 CFLnu=0.0740 divL2=4.027e-04 Q0=-8.099e-03 theta_budget=3.911e-07
+step=37800 time=3.8476/9h CFL=0.9000 CFLnu=0.0686 divL2=4.515e-04 Q0=-8.135e-03 theta_budget=5.757e-07
+step=38100 time=3.8769/9h CFL=0.9000 CFLnu=0.0674 divL2=4.191e-04 Q0=-8.494e-03 theta_budget=8.709e-08
+step=38400 time=3.9073/9h CFL=0.9000 CFLnu=0.0598 divL2=4.378e-04 Q0=-8.323e-03 theta_budget=2.283e-07
+step=38700 time=3.9379/9h CFL=0.9000 CFLnu=0.0669 divL2=4.368e-04 Q0=-8.569e-03 theta_budget=1.489e-06
+step=39000 time=3.9688/9h CFL=0.9000 CFLnu=0.0527 divL2=1.025e-03 Q0=-8.806e-03 theta_budget=8.332e-07
+step=39300 time=3.9976/9h CFL=0.9000 CFLnu=0.0703 divL2=5.320e-04 Q0=-9.163e-03 theta_budget=2.771e-06
+step=39600 time=4.0263/9h CFL=0.9000 CFLnu=0.0588 divL2=4.288e-04 Q0=-9.768e-03 theta_budget=1.853e-06
+step=39900 time=4.0549/9h CFL=0.9000 CFLnu=0.0809 divL2=4.048e-04 Q0=-1.014e-02 theta_budget=7.427e-07
+step=40200 time=4.0859/9h CFL=0.9000 CFLnu=0.0587 divL2=4.642e-04 Q0=-9.922e-03 theta_budget=1.368e-07
+step=40500 time=4.1162/9h CFL=0.9000 CFLnu=0.0679 divL2=8.909e-04 Q0=-9.906e-03 theta_budget=6.805e-07
+step=40800 time=4.1464/9h CFL=0.9000 CFLnu=0.0691 divL2=5.691e-04 Q0=-9.993e-03 theta_budget=3.322e-07
+step=41100 time=4.1760/9h CFL=0.9000 CFLnu=0.0668 divL2=4.231e-04 Q0=-1.037e-02 theta_budget=1.888e-07
+step=41400 time=4.2068/9h CFL=0.9000 CFLnu=0.0667 divL2=5.064e-04 Q0=-9.800e-03 theta_budget=5.593e-07
+step=41700 time=4.2367/9h CFL=0.9000 CFLnu=0.0913 divL2=3.973e-04 Q0=-1.022e-02 theta_budget=4.469e-07
+step=42000 time=4.2658/9h CFL=0.9000 CFLnu=0.0709 divL2=4.027e-04 Q0=-1.046e-02 theta_budget=7.152e-07
+step=42300 time=4.2951/9h CFL=0.9000 CFLnu=0.0669 divL2=4.463e-04 Q0=-1.130e-02 theta_budget=1.204e-06
+step=42600 time=4.3245/9h CFL=0.9000 CFLnu=0.0718 divL2=4.172e-04 Q0=-1.175e-02 theta_budget=1.587e-06
+step=42900 time=4.3552/9h CFL=0.9000 CFLnu=0.0750 divL2=4.904e-03 Q0=-1.130e-02 theta_budget=1.503e-07
+step=43200 time=4.3834/9h CFL=0.9000 CFLnu=0.0704 divL2=4.538e-04 Q0=-1.011e-02 theta_budget=4.112e-07
+step=43500 time=4.4116/9h CFL=0.9000 CFLnu=0.0677 divL2=4.791e-04 Q0=-9.997e-03 theta_budget=1.914e-06
+step=43800 time=4.4402/9h CFL=0.9000 CFLnu=0.0974 divL2=4.235e-04 Q0=-9.912e-03 theta_budget=2.637e-06
+step=44100 time=4.4684/9h CFL=0.9000 CFLnu=0.0718 divL2=4.398e-04 Q0=-1.016e-02 theta_budget=7.853e-07
+step=44400 time=4.4963/9h CFL=0.9000 CFLnu=0.0849 divL2=4.471e-04 Q0=-1.056e-02 theta_budget=8.651e-07
+step=44700 time=4.5255/9h CFL=0.9000 CFLnu=0.0680 divL2=4.883e-04 Q0=-1.031e-02 theta_budget=2.058e-06
+step=45000 time=4.5542/9h CFL=0.9000 CFLnu=0.0666 divL2=4.404e-04 Q0=-1.017e-02 theta_budget=1.999e-07
+step=45300 time=4.5823/9h CFL=0.9000 CFLnu=0.0782 divL2=4.312e-04 Q0=-9.812e-03 theta_budget=2.666e-06
+step=45600 time=4.6106/9h CFL=0.9000 CFLnu=0.0645 divL2=4.404e-04 Q0=-9.741e-03 theta_budget=9.292e-07
+step=45900 time=4.6389/9h CFL=0.9000 CFLnu=0.0570 divL2=4.243e-04 Q0=-9.901e-03 theta_budget=1.646e-06
+step=46200 time=4.6673/9h CFL=0.9000 CFLnu=0.0630 divL2=4.419e-04 Q0=-9.902e-03 theta_budget=1.733e-06
+step=46500 time=4.6957/9h CFL=0.9000 CFLnu=0.0623 divL2=4.476e-04 Q0=-9.863e-03 theta_budget=3.715e-07
+step=46800 time=4.7251/9h CFL=0.9000 CFLnu=0.0651 divL2=9.075e-04 Q0=-9.336e-03 theta_budget=2.153e-06
+step=47100 time=4.7529/9h CFL=0.9000 CFLnu=0.0742 divL2=4.462e-04 Q0=-9.369e-03 theta_budget=2.149e-08
+step=47400 time=4.7808/9h CFL=0.9000 CFLnu=0.0766 divL2=4.721e-04 Q0=-1.010e-02 theta_budget=8.687e-07
+step=47700 time=4.8080/9h CFL=0.9000 CFLnu=0.0560 divL2=4.342e-04 Q0=-1.018e-02 theta_budget=2.528e-06
+step=48000 time=4.8358/9h CFL=0.9000 CFLnu=0.0750 divL2=4.141e-04 Q0=-9.920e-03 theta_budget=2.379e-06
+step=48300 time=4.8651/9h CFL=0.9000 CFLnu=0.0660 divL2=4.516e-04 Q0=-1.075e-02 theta_budget=1.269e-06
+step=48600 time=4.8931/9h CFL=0.9000 CFLnu=0.0752 divL2=4.632e-04 Q0=-1.103e-02 theta_budget=1.138e-06
+step=48900 time=4.9212/9h CFL=0.9000 CFLnu=0.0651 divL2=4.456e-04 Q0=-1.132e-02 theta_budget=3.013e-06
+step=49200 time=4.9496/9h CFL=0.9000 CFLnu=0.0712 divL2=4.408e-04 Q0=-1.145e-02 theta_budget=1.009e-06
+step=49500 time=4.9778/9h CFL=0.9000 CFLnu=0.0687 divL2=4.710e-04 Q0=-1.095e-02 theta_budget=7.433e-07
+step=49800 time=5.0045/9h CFL=0.9000 CFLnu=0.0652 divL2=4.648e-04 Q0=-1.049e-02 theta_budget=2.851e-08
+step=50100 time=5.0310/9h CFL=0.9000 CFLnu=0.0629 divL2=4.232e-04 Q0=-1.039e-02 theta_budget=9.922e-07
+step=50400 time=5.0579/9h CFL=0.9000 CFLnu=0.0810 divL2=4.436e-04 Q0=-1.066e-02 theta_budget=2.386e-06
+step=50700 time=5.0847/9h CFL=0.9000 CFLnu=0.0678 divL2=4.422e-04 Q0=-1.082e-02 theta_budget=1.217e-06
+step=51000 time=5.1118/9h CFL=0.9000 CFLnu=0.0583 divL2=4.635e-04 Q0=-1.101e-02 theta_budget=1.353e-06
+step=51300 time=5.1388/9h CFL=0.9000 CFLnu=0.0619 divL2=4.636e-04 Q0=-1.111e-02 theta_budget=1.380e-06
+step=51600 time=5.1668/9h CFL=0.9000 CFLnu=0.0758 divL2=4.746e-04 Q0=-1.059e-02 theta_budget=3.265e-07
+step=51900 time=5.1938/9h CFL=0.9000 CFLnu=0.0585 divL2=4.763e-04 Q0=-1.062e-02 theta_budget=5.959e-08
+step=52200 time=5.2203/9h CFL=0.9000 CFLnu=0.0760 divL2=4.551e-04 Q0=-1.085e-02 theta_budget=1.468e-06
+step=52500 time=5.2485/9h CFL=0.9000 CFLnu=0.0695 divL2=5.903e-04 Q0=-1.157e-02 theta_budget=1.080e-07
+step=52800 time=5.2761/9h CFL=0.9000 CFLnu=0.0640 divL2=4.875e-04 Q0=-1.165e-02 theta_budget=1.269e-06
+step=53100 time=5.3031/9h CFL=0.9000 CFLnu=0.0841 divL2=4.395e-04 Q0=-1.153e-02 theta_budget=5.683e-07
+step=53400 time=5.3312/9h CFL=0.9000 CFLnu=0.0722 divL2=4.187e-04 Q0=-1.182e-02 theta_budget=8.032e-07
+step=53700 time=5.3590/9h CFL=0.9000 CFLnu=0.0705 divL2=3.915e-04 Q0=-1.204e-02 theta_budget=9.654e-07
+step=54000 time=5.3873/9h CFL=0.9000 CFLnu=0.0664 divL2=4.183e-04 Q0=-1.212e-02 theta_budget=1.713e-06
+step=54300 time=5.4157/9h CFL=0.9000 CFLnu=0.0762 divL2=8.639e-04 Q0=-1.232e-02 theta_budget=1.046e-07
+step=54600 time=5.4439/9h CFL=0.9000 CFLnu=0.0734 divL2=5.547e-04 Q0=-1.242e-02 theta_budget=2.360e-07
+step=54900 time=5.4709/9h CFL=0.9000 CFLnu=0.0768 divL2=4.781e-04 Q0=-1.272e-02 theta_budget=2.803e-06
+step=55200 time=5.4977/9h CFL=0.9000 CFLnu=0.0614 divL2=4.599e-04 Q0=-1.275e-02 theta_budget=8.326e-07
+step=55500 time=5.5239/9h CFL=0.9000 CFLnu=0.0669 divL2=4.418e-04 Q0=-1.229e-02 theta_budget=2.059e-07
+step=55800 time=5.5504/9h CFL=0.9000 CFLnu=0.0683 divL2=4.448e-04 Q0=-1.147e-02 theta_budget=2.036e-07
+step=56100 time=5.5770/9h CFL=0.9000 CFLnu=0.0654 divL2=4.778e-04 Q0=-1.160e-02 theta_budget=2.071e-06
+step=56400 time=5.6034/9h CFL=0.9000 CFLnu=0.0627 divL2=4.481e-04 Q0=-1.169e-02 theta_budget=1.165e-06
+step=56700 time=5.6304/9h CFL=0.9000 CFLnu=0.0810 divL2=4.662e-04 Q0=-1.145e-02 theta_budget=8.841e-07
+step=57000 time=5.6571/9h CFL=0.9000 CFLnu=0.0665 divL2=4.586e-04 Q0=-1.129e-02 theta_budget=2.527e-06
+step=57300 time=5.6849/9h CFL=0.9000 CFLnu=0.0687 divL2=4.258e-04 Q0=-1.110e-02 theta_budget=9.844e-08
+step=57600 time=5.7121/9h CFL=0.9000 CFLnu=0.0617 divL2=4.931e-04 Q0=-1.064e-02 theta_budget=1.397e-06
+step=57900 time=5.7388/9h CFL=0.9000 CFLnu=0.0646 divL2=5.270e-04 Q0=-1.128e-02 theta_budget=1.478e-06
+step=58200 time=5.7648/9h CFL=0.9000 CFLnu=0.0566 divL2=4.586e-04 Q0=-1.166e-02 theta_budget=1.420e-06
+step=58500 time=5.7913/9h CFL=0.9000 CFLnu=0.0670 divL2=4.771e-04 Q0=-1.111e-02 theta_budget=1.491e-06
+step=58800 time=5.8183/9h CFL=0.9000 CFLnu=0.0604 divL2=4.473e-04 Q0=-1.179e-02 theta_budget=1.751e-06
+step=59100 time=5.8465/9h CFL=0.9000 CFLnu=0.0689 divL2=1.405e-03 Q0=-1.132e-02 theta_budget=1.007e-07
+step=59400 time=5.8736/9h CFL=0.9000 CFLnu=0.0763 divL2=4.874e-04 Q0=-1.192e-02 theta_budget=3.220e-06
+step=59700 time=5.8998/9h CFL=0.9000 CFLnu=0.0578 divL2=4.265e-04 Q0=-1.173e-02 theta_budget=5.968e-07
+step=60000 time=5.9262/9h CFL=0.9000 CFLnu=0.0634 divL2=4.785e-04 Q0=-1.163e-02 theta_budget=1.279e-06
+step=60300 time=5.9526/9h CFL=0.9000 CFLnu=0.0735 divL2=5.242e-04 Q0=-1.243e-02 theta_budget=2.033e-06
+step=60600 time=5.9785/9h CFL=0.9000 CFLnu=0.0802 divL2=4.646e-04 Q0=-1.207e-02 theta_budget=1.920e-06
+step=60900 time=6.0065/9h CFL=0.9000 CFLnu=0.0679 divL2=2.266e-03 Q0=-1.253e-02 theta_budget=2.270e-06
+step=61200 time=6.0338/9h CFL=0.9000 CFLnu=0.0620 divL2=4.801e-04 Q0=-1.240e-02 theta_budget=8.237e-07
+step=61500 time=6.0594/9h CFL=0.9000 CFLnu=0.0598 divL2=4.909e-04 Q0=-1.262e-02 theta_budget=1.390e-06
+step=61800 time=6.0846/9h CFL=0.9000 CFLnu=0.0691 divL2=4.586e-04 Q0=-1.178e-02 theta_budget=1.240e-06
+step=62100 time=6.1114/9h CFL=0.9000 CFLnu=0.0709 divL2=4.470e-04 Q0=-1.115e-02 theta_budget=2.330e-07
+step=62400 time=6.1395/9h CFL=0.9000 CFLnu=0.0684 divL2=3.137e-03 Q0=-1.195e-02 theta_budget=1.335e-06
+step=62700 time=6.1673/9h CFL=0.9000 CFLnu=0.0636 divL2=1.004e-03 Q0=-1.176e-02 theta_budget=9.472e-07
+step=63000 time=6.1944/9h CFL=0.9000 CFLnu=0.0699 divL2=6.908e-04 Q0=-1.255e-02 theta_budget=1.389e-06
+step=63300 time=6.2208/9h CFL=0.9000 CFLnu=0.0784 divL2=4.805e-04 Q0=-1.266e-02 theta_budget=1.810e-06
+step=63600 time=6.2473/9h CFL=0.9000 CFLnu=0.0658 divL2=4.993e-04 Q0=-1.244e-02 theta_budget=1.002e-06
+step=63900 time=6.2737/9h CFL=0.9000 CFLnu=0.0663 divL2=5.398e-04 Q0=-1.214e-02 theta_budget=1.322e-06
+step=64200 time=6.3001/9h CFL=0.9000 CFLnu=0.0806 divL2=5.353e-04 Q0=-1.251e-02 theta_budget=5.296e-07
+step=64500 time=6.3281/9h CFL=0.9000 CFLnu=0.0776 divL2=6.961e-04 Q0=-1.294e-02 theta_budget=4.066e-07
+step=64800 time=6.3554/9h CFL=0.9000 CFLnu=0.0689 divL2=5.471e-04 Q0=-1.339e-02 theta_budget=2.466e-06
+step=65100 time=6.3827/9h CFL=0.9000 CFLnu=0.0648 divL2=5.950e-04 Q0=-1.276e-02 theta_budget=8.712e-07
+step=65400 time=6.4082/9h CFL=0.9000 CFLnu=0.0609 divL2=4.519e-04 Q0=-1.330e-02 theta_budget=1.859e-07
+step=65700 time=6.4340/9h CFL=0.9000 CFLnu=0.0594 divL2=4.973e-04 Q0=-1.328e-02 theta_budget=8.345e-07
+step=66000 time=6.4599/9h CFL=0.9000 CFLnu=0.0680 divL2=4.576e-04 Q0=-1.295e-02 theta_budget=4.962e-06
+step=66300 time=6.4858/9h CFL=0.9000 CFLnu=0.0665 divL2=4.759e-04 Q0=-1.272e-02 theta_budget=2.163e-07
+step=66600 time=6.5121/9h CFL=0.9000 CFLnu=0.0707 divL2=4.850e-04 Q0=-1.193e-02 theta_budget=4.920e-07
+step=66900 time=6.5379/9h CFL=0.9000 CFLnu=0.0733 divL2=5.010e-04 Q0=-1.210e-02 theta_budget=4.958e-07
+step=67200 time=6.5637/9h CFL=0.9000 CFLnu=0.0784 divL2=4.811e-04 Q0=-1.281e-02 theta_budget=3.613e-07
+step=67500 time=6.5897/9h CFL=0.9000 CFLnu=0.0707 divL2=4.357e-04 Q0=-1.331e-02 theta_budget=7.698e-07
+step=67800 time=6.6173/9h CFL=0.9000 CFLnu=0.0640 divL2=4.992e-04 Q0=-1.265e-02 theta_budget=3.584e-07
+step=68100 time=6.6447/9h CFL=0.9000 CFLnu=0.0666 divL2=5.255e-04 Q0=-1.267e-02 theta_budget=2.525e-06
+step=68400 time=6.6716/9h CFL=0.9000 CFLnu=0.0736 divL2=4.918e-04 Q0=-1.273e-02 theta_budget=2.513e-06
+step=68700 time=6.6978/9h CFL=0.9000 CFLnu=0.0636 divL2=4.658e-04 Q0=-1.282e-02 theta_budget=1.420e-06
+step=69000 time=6.7254/9h CFL=0.9000 CFLnu=0.0664 divL2=4.620e-04 Q0=-1.155e-02 theta_budget=3.122e-07
+step=69300 time=6.7533/9h CFL=0.9000 CFLnu=0.0698 divL2=9.180e-04 Q0=-1.246e-02 theta_budget=1.272e-06
+step=69600 time=6.7798/9h CFL=0.9000 CFLnu=0.0636 divL2=5.365e-04 Q0=-1.274e-02 theta_budget=3.847e-07
+step=69900 time=6.8058/9h CFL=0.9000 CFLnu=0.0636 divL2=5.307e-04 Q0=-1.210e-02 theta_budget=3.424e-07
+step=70200 time=6.8316/9h CFL=0.9000 CFLnu=0.0786 divL2=4.809e-04 Q0=-1.153e-02 theta_budget=2.791e-07
+step=70500 time=6.8576/9h CFL=0.9000 CFLnu=0.0731 divL2=4.607e-04 Q0=-1.258e-02 theta_budget=3.867e-06
+step=70800 time=6.8839/9h CFL=0.9000 CFLnu=0.0769 divL2=4.857e-04 Q0=-1.223e-02 theta_budget=9.055e-07
+step=71100 time=6.9096/9h CFL=0.9000 CFLnu=0.0770 divL2=4.573e-04 Q0=-1.233e-02 theta_budget=1.431e-06
+step=71400 time=6.9365/9h CFL=0.9000 CFLnu=0.0730 divL2=4.720e-04 Q0=-1.226e-02 theta_budget=3.329e-07
+step=71700 time=6.9630/9h CFL=0.9000 CFLnu=0.0845 divL2=4.729e-04 Q0=-1.277e-02 theta_budget=1.925e-07
+step=72000 time=6.9903/9h CFL=0.9000 CFLnu=0.0804 divL2=4.649e-04 Q0=-1.293e-02 theta_budget=9.181e-07
+step=72300 time=7.0179/9h CFL=0.9000 CFLnu=0.0761 divL2=6.250e-04 Q0=-1.362e-02 theta_budget=2.084e-07
+step=72600 time=7.0450/9h CFL=0.9000 CFLnu=0.0745 divL2=5.664e-04 Q0=-1.330e-02 theta_budget=3.679e-07
+step=72900 time=7.0712/9h CFL=0.9000 CFLnu=0.0652 divL2=4.707e-04 Q0=-1.308e-02 theta_budget=1.056e-06
+step=73200 time=7.0973/9h CFL=0.9000 CFLnu=0.0589 divL2=4.705e-04 Q0=-1.324e-02 theta_budget=1.503e-06
+step=73500 time=7.1239/9h CFL=0.9000 CFLnu=0.0695 divL2=4.707e-04 Q0=-1.349e-02 theta_budget=1.682e-06
+step=73800 time=7.1502/9h CFL=0.9000 CFLnu=0.0729 divL2=4.620e-04 Q0=-1.365e-02 theta_budget=1.413e-06
+step=74100 time=7.1782/9h CFL=0.9000 CFLnu=0.0889 divL2=1.098e-03 Q0=-1.342e-02 theta_budget=2.922e-07
+step=74400 time=7.2052/9h CFL=0.9000 CFLnu=0.0648 divL2=5.520e-04 Q0=-1.325e-02 theta_budget=1.667e-06
+step=74700 time=7.2318/9h CFL=0.9000 CFLnu=0.0758 divL2=5.066e-04 Q0=-1.323e-02 theta_budget=5.790e-07
+step=75000 time=7.2581/9h CFL=0.9000 CFLnu=0.0792 divL2=4.886e-04 Q0=-1.318e-02 theta_budget=6.116e-07
+step=75300 time=7.2853/9h CFL=0.9000 CFLnu=0.0688 divL2=5.707e-04 Q0=-1.306e-02 theta_budget=2.164e-06
+step=75600 time=7.3132/9h CFL=0.9000 CFLnu=0.0723 divL2=5.533e-04 Q0=-1.351e-02 theta_budget=8.471e-07
+step=75900 time=7.3406/9h CFL=0.9000 CFLnu=0.0710 divL2=4.979e-04 Q0=-1.336e-02 theta_budget=3.859e-06
+step=76200 time=7.3659/9h CFL=0.9000 CFLnu=0.0627 divL2=4.819e-04 Q0=-1.225e-02 theta_budget=3.164e-06
+step=76500 time=7.3920/9h CFL=0.9000 CFLnu=0.0780 divL2=5.027e-04 Q0=-1.186e-02 theta_budget=4.576e-07
+step=76800 time=7.4197/9h CFL=0.9000 CFLnu=0.0655 divL2=6.595e-04 Q0=-1.169e-02 theta_budget=1.988e-06
+step=77100 time=7.4466/9h CFL=0.9000 CFLnu=0.0702 divL2=4.643e-04 Q0=-1.192e-02 theta_budget=1.145e-07
+step=77400 time=7.4740/9h CFL=0.9000 CFLnu=0.0603 divL2=4.512e-04 Q0=-1.241e-02 theta_budget=1.260e-06
+step=77700 time=7.5014/9h CFL=0.9000 CFLnu=0.0657 divL2=5.493e-04 Q0=-1.206e-02 theta_budget=6.103e-08
+step=78000 time=7.5277/9h CFL=0.9000 CFLnu=0.0665 divL2=4.404e-04 Q0=-1.237e-02 theta_budget=3.742e-08
+step=78300 time=7.5548/9h CFL=0.9000 CFLnu=0.0603 divL2=4.746e-04 Q0=-1.304e-02 theta_budget=1.757e-06
+step=78600 time=7.5815/9h CFL=0.9000 CFLnu=0.0705 divL2=4.631e-04 Q0=-1.362e-02 theta_budget=8.485e-07
+step=78900 time=7.6085/9h CFL=0.9000 CFLnu=0.0642 divL2=4.632e-04 Q0=-1.327e-02 theta_budget=2.526e-06
+step=79200 time=7.6351/9h CFL=0.9000 CFLnu=0.0773 divL2=4.745e-04 Q0=-1.366e-02 theta_budget=5.519e-07
+step=79500 time=7.6619/9h CFL=0.9000 CFLnu=0.0707 divL2=4.481e-04 Q0=-1.303e-02 theta_budget=1.354e-06
+step=79800 time=7.6896/9h CFL=0.9000 CFLnu=0.0629 divL2=5.305e-04 Q0=-1.286e-02 theta_budget=1.024e-06
+step=80100 time=7.7164/9h CFL=0.9000 CFLnu=0.0704 divL2=4.595e-04 Q0=-1.276e-02 theta_budget=3.367e-07
+step=80400 time=7.7438/9h CFL=0.9000 CFLnu=0.0866 divL2=4.720e-04 Q0=-1.234e-02 theta_budget=4.479e-08
+step=80700 time=7.7713/9h CFL=0.9000 CFLnu=0.0694 divL2=6.155e-04 Q0=-1.252e-02 theta_budget=3.625e-07
+step=81000 time=7.7982/9h CFL=0.9000 CFLnu=0.0793 divL2=5.082e-04 Q0=-1.269e-02 theta_budget=1.336e-06
+step=81300 time=7.8241/9h CFL=0.9000 CFLnu=0.0574 divL2=4.667e-04 Q0=-1.276e-02 theta_budget=5.232e-07
+step=81600 time=7.8502/9h CFL=0.9000 CFLnu=0.0800 divL2=4.970e-04 Q0=-1.294e-02 theta_budget=2.566e-06
+step=81900 time=7.8776/9h CFL=0.9000 CFLnu=0.0641 divL2=5.291e-04 Q0=-1.306e-02 theta_budget=1.258e-06
+step=82200 time=7.9037/9h CFL=0.9000 CFLnu=0.0714 divL2=5.073e-04 Q0=-1.324e-02 theta_budget=9.648e-08
+step=82500 time=7.9311/9h CFL=0.9000 CFLnu=0.0672 divL2=5.474e-04 Q0=-1.323e-02 theta_budget=1.438e-06
+step=82800 time=7.9584/9h CFL=0.9000 CFLnu=0.0741 divL2=4.755e-04 Q0=-1.298e-02 theta_budget=1.829e-06
+step=83100 time=7.9856/9h CFL=0.9000 CFLnu=0.0694 divL2=5.498e-04 Q0=-1.233e-02 theta_budget=1.215e-06
+step=83400 time=8.0118/9h CFL=0.9000 CFLnu=0.0678 divL2=4.714e-04 Q0=-1.287e-02 theta_budget=6.406e-08
+step=83700 time=8.0379/9h CFL=0.9000 CFLnu=0.0651 divL2=4.740e-04 Q0=-1.266e-02 theta_budget=4.760e-07
+step=84000 time=8.0643/9h CFL=0.9000 CFLnu=0.0659 divL2=4.445e-04 Q0=-1.277e-02 theta_budget=1.977e-07
+step=84300 time=8.0912/9h CFL=0.9000 CFLnu=0.0667 divL2=4.731e-04 Q0=-1.343e-02 theta_budget=1.377e-06
+step=84600 time=8.1177/9h CFL=0.9000 CFLnu=0.0703 divL2=4.773e-04 Q0=-1.357e-02 theta_budget=4.013e-07
+step=84900 time=8.1435/9h CFL=0.9000 CFLnu=0.0619 divL2=4.840e-04 Q0=-1.371e-02 theta_budget=1.660e-07
+step=85200 time=8.1693/9h CFL=0.9000 CFLnu=0.0796 divL2=4.566e-04 Q0=-1.414e-02 theta_budget=5.291e-07
+step=85500 time=8.1958/9h CFL=0.9000 CFLnu=0.0613 divL2=4.372e-04 Q0=-1.408e-02 theta_budget=3.821e-07
+step=85800 time=8.2228/9h CFL=0.9000 CFLnu=0.0678 divL2=4.421e-04 Q0=-1.367e-02 theta_budget=2.036e-06
+step=86100 time=8.2505/9h CFL=0.9000 CFLnu=0.0740 divL2=7.415e-04 Q0=-1.358e-02 theta_budget=8.827e-07
+step=86400 time=8.2770/9h CFL=0.9000 CFLnu=0.0642 divL2=5.212e-04 Q0=-1.332e-02 theta_budget=1.395e-06
+step=86700 time=8.3028/9h CFL=0.9000 CFLnu=0.0646 divL2=4.581e-04 Q0=-1.252e-02 theta_budget=1.499e-06
+step=87000 time=8.3295/9h CFL=0.9000 CFLnu=0.0619 divL2=4.839e-04 Q0=-1.202e-02 theta_budget=7.189e-07
+step=87300 time=8.3560/9h CFL=0.9000 CFLnu=0.0636 divL2=4.918e-04 Q0=-1.146e-02 theta_budget=1.085e-06
+step=87600 time=8.3828/9h CFL=0.9000 CFLnu=0.0590 divL2=4.472e-04 Q0=-1.242e-02 theta_budget=1.782e-06
+step=87900 time=8.4096/9h CFL=0.9000 CFLnu=0.0744 divL2=4.915e-04 Q0=-1.233e-02 theta_budget=1.634e-07
+step=88200 time=8.4367/9h CFL=0.9000 CFLnu=0.0570 divL2=5.060e-04 Q0=-1.299e-02 theta_budget=1.941e-06
+step=88500 time=8.4636/9h CFL=0.9000 CFLnu=0.0641 divL2=4.550e-04 Q0=-1.232e-02 theta_budget=1.189e-06
+step=88800 time=8.4907/9h CFL=0.9000 CFLnu=0.0798 divL2=4.912e-04 Q0=-1.284e-02 theta_budget=2.307e-06
+step=89100 time=8.5168/9h CFL=0.9000 CFLnu=0.0641 divL2=4.742e-04 Q0=-1.340e-02 theta_budget=5.545e-07
+step=89400 time=8.5430/9h CFL=0.9000 CFLnu=0.0716 divL2=4.718e-04 Q0=-1.274e-02 theta_budget=1.459e-06
+step=89700 time=8.5694/9h CFL=0.9000 CFLnu=0.0671 divL2=4.558e-04 Q0=-1.240e-02 theta_budget=2.220e-06
+step=90000 time=8.5961/9h CFL=0.9000 CFLnu=0.0725 divL2=4.972e-04 Q0=-1.248e-02 theta_budget=2.001e-06
+step=90300 time=8.6230/9h CFL=0.9000 CFLnu=0.0575 divL2=4.783e-04 Q0=-1.213e-02 theta_budget=3.435e-07
+step=90600 time=8.6499/9h CFL=0.9000 CFLnu=0.0753 divL2=4.512e-04 Q0=-1.327e-02 theta_budget=1.204e-06
+step=90900 time=8.6777/9h CFL=0.9000 CFLnu=0.0779 divL2=7.449e-04 Q0=-1.397e-02 theta_budget=1.198e-06
+step=91200 time=8.7049/9h CFL=0.9000 CFLnu=0.0697 divL2=7.895e-04 Q0=-1.312e-02 theta_budget=5.195e-07
+step=91500 time=8.7320/9h CFL=0.9000 CFLnu=0.0681 divL2=6.874e-04 Q0=-1.307e-02 theta_budget=1.673e-06
+step=91800 time=8.7590/9h CFL=0.9000 CFLnu=0.0772 divL2=6.019e-04 Q0=-1.323e-02 theta_budget=1.421e-06
+step=92100 time=8.7854/9h CFL=0.9000 CFLnu=0.0581 divL2=5.313e-04 Q0=-1.316e-02 theta_budget=2.298e-06
+step=92400 time=8.8112/9h CFL=0.9000 CFLnu=0.0795 divL2=4.914e-04 Q0=-1.351e-02 theta_budget=9.056e-07
+step=92700 time=8.8385/9h CFL=0.9000 CFLnu=0.0769 divL2=4.471e-04 Q0=-1.449e-02 theta_budget=1.494e-07
+step=93000 time=8.8660/9h CFL=0.9000 CFLnu=0.0715 divL2=4.511e-04 Q0=-1.382e-02 theta_budget=8.146e-07
+step=93300 time=8.8916/9h CFL=0.9000 CFLnu=0.0678 divL2=4.998e-04 Q0=-1.345e-02 theta_budget=7.771e-08
+step=93600 time=8.9175/9h CFL=0.9000 CFLnu=0.0585 divL2=4.495e-04 Q0=-1.381e-02 theta_budget=1.071e-06
+step=93900 time=8.9436/9h CFL=0.9000 CFLnu=0.0565 divL2=4.544e-04 Q0=-1.293e-02 theta_budget=2.466e-06
+step=94200 time=8.9704/9h CFL=0.9000 CFLnu=0.0715 divL2=4.448e-04 Q0=-1.301e-02 theta_budget=6.242e-07
+step=94500 time=8.9984/9h CFL=0.9000 CFLnu=0.0706 divL2=6.351e-04 Q0=-1.377e-02 theta_budget=3.232e-09
+step=94519 time=9.0000/9h CFL=0.1110 CFLnu=0.0089 divL2=3.865e-04 Q0=-1.384e-02 theta_budget=5.604e-07
+2026-08-02 13:01:23.445 system_profiler[69880:2704582] XType: Using static font registry.
+{
+  "amd_coefficient": 0.212,
+  "boundary_layer_height": 202.68245928674244,
+  "compilation_s": 17.323734208010137,
+  "coupling_integrator": "coupled-ssprk3",
+  "end_time_hours": 9.0,
+  "friction_velocity": 0.2844869035189269,
+  "grid_spacing_m": 6.25,
+  "jet_height": 193.6987704918033,
+  "jet_speed": 9.17174120418361,
+  "max_cfl": 0.9000000000000001,
+  "max_diffusive_cfl": 0.2655994441660461,
+  "max_divergence": 0.009104518219828606,
+  "max_scalar_budget_residual": 6.471336475945917e-06,
+  "maximum_abs_w": 1.2039802015804855,
+  "mp5_dissipation_strength": 1.0,
+  "nx": 64,
+  "ny": 64,
+  "nz": 64,
+  "obukhov_length": 118.13214123835836,
+  "official_participants": 7,
+  "pressure_smooth": 1,
+  "projection_method": "fpj2",
+  "runtime_s": 16132.06886270798,
+  "sample_count": 61,
+  "scalar_amd_coefficient": 0.212,
+  "schema": "jaxwind.gabls1.nonspectral-amd.v1",
+  "sgs_model": "AMD",
+  "solver": "non-spectral MAC + matrix-free GMG/PCG",
+  "stopped_early": "false",
+  "surface_heat_flux": -0.01309792908122305
+}

@@ -26,6 +26,13 @@ class YSlabMACVelocity(NamedTuple):
     z: Array  # (device, nz + 1, local_y, nx)
 
 
+class YSlabVelocityPressureProjection(NamedTuple):
+    """Device-resident projected y-slab velocity and pseudo-pressure."""
+
+    velocity: YSlabMACVelocity
+    pressure_correction: Array
+
+
 @dataclass(frozen=True, slots=True)
 class YSlabMACProjectionResult:
     velocity: YSlabMACVelocity
@@ -103,6 +110,15 @@ class YSlabMACProjector:
         self._mapped_gradient = jax.pmap(
             self._gradient_local,
             **mapped,
+        )
+        self._mapped_project_velocity_pressure = (
+            jax.pmap(
+                self._project_velocity_pressure_local,
+                in_axes=(0, None, None, 0),
+                **mapped,
+            )
+            if solver.krylov.execution == "jax"
+            else None
         )
 
     def _divergence_local(self, velocity: YSlabMACVelocity) -> Array:
@@ -210,6 +226,29 @@ class YSlabMACProjector:
         )
         return YSlabMACVelocity(x_gradient, gradient, z_gradient)
 
+    def _project_velocity_pressure_local(
+        self,
+        velocity: YSlabMACVelocity,
+        timestep: Array,
+        target_divergence: Array,
+        initial_pressure: Array,
+    ) -> YSlabVelocityPressureProjection:
+        divergence = self._divergence_local(velocity)
+        target = jnp.broadcast_to(target_divergence, divergence.shape)
+        pressure, *_ = self.solver._device_pcg_local(
+            (target - divergence) / timestep,
+            initial_pressure,
+        )
+        gradient = self._gradient_local(pressure)
+        return YSlabVelocityPressureProjection(
+            YSlabMACVelocity(
+                velocity.x - timestep * gradient.x,
+                velocity.y - timestep * gradient.y,
+                velocity.z - timestep * gradient.z,
+            ),
+            pressure,
+        )
+
     def _check_velocity(self, velocity: YSlabMACVelocity) -> None:
         local_devices = self.solver.local_device_count
         devices = self.solver.device_count
@@ -267,11 +306,50 @@ class YSlabMACProjector:
             linear_result,
         )
 
+    def project_velocity_and_pressure(
+        self,
+        velocity: YSlabMACVelocity,
+        *,
+        timestep: float,
+        target_divergence: Array | float = 0.0,
+        initial_pressure: Array | None = None,
+    ) -> YSlabVelocityPressureProjection:
+        """Project in one device program without host convergence syncs."""
+        if self.solver.krylov.execution != "jax":
+            result = self.project(
+                velocity,
+                timestep=timestep,
+                target_divergence=target_divergence,
+                initial_pressure=initial_pressure,
+            )
+            return YSlabVelocityPressureProjection(
+                result.velocity,
+                result.pressure_correction,
+            )
+        if not (timestep > 0.0 and timestep < float("inf")):
+            raise ValueError("projection timestep must be positive and finite")
+        self._check_velocity(velocity)
+        if self._mapped_project_velocity_pressure is None:
+            raise RuntimeError("device y-slab projector was not initialized")
+        starting_pressure = (
+            jnp.zeros_like(velocity.x[..., :-1])
+            if initial_pressure is None
+            else jnp.asarray(initial_pressure, dtype=velocity.x.dtype)
+        )
+        self.solver._check_sharded_shape(starting_pressure)
+        return self._mapped_project_velocity_pressure(
+            velocity,
+            jnp.asarray(timestep, dtype=velocity.x.dtype),
+            jnp.asarray(target_divergence, dtype=velocity.x.dtype),
+            starting_pressure,
+        )
+
 
 __all__ = [
     "YSlabMACProjectionResult",
     "YSlabMACProjector",
     "YSlabMACVelocity",
+    "YSlabVelocityPressureProjection",
     "gather_y_mac_velocity",
     "shard_y_mac_velocity",
 ]
