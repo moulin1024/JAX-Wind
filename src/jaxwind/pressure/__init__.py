@@ -29,6 +29,7 @@ from .matrix_free_gmg import (
     fgmres,
     pcg,
 )
+from .kep4_poisson import KEP4PoissonOperator
 from .mac_projection import (
     VelocityPressureProjection,
     fpj2_pressure_prediction,
@@ -37,6 +38,8 @@ from .mac_projection import (
     MACStageProjector,
     MACVelocity,
     SSPRK3ProjectionResult,
+    kep4_mac_divergence,
+    kep4_mac_pressure_gradient,
     mac_divergence,
     mac_pressure_gradient,
     projected_ssprk3_step,
@@ -50,6 +53,7 @@ __all__ = [
     "FGMRESConfig",
     "FGMRESResult",
     "GMGConfig",
+    "KEP4PoissonOperator",
     "MatrixFreeGMG",
     "MatrixFreePoissonOperator",
     "MatrixFreePoissonSolver",
@@ -76,6 +80,8 @@ __all__ = [
     "fpj2_ssprk3_velocity_step",
     "gather_y_field",
     "gather_y_mac_velocity",
+    "kep4_mac_divergence",
+    "kep4_mac_pressure_gradient",
     "mac_divergence",
     "mac_pressure_gradient",
     "projected_ssprk3_step",

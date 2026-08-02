@@ -29,7 +29,7 @@ INITIAL_ZI_FRACTION = 0.844
 STABLE_THETA_GRADIENT = 0.003
 ROUGHNESS_LENGTH = 0.16
 DOMAIN = (6400.0, 6400.0, 2400.0)
-CHECKPOINT_SCHEMA = "jaxwind.nieuwstadt1993.nonspectral-amd.v1"
+CHECKPOINT_SCHEMA = "jaxwind.nieuwstadt1993.kep4-pressure-amd.v2"
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -52,6 +52,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--pressure-rtol", type=float, default=1.0e-5)
     parser.add_argument("--pressure-max-iterations", type=int, default=40)
     parser.add_argument("--pressure-coarse-smooth", type=int, default=20)
+    parser.add_argument(
+        "--pressure-discretization",
+        choices=("centered2", "kep4"),
+        default="kep4",
+    )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--single", action="store_true")
     parser.add_argument("--restart", type=Path)
@@ -59,9 +64,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=ROOT
-        / "benchmark_results"
-        / "nieuwstadt1993_nonspectral_amd_40x40x48",
+        default=ROOT / "benchmark_results" / "nieuwstadt1993_nonspectral_amd_40x40x48",
     )
     parser.add_argument("--quick", action="store_true")
     args = parser.parse_args(argv)
@@ -171,6 +174,8 @@ def _restore_checkpoint(args, coupled, dtype):
     ):
         if not np.isclose(float(checkpoint[key]), expected, rtol=0.0, atol=1.0e-12):
             raise SystemExit(f"restart {key} does not match")
+    if str(checkpoint["pressure_discretization"]) != args.pressure_discretization:
+        raise SystemExit("restart pressure discretization does not match")
     state = coupled.initial_state(
         MACVelocity(
             jnp.asarray(checkpoint["velocity_x"], dtype=dtype),
@@ -233,7 +238,6 @@ def run(args: argparse.Namespace) -> dict[str, float | str]:
         PCGConfig,
         PoissonBoundaryConditions,
         RectilinearGrid,
-        mac_divergence,
     )
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -270,6 +274,7 @@ def run(args: argparse.Namespace) -> dict[str, float | str]:
             relative_tolerance=args.pressure_rtol,
             execution="jax",
         ),
+        discretization=args.pressure_discretization,
     )
     momentum = NeutralABLMomentum(
         grid,
@@ -331,11 +336,7 @@ def run(args: argparse.Namespace) -> dict[str, float | str]:
 
     diagnostic_kernel = jax.jit(coupled.diagnostic_fields)
     maximum_mode = (
-        math.sqrt(2.0)
-        * math.pi
-        * max(args.nx, args.ny)
-        * case.zi0
-        / DOMAIN[0]
+        math.sqrt(2.0) * math.pi * max(args.nx, args.ny) * case.zi0 / DOMAIN[0]
     )
     spectrum_edges = np.linspace(0.0, maximum_mode, args.nx // 2 + 2)
 
@@ -346,7 +347,9 @@ def run(args: argparse.Namespace) -> dict[str, float | str]:
     jax.block_until_ready(compiled_state.velocity.x)
     jax.block_until_ready(compiled_fields.sgs_tke)
     compilation_s = time.perf_counter() - compile_start
-    print(f"[compile] non-spectral CBL kernels ready in {compilation_s:.3f}s", flush=True)
+    print(
+        f"[compile] non-spectral CBL kernels ready in {compilation_s:.3f}s", flush=True
+    )
 
     def collect_sample() -> dict:
         return amd_diagnostics.snapshot_statistics(
@@ -369,8 +372,7 @@ def run(args: argparse.Namespace) -> dict[str, float | str]:
                 "zi": statistics["zi"],
                 "zi_over_zi0": statistics["zi"] / case.zi0,
                 "wstar": statistics["wstar"],
-                "energy_bl_over_wstar0_sq": statistics["energy_bl"]
-                / case.wstar0**2,
+                "energy_bl_over_wstar0_sq": statistics["energy_bl"] / case.wstar0**2,
             }
         )
 
@@ -392,6 +394,7 @@ def run(args: argparse.Namespace) -> dict[str, float | str]:
             "amd_coefficient": args.amd_coefficient,
             "scalar_amd_coefficient": args.scalar_amd_coefficient,
             "mp5_strength": args.mp5_strength,
+            "pressure_discretization": args.pressure_discretization,
             "sample_keys": np.asarray(sample_keys),
             "sample_count": len(samples),
             "sample_times": np.asarray(sample_times),
@@ -407,9 +410,7 @@ def run(args: argparse.Namespace) -> dict[str, float | str]:
                 [np.asarray(sample[key]) for sample in samples]
             )
         for key in time_keys:
-            payload[f"time_rows_{key}"] = np.asarray(
-                [row[key] for row in time_rows]
-            )
+            payload[f"time_rows_{key}"] = np.asarray([row[key] for row in time_rows])
         destination = args.output_dir / "checkpoint.npz"
         temporary = destination.with_name(f".{destination.name}.tmp-{os.getpid()}")
         with temporary.open("wb") as stream:
@@ -435,12 +436,10 @@ def run(args: argparse.Namespace) -> dict[str, float | str]:
         momentum_diffusive = float(
             timestep
             * 2.0
-            * jnp.max(momentum.sgs_viscosity(momentum.cell_centered_velocity(state.velocity)))
-            * (
-                1.0 / momentum.dx**2
-                + 1.0 / momentum.dy**2
-                + 1.0 / momentum.dz**2
+            * jnp.max(
+                momentum.sgs_viscosity(momentum.cell_centered_velocity(state.velocity))
             )
+            * (1.0 / momentum.dx**2 + 1.0 / momentum.dy**2 + 1.0 / momentum.dz**2)
         )
         scalar_diffusive = float(
             timestep
@@ -448,11 +447,10 @@ def run(args: argparse.Namespace) -> dict[str, float | str]:
         )
         diffusive_cfl = max(momentum_diffusive, scalar_diffusive)
         divergence = float(
-            pressure_solver.operator.norm(mac_divergence(state.velocity, grid))
+            pressure_solver.operator.norm(momentum.projector.divergence(state.velocity))
         )
         expected_theta_mean = (
-            initial_theta_mean
-            + state.time * case.surface_theta_flux / DOMAIN[2]
+            initial_theta_mean + state.time * case.surface_theta_flux / DOMAIN[2]
         )
         scalar_budget_error = abs(
             float(jnp.mean(state.potential_temperature)) - expected_theta_mean
@@ -464,9 +462,7 @@ def run(args: argparse.Namespace) -> dict[str, float | str]:
             max_scalar_budget_error,
             scalar_budget_error,
         )
-        reached_step_limit = (
-            args.max_steps is not None and state.step >= args.max_steps
-        )
+        reached_step_limit = args.max_steps is not None and state.step >= args.max_steps
         final = state.time >= final_time or reached_step_limit
         if state.step % args.sample_every == 0 or final:
             statistics = collect_sample()

@@ -10,9 +10,12 @@ wall law with `z0 = z0h = 0.1 m`.
 
 The default transport path is fourth-order skew/adjoint-paired KEP momentum,
 AMD, conservative KO6 cutoff damping, and a complete MP5 potential-temperature
-flux.  The former second-order centered-plus-MP5 path remains available with
+flux. Pressure uses the matching fourth-order `D4=-G4.T` constraint and
+`-D4G4` Poisson operator, with the compact second-order GMG retained only as a
+preconditioner. The former second-order centered-plus-MP5 path remains available with
 `--momentum-advection centered2 --momentum-regularization mp5
---scalar-advection centered_mp5`.  The KEP4 conservation qualification and
+--scalar-advection centered_mp5 --pressure-discretization centered2`. The KEP4
+operator identities and remaining conservation qualification are recorded in
 operator identities are recorded in
 `doc/design/decisions/0012-kep4-ko6-mp5-transport.md`.
 
@@ -44,6 +47,8 @@ complete ground-to-top vertical columns. KEP4, KO6, AMD, and scalar MP5 share
 one packed three-row halo message per neighbor and stage; stable MOST and
 vertical SGS fluxes stay local. The matrix-free GMG/PCG pressure solve uses
 the same y slabs on fine levels and globally replicates only its coarse level.
+Its exact fourth-order apply uses three pressure halo rows; GMG remains a
+compact second-order preconditioner.
 Rank 0 reconstructs the ordinary full-domain checkpoint and diagnostics, so
 serial and MPI runs can restart each other's checkpoints.
 

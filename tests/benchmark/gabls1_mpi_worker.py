@@ -47,6 +47,8 @@ def main() -> None:
     )
     periodic = BoundaryCondition("periodic")
     neumann = BoundaryCondition("neumann")
+    local_y = count // size
+    start = rank * local_y
     pressure = YSlabMatrixFreePoissonSolver(
         grid,
         PoissonBoundaryConditions(
@@ -64,7 +66,22 @@ def main() -> None:
             relative_tolerance=1.0e-5,
         ),
         distribution=YSlabConfig(coarse_cells_per_device=1),
+        discretization="kep4",
     )
+    global_pressure = jnp.sin(0.013 * jnp.arange(count**3, dtype=jnp.float32)).reshape(
+        (count, count, count)
+    )
+    local_pressure = global_pressure[:, start : start + local_y, :][None]
+    local_action = pressure.apply(local_pressure)
+    action_parts = communicator.gather(np.asarray(local_action[0]), root=0)
+    if rank == 0:
+        distributed_action = np.concatenate(action_parts, axis=1)
+        reference_action = np.asarray(pressure.operator.apply(global_pressure))
+        operator_difference = float(
+            np.max(np.abs(distributed_action - reference_action))
+        )
+    else:
+        operator_difference = None
     coupled = YSlabAMDBoussinesq(
         grid,
         pressure,
@@ -81,8 +98,6 @@ def main() -> None:
         coupling_integrator="coupled-ssprk3",
         projection_method="fpj2",
     )
-    local_y = count // size
-    start = rank * local_y
     z = (jnp.arange(count, dtype=jnp.float32) + 0.5) * (400.0 / count)
     theta_profile = jnp.where(z <= 100.0, 265.0, 265.0 + 0.01 * (z - 100.0))
     random = jax.random.uniform(
@@ -145,6 +160,7 @@ def main() -> None:
                     "surface_heat_flux": heat_flux_sum / (count * count),
                     "projection_calls": projection_calls,
                     "fpj2_history_count": coupled.fpj2_state.history_count,
+                    "operator_difference": operator_difference,
                 }
             ),
             flush=True,

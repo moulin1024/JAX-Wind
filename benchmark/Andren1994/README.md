@@ -13,13 +13,16 @@ python benchmark/Andren1994/run.py \
 
 The current runner defaults to fourth-order skew/adjoint-paired KEP momentum,
 conservative KO6 cutoff damping, a matrix-free symmetric-GMG/PCG pressure
-solver, and filter-free AMD. The AMD run also advances the paper's passive
+solver with a compatible fourth-order `D4/G4` projection, and filter-free AMD.
+The Krylov operator is exact `-D4G4`; the compact second-order GMG is only its
+preconditioner. The AMD run also advances the paper's passive
 scalar with a complete MP5 transport flux, conservative AMD flux, and a
 prescribed lower surface flux of `1e-3`; use `--no-passive-scalar` only for a
 momentum-only diagnostic run. `--scalar-amd-coefficient` defaults to the
 momentum `--amd-coefficient`. The previous transport is selectable with
 `--momentum-advection centered2 --momentum-regularization mp5
---scalar-advection centered_mp5`. Use `--sgs lasd` for the physical-space LASD
+--scalar-advection centered_mp5 --pressure-discretization centered2`. Use
+`--sgs lasd` for the physical-space LASD
 momentum closure (the scalar is then off by default). The restriction is the volume-weighted
 adjoint of prolongation. Use `--linear-solver gmres` for the restarted GMRES
 reference path.

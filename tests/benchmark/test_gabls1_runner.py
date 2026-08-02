@@ -32,6 +32,7 @@ def test_gabls1_defaults_are_the_official_coarse_case() -> None:
     assert args.amd_coefficient == 0.212
     assert args.scalar_amd_coefficient == 0.212
     assert args.target_cfl == 0.9
+    assert args.pressure_discretization == "kep4"
     assert args.projection_method == "fpj2"
     assert args.coupling_integrator == "coupled-ssprk3"
     assert args.pressure_smooth == 1

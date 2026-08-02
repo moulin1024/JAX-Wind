@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from typing import Literal
 
 import jax
 from jax import lax
@@ -21,6 +22,8 @@ from .matrix_free_gmg import (
     _interpolate_axis,
     _transpose_interpolate_axis,
 )
+from .kep4_operators import periodic_poisson_axis_from_halo, poisson_axis
+from .kep4_poisson import KEP4PoissonOperator
 
 
 Array = jax.Array
@@ -78,6 +81,7 @@ class YSlabMatrixFreePoissonSolver:
         gmg: GMGConfig = GMGConfig(),
         krylov: FGMRESConfig | PCGConfig = FGMRESConfig(),
         distribution: YSlabConfig = YSlabConfig(),
+        discretization: Literal["centered2", "kep4"] = "centered2",
     ) -> None:
         selected = tuple(jax.local_devices()) if devices is None else tuple(devices)
         if not selected:
@@ -86,31 +90,35 @@ class YSlabMatrixFreePoissonSolver:
         if process_count > 1 and devices is not None:
             expected = tuple(jax.local_devices())
             if selected != expected:
-                raise ValueError(
-                    "multi-process pmap must use every local JAX device"
-                )
+                raise ValueError("multi-process pmap must use every local JAX device")
         self.local_device_count = len(selected)
-        self.device_count = (
-            jax.device_count() if process_count > 1 else len(selected)
-        )
+        self.device_count = jax.device_count() if process_count > 1 else len(selected)
         if grid.shape[1] % self.device_count:
             raise ValueError("finest-grid y cells must divide across devices")
         self.devices = selected
         self.distribution = distribution
-        self.operator = MatrixFreePoissonOperator(
+        if discretization not in {"centered2", "kep4"}:
+            raise ValueError("Poisson discretization must be 'centered2' or 'kep4'")
+        preconditioner_operator = MatrixFreePoissonOperator(
             grid,
             boundaries,
             dtype=dtype,
         )
-        self.serial_gmg = MatrixFreeGMG(self.operator, gmg)
+        self.discretization = discretization
+        self.operator = (
+            preconditioner_operator
+            if discretization == "centered2"
+            else KEP4PoissonOperator(grid, boundaries, dtype=dtype)
+        )
+        if discretization == "kep4":
+            if boundaries.y_lower.kind != "periodic":
+                raise ValueError("distributed KEP4 currently requires periodic y")
+            if grid.shape[1] // self.device_count < 3:
+                raise ValueError("distributed KEP4 requires three y cells per rank")
+        self.serial_gmg = MatrixFreeGMG(preconditioner_operator, gmg)
         self.krylov = replace(krylov, jit_kernels=False)
-        if (
-            self.krylov.execution == "jax"
-            and not isinstance(self.krylov, PCGConfig)
-        ):
-            raise ValueError(
-                "device-resident y-slab solves currently require PCG"
-            )
+        if self.krylov.execution == "jax" and not isinstance(self.krylov, PCGConfig):
+            raise ValueError("device-resident y-slab solves currently require PCG")
         self.replication_level = self._choose_replication_level()
         self._validate_sharded_levels()
         mapped: dict[str, object] = dict(
@@ -153,9 +161,7 @@ class YSlabMatrixFreePoissonSolver:
         return self.level_shapes[self.replication_level]
 
     def _choose_replication_level(self) -> int:
-        threshold = (
-            self.distribution.coarse_cells_per_device * self.device_count
-        )
+        threshold = self.distribution.coarse_cells_per_device * self.device_count
         for level, shape in enumerate(self.level_shapes):
             if shape[1] <= threshold:
                 return level
@@ -205,13 +211,9 @@ class YSlabMatrixFreePoissonSolver:
             ]
         else:
             send_right = [
-                (source, source + 1)
-                for source in range(self.device_count - 1)
+                (source, source + 1) for source in range(self.device_count - 1)
             ]
-            send_left = [
-                (source, source - 1)
-                for source in range(1, self.device_count)
-            ]
+            send_left = [(source, source - 1) for source in range(1, self.device_count)]
         left = lax.ppermute(
             field[:, -1, :],
             self.distribution.axis_name,
@@ -219,6 +221,45 @@ class YSlabMatrixFreePoissonSolver:
         )
         right = lax.ppermute(
             field[:, 0, :],
+            self.distribution.axis_name,
+            send_left,
+        )
+        return left, right
+
+    def _exchange_y_halo(
+        self,
+        field: Array,
+        width: int,
+        periodic: bool,
+    ) -> tuple[Array, Array]:
+        if width <= 0 or field.shape[1] < width:
+            raise ValueError("invalid distributed y halo width")
+        if self.device_count == 1:
+            if periodic:
+                return field[:, -width:, :], field[:, :width, :]
+            zeros = jnp.zeros_like(field[:, :width, :])
+            return zeros, zeros
+        if periodic:
+            send_right = [
+                (source, (source + 1) % self.device_count)
+                for source in range(self.device_count)
+            ]
+            send_left = [
+                (source, (source - 1) % self.device_count)
+                for source in range(self.device_count)
+            ]
+        else:
+            send_right = [
+                (source, source + 1) for source in range(self.device_count - 1)
+            ]
+            send_left = [(source, source - 1) for source in range(1, self.device_count)]
+        left = lax.ppermute(
+            field[:, -width:, :],
+            self.distribution.axis_name,
+            send_right,
+        )
+        right = lax.ppermute(
+            field[:, :width, :],
             self.distribution.axis_name,
             send_left,
         )
@@ -274,34 +315,22 @@ class YSlabMatrixFreePoissonSolver:
             keepdims=False,
         )
         lower_internal = (
-            (pressure[:, 0, :] - left)
-            / widths[0]
-            / (centers[0] - previous)
+            (pressure[:, 0, :] - left) / widths[0] / (centers[0] - previous)
         )
         upper_internal = (
-            (pressure[:, -1, :] - right)
-            / widths[-1]
-            / (following - centers[-1])
+            (pressure[:, -1, :] - right) / widths[-1] / (following - centers[-1])
         )
         if periodic:
             wrap = 0.5 * (wy[0] + wy[-1])
-            lower_physical = (
-                (pressure[:, 0, :] - left) / widths[0] / wrap
-            )
-            upper_physical = (
-                (pressure[:, -1, :] - right) / widths[-1] / wrap
-            )
+            lower_physical = (pressure[:, 0, :] - left) / widths[0] / wrap
+            upper_physical = (pressure[:, -1, :] - right) / widths[-1] / wrap
         else:
             lower_physical = jnp.zeros_like(left)
             upper_physical = jnp.zeros_like(right)
             if operator.boundaries.y_lower.kind == "dirichlet":
-                lower_physical = (
-                    2.0 * pressure[:, 0, :] / (widths[0] * widths[0])
-                )
+                lower_physical = 2.0 * pressure[:, 0, :] / (widths[0] * widths[0])
             if operator.boundaries.y_upper.kind == "dirichlet":
-                upper_physical = (
-                    2.0 * pressure[:, -1, :] / (widths[-1] * widths[-1])
-                )
+                upper_physical = 2.0 * pressure[:, -1, :] / (widths[-1] * widths[-1])
         y_result = y_result.at[:, 0, :].add(
             jnp.where(rank > 0, lower_internal, lower_physical)
         )
@@ -315,6 +344,31 @@ class YSlabMatrixFreePoissonSolver:
         return result + y_result
 
     def _apply_local(self, pressure: Array) -> Array:
+        if self.discretization == "kep4":
+            dx, dy, dz = self.operator.spacings
+            boundaries = self.operator.boundaries
+            result = poisson_axis(
+                pressure,
+                spacing=dx,
+                axis=-1,
+                lower_kind=boundaries.x_lower.kind,
+                upper_kind=boundaries.x_upper.kind,
+            )
+            result = result + poisson_axis(
+                pressure,
+                spacing=dz,
+                axis=-3,
+                lower_kind=boundaries.z_lower.kind,
+                upper_kind=boundaries.z_upper.kind,
+            )
+            left, right = self._exchange_y_halo(pressure, 3, True)
+            padded = jnp.concatenate((left, pressure, right), axis=1)
+            return result + periodic_poisson_axis_from_halo(
+                padded,
+                spacing=dy,
+                axis=-2,
+                local_count=pressure.shape[1],
+            )
         return self._apply_local_at_level(pressure, 0)
 
     def _project_local(self, field: Array, level: int) -> Array:
@@ -359,20 +413,12 @@ class YSlabMatrixFreePoissonSolver:
             operator.boundaries.z_lower,
             operator.boundaries.z_upper,
         )
-        diagonal = (
-            dz[:, None, None]
-            + local_dy[None, :, None]
-            + dx[None, None, :]
-        )
+        diagonal = dz[:, None, None] + local_dy[None, :, None] + dx[None, None, :]
         if rhs.shape[0] == 1:
             return rhs / jnp.where(diagonal != 0.0, diagonal, 1.0)
         distance = cz[1:] - cz[:-1]
-        lower = jnp.zeros_like(wz).at[1:].set(
-            -1.0 / (wz[1:] * distance)
-        )
-        upper = jnp.zeros_like(wz).at[:-1].set(
-            -1.0 / (wz[:-1] * distance)
-        )
+        lower = jnp.zeros_like(wz).at[1:].set(-1.0 / (wz[1:] * distance))
+        upper = jnp.zeros_like(wz).at[:-1].set(-1.0 / (wz[:-1] * distance))
         denominator = jnp.where(diagonal[0] != 0.0, diagonal[0], 1.0)
         first_upper = upper[0] / denominator
         first_rhs = rhs[0] / denominator
@@ -383,9 +429,7 @@ class YSlabMatrixFreePoissonSolver:
             denominator = diagonal_value - lower_value * previous_upper
             denominator = jnp.where(denominator != 0.0, denominator, 1.0)
             reduced_upper = upper_value / denominator
-            reduced_rhs = (
-                rhs_value - lower_value * previous_rhs
-            ) / denominator
+            reduced_rhs = (rhs_value - lower_value * previous_rhs) / denominator
             return (
                 (reduced_upper, reduced_rhs),
                 (reduced_upper, reduced_rhs),
@@ -432,11 +476,7 @@ class YSlabMatrixFreePoissonSolver:
                 correction = self._line_solve_local(residual, level)
                 solution += self.serial_gmg.config.line_omega * correction
             else:
-                solution += (
-                    self.serial_gmg.config.jacobi_omega
-                    * residual
-                    / diagonal
-                )
+                solution += self.serial_gmg.config.jacobi_omega * residual / diagonal
             # Constant pressure offsets do not change the operator residual.
             # Fix the gauge once at the preconditioner exit instead of issuing
             # a cross-rank reduction after every smoothing update.
@@ -527,12 +567,10 @@ class YSlabMatrixFreePoissonSolver:
                 ]
             else:
                 send_right = [
-                    (source, source + 1)
-                    for source in range(self.device_count - 1)
+                    (source, source + 1) for source in range(self.device_count - 1)
                 ]
                 send_left = [
-                    (source, source - 1)
-                    for source in range(1, self.device_count)
+                    (source, source - 1) for source in range(1, self.device_count)
                 ]
             from_left = lax.ppermute(
                 right_ghost,
@@ -557,8 +595,7 @@ class YSlabMatrixFreePoissonSolver:
         rank = self._rank()
         result = _interpolate_axis(field, transfer.x, -1)
         periodic = (
-            self.serial_gmg.operators[level].boundaries.y_lower.kind
-            == "periodic"
+            self.serial_gmg.operators[level].boundaries.y_lower.kind == "periodic"
         )
         left, right = self._exchange_y(result, periodic)
         padded = jnp.concatenate(
@@ -604,12 +641,11 @@ class YSlabMatrixFreePoissonSolver:
             return mapped
 
         shape = (1, fine_local_y, 1)
-        result = (
-            jnp.take(padded, local_index(lower_index), axis=1)
-            * lower_weight.reshape(shape)
-            + jnp.take(padded, local_index(upper_index), axis=1)
-            * upper_weight.reshape(shape)
-        )
+        result = jnp.take(
+            padded, local_index(lower_index), axis=1
+        ) * lower_weight.reshape(shape) + jnp.take(
+            padded, local_index(upper_index), axis=1
+        ) * upper_weight.reshape(shape)
         return _interpolate_axis(result, transfer.z, -3)
 
     def _replicated_cycle(self, rhs: Array, level: int) -> Array:
@@ -719,9 +755,7 @@ class YSlabMatrixFreePoissonSolver:
         def condition(state) -> Array:
             current_iteration = state[0]
             current_active = state[-1]
-            return (
-                current_iteration < self.krylov.max_iterations
-            ) & current_active
+            return (current_iteration < self.krylov.max_iterations) & current_active
 
         def body(state):
             (
@@ -754,10 +788,7 @@ class YSlabMatrixFreePoissonSolver:
                 & (next_dot > 0.0)
             )
             safe_dot = jnp.where(current_dot > 0.0, current_dot, 1.0)
-            direction = (
-                next_preconditioned
-                + (next_dot / safe_dot) * direction
-            )
+            direction = next_preconditioned + (next_dot / safe_dot) * direction
             next_active = valid_next & (next_residual_norm > target)
             return (
                 current_iteration + 1,
@@ -784,9 +815,7 @@ class YSlabMatrixFreePoissonSolver:
         )
         iterations, solution, _, _, _, residual_norm, active = state
         solution = self._project_finest_local(solution)
-        converged = (~active) & jnp.isfinite(residual_norm) & (
-            residual_norm <= target
-        )
+        converged = (~active) & jnp.isfinite(residual_norm) & (residual_norm <= target)
         return (
             solution,
             compatibility_shift,
@@ -850,9 +879,7 @@ class YSlabMatrixFreePoissonSolver:
             ) = self._mapped_device_solve(physical_rhs, starting_value)
             residual_norm = float(residual_norms[0])
             rhs_norm = float(rhs_norms[0])
-            relative_residual = (
-                0.0 if rhs_norm == 0.0 else residual_norm / rhs_norm
-            )
+            relative_residual = 0.0 if rhs_norm == 0.0 else residual_norm / rhs_norm
             return PCGResult(
                 solution,
                 bool(converged[0]),

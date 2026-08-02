@@ -3,18 +3,27 @@ from __future__ import annotations
 import jax.numpy as jnp
 
 from jaxwind.pressure import (
+    BoundaryCondition,
     FGMRESConfig,
     MACStageProjector,
     MACVelocity,
     MatrixFreePoissonSolver,
+    PCGConfig,
     PoissonBoundaryConditions,
     RectilinearGrid,
     fpj2_pressure_prediction,
     fpj2_ssprk3_velocity_step,
+    kep4_mac_divergence,
+    kep4_mac_pressure_gradient,
     mac_divergence,
     mac_pressure_gradient,
     projected_ssprk3_step,
     projected_ssprk3_velocity_pressure_step,
+)
+from jaxwind.pressure.kep4_operators import (
+    neumann_divergence_axis,
+    neumann_gradient_axis,
+    periodic_gradient_axis,
 )
 
 
@@ -31,28 +40,144 @@ def _wall_solver(grid: RectilinearGrid) -> MatrixFreePoissonSolver:
     )
 
 
+def _kep4_solver(grid: RectilinearGrid) -> MatrixFreePoissonSolver:
+    periodic = BoundaryCondition("periodic")
+    neumann = BoundaryCondition("neumann")
+    return MatrixFreePoissonSolver(
+        grid,
+        PoissonBoundaryConditions(
+            periodic,
+            periodic,
+            periodic,
+            periodic,
+            neumann,
+            neumann,
+        ),
+        dtype=jnp.float32,
+        krylov=PCGConfig(
+            max_iterations=100,
+            relative_tolerance=1.0e-6,
+        ),
+        discretization="kep4",
+    )
+
+
+def test_kep4_periodic_gradient_has_fourth_order_accuracy() -> None:
+    errors = []
+    for count in (8, 16):
+        spacing = 1.0 / count
+        centers = (jnp.arange(count, dtype=jnp.float32) + 0.5) * spacing
+        pressure = jnp.sin(2.0 * jnp.pi * centers)
+        gradient = periodic_gradient_axis(pressure, spacing, -1)[:-1]
+        exact = (
+            2.0
+            * jnp.pi
+            * jnp.cos(2.0 * jnp.pi * jnp.arange(count, dtype=jnp.float32) * spacing)
+        )
+        errors.append(float(jnp.max(jnp.abs(gradient - exact))))
+
+    assert errors[0] / errors[1] > 12.0
+
+
+def test_kep4_neumann_wall_closures_have_fourth_order_accuracy() -> None:
+    gradient_errors = []
+    divergence_errors = []
+    for count in (8, 16):
+        spacing = 1.0 / count
+        centers = (jnp.arange(count, dtype=jnp.float32) + 0.5) * spacing
+        faces = jnp.arange(count + 1, dtype=jnp.float32) * spacing
+
+        pressure = jnp.cos(jnp.pi * centers)
+        gradient = neumann_gradient_axis(pressure, spacing, -1)
+        exact_gradient = -jnp.pi * jnp.sin(jnp.pi * faces)
+        gradient_errors.append(float(jnp.max(jnp.abs(gradient - exact_gradient))))
+
+        velocity = jnp.sin(jnp.pi * faces)
+        divergence = neumann_divergence_axis(velocity, spacing, -1)
+        exact_divergence = jnp.pi * jnp.cos(jnp.pi * centers)
+        divergence_errors.append(float(jnp.max(jnp.abs(divergence - exact_divergence))))
+
+    assert gradient_errors[0] / gradient_errors[1] > 12.0
+    assert divergence_errors[0] / divergence_errors[1] > 12.0
+
+
+def test_kep4_gradient_and_divergence_are_negative_transposes() -> None:
+    grid = RectilinearGrid.uniform(8, 8, 8)
+    solver = _kep4_solver(grid)
+    pressure = jnp.sin(0.17 * jnp.arange(grid.cell_count, dtype=jnp.float32)).reshape(
+        grid.shape
+    )
+    velocity = _closed_velocity(grid, phase=0.31)
+    gradient = kep4_mac_pressure_gradient(
+        pressure,
+        grid,
+        solver.operator.boundaries,
+    )
+    divergence = kep4_mac_divergence(
+        velocity,
+        grid,
+        solver.operator.boundaries,
+    )
+
+    x_work = jnp.sum(velocity.x[..., 1:-1] * gradient.x[..., 1:-1])
+    x_work += 0.5 * jnp.sum(
+        velocity.x[..., 0] * gradient.x[..., 0]
+        + velocity.x[..., -1] * gradient.x[..., -1]
+    )
+    y_work = jnp.sum(velocity.y[:, 1:-1, :] * gradient.y[:, 1:-1, :])
+    y_work += 0.5 * jnp.sum(
+        velocity.y[:, 0, :] * gradient.y[:, 0, :]
+        + velocity.y[:, -1, :] * gradient.y[:, -1, :]
+    )
+    z_work = jnp.sum(velocity.z * gradient.z)
+    defect = x_work + y_work + z_work + jnp.sum(pressure * divergence)
+
+    assert abs(float(defect)) < 2.0e-4
+
+
+def test_kep4_mac_complex_matches_poisson_and_projects() -> None:
+    grid = RectilinearGrid.uniform(8, 8, 8)
+    solver = _kep4_solver(grid)
+    pressure = jnp.cos(0.11 * jnp.arange(grid.cell_count, dtype=jnp.float32)).reshape(
+        grid.shape
+    )
+    gradient = kep4_mac_pressure_gradient(
+        pressure,
+        grid,
+        solver.operator.boundaries,
+    )
+    composed = -kep4_mac_divergence(
+        gradient,
+        grid,
+        solver.operator.boundaries,
+    )
+
+    result = MACStageProjector(solver).project(
+        _closed_velocity(grid, phase=0.23),
+        timestep=0.01,
+    )
+
+    assert float(jnp.max(jnp.abs(composed - solver.operator.apply(pressure)))) < 5.0e-5
+    assert result.linear_result.converged
+    assert float(solver.operator.norm(result.divergence_after)) < 3.0e-4
+
+
 def _closed_velocity(grid: RectilinearGrid, phase: float = 0.0) -> MACVelocity:
     nz, ny, nx = grid.shape
     x = jnp.sin(
         phase
         + 0.13
-        * jnp.arange(nz * ny * (nx + 1), dtype=jnp.float32).reshape(
-            nz, ny, nx + 1
-        )
+        * jnp.arange(nz * ny * (nx + 1), dtype=jnp.float32).reshape(nz, ny, nx + 1)
     )
     y = jnp.cos(
         phase
         + 0.11
-        * jnp.arange(nz * (ny + 1) * nx, dtype=jnp.float32).reshape(
-            nz, ny + 1, nx
-        )
+        * jnp.arange(nz * (ny + 1) * nx, dtype=jnp.float32).reshape(nz, ny + 1, nx)
     )
     z = jnp.sin(
         phase
         + 0.07
-        * jnp.arange((nz + 1) * ny * nx, dtype=jnp.float32).reshape(
-            nz + 1, ny, nx
-        )
+        * jnp.arange((nz + 1) * ny * nx, dtype=jnp.float32).reshape(nz + 1, ny, nx)
     )
     return MACVelocity(
         x.at[..., 0].set(0.0).at[..., -1].set(0.0),
@@ -64,9 +189,9 @@ def _closed_velocity(grid: RectilinearGrid, phase: float = 0.0) -> MACVelocity:
 def test_mac_gradient_and_divergence_form_the_poisson_operator() -> None:
     grid = RectilinearGrid.uniform(8, 6, 10)
     solver = _wall_solver(grid)
-    pressure = jnp.sin(
-        0.17 * jnp.arange(grid.cell_count, dtype=jnp.float32)
-    ).reshape(grid.shape)
+    pressure = jnp.sin(0.17 * jnp.arange(grid.cell_count, dtype=jnp.float32)).reshape(
+        grid.shape
+    )
 
     composed = -mac_divergence(
         mac_pressure_gradient(
@@ -227,9 +352,7 @@ def test_fpj2_uses_one_final_projection_and_remains_divergence_free() -> None:
         initial_pressure=second.pressure,
     )
 
-    fast_divergence = solver.operator.norm(
-        mac_divergence(fast.velocity, grid)
-    )
+    fast_divergence = solver.operator.norm(mac_divergence(fast.velocity, grid))
     difference = max(
         float(jnp.max(jnp.abs(left - right)))
         for left, right in zip(fast.velocity, reference.velocity, strict=True)

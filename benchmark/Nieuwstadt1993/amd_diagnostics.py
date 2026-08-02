@@ -24,12 +24,9 @@ class NieuwstadtCase:
 
     @property
     def wstar0(self) -> float:
-        return (
-            self.gravity
-            * self.surface_theta_flux
-            * self.zi0
-            / self.theta0
-        ) ** (1.0 / 3.0)
+        return (self.gravity * self.surface_theta_flux * self.zi0 / self.theta0) ** (
+            1.0 / 3.0
+        )
 
     @property
     def theta_star0(self) -> float:
@@ -40,9 +37,9 @@ class NieuwstadtCase:
         return self.zi0 / self.wstar0
 
     def convective_scales(self, zi: float) -> tuple[float, float]:
-        wstar = (
-            self.gravity * self.surface_theta_flux * zi / self.theta0
-        ) ** (1.0 / 3.0)
+        wstar = (self.gravity * self.surface_theta_flux * zi / self.theta0) ** (
+            1.0 / 3.0
+        )
         return wstar, self.surface_theta_flux / wstar
 
 
@@ -102,9 +99,7 @@ def snapshot_statistics(
     theta_perturbation = np.asarray(jax.device_get(theta_jax), dtype=np.float64)
     theta = case.theta0 + theta_perturbation
     pressure = np.asarray(jax.device_get(state.pressure), dtype=np.float64)
-    z = (
-        np.arange(coupled.grid.shape[0], dtype=np.float64) + 0.5
-    ) * coupled.momentum.dz
+    z = (np.arange(coupled.grid.shape[0], dtype=np.float64) + 0.5) * coupled.momentum.dz
 
     mean = np.mean(cells, axis=(1, 2))
     fluctuation = cells - mean[:, None, None, :]
@@ -291,9 +286,7 @@ def save_outputs(
     }
     zi_mean = float(np.mean([sample["zi"] for sample in selected]))
     wstar_mean = float(np.mean([sample["wstar"] for sample in selected]))
-    theta_star_mean = float(
-        np.mean([sample["theta_star"] for sample in selected])
-    )
+    theta_star_mean = float(np.mean([sample["theta_star"] for sample in selected]))
     nz = coupled.grid.shape[0]
     z = (np.arange(nz) + 0.5) * coupled.momentum.dz
     component_sgs = (2.0 / 3.0) * averaged["sgs_tke"]
@@ -348,8 +341,7 @@ def save_outputs(
                 * zi_mean
                 / wstar_mean**3,
                 "w_var_over_wstar_sq": w_var[index] / wstar_mean**2,
-                "w_var_resolved_over_wstar_sq": w_var_resolved[index]
-                / wstar_mean**2,
+                "w_var_resolved_over_wstar_sq": w_var_resolved[index] / wstar_mean**2,
                 "w_var_sgs_over_wstar_sq": component_sgs[index] / wstar_mean**2,
                 "horizontal_var_over_wstar_sq": 0.5
                 * (u_var[index] + v_var[index])
@@ -362,13 +354,11 @@ def save_outputs(
                 / wstar_mean**2,
                 "horizontal_var_sgs_over_wstar_sq": component_sgs[index]
                 / wstar_mean**2,
-                "sgs_tke_over_wstar_sq": averaged["sgs_tke"][index]
-                / wstar_mean**2,
-                "theta_var_over_thetastar_sq": theta_var[index]
-                / theta_star_mean**2,
-                "theta_var_resolved_over_thetastar_sq": averaged[
-                    "theta_var_resolved"
-                ][index]
+                "sgs_tke_over_wstar_sq": averaged["sgs_tke"][index] / wstar_mean**2,
+                "theta_var_over_thetastar_sq": theta_var[index] / theta_star_mean**2,
+                "theta_var_resolved_over_thetastar_sq": averaged["theta_var_resolved"][
+                    index
+                ]
                 / theta_star_mean**2,
                 "theta_var_sgs_over_thetastar_sq": theta_var_sgs[index]
                 / theta_star_mean**2,
@@ -377,9 +367,7 @@ def save_outputs(
                 "skewness": skewness[index],
                 "alpha_u": averaged["alpha_u"][index],
                 "w_u_over_wstar": averaged["w_u"][index] / wstar_mean,
-                "theta_u_excess_over_thetastar": averaged["theta_u_excess"][
-                    index
-                ]
+                "theta_u_excess_over_thetastar": averaged["theta_u_excess"][index]
                 / theta_star_mean,
                 "buoyancy_production": case.gravity
                 / case.theta0
@@ -387,16 +375,10 @@ def save_outputs(
                 / transport_norm,
                 "d_w_transport": d_w_transport[index],
                 "d_p_transport": d_p_transport[index],
-                "momentum_diffusivity_m2_s": averaged["momentum_diffusivity"][
-                    index
-                ],
+                "momentum_diffusivity_m2_s": averaged["momentum_diffusivity"][index],
                 "scalar_diffusivity_m2_s": averaged["scalar_diffusivity"][index],
-                "amd_scalar_dissipation": averaged["amd_scalar_dissipation"][
-                    index
-                ],
-                "mp5_scalar_dissipation": averaged["mp5_scalar_dissipation"][
-                    index
-                ],
+                "amd_scalar_dissipation": averaged["amd_scalar_dissipation"][index],
+                "mp5_scalar_dissipation": averaged["mp5_scalar_dissipation"][index],
             }
         )
     _write_csv(output / "profiles.csv", profiles)
@@ -405,11 +387,15 @@ def save_outputs(
     inversion_search = z <= case.zi_search_max_fraction * case.zi0
     entrainment_flux = float(np.min(averaged["heat_flux"][inversion_search]))
     zi_flux_min = float(
-        z[np.flatnonzero(inversion_search)[np.argmin(averaged["heat_flux"][inversion_search])]]
+        z[
+            np.flatnonzero(inversion_search)[
+                np.argmin(averaged["heat_flux"][inversion_search])
+            ]
+        ]
     )
     mixed = z <= 0.8 * zi_mean
     summary: dict[str, float | str] = {
-        "schema": "jaxwind.nieuwstadt1993.nonspectral-amd.v1",
+        "schema": "jaxwind.nieuwstadt1993.kep4-pressure-amd.v2",
         "solver": "non-spectral MAC + matrix-free GMG/PCG",
         "sgs_model": "AMD",
         "sample_count": float(len(selected)),
@@ -433,6 +419,7 @@ def save_outputs(
         "amd_coefficient": float(args.amd_coefficient),
         "scalar_amd_coefficient": float(args.scalar_amd_coefficient),
         "mp5_dissipation_strength": float(args.mp5_strength),
+        "pressure_discretization": args.pressure_discretization,
     }
     with (output / "summary.csv").open("w", newline="") as stream:
         writer = csv.writer(stream)
@@ -458,7 +445,10 @@ def save_outputs(
                 **vars(args),
                 "output_dir": str(args.output_dir),
                 "implementation": "non-spectral MAC AMD Boussinesq",
-                "pressure": "matrix-free GMG-preconditioned Krylov",
+                "pressure": (
+                    f"{args.pressure_discretization} matrix-free "
+                    "GMG-preconditioned Krylov"
+                ),
                 "coupling": "Strang scalar-half / projected momentum / scalar-half",
             },
             indent=2,
@@ -489,8 +479,7 @@ def make_plots_from_files(output: Path) -> None:
         for key in profile_rows[0]
     }
     times = {
-        key: np.asarray([float(row[key]) for row in time_rows])
-        for key in time_rows[0]
+        key: np.asarray([float(row[key]) for row in time_rows]) for key in time_rows[0]
     }
     stats = np.load(output / "benchmark_stats.npz")
     z_zi = profiles["z_over_zi"]
@@ -519,11 +508,28 @@ def make_plots_from_files(output: Path) -> None:
 
     fig, axes = plt.subplots(2, 2, figsize=(9, 8), sharey=True)
     panels = (
-        ("w_var_over_wstar_sq", "w_var_resolved_over_wstar_sq", "w_var_sgs_over_wstar_sq", r"$\langle w'^2\rangle/w_*^2$"),
-        ("horizontal_var_over_wstar_sq", "horizontal_var_resolved_over_wstar_sq", "horizontal_var_sgs_over_wstar_sq", r"$\langle u_h'^2\rangle/w_*^2$"),
-        ("theta_var_over_thetastar_sq", "theta_var_resolved_over_thetastar_sq", "theta_var_sgs_over_thetastar_sq", r"$\langle\theta'^2\rangle/\theta_*^2$"),
+        (
+            "w_var_over_wstar_sq",
+            "w_var_resolved_over_wstar_sq",
+            "w_var_sgs_over_wstar_sq",
+            r"$\langle w'^2\rangle/w_*^2$",
+        ),
+        (
+            "horizontal_var_over_wstar_sq",
+            "horizontal_var_resolved_over_wstar_sq",
+            "horizontal_var_sgs_over_wstar_sq",
+            r"$\langle u_h'^2\rangle/w_*^2$",
+        ),
+        (
+            "theta_var_over_thetastar_sq",
+            "theta_var_resolved_over_thetastar_sq",
+            "theta_var_sgs_over_thetastar_sq",
+            r"$\langle\theta'^2\rangle/\theta_*^2$",
+        ),
     )
-    for axis, (total, resolved, sgs, label) in zip(axes.ravel()[:3], panels, strict=True):
+    for axis, (total, resolved, sgs, label) in zip(
+        axes.ravel()[:3], panels, strict=True
+    ):
         axis.plot(profiles[total], z_zi, label="total")
         axis.plot(profiles[resolved], z_zi, "--", label="resolved")
         axis.plot(profiles[sgs], z_zi, ":", label="AMD SGS")

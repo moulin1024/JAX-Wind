@@ -216,6 +216,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="fpj2",
     )
     parser.add_argument(
+        "--pressure-discretization",
+        choices=("centered2", "kep4"),
+        default="kep4",
+    )
+    parser.add_argument(
         "--fpj2-timestep-ratio-limit",
         type=float,
         default=2.0,
@@ -368,6 +373,7 @@ def main() -> None:
             coarse_smooth=20,
         ),
         krylov=krylov,
+        discretization=args.pressure_discretization,
     )
     solver = NeutralABLMomentum(
         grid,
@@ -472,7 +478,7 @@ def main() -> None:
         if args.passive_scalar and (
             "checkpoint_schema" not in checkpoint
             or str(checkpoint["checkpoint_schema"])
-            != "jaxwind.andren1994.kep4-ko6-mp5.v3"
+            != "jaxwind.andren1994.kep4-pressure-ko6-mp5.v4"
         ):
             raise SystemExit(
                 "restart predates passive-scalar/complete-SGS statistics; "
@@ -514,6 +520,7 @@ def main() -> None:
             ("momentum_advection", args.momentum_advection),
             ("momentum_regularization", args.momentum_regularization),
             ("scalar_advection", args.scalar_advection),
+            ("pressure_discretization", args.pressure_discretization),
         ):
             if name not in checkpoint or str(checkpoint[name]) != expected:
                 raise SystemExit(f"restart {name} does not match this run")
@@ -772,7 +779,7 @@ def main() -> None:
                 for _ in amd_diagnostics.BUDGET_NAMES
             )
         payload = {
-            "checkpoint_schema": "jaxwind.andren1994.kep4-ko6-mp5.v3",
+            "checkpoint_schema": "jaxwind.andren1994.kep4-pressure-ko6-mp5.v4",
             "velocity_x": np.asarray(velocity.x),
             "velocity_y": np.asarray(velocity.y),
             "velocity_z": np.asarray(velocity.z),
@@ -790,6 +797,7 @@ def main() -> None:
             "momentum_advection": args.momentum_advection,
             "momentum_regularization": args.momentum_regularization,
             "scalar_advection": args.scalar_advection,
+            "pressure_discretization": args.pressure_discretization,
             "sample_times": np.asarray(sample_times),
             "budget_times": np.asarray(budget_times),
         }
@@ -1170,7 +1178,7 @@ def main() -> None:
             )
 
     summary = {
-        "schema": "jaxwind.andren1994.amd-passive-scalar.v2",
+        "schema": "jaxwind.andren1994.kep4-pressure-amd-passive-scalar.v3",
         "reference": "Andren et al. (1994), QJRMS 120, 1457-1484",
         "backend": jax.default_backend(),
         "dtype": str(dtype),
@@ -1220,6 +1228,7 @@ def main() -> None:
         "momentum_advection": args.momentum_advection,
         "momentum_regularization": args.momentum_regularization,
         "scalar_advection": args.scalar_advection,
+        "pressure_discretization": args.pressure_discretization,
         "sgs_time_integration": args.sgs_time_integration,
         "vertical_sgs_diffusion_is_implicit": (
             args.sgs_time_integration == "imex_ark3"

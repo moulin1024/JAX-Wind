@@ -8,6 +8,7 @@ def test_nieuwstadt_orchestrator_defaults_to_nonspectral_amd() -> None:
 
     assert args.solver == "amd-nonspectral"
     assert args.amd_coefficient == 0.212
+    assert args.pressure_discretization == "kep4"
     assert args.dt == 1.25
     assert args.nx == 40
     assert args.ny == 40
@@ -22,6 +23,7 @@ def test_nonspectral_amd_runner_uses_canonical_case_and_averaging_window() -> No
     assert args.amd_coefficient == 0.212
     assert args.scalar_amd_coefficient == 0.212
     assert args.dt_max == 1.25
+    assert args.pressure_discretization == "kep4"
     assert (args.nx, args.ny, args.nz) == (40, 40, 48)
 
 

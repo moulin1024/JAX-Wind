@@ -124,6 +124,7 @@ def _build_distributed(args, jax):
         distribution=YSlabConfig(
             coarse_cells_per_device=args.y_slab_coarse_cells_per_rank
         ),
+        discretization=args.pressure_discretization,
     )
     coupled = YSlabAMDBoussinesq(
         grid,
@@ -201,6 +202,7 @@ def _build_serial_observer(args, case, dtype):
             relative_tolerance=args.pressure_rtol,
             execution="jax",
         ),
+        discretization=args.pressure_discretization,
     )
     momentum = NeutralABLMomentum(
         grid,
@@ -306,6 +308,7 @@ def _validate_checkpoint(args, checkpoint, coupled) -> None:
         "momentum_advection",
         "momentum_regularization",
         "scalar_advection",
+        "pressure_discretization",
     ):
         if str(checkpoint[key]) != getattr(args, key):
             raise SystemExit(f"restart {key} does not match")
@@ -525,6 +528,7 @@ def run(args) -> dict[str, float | int | str] | None:
             "momentum_advection": args.momentum_advection,
             "momentum_regularization": args.momentum_regularization,
             "scalar_advection": args.scalar_advection,
+            "pressure_discretization": args.pressure_discretization,
             "max_cfl": max_cfl,
             "max_diffusive_cfl": max_diffusive_cfl,
             "max_divergence": max_divergence,
@@ -751,6 +755,7 @@ def run(args) -> dict[str, float | int | str] | None:
                 "momentum_advection": args.momentum_advection,
                 "momentum_regularization": args.momentum_regularization,
                 "scalar_advection": args.scalar_advection,
+                "pressure_discretization": args.pressure_discretization,
                 "projection_method": args.projection_method,
                 "coupling_integrator": args.coupling_integrator,
                 "pressure_smooth": args.pressure_smooth,

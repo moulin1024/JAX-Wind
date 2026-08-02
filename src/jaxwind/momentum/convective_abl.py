@@ -13,7 +13,6 @@ from jaxwind.pressure import (
     fpj2_pressure_prediction,
     fpj2_ssprk3_velocity_step,
     MACVelocity,
-    mac_divergence,
     projected_ssprk3_velocity_pressure_step,
 )
 
@@ -210,7 +209,7 @@ class AMDBoussinesq:
                 potential_temperature,
                 time,
             )
-            divergence = mac_divergence(velocity, self.grid)
+            divergence = self.momentum.projector.divergence(velocity)
             return (
                 jnp.mean(
                     potential_temperature - self.config.reference_potential_temperature
@@ -412,8 +411,8 @@ class AMDBoussinesq:
         # Convert conservative transport to its constant-preserving advective
         # equivalent at those stages, then remove the correction's mean so the
         # accepted scalar remains globally conservative.
-        divergence_correction = potential_temperature * mac_divergence(
-            velocity, self.grid
+        divergence_correction = (
+            potential_temperature * self.momentum.projector.divergence(velocity)
         )
         scalar_advection += divergence_correction - jnp.mean(divergence_correction)
         scalar = scalar_advection + self.scalar.sgs_tendency(

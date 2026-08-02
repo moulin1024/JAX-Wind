@@ -50,6 +50,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--amd-coefficient", type=float, default=0.212)
     parser.add_argument("--scalar-amd-coefficient", type=float)
     parser.add_argument("--mp5-strength", type=float, default=1.0)
+    parser.add_argument(
+        "--pressure-discretization",
+        choices=("centered2", "kep4"),
+        default="kep4",
+    )
     parser.add_argument("--target-cfl", type=float, default=0.8)
     parser.add_argument("--target-diffusive-cfl", type=float, default=0.5)
     parser.add_argument("--restart", type=Path)
@@ -139,6 +144,8 @@ def main() -> None:
                 ),
                 "--mp5-strength",
                 str(args.mp5_strength),
+                "--pressure-discretization",
+                args.pressure_discretization,
                 "--seed",
                 str(args.seed),
             ]
@@ -147,9 +154,7 @@ def main() -> None:
             if args.restart is not None:
                 solve_command.extend(("--restart", str(args.restart)))
             if args.max_run_seconds is not None:
-                solve_command.extend(
-                    ("--max-run-seconds", str(args.max_run_seconds))
-                )
+                solve_command.extend(("--max-run-seconds", str(args.max_run_seconds)))
         else:
             solve_command = [
                 sys.executable,
@@ -207,7 +212,9 @@ def main() -> None:
             env,
         )
     elif not args.skip_csv:
-        print("[benchmark] digitized CSV data absent; continuing with paper-image overlays")
+        print(
+            "[benchmark] digitized CSV data absent; continuing with paper-image overlays"
+        )
 
     figure_dir = REFERENCE_DIR / "figures"
     figures_available = all(

@@ -11,6 +11,7 @@ import jax.numpy as jnp
 
 from .distributed_gmg import YSlabMatrixFreePoissonSolver, shard_y_field
 from .fgmres import FGMRESResult
+from .kep4_operators import divergence_axis, gradient_axis
 from .mac_projection import MACVelocity, _gradient_axis
 from .pcg import PCGResult
 
@@ -102,6 +103,7 @@ class YSlabMACProjector:
 
     def __init__(self, solver: YSlabMatrixFreePoissonSolver) -> None:
         self.solver = solver
+        self.discretization = solver.discretization
         mapped = solver.pmap_options
         self._mapped_divergence = jax.pmap(
             self._divergence_local,
@@ -123,22 +125,77 @@ class YSlabMACProjector:
 
     def _divergence_local(self, velocity: YSlabMACVelocity) -> Array:
         operator = self.solver.operator
+        if self.discretization == "kep4":
+            dx, dy, dz = operator.spacings
+            boundaries = operator.boundaries
+            x_divergence = divergence_axis(
+                velocity.x,
+                spacing=dx,
+                axis=-1,
+                lower_kind=boundaries.x_lower.kind,
+                upper_kind=boundaries.x_upper.kind,
+            )
+            z_divergence = divergence_axis(
+                velocity.z,
+                spacing=dz,
+                axis=-3,
+                lower_kind=boundaries.z_lower.kind,
+                upper_kind=boundaries.z_upper.kind,
+            )
+            interior_faces = velocity.y[:, 1:-1, :]
+            left, right = self.solver._exchange_y_halo(
+                interior_faces,
+                1,
+                True,
+            )
+            padded = jnp.concatenate((left, velocity.y, right), axis=1)
+            local_y = velocity.x.shape[1]
+            y_divergence = (
+                padded[:, :local_y, :]
+                - 27.0 * padded[:, 1 : local_y + 1, :]
+                + 27.0 * padded[:, 2 : local_y + 2, :]
+                - padded[:, 3 : local_y + 3, :]
+            ) / (24.0 * dy)
+            return x_divergence + y_divergence + z_divergence
         wx, wy, wz = operator._level.widths
         local_y = operator.shape[1] // self.solver.device_count
         start = self.solver._rank() * local_y
         local_wy = lax.dynamic_slice_in_dim(wy, start, local_y)
         return (
-            (velocity.x[..., 1:] - velocity.x[..., :-1])
-            / wx[None, None, :]
-            + (velocity.y[:, 1:, :] - velocity.y[:, :-1, :])
-            / local_wy[None, :, None]
-            + (velocity.z[1:, ...] - velocity.z[:-1, ...])
-            / wz[:, None, None]
+            (velocity.x[..., 1:] - velocity.x[..., :-1]) / wx[None, None, :]
+            + (velocity.y[:, 1:, :] - velocity.y[:, :-1, :]) / local_wy[None, :, None]
+            + (velocity.z[1:, ...] - velocity.z[:-1, ...]) / wz[:, None, None]
         )
 
     def _gradient_local(self, pressure: Array) -> YSlabMACVelocity:
         operator = self.solver.operator
         boundaries = operator.boundaries
+        if self.discretization == "kep4":
+            dx, dy, dz = operator.spacings
+            x_gradient = gradient_axis(
+                pressure,
+                spacing=dx,
+                axis=-1,
+                lower_kind=boundaries.x_lower.kind,
+                upper_kind=boundaries.x_upper.kind,
+            )
+            z_gradient = gradient_axis(
+                pressure,
+                spacing=dz,
+                axis=-3,
+                lower_kind=boundaries.z_lower.kind,
+                upper_kind=boundaries.z_upper.kind,
+            )
+            left, right = self.solver._exchange_y_halo(pressure, 2, True)
+            padded = jnp.concatenate((left, pressure, right), axis=1)
+            local_y = pressure.shape[1]
+            y_gradient = (
+                padded[:, : local_y + 1, :]
+                - 27.0 * padded[:, 1 : local_y + 2, :]
+                + 27.0 * padded[:, 2 : local_y + 3, :]
+                - padded[:, 3 : local_y + 4, :]
+            ) / (24.0 * dy)
+            return YSlabMACVelocity(x_gradient, y_gradient, z_gradient)
         x_gradient = _gradient_axis(
             pressure,
             axis=-1,
@@ -184,12 +241,8 @@ class YSlabMACProjector:
             jnp.minimum(start + local_y, global_y - 1),
             keepdims=False,
         )
-        lower_internal = (
-            pressure[:, 0, :] - left
-        ) / (local_centers[0] - previous)
-        upper_internal = (
-            right - pressure[:, -1, :]
-        ) / (following - local_centers[-1])
+        lower_internal = (pressure[:, 0, :] - left) / (local_centers[0] - previous)
+        upper_internal = (right - pressure[:, -1, :]) / (following - local_centers[-1])
         if periodic:
             wy = operator._level.widths[1]
             wrap = 0.5 * (wy[0] + wy[-1])
@@ -197,18 +250,18 @@ class YSlabMACProjector:
             upper_physical = (right - pressure[:, -1, :]) / wrap
         else:
             if boundaries.y_lower.kind == "dirichlet":
-                lower_physical = (
-                    pressure[:, 0, :] - boundaries.y_lower.value
-                ) / (local_centers[0] - operator.grid.y_faces[0])
+                lower_physical = (pressure[:, 0, :] - boundaries.y_lower.value) / (
+                    local_centers[0] - operator.grid.y_faces[0]
+                )
             else:
                 lower_physical = jnp.full_like(
                     pressure[:, 0, :],
                     -boundaries.y_lower.value,
                 )
             if boundaries.y_upper.kind == "dirichlet":
-                upper_physical = (
-                    boundaries.y_upper.value - pressure[:, -1, :]
-                ) / (operator.grid.y_faces[-1] - local_centers[-1])
+                upper_physical = (boundaries.y_upper.value - pressure[:, -1, :]) / (
+                    operator.grid.y_faces[-1] - local_centers[-1]
+                )
             else:
                 upper_physical = jnp.full_like(
                     pressure[:, -1, :],

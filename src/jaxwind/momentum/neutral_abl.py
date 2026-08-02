@@ -17,8 +17,6 @@ from jaxwind.pressure import (
     MatrixFreePoissonSolver,
     RectilinearGrid,
     VelocityPressureProjection,
-    mac_divergence,
-    mac_pressure_gradient,
     projected_ssprk3_velocity_pressure_step,
     projected_ssprk3_step,
     projected_ssprk3_velocity_step,
@@ -328,36 +326,28 @@ def _wall_normal_d4_transpose(field: Array, spacing: float) -> Array:
         * jnp.asarray(
             (-25.0, 48.0, -36.0, 16.0, -3.0),
             dtype=field.dtype,
-        )[
-            (...,) + (None,) * (field.ndim - 1)
-        ]
+        )[(...,) + (None,) * (field.ndim - 1)]
     )
     result = result.at[:5].add(
         field[1]
         * jnp.asarray(
             (-3.0, -10.0, 18.0, -6.0, 1.0),
             dtype=field.dtype,
-        )[
-            (...,) + (None,) * (field.ndim - 1)
-        ]
+        )[(...,) + (None,) * (field.ndim - 1)]
     )
     result = result.at[-5:].add(
         field[-2]
         * jnp.asarray(
             (-1.0, 6.0, -18.0, 10.0, 3.0),
             dtype=field.dtype,
-        )[
-            (...,) + (None,) * (field.ndim - 1)
-        ]
+        )[(...,) + (None,) * (field.ndim - 1)]
     )
     result = result.at[-5:].add(
         field[-1]
         * jnp.asarray(
             (3.0, -16.0, 36.0, -48.0, 25.0),
             dtype=field.dtype,
-        )[
-            (...,) + (None,) * (field.ndim - 1)
-        ]
+        )[(...,) + (None,) * (field.ndim - 1)]
     )
     return scale * result
 
@@ -782,7 +772,7 @@ class NeutralABLMomentum:
             cells = _cell_velocity(velocity)
             viscosity = self.sgs_viscosity(cells, lasd_coefficient)
             energy = 0.5 * jnp.mean(jnp.sum(cells * cells, axis=-1))
-            divergence = mac_divergence(velocity, self.grid)
+            divergence = self.projector.divergence(velocity)
             if self.lasd_closure is None:
                 mean_coefficient = jnp.asarray(
                     self.config.amd.coefficient,
@@ -1912,10 +1902,8 @@ class NeutralABLMomentum:
             )
             projection_timestep = _ARK3_C[stage_index] * timestep
             if use_fast_projection:
-                gradient = mac_pressure_gradient(
-                    predicted_pressures[stage_index - 1],
-                    self.grid,
-                    self.pressure_solver.operator.boundaries,
+                gradient = self.projector.pressure_gradient(
+                    predicted_pressures[stage_index - 1]
                 )
                 stage = self.enforce_boundaries(
                     _velocity_sum(

@@ -509,7 +509,7 @@ def save_outputs(
         if np.asarray(value).ndim == 0
     }
     summary: dict[str, float | int | str] = {
-        "schema": "jaxwind.gabls1.kep4-ko6-mp5.v2",
+        "schema": "jaxwind.gabls1.kep4-pressure-ko6-mp5.v3",
         "sample_count": len(samples),
         "official_participants": (
             len(load_period_sets(reference_dir, "A", 9))

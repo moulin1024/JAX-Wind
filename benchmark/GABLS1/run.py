@@ -26,7 +26,7 @@ from benchmark.GABLS1 import diagnostics  # noqa: E402
 
 
 HERE = Path(__file__).resolve().parent
-CHECKPOINT_SCHEMA = "jaxwind.gabls1.kep4-ko6-mp5.v2"
+CHECKPOINT_SCHEMA = "jaxwind.gabls1.kep4-pressure-ko6-mp5.v3"
 
 
 def _format_duration(seconds: float) -> str:
@@ -103,6 +103,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--projection-method",
         choices=("full", "fpj2"),
         default="fpj2",
+    )
+    parser.add_argument(
+        "--pressure-discretization",
+        choices=("centered2", "kep4"),
+        default="kep4",
     )
     parser.add_argument(
         "--fpj2-timestep-ratio-limit",
@@ -291,6 +296,7 @@ def _restore_checkpoint(args, coupled, dtype):
         "momentum_advection",
         "momentum_regularization",
         "scalar_advection",
+        "pressure_discretization",
     ):
         if str(checkpoint[key]) != getattr(args, key):
             raise SystemExit(f"restart {key} does not match")
@@ -383,6 +389,7 @@ def _build_coupled(args: argparse.Namespace):
             relative_tolerance=args.pressure_rtol,
             execution="jax",
         ),
+        discretization=args.pressure_discretization,
     )
     momentum = NeutralABLMomentum(
         grid,
@@ -519,6 +526,7 @@ def run(args: argparse.Namespace) -> dict[str, float | int | str]:
             "momentum_advection": args.momentum_advection,
             "momentum_regularization": args.momentum_regularization,
             "scalar_advection": args.scalar_advection,
+            "pressure_discretization": args.pressure_discretization,
             "max_cfl": max_cfl,
             "max_diffusive_cfl": max_diffusive_cfl,
             "max_divergence": max_divergence,
@@ -708,6 +716,7 @@ def run(args: argparse.Namespace) -> dict[str, float | int | str]:
             "momentum_advection": args.momentum_advection,
             "momentum_regularization": args.momentum_regularization,
             "scalar_advection": args.scalar_advection,
+            "pressure_discretization": args.pressure_discretization,
             "projection_method": args.projection_method,
             "coupling_integrator": args.coupling_integrator,
             "pressure_smooth": args.pressure_smooth,

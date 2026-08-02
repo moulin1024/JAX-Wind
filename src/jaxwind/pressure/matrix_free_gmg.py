@@ -145,9 +145,7 @@ class RectilinearGrid:
             raise ValueError("domain lengths must be positive")
 
         def faces(start: float, length: float, count: int) -> tuple[float, ...]:
-            return tuple(
-                start + length * index / count for index in range(count + 1)
-            )
+            return tuple(start + length * index / count for index in range(count + 1))
 
         return cls(
             faces(origin[0], lx, nx),
@@ -201,23 +199,15 @@ def _apply_axis(
     if count > 1:
         distance = centers[1:] - centers[:-1]
         difference = values[..., :-1] - values[..., 1:]
-        result = result.at[..., :-1].add(
-            difference / (widths[:-1] * distance)
-        )
-        result = result.at[..., 1:].add(
-            -difference / (widths[1:] * distance)
-        )
+        result = result.at[..., :-1].add(difference / (widths[:-1] * distance))
+        result = result.at[..., 1:].add(-difference / (widths[1:] * distance))
 
     if lower.kind == "periodic":
         if count > 1:
             distance = 0.5 * (widths[-1] + widths[0])
             difference = values[..., -1] - values[..., 0]
-            result = result.at[..., -1].add(
-                difference / (widths[-1] * distance)
-            )
-            result = result.at[..., 0].add(
-                -difference / (widths[0] * distance)
-            )
+            result = result.at[..., -1].add(difference / (widths[-1] * distance))
+            result = result.at[..., 0].add(-difference / (widths[0] * distance))
     else:
         if lower.kind == "dirichlet":
             result = result.at[..., 0].add(
@@ -268,9 +258,7 @@ def _make_level(
     dy = _axis_diagonal(wy, cy, boundaries.y_lower, boundaries.y_upper)
     dz = _axis_diagonal(wz, cz, boundaries.z_lower, boundaries.z_upper)
     volume = wz[:, None, None] * wy[None, :, None] * wx[None, None, :]
-    diagonal = (
-        dz[:, None, None] + dy[None, :, None] + dx[None, None, :]
-    )
+    diagonal = dz[:, None, None] + dy[None, :, None] + dx[None, None, :]
     return _Level(grid, (wx, wy, wz), (cx, cy, cz), volume, diagonal)
 
 
@@ -370,17 +358,13 @@ class MatrixFreePoissonOperator:
                     2.0 * lower.value / (widths[0] * widths[0])
                 )
             elif lower.kind == "neumann":
-                result = result.at[tuple(lower_slice)].add(
-                    lower.value / widths[0]
-                )
+                result = result.at[tuple(lower_slice)].add(lower.value / widths[0])
             if upper.kind == "dirichlet":
                 result = result.at[tuple(upper_slice)].add(
                     2.0 * upper.value / (widths[-1] * widths[-1])
                 )
             elif upper.kind == "neumann":
-                result = result.at[tuple(upper_slice)].add(
-                    upper.value / widths[-1]
-                )
+                result = result.at[tuple(upper_slice)].add(upper.value / widths[-1])
         return result
 
     def volume_mean(self, field: Array) -> Array:
@@ -434,9 +418,7 @@ class GMGConfig:
         if min(self.pre_smooth, self.post_smooth, self.coarse_smooth) < 0:
             raise ValueError("smoothing counts must be nonnegative")
         if self.pre_smooth != self.post_smooth:
-            raise ValueError(
-                "symmetric GMG requires equal pre_smooth and post_smooth"
-            )
+            raise ValueError("symmetric GMG requires equal pre_smooth and post_smooth")
         if not 0.0 < self.jacobi_omega < 1.0:
             raise ValueError("jacobi_omega must lie between zero and one")
         if not 0.0 < self.line_omega <= 1.0:
@@ -711,21 +693,15 @@ def _solve_z_lines(
         operator.boundaries.z_lower,
         operator.boundaries.z_upper,
     )
-    diagonal = (
-        dz[:, None, None] + dy[None, :, None] + dx[None, None, :]
-    )
+    diagonal = dz[:, None, None] + dy[None, :, None] + dx[None, None, :]
     count = rhs.shape[0]
     if count == 1:
         safe_diagonal = jnp.where(diagonal != 0.0, diagonal, 1.0)
         return rhs / safe_diagonal
 
     distance = cz[1:] - cz[:-1]
-    lower = jnp.zeros_like(wz).at[1:].set(
-        -1.0 / (wz[1:] * distance)
-    )
-    upper = jnp.zeros_like(wz).at[:-1].set(
-        -1.0 / (wz[:-1] * distance)
-    )
+    lower = jnp.zeros_like(wz).at[1:].set(-1.0 / (wz[1:] * distance))
+    upper = jnp.zeros_like(wz).at[:-1].set(-1.0 / (wz[:-1] * distance))
     first_denominator = jnp.where(diagonal[0] != 0.0, diagonal[0], 1.0)
     first_upper = upper[0] / first_denominator
     first_rhs = rhs[0] / first_denominator
@@ -739,9 +715,7 @@ def _solve_z_lines(
         denominator = diagonal_value - lower_value * previous_upper
         denominator = jnp.where(denominator != 0.0, denominator, 1.0)
         reduced_upper = upper_value / denominator
-        reduced_rhs = (
-            rhs_value - lower_value * previous_rhs
-        ) / denominator
+        reduced_rhs = (rhs_value - lower_value * previous_rhs) / denominator
         return (
             (reduced_upper, reduced_rhs),
             (reduced_upper, reduced_rhs),
@@ -801,10 +775,7 @@ class MatrixFreeGMG:
 
         for _ in range(config.max_levels - 1):
             fine = operators[-1]
-            anisotropic = (
-                _z_anisotropy_ratio(fine.grid)
-                >= config.anisotropy_threshold
-            )
+            anisotropic = _z_anisotropy_ratio(fine.grid) >= config.anisotropy_threshold
             use_z_line = config.smoother == "z_line" or (
                 config.smoother == "auto"
                 and anisotropic
@@ -816,11 +787,7 @@ class MatrixFreeGMG:
             hold_z = config.coarsening == "z_semi" or (
                 config.coarsening == "auto" and anisotropic
             )
-            fz = (
-                1
-                if hold_z
-                else _coarsening_factor(nz, config.min_coarse_cells)
-            )
+            fz = 1 if hold_z else _coarsening_factor(nz, config.min_coarse_cells)
             if (fz, fy, fx) == (1, 1, 1):
                 break
             level_smoothers.append("z_line" if use_z_line else "jacobi")
@@ -847,8 +814,7 @@ class MatrixFreeGMG:
 
         coarse = operators[-1]
         coarse_anisotropic = (
-            _z_anisotropy_ratio(coarse.grid)
-            >= config.anisotropy_threshold
+            _z_anisotropy_ratio(coarse.grid) >= config.anisotropy_threshold
         )
         coarse_z_line = config.smoother == "z_line" or (
             config.smoother == "auto"
@@ -933,19 +899,29 @@ class MatrixFreePoissonSolver:
         dtype: jnp.dtype = jnp.float64,
         gmg: GMGConfig = GMGConfig(),
         krylov: FGMRESConfig | PCGConfig = FGMRESConfig(),
+        discretization: Literal["centered2", "kep4"] = "centered2",
     ) -> None:
-        self.operator = MatrixFreePoissonOperator(
+        if discretization not in {"centered2", "kep4"}:
+            raise ValueError("Poisson discretization must be 'centered2' or 'kep4'")
+        preconditioner_operator = MatrixFreePoissonOperator(
             grid,
             boundaries,
             dtype=dtype,
         )
-        self.preconditioner = MatrixFreeGMG(self.operator, gmg)
+        self.discretization = discretization
+        if discretization == "centered2":
+            self.operator = preconditioner_operator
+        else:
+            from .kep4_poisson import KEP4PoissonOperator
+
+            self.operator = KEP4PoissonOperator(grid, boundaries, dtype=dtype)
+        # The compact second-order V-cycle is a symmetric, inexpensive
+        # preconditioner for the wider compatible D4G4 operator.
+        self.preconditioner = MatrixFreeGMG(preconditioner_operator, gmg)
         self.krylov = krylov
         if krylov.jit_kernels:
             self._apply_kernel = jax.jit(self.operator.apply)
-            self._preconditioner_kernel = jax.jit(
-                self.preconditioner.apply
-            )
+            self._preconditioner_kernel = jax.jit(self.preconditioner.apply)
             self._python_krylov_config = replace(
                 krylov,
                 jit_kernels=False,
@@ -955,9 +931,7 @@ class MatrixFreePoissonSolver:
             self._preconditioner_kernel = self.preconditioner.apply
             self._python_krylov_config = krylov
         self._device_solve_kernel = (
-            self._build_device_solver()
-            if self.krylov.execution == "jax"
-            else None
+            self._build_device_solver() if self.krylov.execution == "jax" else None
         )
 
     def _build_device_solver(self):
@@ -984,9 +958,7 @@ class MatrixFreePoissonSolver:
         *,
         initial: Array | None = None,
     ) -> FGMRESResult | PCGResult:
-        effective_rhs, compatibility_shift = self.operator.prepare_rhs(
-            physical_rhs
-        )
+        effective_rhs, compatibility_shift = self.operator.prepare_rhs(physical_rhs)
         if self.krylov.execution == "jax":
             solution = self._device_solution(effective_rhs, initial)
             residual = self.operator.project_nullspace(
@@ -994,17 +966,13 @@ class MatrixFreePoissonSolver:
             )
             residual_norm = float(self.operator.norm(residual))
             rhs_norm = float(self.operator.norm(effective_rhs))
-            relative_residual = (
-                0.0 if rhs_norm == 0.0 else residual_norm / rhs_norm
-            )
+            relative_residual = 0.0 if rhs_norm == 0.0 else residual_norm / rhs_norm
             target = max(
                 self.krylov.absolute_tolerance,
                 self.krylov.relative_tolerance * rhs_norm,
             )
             result_type = (
-                PCGResult
-                if isinstance(self.krylov, PCGConfig)
-                else FGMRESResult
+                PCGResult if isinstance(self.krylov, PCGConfig) else FGMRESResult
             )
             return result_type(
                 solution,
@@ -1015,11 +983,7 @@ class MatrixFreePoissonSolver:
                 (residual_norm,),
                 float(compatibility_shift),
             )
-        solve = (
-            pcg
-            if isinstance(self._python_krylov_config, PCGConfig)
-            else fgmres
-        )
+        solve = pcg if isinstance(self._python_krylov_config, PCGConfig) else fgmres
         result = solve(
             self._apply_kernel,
             effective_rhs,
@@ -1031,9 +995,7 @@ class MatrixFreePoissonSolver:
         )
         return replace(result, compatibility_shift=float(compatibility_shift))
 
-    def _device_solution(
-        self, effective_rhs: Array, initial: Array | None
-    ) -> Array:
+    def _device_solution(self, effective_rhs: Array, initial: Array | None) -> Array:
         if self._device_solve_kernel is None:
             raise RuntimeError("device GMRES kernel was not initialized")
         starting_value = (
@@ -1051,6 +1013,7 @@ class MatrixFreePoissonSolver:
             return self.solve(physical_rhs, initial=initial).solution
         effective_rhs, _ = self.operator.prepare_rhs(physical_rhs)
         return self._device_solution(effective_rhs, initial)
+
 
 __all__ = [
     "BoundaryCondition",

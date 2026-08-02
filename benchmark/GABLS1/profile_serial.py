@@ -236,6 +236,7 @@ def main(argv: list[str] | None = None) -> None:
             list(shape) for shape in pressure.preconditioner.level_shapes
         ],
         "pressure_execution": pressure.krylov.execution,
+        "pressure_discretization": args.pressure_discretization,
         "projection_method": args.projection_method,
         "coupling_integrator": args.coupling_integrator,
         "momentum_advection": args.momentum_advection,

@@ -9,6 +9,7 @@ Experimental implementation on `feature/kep4-ko6-mp5`.
 The non-spectral ABL runners default to the following transport split:
 
 - momentum: fourth-order skew/adjoint-paired KEP transport;
+- pressure: compatible fourth-order staggered `D4`, `G4`, and `-D4 G4`;
 - momentum grid-cutoff regularization: conservative KO6;
 - momentum SGS: AMD or physical-space LASD;
 - scalar: complete local-Lax-Friedrichs MP5 flux;
@@ -39,16 +40,31 @@ R_ko6(u) = -B.T nu6 B u / (64 dx),  nu6 >= 0,
 This separates modeled AMD dissipation from numerical cutoff dissipation in
 the diagnostics.
 
-## Conservation qualification
+## Compatible pressure complex
 
-The present pressure projection enforces the second-order MAC continuity
-equation.  A fully conservative Morinishi fourth-order staggered scheme also
-requires a matching fourth-order continuity operator, pressure gradient, and
-Poisson operator.  Consequently, the implemented KEP4 operator is exactly
-energy neutral but is not advertised as the fully conservative Morinishi S4
-scheme.  The second-order `centered2` path remains the strict
-mass/momentum/energy-compatible fallback until the pressure complex is
-upgraded as one unit.
+The pressure path now uses a fourth-order face-to-cell divergence and defines
+the cell-to-face gradient by the exact negative transpose:
+
+```text
+D4 = -G4.T,
+A4 = -D4 G4 = G4.T G4,
+u(n+1) = u* - dt G4 p,
+D4 u(n+1) = 0.
+```
+
+Periodic face endpoints represent one degree of freedom and carry half weight
+in the face inner product. Homogeneous-Neumann walls use even pressure
+reflection and odd normal-velocity reflection, which sets the physical wall
+gradient to zero while retaining fourth-order accuracy. The resulting Poisson
+operator is symmetric positive semidefinite and
+annihilates constants. Krylov iterations apply `A4` exactly; the compact
+second-order symmetric GMG V-cycle is used only as a preconditioner.
+
+This removes the former pressure/continuity mismatch. The momentum transport
+is still a skew/adjoint-paired cell-velocity operator rather than the complete
+conservative Morinishi staggered flux construction, so it is not advertised
+as that full S4 method. The legacy second-order compatible MAC path remains
+selectable for controlled comparisons.
 
 ## Scalar qualification
 
@@ -72,6 +88,11 @@ three PPEs until two pressure histories exist, or whenever the timestep ratio
 exceeds the configured safety limit. Both histories are included in MPI
 checkpoints.
 
+The distributed pressure apply exchanges three pressure rows because the
+composed `D4G4` stencil reaches three cells. Pressure gradients exchange two
+rows and face divergences exchange one extra interior face. These halo paths
+reproduce the serial `D4G4` operator to floating-point roundoff.
+
 At 64 cubed, y slabs are intended for two to four GPUs.  Eight GPUs leave only
 eight owned y rows per rank and should use a future horizontal x-y pencil
 decomposition instead of thinner y slabs.
@@ -84,9 +105,11 @@ decomposition instead of thinner y slabs.
 --ko6-strength FLOAT
 --scalar-advection {centered_mp5,mp5}
 --mp5-strength FLOAT
+--pressure-discretization {centered2,kep4}
 --projection-method {full,fpj2}
 --coupling-integrator {strang,coupled-ssprk3}
 --fpj2-timestep-ratio-limit FLOAT
 ```
 
-The new defaults are `kep4`, `ko6`, and `mp5`, respectively.
+The new defaults are KEP4 momentum, KEP4 pressure, KO6 momentum
+regularization, and complete MP5 scalar transport.

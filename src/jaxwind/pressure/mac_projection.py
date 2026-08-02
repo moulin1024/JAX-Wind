@@ -9,6 +9,11 @@ import jax
 import jax.numpy as jnp
 
 from .fgmres import FGMRESResult
+from .kep4_operators import (
+    divergence_axis as kep4_divergence_axis,
+    gradient_axis as kep4_gradient_axis,
+    validate_kep4_pressure_grid,
+)
 from .matrix_free_gmg import (
     MatrixFreePoissonSolver,
     PoissonBoundaryConditions,
@@ -81,12 +86,9 @@ def mac_divergence(velocity: MACVelocity, grid: RectilinearGrid) -> Array:
     dy = _widths(grid.y_faces, dtype)
     dz = _widths(grid.z_faces, dtype)
     return (
-        (velocity.x[..., 1:] - velocity.x[..., :-1])
-        / dx[None, None, :]
-        + (velocity.y[:, 1:, :] - velocity.y[:, :-1, :])
-        / dy[None, :, None]
-        + (velocity.z[1:, ...] - velocity.z[:-1, ...])
-        / dz[:, None, None]
+        (velocity.x[..., 1:] - velocity.x[..., :-1]) / dx[None, None, :]
+        + (velocity.y[:, 1:, :] - velocity.y[:, :-1, :]) / dy[None, :, None]
+        + (velocity.z[1:, ...] - velocity.z[:-1, ...]) / dz[:, None, None]
     )
 
 
@@ -108,8 +110,7 @@ def _gradient_axis(
     gradient = jnp.zeros(face_shape, dtype=dtype)
     if values.shape[-1] > 1:
         gradient = gradient.at[..., 1:-1].set(
-            (values[..., 1:] - values[..., :-1])
-            / (centers[1:] - centers[:-1])
+            (values[..., 1:] - values[..., :-1]) / (centers[1:] - centers[:-1])
         )
 
     if lower_kind == "periodic":
@@ -119,16 +120,14 @@ def _gradient_axis(
             + face_coordinates[-1]
             - face_coordinates[-2]
         )
-        periodic_gradient = (
-            values[..., 0] - values[..., -1]
-        ) / distance
+        periodic_gradient = (values[..., 0] - values[..., -1]) / distance
         gradient = gradient.at[..., 0].set(periodic_gradient)
         gradient = gradient.at[..., -1].set(periodic_gradient)
     else:
         if lower_kind == "dirichlet":
-            lower_gradient = (
-                values[..., 0] - lower_value
-            ) / (centers[0] - face_coordinates[0])
+            lower_gradient = (values[..., 0] - lower_value) / (
+                centers[0] - face_coordinates[0]
+            )
         else:
             lower_gradient = jnp.full(
                 values.shape[:-1],
@@ -136,9 +135,9 @@ def _gradient_axis(
                 dtype=dtype,
             )
         if upper_kind == "dirichlet":
-            upper_gradient = (
-                upper_value - values[..., -1]
-            ) / (face_coordinates[-1] - centers[-1])
+            upper_gradient = (upper_value - values[..., -1]) / (
+                face_coordinates[-1] - centers[-1]
+            )
         else:
             upper_gradient = jnp.full(
                 values.shape[:-1],
@@ -191,6 +190,75 @@ def mac_pressure_gradient(
     )
 
 
+def kep4_mac_divergence(
+    velocity: MACVelocity,
+    grid: RectilinearGrid,
+    boundaries: PoissonBoundaryConditions,
+) -> Array:
+    """Return the fourth-order divergence compatible with KEP4 pressure."""
+    _check_velocity_shape(velocity, grid)
+    dx, dy, dz = validate_kep4_pressure_grid(grid, boundaries)
+    return (
+        kep4_divergence_axis(
+            velocity.x,
+            spacing=dx,
+            axis=-1,
+            lower_kind=boundaries.x_lower.kind,
+            upper_kind=boundaries.x_upper.kind,
+        )
+        + kep4_divergence_axis(
+            velocity.y,
+            spacing=dy,
+            axis=-2,
+            lower_kind=boundaries.y_lower.kind,
+            upper_kind=boundaries.y_upper.kind,
+        )
+        + kep4_divergence_axis(
+            velocity.z,
+            spacing=dz,
+            axis=-3,
+            lower_kind=boundaries.z_lower.kind,
+            upper_kind=boundaries.z_upper.kind,
+        )
+    )
+
+
+def kep4_mac_pressure_gradient(
+    pressure: Array,
+    grid: RectilinearGrid,
+    boundaries: PoissonBoundaryConditions,
+) -> MACVelocity:
+    """Return the cell-to-face gradient whose negative transpose is D4."""
+    if tuple(pressure.shape) != grid.shape:
+        raise ValueError(
+            f"expected pressure shape {grid.shape}, got {tuple(pressure.shape)}"
+        )
+    dx, dy, dz = validate_kep4_pressure_grid(grid, boundaries)
+    return MACVelocity(
+        kep4_gradient_axis(
+            pressure,
+            spacing=dx,
+            axis=-1,
+            lower_kind=boundaries.x_lower.kind,
+            upper_kind=boundaries.x_upper.kind,
+        ),
+        kep4_gradient_axis(
+            pressure,
+            spacing=dy,
+            axis=-2,
+            lower_kind=boundaries.y_lower.kind,
+            upper_kind=boundaries.y_upper.kind,
+        ),
+        kep4_gradient_axis(
+            pressure,
+            spacing=dz,
+            axis=-3,
+            lower_kind=boundaries.z_lower.kind,
+            upper_kind=boundaries.z_upper.kind,
+        ),
+    )
+
+
 def _velocity_sum(*terms: tuple[float, MACVelocity]) -> MACVelocity:
     return MACVelocity(
         sum(weight * velocity.x for weight, velocity in terms),
@@ -206,25 +274,49 @@ class MACStageProjector:
         self.solver = solver
         self.grid = solver.operator.grid
         self.boundaries = solver.operator.boundaries
+        self.discretization = solver.discretization
+        if self.discretization == "kep4":
+
+            def divergence_operator(velocity):
+                return kep4_mac_divergence(
+                    velocity,
+                    self.grid,
+                    self.boundaries,
+                )
+
+            def gradient_operator(pressure):
+                return kep4_mac_pressure_gradient(
+                    pressure,
+                    self.grid,
+                    self.boundaries,
+                )
+        else:
+
+            def divergence_operator(velocity):
+                return mac_divergence(velocity, self.grid)
+
+            def gradient_operator(pressure):
+                return mac_pressure_gradient(
+                    pressure,
+                    self.grid,
+                    self.boundaries,
+                )
+
+        self._divergence_operator = divergence_operator
+        self._gradient_operator = gradient_operator
 
         def project_velocity_kernel(
             velocity: MACVelocity,
             timestep: Array,
             target_divergence: Array,
         ) -> MACVelocity:
-            divergence = mac_divergence(velocity, self.grid)
+            divergence = divergence_operator(velocity)
             target = jnp.broadcast_to(
                 target_divergence,
                 self.grid.shape,
             )
-            pressure = self.solver.solve_array(
-                (target - divergence) / timestep
-            )
-            gradient = mac_pressure_gradient(
-                pressure,
-                self.grid,
-                self.boundaries,
-            )
+            pressure = self.solver.solve_array((target - divergence) / timestep)
+            gradient = gradient_operator(pressure)
             return _velocity_sum(
                 (1.0, velocity),
                 (-timestep, gradient),
@@ -236,7 +328,7 @@ class MACStageProjector:
             target_divergence: Array,
             initial_pressure: Array,
         ) -> VelocityPressureProjection:
-            divergence = mac_divergence(velocity, self.grid)
+            divergence = divergence_operator(velocity)
             target = jnp.broadcast_to(
                 target_divergence,
                 self.grid.shape,
@@ -245,11 +337,7 @@ class MACStageProjector:
                 (target - divergence) / timestep,
                 initial=initial_pressure,
             )
-            gradient = mac_pressure_gradient(
-                pressure,
-                self.grid,
-                self.boundaries,
-            )
+            gradient = gradient_operator(pressure)
             return VelocityPressureProjection(
                 _velocity_sum(
                     (1.0, velocity),
@@ -262,13 +350,13 @@ class MACStageProjector:
         self._project_velocity_pressure_kernel = jax.jit(
             project_velocity_pressure_kernel
         )
-        self._pressure_gradient_kernel = jax.jit(
-            lambda pressure: mac_pressure_gradient(
-                pressure,
-                self.grid,
-                self.boundaries,
-            )
-        )
+        self._pressure_gradient_kernel = jax.jit(gradient_operator)
+        self._divergence_kernel = jax.jit(divergence_operator)
+
+    def divergence(self, velocity: MACVelocity) -> Array:
+        """Return the constraint divergence used by this projector."""
+        _check_velocity_shape(velocity, self.grid)
+        return self._divergence_kernel(velocity)
 
     def pressure_gradient(self, pressure: Array) -> MACVelocity:
         """Return a compiled pressure gradient for predicted-stage methods."""
@@ -338,7 +426,7 @@ class MACStageProjector:
     ) -> MACProjectionResult:
         if not math_is_positive_finite(timestep):
             raise ValueError("projection timestep must be positive and finite")
-        divergence_before = mac_divergence(velocity, self.grid)
+        divergence_before = self._divergence_operator(velocity)
         target = jnp.broadcast_to(
             jnp.asarray(target_divergence, dtype=divergence_before.dtype),
             self.grid.shape,
@@ -348,16 +436,12 @@ class MACStageProjector:
             physical_rhs,
             initial=initial_pressure,
         )
-        gradient = mac_pressure_gradient(
-            linear_result.solution,
-            self.grid,
-            self.boundaries,
-        )
+        gradient = self._gradient_operator(linear_result.solution)
         corrected = _velocity_sum(
             (1.0, velocity),
             (-timestep, gradient),
         )
-        divergence_after = mac_divergence(corrected, self.grid)
+        divergence_after = self._divergence_operator(corrected)
         return MACProjectionResult(
             corrected,
             linear_result.solution,
@@ -518,12 +602,10 @@ def fpj2_pressure_prediction(
         raise ValueError("FPJ-2 timesteps must be positive")
     if not 0.0 <= stage_abscissa <= 1.0:
         raise ValueError("FPJ-2 stage abscissa must lie in [0, 1]")
-    extrapolation = (
-        current_timestep + stage_abscissa * next_timestep
-    ) / (current_timestep + previous_timestep)
-    return current_pressure + extrapolation * (
-        current_pressure - previous_pressure
+    extrapolation = (current_timestep + stage_abscissa * next_timestep) / (
+        current_timestep + previous_timestep
     )
+    return current_pressure + extrapolation * (current_pressure - previous_pressure)
 
 
 def fpj2_ssprk3_velocity_step(
@@ -592,6 +674,8 @@ __all__ = [
     "MACStageProjector",
     "MACVelocity",
     "SSPRK3ProjectionResult",
+    "kep4_mac_divergence",
+    "kep4_mac_pressure_gradient",
     "mac_divergence",
     "mac_pressure_gradient",
     "projected_ssprk3_step",

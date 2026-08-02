@@ -193,7 +193,7 @@ def test_full_mp5_scalar_flux_is_conservative_and_constant_consistent() -> None:
     scalar = jnp.full(solver.grid.shape, 3.25, dtype=jnp.float32)
 
     tendency = scalar_solver.mp5_advective_tendency(scalar, velocity)
-    divergence = neutral_abl.mac_divergence(velocity, solver.grid)
+    divergence = solver.projector.divergence(velocity)
 
     assert jnp.allclose(tendency, -scalar * divergence, atol=2.0e-6)
     assert float(jnp.abs(jnp.sum(tendency))) < 2.0e-5
