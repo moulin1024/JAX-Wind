@@ -194,31 +194,76 @@ class MoninObukhovWallLaw:
         unstable = 2.0 * jnp.log(0.5 * (1.0 + x))
         return jnp.where(zeta >= 0.0, stable, unstable)
 
-    def surface_fluxes(
+    def _stable_inverse_obukhov(
         self,
-        horizontal_velocity: Array,
-        potential_temperature: Array,
-        surface_potential_temperature: Array | float,
-        matching_height: float,
-    ) -> SurfaceLayerFluxes:
-        """Return local stress and kinematic heat flux at the lower boundary."""
-        height = self._validate_height(matching_height)
-        speed = jnp.linalg.norm(horizontal_velocity, axis=-1)
-        temperature = jnp.asarray(
-            potential_temperature,
-            dtype=horizontal_velocity.dtype,
-        )
-        surface_temperature = jnp.asarray(
-            surface_potential_temperature,
-            dtype=horizontal_velocity.dtype,
-        )
-        temperature_difference = temperature - surface_temperature
-        neutral_momentum_log = math.log(
-            height / self.momentum_roughness_length
-        )
-        neutral_heat_log = math.log(height / self.thermal_roughness_length)
-        inverse_obukhov = jnp.zeros_like(speed)
+        speed: Array,
+        temperature_difference: Array,
+        height: float,
+        neutral_momentum_log: float,
+        neutral_heat_log: float,
+    ) -> tuple[Array, Array]:
+        """Return the physical closed-form stable MOST root and its validity.
 
+        With the linear stable corrections, ``x = 1 / L`` obeys a quadratic:
+
+        ``x (Ah + Bh x) = C (Am + Bm x)^2``.
+
+        The cancellation-free expression below selects the root connected to
+        the neutral limit.  Cases outside that branch (including clipped zeta
+        or vanishing wind) are marked invalid and retain the iterative path.
+        """
+        speed_squared = speed * speed
+        bulk_coefficient = (
+            self.gravity
+            * temperature_difference
+            / (
+                jnp.maximum(speed_squared, 1.0e-12)
+                * self.reference_potential_temperature
+            )
+        )
+        momentum_slope = self.stable_momentum_beta * (
+            height - self.momentum_roughness_length
+        )
+        heat_slope = self.stable_heat_beta * (
+            height - self.thermal_roughness_length
+        )
+        quadratic = heat_slope - bulk_coefficient * momentum_slope**2
+        linear = (
+            neutral_heat_log
+            - 2.0
+            * bulk_coefficient
+            * neutral_momentum_log
+            * momentum_slope
+        )
+        constant = -bulk_coefficient * neutral_momentum_log**2
+        discriminant = linear * linear - 4.0 * quadratic * constant
+        square_root = jnp.sqrt(jnp.maximum(discriminant, 0.0))
+        inverse_obukhov = -2.0 * constant / jnp.maximum(
+            linear + square_root,
+            1.0e-12,
+        )
+        valid = (
+            (temperature_difference >= 0.0)
+            & (speed_squared > 1.0e-12)
+            & (quadratic > 0.0)
+            & (linear > 0.0)
+            & (discriminant >= 0.0)
+            & jnp.isfinite(inverse_obukhov)
+            & (inverse_obukhov >= 0.0)
+            & (height * inverse_obukhov <= self.maximum_abs_zeta)
+        )
+        return inverse_obukhov, valid
+
+    def _iterative_inverse_obukhov(
+        self,
+        speed: Array,
+        temperature_difference: Array,
+        height: float,
+        neutral_momentum_log: float,
+        neutral_heat_log: float,
+    ) -> Array:
+        """Solve the general stable/unstable MOST relation by relaxation."""
+        inverse_obukhov = jnp.zeros_like(speed)
         for _ in range(self.iterations):
             momentum_denominator = (
                 neutral_momentum_log
@@ -253,20 +298,87 @@ class MoninObukhovWallLaw:
                 (1.0 - self.relaxation) * inverse_obukhov
                 + self.relaxation * candidate
             )
+        return inverse_obukhov
 
-        momentum_denominator = (
-            neutral_momentum_log
-            - self.momentum_stability_correction(height * inverse_obukhov)
-            + self.momentum_stability_correction(
-                self.momentum_roughness_length * inverse_obukhov
-            )
+    def surface_fluxes(
+        self,
+        horizontal_velocity: Array,
+        potential_temperature: Array,
+        surface_potential_temperature: Array | float,
+        matching_height: float,
+    ) -> SurfaceLayerFluxes:
+        """Return local stress and kinematic heat flux at the lower boundary."""
+        height = self._validate_height(matching_height)
+        speed = jnp.linalg.norm(horizontal_velocity, axis=-1)
+        temperature = jnp.asarray(
+            potential_temperature,
+            dtype=horizontal_velocity.dtype,
         )
-        heat_denominator = (
-            neutral_heat_log
-            - self.heat_stability_correction(height * inverse_obukhov)
-            + self.heat_stability_correction(
-                self.thermal_roughness_length * inverse_obukhov
+        surface_temperature = jnp.asarray(
+            surface_potential_temperature,
+            dtype=horizontal_velocity.dtype,
+        )
+        temperature_difference = temperature - surface_temperature
+        neutral_momentum_log = math.log(
+            height / self.momentum_roughness_length
+        )
+        neutral_heat_log = math.log(height / self.thermal_roughness_length)
+        stable_inverse_obukhov, stable_valid = self._stable_inverse_obukhov(
+            speed,
+            temperature_difference,
+            height,
+            neutral_momentum_log,
+            neutral_heat_log,
+        )
+
+        def closed_form(_: None) -> tuple[Array, Array, Array]:
+            momentum_denominator = (
+                neutral_momentum_log
+                + self.stable_momentum_beta
+                * (height - self.momentum_roughness_length)
+                * stable_inverse_obukhov
             )
+            heat_denominator = (
+                neutral_heat_log
+                + self.stable_heat_beta
+                * (height - self.thermal_roughness_length)
+                * stable_inverse_obukhov
+            )
+            return (
+                stable_inverse_obukhov,
+                momentum_denominator,
+                heat_denominator,
+            )
+
+        def iterative(_: None) -> tuple[Array, Array, Array]:
+            inverse_obukhov = self._iterative_inverse_obukhov(
+                speed,
+                temperature_difference,
+                height,
+                neutral_momentum_log,
+                neutral_heat_log,
+            )
+            momentum_denominator = (
+                neutral_momentum_log
+                - self.momentum_stability_correction(height * inverse_obukhov)
+                + self.momentum_stability_correction(
+                    self.momentum_roughness_length * inverse_obukhov
+                )
+            )
+            heat_denominator = (
+                neutral_heat_log
+                - self.heat_stability_correction(height * inverse_obukhov)
+                + self.heat_stability_correction(
+                    self.thermal_roughness_length * inverse_obukhov
+                )
+            )
+            return inverse_obukhov, momentum_denominator, heat_denominator
+
+        inverse_obukhov, momentum_denominator, heat_denominator = jax.lax.cond(
+            jnp.all(stable_valid),
+            closed_form,
+            iterative,
+            operand=None,
         )
         ustar = self.von_karman * speed / jnp.maximum(
             momentum_denominator,

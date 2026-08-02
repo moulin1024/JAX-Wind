@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timedelta
 import json
 import math
 import os
@@ -26,6 +27,46 @@ from benchmark.GABLS1 import diagnostics  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 CHECKPOINT_SCHEMA = "jaxwind.gabls1.nonspectral-amd.v1"
+
+
+def _format_duration(seconds: float) -> str:
+    total_seconds = max(0, int(round(seconds)))
+    days, remainder = divmod(total_seconds, 24 * 3600)
+    hours, remainder = divmod(remainder, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    clock = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+    return f"{days}d{clock}" if days else clock
+
+
+def _eta_log_fields(
+    *,
+    start_wall: float,
+    start_simulation_time: float,
+    simulation_time: float,
+    final_simulation_time: float,
+    current_wall: float | None = None,
+    now: datetime | None = None,
+) -> str:
+    """Format elapsed time, measured throughput, and projected completion."""
+    wall = time.perf_counter() if current_wall is None else current_wall
+    elapsed_wall = max(0.0, wall - start_wall)
+    advanced_simulation = simulation_time - start_simulation_time
+    if elapsed_wall <= 0.0 or advanced_simulation <= 0.0:
+        return (
+            f"wall={_format_duration(elapsed_wall)} speed=calculating "
+            "remain=calculating ETA=calculating"
+        )
+    simulation_per_wall = advanced_simulation / elapsed_wall
+    remaining_simulation = max(0.0, final_simulation_time - simulation_time)
+    remaining_wall = remaining_simulation / simulation_per_wall
+    current_time = datetime.now().astimezone() if now is None else now
+    completion = current_time + timedelta(seconds=remaining_wall)
+    return (
+        f"wall={_format_duration(elapsed_wall)} "
+        f"speed={simulation_per_wall:.2f}x "
+        f"remain={_format_duration(remaining_wall)} "
+        f"ETA={completion.isoformat(timespec='seconds')}"
+    )
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -59,6 +100,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--y-slab-coarse-cells-per-rank", type=int, default=4)
     parser.add_argument("--checkpoint-every", type=int, default=1000)
     parser.add_argument("--log-every", type=int, default=300)
+    parser.add_argument("--metrics-every", type=int, default=300)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--dtype", choices=("float32", "float64"), default="float32")
     parser.add_argument("--max-steps", type=int)
@@ -90,6 +132,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         args.max_steps = 4 if args.max_steps is None else args.max_steps
         args.checkpoint_every = 2
         args.log_every = 1
+        args.metrics_every = 1
     if args.smoke:
         args.nx = args.ny = args.nz = 16
         args.end_hours = 0.02
@@ -98,6 +141,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         args.dt_max = min(args.dt_max, 0.5)
         args.checkpoint_every = min(args.checkpoint_every, 50)
         args.log_every = min(args.log_every, 20)
+        args.metrics_every = min(args.metrics_every, 20)
     if min(args.nx, args.ny, args.nz) < 4:
         parser.error("all grid dimensions must be at least four")
     positive = {
@@ -122,6 +166,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         args.y_slab_coarse_cells_per_rank,
         args.checkpoint_every,
         args.log_every,
+        args.metrics_every,
     ) <= 0:
         parser.error("iteration and output intervals must be positive")
     if args.pressure_smooth < 0:
@@ -345,6 +390,7 @@ def run(args: argparse.Namespace) -> dict[str, float | int | str]:
     if args.dtype == "float64":
         jax_config.update("jax_enable_x64", True)
     import jax
+    import jax.numpy as jnp
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     coupled, case, dtype = _build_coupled(args)
@@ -387,13 +433,13 @@ def run(args: argparse.Namespace) -> dict[str, float | int | str]:
             timestep=min(args.dt_max, 0.25),
         )
     compiled_fields = diagnostic_kernel(state)
-    compiled_pre_metrics = coupled.pre_step_metrics(state)
+    compiled_rates = coupled.stability_rates(state)
     compiled_accepted_metrics = coupled.accepted_state_metrics(
         compiled_state
     )
     jax.block_until_ready(compiled_state.velocity.x)
     jax.block_until_ready(compiled_fields.surface_heat_flux)
-    jax.block_until_ready(compiled_pre_metrics)
+    jax.block_until_ready(compiled_rates)
     jax.block_until_ready(compiled_accepted_metrics)
     if saved_fpj2 is None:
         momentum.reset_fpj2()
@@ -407,6 +453,7 @@ def run(args: argparse.Namespace) -> dict[str, float | int | str]:
     next_sample_time = (
         math.floor(state.time / args.sample_interval_seconds) + 1
     ) * args.sample_interval_seconds
+    start_simulation_time = state.time
     start = time.perf_counter()
     stopped_early = False
 
@@ -483,13 +530,9 @@ def run(args: argparse.Namespace) -> dict[str, float | int | str]:
             samples.append(statistics)
 
     while state.time < final_time:
-        (
-            advective_rate,
-            momentum_rate,
-            scalar_rate,
-            theta_before,
-            heat_flux_before,
-        ) = (float(value) for value in coupled.pre_step_metrics(state))
+        advective_rate, momentum_rate, scalar_rate = (
+            float(value) for value in coupled.stability_rates(state)
+        )
         timestep = min(
             args.target_cfl / advective_rate,
             (
@@ -505,31 +548,57 @@ def run(args: argparse.Namespace) -> dict[str, float | int | str]:
             args.dt_max,
             final_time - state.time,
         )
-        state = coupled.step(state, timestep=timestep)
-        theta_after, heat_flux_after, divergence = (
-            float(value) for value in coupled.accepted_state_metrics(state)
+        next_step = state.step + 1
+        final_after_step = state.time + timestep >= final_time - 1.0e-12
+        max_steps_after_step = (
+            args.max_steps is not None and next_step >= args.max_steps
         )
-        budget_residual = abs(
-            theta_after
-            - theta_before
-            - timestep
-            * (
-                0.5 * (heat_flux_before + heat_flux_after)
-                if coupled.last_surface_heat_flux_quadrature is None
-                else float(coupled.last_surface_heat_flux_quadrature)
+        metrics_due = (
+            next_step % args.metrics_every == 0
+            or next_step % args.log_every == 0
+            or next_step % args.checkpoint_every == 0
+            or final_after_step
+            or max_steps_after_step
+        )
+        if metrics_due:
+            theta_before = float(
+                jnp.mean(
+                    state.potential_temperature
+                    - coupled.config.reference_potential_temperature
+                )
             )
-            / case.domain
-        )
+            heat_flux_before = (
+                float(jnp.mean(coupled.surface_layer_fluxes(state).heat_flux))
+                if args.coupling_integrator == "strang"
+                else math.nan
+            )
+        state = coupled.step(state, timestep=timestep)
+        if metrics_due:
+            theta_after, heat_flux_after, divergence = (
+                float(value) for value in coupled.accepted_state_metrics(state)
+            )
+            budget_residual = abs(
+                theta_after
+                - theta_before
+                - timestep
+                * (
+                    0.5 * (heat_flux_before + heat_flux_after)
+                    if coupled.last_surface_heat_flux_quadrature is None
+                    else float(coupled.last_surface_heat_flux_quadrature)
+                )
+                / case.domain
+            )
         timesteps.append(timestep)
         cfl = timestep * advective_rate
         diffusive_cfl = timestep * max(momentum_rate, scalar_rate)
         max_cfl = max(max_cfl, cfl)
         max_diffusive_cfl = max(max_diffusive_cfl, diffusive_cfl)
-        max_divergence = max(max_divergence, divergence)
-        max_scalar_budget_residual = max(
-            max_scalar_budget_residual,
-            budget_residual,
-        )
+        if metrics_due:
+            max_divergence = max(max_divergence, divergence)
+            max_scalar_budget_residual = max(
+                max_scalar_budget_residual,
+                budget_residual,
+            )
         final = state.time >= final_time
         if state.time + 1.0e-9 >= next_sample_time or final:
             append_diagnostics()
@@ -541,7 +610,13 @@ def run(args: argparse.Namespace) -> dict[str, float | int | str]:
                 f"{args.end_hours:g}h CFL={cfl:.4f} CFLnu={diffusive_cfl:.4f} "
                 f"divL2={divergence:.3e} "
                 f"Q0={heat_flux_after:.3e} "
-                f"theta_budget={budget_residual:.3e}",
+                f"theta_budget={budget_residual:.3e} "
+                + _eta_log_fields(
+                    start_wall=start,
+                    start_simulation_time=start_simulation_time,
+                    simulation_time=state.time,
+                    final_simulation_time=final_time,
+                ),
                 flush=True,
             )
         if state.step % args.checkpoint_every == 0 or final:
@@ -584,6 +659,7 @@ def run(args: argparse.Namespace) -> dict[str, float | int | str]:
             "max_diffusive_cfl": max_diffusive_cfl,
             "max_divergence": max_divergence,
             "max_scalar_budget_residual": max_scalar_budget_residual,
+            "accepted_metrics_interval_steps": args.metrics_every,
             "amd_coefficient": args.amd_coefficient,
             "scalar_amd_coefficient": args.scalar_amd_coefficient,
             "mp5_dissipation_strength": args.mp5_strength,

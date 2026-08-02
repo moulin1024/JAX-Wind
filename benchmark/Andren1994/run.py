@@ -129,6 +129,8 @@ def main() -> None:
         raise SystemExit("sampling intervals must be positive")
     if not math.isfinite(args.amd_coefficient) or args.amd_coefficient < 0.0:
         raise SystemExit("AMD coefficient must be finite and nonnegative")
+    if not math.isfinite(args.mp5_strength) or args.mp5_strength < 0.0:
+        raise SystemExit("MP5 strength must be finite and nonnegative")
     if args.passive_scalar is None:
         args.passive_scalar = args.sgs == "amd"
     if args.scalar_amd_coefficient is None:
@@ -369,6 +371,18 @@ def main() -> None:
                 raise SystemExit(
                     "restart AMD coefficient does not match this run"
                 )
+        checkpoint_mp5_strength = (
+            float(checkpoint["mp5_strength"])
+            if "mp5_strength" in checkpoint
+            else 1.0
+        )
+        if not np.isclose(
+            checkpoint_mp5_strength,
+            args.mp5_strength,
+            rtol=0.0,
+            atol=1.0e-12,
+        ):
+            raise SystemExit("restart MP5 strength does not match this run")
         for name, expected in (
             ("scalar_amd_coefficient", args.scalar_amd_coefficient),
             ("scalar_surface_flux", args.scalar_surface_flux),
@@ -639,6 +653,7 @@ def main() -> None:
             "amd_coefficient": args.amd_coefficient,
             "scalar_amd_coefficient": args.scalar_amd_coefficient,
             "scalar_surface_flux": args.scalar_surface_flux,
+            "mp5_strength": args.mp5_strength,
             "sample_times": np.asarray(sample_times),
             "budget_times": np.asarray(budget_times),
         }

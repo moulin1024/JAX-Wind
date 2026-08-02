@@ -581,6 +581,30 @@ def test_adaptive_timestep_hits_requested_cfl() -> None:
     assert abs(diagnostic.maximum_cfl - 0.9) < 1.0e-6
 
 
+def test_cfl_rate_uses_cell_local_face_envelopes() -> None:
+    solver = _solver(nx=4, ny=4, nz=4)
+    nz, ny, nx = solver.grid.shape
+    velocity = MACVelocity(
+        jnp.zeros((nz, ny, nx + 1), dtype=jnp.float32),
+        jnp.zeros((nz, ny + 1, nx), dtype=jnp.float32),
+        jnp.zeros((nz + 1, ny, nx), dtype=jnp.float32),
+    )
+    velocity = MACVelocity(
+        velocity.x.at[0, 0, 0].set(4.0),
+        velocity.y.at[1, 1, 1].set(3.0),
+        velocity.z.at[2, 2, 2].set(2.0),
+    )
+    expected = max(4.0 / solver.dx, 3.0 / solver.dy, 2.0 / solver.dz)
+    old_global_sum = (
+        4.0 / solver.dx + 3.0 / solver.dy + 2.0 / solver.dz
+    )
+
+    actual = float(solver.cfl_rate(velocity))
+
+    assert actual == expected
+    assert actual < old_global_sum
+
+
 def test_variational_principal_sgs_operator_is_dissipative() -> None:
     solver = _solver()
     nz, ny, nx = solver.grid.shape

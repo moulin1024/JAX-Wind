@@ -729,11 +729,24 @@ class YSlabAMDBoussinesq:
         )
         viscosity = self._crop_cell_rows(viscosity)
         scalar_diffusivity = self._crop_cell_rows(scalar_diffusivity)
-        advective = (
-            jnp.max(jnp.abs(velocity.x)) / self.dx
-            + jnp.max(jnp.abs(velocity.y)) / self.dy
-            + jnp.max(jnp.abs(velocity.z)) / self.dz
+        local_advective = (
+            jnp.maximum(
+                jnp.abs(velocity.x[..., :-1]),
+                jnp.abs(velocity.x[..., 1:]),
+            )
+            / self.dx
+            + jnp.maximum(
+                jnp.abs(velocity.y[:, :-1, :]),
+                jnp.abs(velocity.y[:, 1:, :]),
+            )
+            / self.dy
+            + jnp.maximum(
+                jnp.abs(velocity.z[:-1, ...]),
+                jnp.abs(velocity.z[1:, ...]),
+            )
+            / self.dz
         )
+        advective = jnp.max(local_advective)
         inverse_spacing_squared = (
             1.0 / self.dx**2
             + 1.0 / self.dy**2

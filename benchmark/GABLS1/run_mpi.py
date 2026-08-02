@@ -417,6 +417,7 @@ def run(args) -> dict[str, float | int | str] | None:
     next_sample_time = (
         math.floor(state.time / args.sample_interval_seconds) + 1
     ) * args.sample_interval_seconds
+    start_simulation_time = state.time
     start_wall = time.perf_counter()
     stopped_early = False
     cached_global_step = -1
@@ -519,65 +520,81 @@ def run(args) -> dict[str, float | int | str] | None:
             args.dt_max,
             final_time - state.time,
         )
-        theta_local_before = np.asarray(state.potential_temperature[0])
-        theta_sum_before = communicator.allreduce(
-            float(np.sum(theta_local_before, dtype=np.float64)),
-            op=MPI.SUM,
+        next_step = state.step + 1
+        final_after_step = state.time + timestep >= final_time - 1.0e-12
+        max_steps_after_step = (
+            args.max_steps is not None and next_step >= args.max_steps
         )
-        flux_before = coupled.surface_layer_fluxes(state)
-        heat_sum_before = communicator.allreduce(
-            float(np.sum(np.asarray(flux_before.heat_flux))),
-            op=MPI.SUM,
+        metrics_due = (
+            next_step % args.metrics_every == 0
+            or next_step % args.log_every == 0
+            or next_step % args.checkpoint_every == 0
+            or final_after_step
+            or max_steps_after_step
         )
+        if metrics_due:
+            theta_local_before = np.asarray(state.potential_temperature[0])
+            theta_sum_before = communicator.allreduce(
+                float(np.sum(theta_local_before, dtype=np.float64)),
+                op=MPI.SUM,
+            )
+            if args.coupling_integrator == "strang":
+                flux_before = coupled.surface_layer_fluxes(state)
+                heat_sum_before = communicator.allreduce(
+                    float(np.sum(np.asarray(flux_before.heat_flux))),
+                    op=MPI.SUM,
+                )
         state = coupled.step(state, timestep=timestep)
         cached_global_step = -1
-        flux_after = coupled.surface_layer_fluxes(state)
-        heat_sum_after = communicator.allreduce(
-            float(np.sum(np.asarray(flux_after.heat_flux))),
-            op=MPI.SUM,
-        )
-        theta_sum_after = communicator.allreduce(
-            float(
-                np.sum(
-                    np.asarray(state.potential_temperature[0]),
-                    dtype=np.float64,
+        if metrics_due:
+            flux_after = coupled.surface_layer_fluxes(state)
+            heat_sum_after = communicator.allreduce(
+                float(np.sum(np.asarray(flux_after.heat_flux))),
+                op=MPI.SUM,
+            )
+            theta_sum_after = communicator.allreduce(
+                float(
+                    np.sum(
+                        np.asarray(state.potential_temperature[0]),
+                        dtype=np.float64,
+                    )
+                ),
+                op=MPI.SUM,
+            )
+            theta_before = theta_sum_before / (args.nx * args.ny * args.nz)
+            theta_after = theta_sum_after / (args.nx * args.ny * args.nz)
+            heat_flux_after = heat_sum_after / (args.nx * args.ny)
+            if coupled.last_surface_heat_flux_quadrature is None:
+                heat_flux_before = heat_sum_before / (args.nx * args.ny)
+                integrated_heat_flux = 0.5 * (
+                    heat_flux_before + heat_flux_after
                 )
-            ),
-            op=MPI.SUM,
-        )
-        theta_before = theta_sum_before / (args.nx * args.ny * args.nz)
-        theta_after = theta_sum_after / (args.nx * args.ny * args.nz)
-        heat_flux_before = heat_sum_before / (args.nx * args.ny)
-        heat_flux_after = heat_sum_after / (args.nx * args.ny)
-        budget_residual = abs(
-            theta_after
-            - theta_before
-            - timestep
-            * (
-                0.5 * (heat_flux_before + heat_flux_after)
-                if coupled.last_surface_heat_flux_quadrature is None
-                else float(
+            else:
+                integrated_heat_flux = float(
                     np.mean(
                         np.asarray(
                             coupled.last_surface_heat_flux_quadrature
                         )
                     )
                 )
+            budget_residual = abs(
+                theta_after
+                - theta_before
+                - timestep * integrated_heat_flux / case.domain
             )
-            / case.domain
-        )
+            divergence = coupled.divergence_norm(state.velocity)
         cfl = timestep * advective_rate
         diffusive_cfl = timestep * max(momentum_rate, scalar_rate)
-        divergence = coupled.divergence_norm(state.velocity)
         if rank == 0:
             timesteps.append(timestep)
             max_cfl = max(max_cfl, cfl)
             max_diffusive_cfl = max(max_diffusive_cfl, diffusive_cfl)
-            max_divergence = max(max_divergence, divergence)
-            max_scalar_budget_residual = max(
-                max_scalar_budget_residual,
-                budget_residual,
-            )
+            if metrics_due:
+                max_divergence = max(max_divergence, divergence)
+                max_scalar_budget_residual = max(
+                    max_scalar_budget_residual,
+                    budget_residual,
+                )
         final = state.time >= final_time
         if state.time + 1.0e-9 >= next_sample_time or final:
             append_diagnostics()
@@ -589,7 +606,13 @@ def run(args) -> dict[str, float | int | str] | None:
                 f"{args.end_hours:g}h CFL={cfl:.4f} "
                 f"CFLnu={diffusive_cfl:.4f} divL2={divergence:.3e} "
                 f"Q0={heat_flux_after:.3e} "
-                f"theta_budget={budget_residual:.3e}",
+                f"theta_budget={budget_residual:.3e} "
+                + serial_run._eta_log_fields(
+                    start_wall=start_wall,
+                    start_simulation_time=start_simulation_time,
+                    simulation_time=state.time,
+                    final_simulation_time=final_time,
+                ),
                 flush=True,
             )
         if state.step % args.checkpoint_every == 0 or final:
@@ -654,6 +677,7 @@ def run(args) -> dict[str, float | int | str] | None:
                 "max_diffusive_cfl": max_diffusive_cfl,
                 "max_divergence": max_divergence,
                 "max_scalar_budget_residual": max_scalar_budget_residual,
+                "accepted_metrics_interval_steps": args.metrics_every,
                 "amd_coefficient": args.amd_coefficient,
                 "scalar_amd_coefficient": args.scalar_amd_coefficient,
                 "mp5_dissipation_strength": args.mp5_strength,

@@ -2136,12 +2136,31 @@ class NeutralABLMomentum:
         )
 
     def cfl_rate(self, velocity: MACVelocity) -> Array:
-        """Return the advective CFL accumulated per unit time."""
-        return (
-            jnp.max(jnp.abs(velocity.x)) / self.dx
-            + jnp.max(jnp.abs(velocity.y)) / self.dy
-            + jnp.max(jnp.abs(velocity.z)) / self.dz
+        """Return a conservative cell-local face-envelope CFL rate.
+
+        Each cell uses the larger speed on its two faces in each direction.
+        Taking the maximum only after summing those local contributions avoids
+        combining three unrelated domain-wide extrema while remaining safe for
+        the face-flux update.
+        """
+        local_rate = (
+            jnp.maximum(
+                jnp.abs(velocity.x[..., :-1]),
+                jnp.abs(velocity.x[..., 1:]),
+            )
+            / self.dx
+            + jnp.maximum(
+                jnp.abs(velocity.y[:, :-1, :]),
+                jnp.abs(velocity.y[:, 1:, :]),
+            )
+            / self.dy
+            + jnp.maximum(
+                jnp.abs(velocity.z[:-1, ...]),
+                jnp.abs(velocity.z[1:, ...]),
+            )
+            / self.dz
         )
+        return jnp.max(local_rate)
 
     def timestep_for_cfl(
         self,

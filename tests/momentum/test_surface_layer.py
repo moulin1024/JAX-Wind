@@ -65,6 +65,77 @@ def test_most_flux_signs_and_stability_effect_are_physical() -> None:
     assert jnp.all(unstable.friction_velocity > neutral.friction_velocity)
 
 
+def test_stable_most_closed_form_satisfies_implicit_relation() -> None:
+    law = MoninObukhovWallLaw(
+        momentum_roughness_length=0.1,
+        thermal_roughness_length=0.01,
+        reference_potential_temperature=300.0,
+        iterations=1,
+    )
+    velocity = jnp.asarray(
+        [[[8.0, 0.0], [6.0, 1.0]]],
+        dtype=jnp.float32,
+    )
+    temperature = jnp.asarray([[300.4, 300.2]], dtype=jnp.float32)
+    height = 10.0
+    fluxes = law.surface_fluxes(velocity, temperature, 300.0, height)
+    inverse_obukhov = 1.0 / fluxes.obukhov_length
+    speed = jnp.linalg.norm(velocity, axis=-1)
+    momentum_denominator = (
+        math.log(height / law.momentum_roughness_length)
+        + law.stable_momentum_beta
+        * (height - law.momentum_roughness_length)
+        * inverse_obukhov
+    )
+    heat_denominator = (
+        math.log(height / law.thermal_roughness_length)
+        + law.stable_heat_beta
+        * (height - law.thermal_roughness_length)
+        * inverse_obukhov
+    )
+    expected_inverse_obukhov = (
+        law.gravity
+        * (temperature - 300.0)
+        * momentum_denominator**2
+        / (
+            speed**2
+            * law.reference_potential_temperature
+            * heat_denominator
+        )
+    )
+
+    assert jnp.allclose(
+        inverse_obukhov,
+        expected_inverse_obukhov,
+        rtol=2.0e-6,
+        atol=1.0e-8,
+    )
+
+
+def test_unstable_most_retains_iterative_fallback() -> None:
+    velocity = jnp.asarray([[[8.0, 0.0]]], dtype=jnp.float32)
+    temperature = jnp.asarray([[299.5]], dtype=jnp.float32)
+    one_iteration = MoninObukhovWallLaw(
+        momentum_roughness_length=0.1,
+        thermal_roughness_length=0.01,
+        reference_potential_temperature=300.0,
+        iterations=1,
+    ).surface_fluxes(velocity, temperature, 300.0, 10.0)
+    converged = MoninObukhovWallLaw(
+        momentum_roughness_length=0.1,
+        thermal_roughness_length=0.01,
+        reference_potential_temperature=300.0,
+        iterations=12,
+    ).surface_fluxes(velocity, temperature, 300.0, 10.0)
+
+    assert not jnp.allclose(
+        one_iteration.obukhov_length,
+        converged.obukhov_length,
+        rtol=1.0e-4,
+        atol=1.0e-4,
+    )
+
+
 def test_most_surface_fluxes_are_jittable_and_finite() -> None:
     law = MoninObukhovWallLaw(
         momentum_roughness_length=0.1,

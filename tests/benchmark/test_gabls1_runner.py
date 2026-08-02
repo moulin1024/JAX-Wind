@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -34,6 +35,7 @@ def test_gabls1_defaults_are_the_official_coarse_case() -> None:
     assert args.projection_method == "full"
     assert args.coupling_integrator == "strang"
     assert args.pressure_smooth == 1
+    assert args.metrics_every == 300
     assert args.reference_dir == REFERENCE
 
 
@@ -44,9 +46,11 @@ def test_gabls1_short_modes_keep_bounded_end_to_end_scope() -> None:
     assert (quick.nx, quick.ny, quick.nz) == (8, 8, 8)
     assert quick.max_steps == 4
     assert quick.sample_start_hours == 0.0
+    assert quick.metrics_every == 1
     assert (smoke.nx, smoke.ny, smoke.nz) == (16, 16, 16)
     assert smoke.end_hours == 0.02
     assert smoke.sample_start_hours == 0.0
+    assert smoke.metrics_every == 20
 
 
 def test_gabls1_accepts_coupled_ssprk3() -> None:
@@ -55,6 +59,36 @@ def test_gabls1_accepts_coupled_ssprk3() -> None:
     )
 
     assert args.coupling_integrator == "coupled-ssprk3"
+
+
+def test_eta_log_fields_uses_measured_simulation_throughput() -> None:
+    status = run._eta_log_fields(
+        start_wall=10.0,
+        current_wall=110.0,
+        start_simulation_time=1_000.0,
+        simulation_time=1_050.0,
+        final_simulation_time=1_150.0,
+        now=datetime(2026, 8, 2, 12, 0, tzinfo=timezone.utc),
+    )
+
+    assert status == (
+        "wall=00:01:40 speed=0.50x remain=00:03:20 "
+        "ETA=2026-08-02T12:03:20+00:00"
+    )
+
+
+def test_eta_log_fields_handles_startup_without_progress() -> None:
+    status = run._eta_log_fields(
+        start_wall=10.0,
+        current_wall=10.0,
+        start_simulation_time=1_000.0,
+        simulation_time=1_000.0,
+        final_simulation_time=1_150.0,
+    )
+
+    assert status == (
+        "wall=00:00:00 speed=calculating remain=calculating ETA=calculating"
+    )
 
 
 def test_official_12p5m_archive_parses_all_sets_and_participants() -> None:
