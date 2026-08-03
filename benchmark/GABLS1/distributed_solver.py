@@ -20,7 +20,11 @@ from jaxwind.momentum import (
     NeutralABLMomentum,
     SurfaceLayerFluxes,
 )
-from jaxwind.momentum.neutral_abl import _cell_velocity, _cells_to_faces
+from jaxwind.momentum.neutral_abl import (
+    _cell_velocity,
+    _cells_to_faces,
+    _velocity_sum,
+)
 from jaxwind.pressure import (
     BoundaryCondition,
     fpj2_pressure_prediction,
@@ -343,9 +347,20 @@ class YSlabAMDBoussinesq:
 
     def _crop_velocity(self, velocity) -> YSlabMACVelocity:
         start = self.halo_width
+        y_lower_owned = velocity.y[:, start : start + self.local_y]
+        # A y-normal S4 tendency at the slab's upper duplicate face reaches
+        # one point beyond the three cell halos available to this rank.  The
+        # same physical face is the next rank's lower face, where the complete
+        # stencil is available.  Compute every shared face once and return it
+        # to its left neighbor instead of averaging two different stencils.
+        y_upper = lax.ppermute(
+            y_lower_owned[:, 0],
+            self.axis_name,
+            self._send_left(),
+        )
         return YSlabMACVelocity(
             velocity.x[:, start : start + self.local_y],
-            velocity.y[:, start : start + self.local_y + 1],
+            jnp.concatenate((y_lower_owned, y_upper[:, None]), axis=1),
             velocity.z[:, start : start + self.local_y],
         )
 
@@ -409,7 +424,7 @@ class YSlabAMDBoussinesq:
             ),
             axis=-1,
         )
-        tendency = self.momentum_kernel.cell_tendency(
+        tendency = self.momentum_kernel.face_tendency(
             padded_velocity,
             wall_stress=wall_stress,
         )
@@ -418,12 +433,21 @@ class YSlabAMDBoussinesq:
             self.axis_name,
         )
         plane_mean = plane_sum / (self.nx * self.ny)
-        tendency = tendency.at[..., 2].add(
+        buoyancy_cells = jnp.zeros(
+            padded_theta.shape + (3,),
+            dtype=padded_theta.dtype,
+        )
+        buoyancy_cells = buoyancy_cells.at[..., 2].set(
             self.gravity
             / self.reference_potential_temperature
             * (padded_theta - plane_mean[:, None, None])
         )
-        return self._crop_velocity(_cells_to_faces(tendency))
+        return self._crop_velocity(
+            _velocity_sum(
+                (1.0, tendency),
+                (1.0, _cells_to_faces(buoyancy_cells)),
+            )
+        )
 
     def _scalar_tendency_local(
         self,
@@ -471,7 +495,7 @@ class YSlabAMDBoussinesq:
             ),
             axis=-1,
         )
-        momentum = self.momentum_kernel.cell_tendency(
+        momentum = self.momentum_kernel.face_tendency(
             padded_velocity,
             cell_velocity=cells,
             gradient=velocity_gradient,
@@ -482,7 +506,8 @@ class YSlabAMDBoussinesq:
             self.axis_name,
         )
         plane_mean = plane_sum / (self.nx * self.ny)
-        momentum = momentum.at[..., 2].add(
+        buoyancy_cells = jnp.zeros(cells.shape, dtype=cells.dtype)
+        buoyancy_cells = buoyancy_cells.at[..., 2].set(
             self.gravity
             / self.reference_potential_temperature
             * (padded_theta - plane_mean[:, None, None])
@@ -508,7 +533,12 @@ class YSlabAMDBoussinesq:
         local_heat = self._crop_cell_rows(surface.heat_flux[None])[0]
         heat_mean = lax.pmean(jnp.mean(local_heat), self.axis_name)
         return (
-            self._crop_velocity(_cells_to_faces(momentum)),
+            self._crop_velocity(
+                _velocity_sum(
+                    (1.0, momentum),
+                    (1.0, _cells_to_faces(buoyancy_cells)),
+                )
+            ),
             scalar_advection + self._crop_cell_rows(scalar_sgs),
             heat_mean,
         )

@@ -13,6 +13,8 @@ from jaxwind.momentum import (
     LASDModel,
     NeutralABLConfig,
     NeutralABLMomentum,
+    staggered_kinetic_energy_work,
+    staggered_momentum,
 )
 from jaxwind.pressure import (
     BoundaryCondition,
@@ -21,6 +23,11 @@ from jaxwind.pressure import (
     MatrixFreePoissonSolver,
     PoissonBoundaryConditions,
     RectilinearGrid,
+    kep4_mac_divergence,
+)
+from jaxwind.pressure.kep4_operators import (
+    neumann_divergence_axis,
+    periodic_divergence_axis,
 )
 
 
@@ -213,18 +220,109 @@ def test_horizontal_skew_advection_has_zero_resolved_energy_work() -> None:
     assert float(jnp.abs(work)) < 2.0e-5
 
 
-def test_kep4_advection_has_zero_discrete_energy_work() -> None:
+def test_morinishi_s4_horizontal_transport_conserves_momentum_and_energy() -> None:
     solver = _solver(nx=8, ny=8, nz=8)
-    cells = jax.random.normal(
-        jax.random.PRNGKey(1994),
-        solver.grid.shape + (3,),
+    x_faces = jnp.asarray(solver.grid.x_faces, dtype=jnp.float32)
+    y_faces = jnp.asarray(solver.grid.y_faces, dtype=jnp.float32)
+    streamfunction = (
+        jnp.sin(2.0 * jnp.pi * y_faces / y_faces[-1])[:, None]
+        * jnp.sin(2.0 * jnp.pi * x_faces / x_faces[-1])[None, :]
+    )
+    u_plane = periodic_divergence_axis(streamfunction, solver.dy, 0)
+    v_plane = -periodic_divergence_axis(streamfunction, solver.dx, 1)
+    velocity = MACVelocity(
+        jnp.broadcast_to(u_plane[None], (8, 8, 9)),
+        jnp.broadcast_to(v_plane[None], (8, 9, 8)),
+        jnp.zeros((9, 8, 8), dtype=jnp.float32),
+    )
+    tendency = solver.kep4_advection(velocity)
+    divergence = kep4_mac_divergence(
+        velocity,
+        solver.grid,
+        solver.pressure_solver.operator.boundaries,
+    )
+    work = staggered_kinetic_energy_work(velocity, tendency)
+    scale = sum(
+        jnp.sum(jnp.abs(component * rate))
+        for component, rate in zip(velocity, tendency, strict=True)
+    )
+    momentum = staggered_momentum(tendency)
+    momentum_scale = jnp.stack(
+        (
+            jnp.sum(jnp.abs(tendency.x[..., :-1])),
+            jnp.sum(jnp.abs(tendency.y[:, :-1, :])),
+        )
     )
 
-    tendency = solver.kep4_advection(cells)
-    work = jnp.sum(cells * tendency)
-    scale = jnp.sum(jnp.abs(cells * tendency))
-
+    assert float(jnp.max(jnp.abs(divergence))) < 1.0e-5
     assert float(jnp.abs(work)) < 2.0e-6 * float(scale)
+    assert float(jnp.max(jnp.abs(momentum[:2]) / momentum_scale)) < 2.0e-6
+
+
+def test_morinishi_s4_wall_transport_conserves_discrete_energy() -> None:
+    solver = _solver(nx=8, ny=8, nz=8)
+    x_faces = jnp.asarray(solver.grid.x_faces, dtype=jnp.float32)
+    z_faces = jnp.asarray(solver.grid.z_faces, dtype=jnp.float32)
+    streamfunction = (
+        jnp.sin(jnp.pi * z_faces / z_faces[-1])[:, None]
+        * jnp.sin(2.0 * jnp.pi * x_faces / x_faces[-1])[None, :]
+    )
+    u_plane = neumann_divergence_axis(streamfunction, solver.dz, 0)
+    w_plane = -periodic_divergence_axis(streamfunction, solver.dx, 1)
+    velocity = MACVelocity(
+        jnp.broadcast_to(u_plane[:, None], (8, 8, 9)),
+        jnp.zeros((8, 9, 8), dtype=jnp.float32),
+        jnp.broadcast_to(w_plane[:, None], (9, 8, 8)),
+    )
+    tendency = solver.kep4_advection(velocity)
+    divergence = kep4_mac_divergence(
+        velocity,
+        solver.grid,
+        solver.pressure_solver.operator.boundaries,
+    )
+    work = staggered_kinetic_energy_work(velocity, tendency)
+    scale = sum(
+        jnp.sum(jnp.abs(component * rate))
+        for component, rate in zip(velocity, tendency, strict=True)
+    )
+
+    assert float(jnp.max(jnp.abs(divergence))) < 1.0e-5
+    assert float(jnp.abs(work)) < 2.0e-6 * float(scale)
+
+
+def test_morinishi_s4_has_fourth_order_accuracy() -> None:
+    errors = []
+    for count in (8, 16):
+        length = 2.0 * jnp.pi
+        spacing = float(length / count)
+        x_faces = jnp.arange(count, dtype=jnp.float32) * spacing
+        x_cells = (jnp.arange(count, dtype=jnp.float32) + 0.5) * spacing
+        y_faces = x_faces
+        y_cells = x_cells
+        u = jnp.sin(x_faces)[None, None, :] * jnp.cos(y_cells)[None, :, None]
+        u = jnp.broadcast_to(u, (2, count, count))
+        v = -jnp.cos(x_cells)[None, None, :] * jnp.sin(y_faces)[None, :, None]
+        v = jnp.broadcast_to(v, (2, count, count))
+        velocity = MACVelocity(
+            jnp.concatenate((u, u[..., :1]), axis=-1),
+            jnp.concatenate((v, v[:, :1, :]), axis=1),
+            jnp.zeros((3, count, count), dtype=jnp.float32),
+        )
+        tendency = neutral_abl.morinishi_s4_advection(
+            velocity,
+            dx=spacing,
+            dy=spacing,
+            dz=0.5,
+        )
+        exact_u = -jnp.sin(x_faces) * jnp.cos(x_faces)
+        exact_v = -jnp.sin(y_faces) * jnp.cos(y_faces)
+        error = jnp.maximum(
+            jnp.max(jnp.abs(tendency.x[0, :, :-1] - exact_u[None, :])),
+            jnp.max(jnp.abs(tendency.y[0, :-1, :] - exact_v[:, None])),
+        )
+        errors.append(float(error))
+
+    assert errors[0] / errors[1] > 12.0
 
 
 def test_ko6_is_conservative_and_energy_dissipative() -> None:

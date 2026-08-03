@@ -23,6 +23,7 @@ from jaxwind.pressure import (
 )
 
 from .lasd import LASDModel, LASDState, PhysicalSpaceLASD
+from .morinishi_s4 import morinishi_s4_advection
 from .physical_filter import physical_top_hat_filter
 from .surface_layer import NeutralLogWallLaw, SurfaceLayerFluxes
 
@@ -257,99 +258,6 @@ def _wall_normal_derivative_transpose(
     result = result.at[-2].add(-field[-1] / spacing)
     result = result.at[-1].add(field[-1] / spacing)
     return result
-
-
-def _wall_normal_d4(field: Array, spacing: float) -> Array:
-    """Fourth-order wall-normal derivative with one-sided wall closures."""
-    if field.shape[0] < 5:
-        return _wall_normal_derivative(field, spacing)
-    scale = 1.0 / (12.0 * spacing)
-    derivative = jnp.zeros_like(field)
-    derivative = derivative.at[0].set(
-        scale
-        * (
-            -25.0 * field[0]
-            + 48.0 * field[1]
-            - 36.0 * field[2]
-            + 16.0 * field[3]
-            - 3.0 * field[4]
-        )
-    )
-    derivative = derivative.at[1].set(
-        scale
-        * (
-            -3.0 * field[0]
-            - 10.0 * field[1]
-            + 18.0 * field[2]
-            - 6.0 * field[3]
-            + field[4]
-        )
-    )
-    derivative = derivative.at[2:-2].set(
-        scale * (field[:-4] - 8.0 * field[1:-3] + 8.0 * field[3:-1] - field[4:])
-    )
-    derivative = derivative.at[-2].set(
-        scale
-        * (
-            -field[-5]
-            + 6.0 * field[-4]
-            - 18.0 * field[-3]
-            + 10.0 * field[-2]
-            + 3.0 * field[-1]
-        )
-    )
-    return derivative.at[-1].set(
-        scale
-        * (
-            3.0 * field[-5]
-            - 16.0 * field[-4]
-            + 36.0 * field[-3]
-            - 48.0 * field[-2]
-            + 25.0 * field[-1]
-        )
-    )
-
-
-def _wall_normal_d4_transpose(field: Array, spacing: float) -> Array:
-    """Euclidean transpose of :func:`_wall_normal_d4`."""
-    if field.shape[0] < 5:
-        return _wall_normal_derivative_transpose(field, spacing)
-    scale = 1.0 / (12.0 * spacing)
-    result = jnp.zeros_like(field)
-    interior = field[2:-2]
-    result = result.at[:-4].add(interior)
-    result = result.at[1:-3].add(-8.0 * interior)
-    result = result.at[3:-1].add(8.0 * interior)
-    result = result.at[4:].add(-interior)
-    result = result.at[:5].add(
-        field[0]
-        * jnp.asarray(
-            (-25.0, 48.0, -36.0, 16.0, -3.0),
-            dtype=field.dtype,
-        )[(...,) + (None,) * (field.ndim - 1)]
-    )
-    result = result.at[:5].add(
-        field[1]
-        * jnp.asarray(
-            (-3.0, -10.0, 18.0, -6.0, 1.0),
-            dtype=field.dtype,
-        )[(...,) + (None,) * (field.ndim - 1)]
-    )
-    result = result.at[-5:].add(
-        field[-2]
-        * jnp.asarray(
-            (-1.0, 6.0, -18.0, 10.0, 3.0),
-            dtype=field.dtype,
-        )[(...,) + (None,) * (field.ndim - 1)]
-    )
-    result = result.at[-5:].add(
-        field[-1]
-        * jnp.asarray(
-            (3.0, -16.0, 36.0, -48.0, 25.0),
-            dtype=field.dtype,
-        )[(...,) + (None,) * (field.ndim - 1)]
-    )
-    return scale * result
 
 
 def _periodic_ko6(
@@ -648,12 +556,10 @@ class NeutralABLMomentum:
             lasd_coefficient: Array,
             wall_velocity: Array,
         ) -> MACVelocity:
-            return _cells_to_faces(
-                self.cell_tendency(
-                    velocity,
-                    lasd_coefficient,
-                    wall_velocity=wall_velocity,
-                )
+            return self.face_tendency(
+                velocity,
+                lasd_coefficient,
+                wall_velocity=wall_velocity,
             )
 
         self._compiled_tendency = jax.jit(compiled_tendency)
@@ -663,12 +569,10 @@ class NeutralABLMomentum:
             lasd_coefficient: Array,
             wall_stress: Array,
         ) -> MACVelocity:
-            return _cells_to_faces(
-                self.cell_tendency(
-                    velocity,
-                    lasd_coefficient,
-                    wall_stress=wall_stress,
-                )
+            return self.face_tendency(
+                velocity,
+                lasd_coefficient,
+                wall_stress=wall_stress,
             )
 
         self._compiled_tendency_with_wall_stress = jax.jit(
@@ -690,13 +594,16 @@ class NeutralABLMomentum:
                 gradient=gradient,
                 wall_velocity=wall_velocity,
             )
-            explicit = (
-                self.advection_tendency(velocity, cells)
-                + cross
+            nonadvective = (
+                cross
                 + self.forcing_tendency(cells)
+                + self.regularization_tendency(velocity, cells)
             )
-            explicit += self.regularization_tendency(velocity, cells)
-            return _cells_to_faces(explicit), _cells_to_faces(principal)
+            explicit = _velocity_sum(
+                (1.0, self.advection_face_tendency(velocity, cells)),
+                (1.0, _cells_to_faces(nonadvective)),
+            )
+            return explicit, _cells_to_faces(principal)
 
         def compiled_imex_initial_tendencies(
             velocity: MACVelocity,
@@ -1158,55 +1065,33 @@ class NeutralABLMomentum:
             tendency.append(-total)
         return jnp.stack(tendency, axis=-1)
 
-    def kep4_advection(self, cell_velocity: Array) -> Array:
-        """Return fourth-order skew/adjoint-paired kinetic-energy transport.
+    def kep4_advection(self, velocity: MACVelocity) -> MACVelocity:
+        """Return the fully conservative Morinishi ``Div-S4`` MAC flux."""
+        return morinishi_s4_advection(
+            velocity,
+            dx=self.dx,
+            dy=self.dy,
+            dz=self.dz,
+        )
 
-        The periodic operators are skew symmetric.  In the wall-normal
-        direction the advective and conservative halves use an explicit
-        derivative/negative-transpose pair, so their discrete velocity work
-        cancels even with one-sided wall closures.
-        """
-
-        def derivative(value: Array, direction: int) -> Array:
-            if direction == 0:
-                return _periodic_d4(value, self.dx, -1)
-            if direction == 1:
-                return _periodic_d4(value, self.dy, -2)
-            return _wall_normal_d4(value, self.dz)
-
-        def negative_transpose(value: Array, direction: int) -> Array:
-            if direction == 0:
-                return _periodic_d4(value, self.dx, -1)
-            if direction == 1:
-                return _periodic_d4(value, self.dy, -2)
-            return -_wall_normal_d4_transpose(value, self.dz)
-
-        tendency = []
-        for component in range(3):
-            transported = cell_velocity[..., component]
-            total = jnp.zeros_like(transported)
-            for direction in range(3):
-                advector = cell_velocity[..., direction]
-                total += 0.5 * (
-                    advector * derivative(transported, direction)
-                    + negative_transpose(
-                        advector * transported,
-                        direction,
-                    )
-                )
-            tendency.append(-total)
-        return jnp.stack(tendency, axis=-1)
+    def advection_face_tendency(
+        self,
+        velocity: MACVelocity,
+        cell_velocity: Array | None = None,
+    ) -> MACVelocity:
+        """Dispatch nondissipative transport on the native MAC locations."""
+        cells = _cell_velocity(velocity) if cell_velocity is None else cell_velocity
+        if self.config.advection_scheme == "kep4":
+            return self.kep4_advection(velocity)
+        return _cells_to_faces(self.conservative_advection(velocity, cells))
 
     def advection_tendency(
         self,
         velocity: MACVelocity,
         cell_velocity: Array | None = None,
     ) -> Array:
-        """Dispatch the configured nondissipative momentum transport."""
-        cells = _cell_velocity(velocity) if cell_velocity is None else cell_velocity
-        if self.config.advection_scheme == "kep4":
-            return self.kep4_advection(cells)
-        return self.conservative_advection(velocity, cells)
+        """Return a cell-centred observation of the native MAC transport."""
+        return _cell_velocity(self.advection_face_tendency(velocity, cell_velocity))
 
     def conservative_advection(
         self,
@@ -1608,9 +1493,8 @@ class NeutralABLMomentum:
         cells = _cell_velocity(velocity) if cell_velocity is None else cell_velocity
         if gradient is None:
             gradient = self.velocity_gradient(cells)
-        tendency = (
-            self.advection_tendency(velocity, cells)
-            + self.sgs_tendency(
+        nonadvective = (
+            self.sgs_tendency(
                 cells,
                 lasd_coefficient,
                 gradient=gradient,
@@ -1618,8 +1502,39 @@ class NeutralABLMomentum:
                 wall_stress=wall_stress,
             )
             + self.forcing_tendency(cells)
+            + self.regularization_tendency(velocity, cells)
         )
-        return tendency + self.regularization_tendency(velocity, cells)
+        return self.advection_tendency(velocity, cells) + nonadvective
+
+    def face_tendency(
+        self,
+        velocity: MACVelocity,
+        lasd_coefficient: Array | None = None,
+        *,
+        cell_velocity: Array | None = None,
+        gradient: Array | None = None,
+        wall_velocity: Array | None = None,
+        wall_stress: Array | None = None,
+    ) -> MACVelocity:
+        """Return the complete momentum RHS on its native MAC locations."""
+        cells = _cell_velocity(velocity) if cell_velocity is None else cell_velocity
+        if gradient is None:
+            gradient = self.velocity_gradient(cells)
+        nonadvective = (
+            self.sgs_tendency(
+                cells,
+                lasd_coefficient,
+                gradient=gradient,
+                wall_velocity=wall_velocity,
+                wall_stress=wall_stress,
+            )
+            + self.forcing_tendency(cells)
+            + self.regularization_tendency(velocity, cells)
+        )
+        return _velocity_sum(
+            (1.0, self.advection_face_tendency(velocity, cells)),
+            (1.0, _cells_to_faces(nonadvective)),
+        )
 
     def tendency(self, velocity: MACVelocity, _time: float) -> MACVelocity:
         return self._compiled_tendency(

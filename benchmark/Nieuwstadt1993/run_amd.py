@@ -29,7 +29,7 @@ INITIAL_ZI_FRACTION = 0.844
 STABLE_THETA_GRADIENT = 0.003
 ROUGHNESS_LENGTH = 0.16
 DOMAIN = (6400.0, 6400.0, 2400.0)
-CHECKPOINT_SCHEMA = "jaxwind.nieuwstadt1993.kep4-pressure-amd.v2"
+CHECKPOINT_SCHEMA = "jaxwind.nieuwstadt1993.morinishi-s4-pressure-amd.v3"
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:

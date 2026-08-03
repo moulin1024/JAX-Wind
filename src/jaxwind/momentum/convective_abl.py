@@ -392,7 +392,7 @@ class AMDBoussinesq:
             time,
         )
         wall_stress = self._momentum_wall_stress(fluxes)
-        momentum_cells = self.momentum.cell_tendency(
+        momentum_faces = self.momentum.face_tendency(
             velocity,
             self.momentum._active_lasd_coefficient(velocity),
             cell_velocity=cells,
@@ -400,7 +400,7 @@ class AMDBoussinesq:
             wall_stress=wall_stress,
         )
         momentum = _velocity_sum(
-            (1.0, _cells_to_faces(momentum_cells)),
+            (1.0, momentum_faces),
             (1.0, self.buoyancy_tendency(potential_temperature)),
         )
         scalar_advection = self.scalar.advective_tendency(

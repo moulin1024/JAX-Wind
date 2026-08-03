@@ -8,15 +8,15 @@ wind `(8, 0) m/s`, Coriolis parameter `1.39e-4 s^-1`, `265 K` mixed layer to
 rate of `0.25 K/h`. Momentum and heat use the coupled stable Monin--Obukhov
 wall law with `z0 = z0h = 0.1 m`.
 
-The default transport path is fourth-order skew/adjoint-paired KEP momentum,
-AMD, conservative KO6 cutoff damping, and a complete MP5 potential-temperature
-flux. Pressure uses the matching fourth-order `D4=-G4.T` constraint and
+The default transport path is fully conservative Morinishi staggered S4
+momentum, AMD, conservative KO6 cutoff damping, and a complete MP5
+potential-temperature flux. Pressure uses the matching fourth-order
+`D4=-G4.T` constraint and
 `-D4G4` Poisson operator, with the compact second-order GMG retained only as a
 preconditioner. The former second-order centered-plus-MP5 path remains available with
 `--momentum-advection centered2 --momentum-regularization mp5
 --scalar-advection centered_mp5 --pressure-discretization centered2`. The KEP4
-operator identities and remaining conservation qualification are recorded in
-operator identities are recorded in
+operator identities and conservation qualification are recorded in
 `doc/design/decisions/0012-kep4-ko6-mp5-transport.md`.
 
 The canonical public low-resolution comparison is `32³` (`12.5 m`) for nine

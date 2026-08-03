@@ -17,6 +17,11 @@ from .neutral_abl import (
     WallModelState,
 )
 from .lasd import LASDModel, LASDState, PhysicalSpaceLASD
+from .morinishi_s4 import (
+    morinishi_s4_advection,
+    staggered_kinetic_energy_work,
+    staggered_momentum,
+)
 from .physical_filter import (
     physical_top_hat_filter,
     physical_top_hat_filter_pair,
@@ -40,6 +45,7 @@ __all__ = [
     "LASDModel",
     "LASDState",
     "MoninObukhovWallLaw",
+    "morinishi_s4_advection",
     "NeutralABLConfig",
     "NeutralABLDiagnostic",
     "NeutralABLMomentum",
@@ -47,6 +53,8 @@ __all__ = [
     "PhysicalSpaceLASD",
     "WallModelState",
     "SurfaceLayerFluxes",
+    "staggered_kinetic_energy_work",
+    "staggered_momentum",
     "physical_top_hat_filter",
     "physical_top_hat_filter_pair",
     "top_hat_stencil",

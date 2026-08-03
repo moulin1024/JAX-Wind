@@ -475,14 +475,14 @@ def main() -> None:
         step = 0
     else:
         checkpoint = np.load(args.restart)
-        if args.passive_scalar and (
+        if (
             "checkpoint_schema" not in checkpoint
             or str(checkpoint["checkpoint_schema"])
-            != "jaxwind.andren1994.kep4-pressure-ko6-mp5.v4"
+            != "jaxwind.andren1994.morinishi-s4-pressure-ko6-mp5.v5"
         ):
             raise SystemExit(
-                "restart predates passive-scalar/complete-SGS statistics; "
-                "a true paper comparison must start a fresh run"
+                "restart predates the Morinishi staggered S4 transport; "
+                "start a fresh run with the current discretization"
             )
         checkpoint_sgs = (
             str(checkpoint["sgs_model"]) if "sgs_model" in checkpoint else "lasd"
@@ -779,7 +779,7 @@ def main() -> None:
                 for _ in amd_diagnostics.BUDGET_NAMES
             )
         payload = {
-            "checkpoint_schema": "jaxwind.andren1994.kep4-pressure-ko6-mp5.v4",
+            "checkpoint_schema": "jaxwind.andren1994.morinishi-s4-pressure-ko6-mp5.v5",
             "velocity_x": np.asarray(velocity.x),
             "velocity_y": np.asarray(velocity.y),
             "velocity_z": np.asarray(velocity.z),
@@ -1178,7 +1178,7 @@ def main() -> None:
             )
 
     summary = {
-        "schema": "jaxwind.andren1994.kep4-pressure-amd-passive-scalar.v3",
+        "schema": "jaxwind.andren1994.morinishi-s4-pressure-amd-scalar.v4",
         "reference": "Andren et al. (1994), QJRMS 120, 1457-1484",
         "backend": jax.default_backend(),
         "dtype": str(dtype),

@@ -395,7 +395,7 @@ def save_outputs(
     )
     mixed = z <= 0.8 * zi_mean
     summary: dict[str, float | str] = {
-        "schema": "jaxwind.nieuwstadt1993.kep4-pressure-amd.v2",
+        "schema": "jaxwind.nieuwstadt1993.morinishi-s4-pressure-amd.v3",
         "solver": "non-spectral MAC + matrix-free GMG/PCG",
         "sgs_model": "AMD",
         "sample_count": float(len(selected)),

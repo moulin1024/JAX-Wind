@@ -25,9 +25,11 @@ def main() -> None:
     )
 
     from benchmark.GABLS1.distributed_solver import YSlabAMDBoussinesq
+    from jaxwind.momentum import morinishi_s4_advection
     from jaxwind.pressure import (
         BoundaryCondition,
         GMGConfig,
+        MACVelocity,
         PCGConfig,
         PoissonBoundaryConditions,
         RectilinearGrid,
@@ -98,6 +100,77 @@ def main() -> None:
         coupling_integrator="coupled-ssprk3",
         projection_method="fpj2",
     )
+    velocity_keys = jax.random.split(jax.random.PRNGKey(1998), 3)
+    global_u = jax.random.normal(
+        velocity_keys[0],
+        (count, count, count + 1),
+        dtype=jnp.float32,
+    )
+    global_u = global_u.at[..., -1].set(global_u[..., 0])
+    global_v = jax.random.normal(
+        velocity_keys[1],
+        (count, count + 1, count),
+        dtype=jnp.float32,
+    )
+    global_v = global_v.at[:, -1, :].set(global_v[:, 0, :])
+    global_w = jax.random.normal(
+        velocity_keys[2],
+        (count + 1, count, count),
+        dtype=jnp.float32,
+    )
+    global_w = global_w.at[0].set(0.0).at[-1].set(0.0)
+    global_velocity = MACVelocity(global_u, global_v, global_w)
+    local_velocity = YSlabMACVelocity(
+        global_u[:, start : start + local_y, :][None],
+        global_v[:, start : start + local_y + 1, :][None],
+        global_w[:, start : start + local_y, :][None],
+    )
+
+    def local_s4_transport(local):
+        padded = coupled._pad_velocity(local)
+        tendency = coupled.momentum_kernel.kep4_advection(padded)
+        return coupled._crop_velocity(tendency)
+
+    mapped_s4_transport = jax.pmap(
+        local_s4_transport,
+        **pressure.pmap_options,
+    )
+    local_s4 = mapped_s4_transport(local_velocity)
+    s4_parts = communicator.gather(
+        tuple(np.asarray(component[0]) for component in local_s4),
+        root=0,
+    )
+    if rank == 0:
+        distributed_s4 = MACVelocity(
+            np.concatenate(tuple(part[0] for part in s4_parts), axis=1),
+            np.concatenate(
+                tuple(part[1][:, :-1, :] for part in s4_parts)
+                + (s4_parts[-1][1][:, -1:, :],),
+                axis=1,
+            ),
+            np.concatenate(tuple(part[2] for part in s4_parts), axis=1),
+        )
+        reference_s4 = morinishi_s4_advection(
+            global_velocity,
+            dx=coupled.dx,
+            dy=coupled.dy,
+            dz=coupled.dz,
+        )
+        momentum_operator_difference = max(
+            float(np.max(np.abs(actual - np.asarray(reference))))
+            for actual, reference in zip(
+                distributed_s4,
+                reference_s4,
+                strict=True,
+            )
+        )
+        if momentum_operator_difference > 2.0e-6:
+            raise AssertionError(
+                "distributed Morinishi S4 does not match the serial operator: "
+                f"{momentum_operator_difference:.3e}"
+            )
+    else:
+        momentum_operator_difference = None
     z = (jnp.arange(count, dtype=jnp.float32) + 0.5) * (400.0 / count)
     theta_profile = jnp.where(z <= 100.0, 265.0, 265.0 + 0.01 * (z - 100.0))
     random = jax.random.uniform(
@@ -161,6 +234,7 @@ def main() -> None:
                     "projection_calls": projection_calls,
                     "fpj2_history_count": coupled.fpj2_state.history_count,
                     "operator_difference": operator_difference,
+                    "momentum_operator_difference": momentum_operator_difference,
                 }
             ),
             flush=True,

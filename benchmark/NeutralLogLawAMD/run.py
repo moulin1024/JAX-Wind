@@ -13,6 +13,9 @@ from pathlib import Path
 import time
 
 
+TRANSPORT_SCHEMA = "jaxwind.morinishi-s4-pressure.v1"
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--nx", type=int, default=16)
@@ -425,6 +428,13 @@ def main() -> None:
         )
         if checkpoint_pressure_discretization != args.pressure_discretization:
             raise SystemExit("restart pressure discretization does not match")
+        checkpoint_transport_schema = (
+            str(checkpoint["transport_schema"])
+            if "transport_schema" in checkpoint
+            else "jaxwind.legacy-cell-kep4"
+        )
+        if checkpoint_transport_schema != TRANSPORT_SCHEMA:
+            raise SystemExit("restart momentum transport discretization does not match")
         checkpoint_matching_level = int(
             checkpoint["wall_matching_level"]
             if "wall_matching_level" in checkpoint
@@ -619,6 +629,7 @@ def main() -> None:
             "sample_start_step": sample_start_step,
             "sample_count": sample_count,
             "sgs_model": args.sgs,
+            "transport_schema": TRANSPORT_SCHEMA,
             "pressure_discretization": args.pressure_discretization,
             "elapsed_seconds": (elapsed_before_run + time.perf_counter() - started),
             "compilation_seconds": (
@@ -932,6 +943,7 @@ def main() -> None:
         "pressure_max_iterations": args.pressure_max_iterations,
         "krylov_execution": args.krylov_execution,
         "projection_method": args.projection_method,
+        "transport_schema": TRANSPORT_SCHEMA,
         "pressure_discretization": args.pressure_discretization,
         "flow_frames": len(flow_frame_steps),
         "flow_frame_start_step": (

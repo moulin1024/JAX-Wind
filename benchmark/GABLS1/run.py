@@ -26,7 +26,7 @@ from benchmark.GABLS1 import diagnostics  # noqa: E402
 
 
 HERE = Path(__file__).resolve().parent
-CHECKPOINT_SCHEMA = "jaxwind.gabls1.kep4-pressure-ko6-mp5.v3"
+CHECKPOINT_SCHEMA = "jaxwind.gabls1.morinishi-s4-pressure-ko6-mp5.v4"
 
 
 def _format_duration(seconds: float) -> str:

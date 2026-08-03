@@ -11,8 +11,8 @@ python benchmark/Andren1994/run.py \
   --output-dir benchmark_results/andren1994_amd_40cubed_complete
 ```
 
-The current runner defaults to fourth-order skew/adjoint-paired KEP momentum,
-conservative KO6 cutoff damping, a matrix-free symmetric-GMG/PCG pressure
+The current runner defaults to fully conservative Morinishi staggered S4
+momentum, conservative KO6 cutoff damping, a matrix-free symmetric-GMG/PCG pressure
 solver with a compatible fourth-order `D4/G4` projection, and filter-free AMD.
 The Krylov operator is exact `-D4G4`; the compact second-order GMG is only its
 preconditioner. The AMD run also advances the paper's passive

@@ -1,4 +1,4 @@
-# KEP4/KO6 momentum and complete MP5 scalar transport
+# Morinishi S4/KO6 momentum and complete MP5 scalar transport
 
 ## Status
 
@@ -8,7 +8,7 @@ Experimental implementation on `feature/kep4-ko6-mp5`.
 
 The non-spectral ABL runners default to the following transport split:
 
-- momentum: fourth-order skew/adjoint-paired KEP transport;
+- momentum: fully conservative Morinishi staggered `Div-S4` transport;
 - pressure: compatible fourth-order staggered `D4`, `G4`, and `-D4 G4`;
 - momentum grid-cutoff regularization: conservative KO6;
 - momentum SGS: AMD or physical-space LASD;
@@ -20,14 +20,33 @@ The non-spectral ABL runners default to the following transport split:
 The legacy second-order conservative MAC transport and additive MP5
 regularization remain selectable for controlled comparisons.
 
-## Energy properties
+## Momentum and energy properties
 
-The KEP operator pairs every derivative with its negative Euclidean
-transpose.  Its resolved velocity work therefore vanishes to roundoff:
+The KEP operator implements Morinishi et al. (1998), Eq. (101), directly on
+the three native MAC velocity grids. For each momentum component and transport
+direction it combines one- and three-mesh fluxes,
 
 ```text
-<u, C_kep4(u)> = 0.
+C_S4 = (9/8) delta_1(a_S4 * mean_1(u))
+     - (1/8) delta_3(a_S4 * mean_3(u)),
+a_S4 = (9/8) mean_1(a) - (1/8) mean_3(a),
 ```
+
+where the convecting velocity is first interpolated to the transported
+component's staggered control-volume face. This is the conservative
+`Div-S4`, not a collocated skew approximation. It conserves each periodic
+momentum component a priori and, when the matching S4 continuity constraint
+is satisfied, its resolved velocity work vanishes to roundoff:
+
+```text
+<U, C_S4(U)> = 0  if  Cont-S4(U) = 0.
+```
+
+At the rigid lower and upper boundaries, tangential velocity, normal velocity,
+and three-mesh momentum-flux ghosts use the uniform-grid forms of Morinishi
+Eqs. (146)--(151). The implementation is regression-tested with both a fully
+periodic horizontal streamfunction and an x-z streamfunction satisfying zero
+wall-normal velocity.
 
 KO6 is assembled from a third-difference operator `B` and a nonnegative local
 coefficient:
@@ -60,10 +79,9 @@ operator is symmetric positive semidefinite and
 annihilates constants. Krylov iterations apply `A4` exactly; the compact
 second-order symmetric GMG V-cycle is used only as a preconditioner.
 
-This removes the former pressure/continuity mismatch. The momentum transport
-is still a skew/adjoint-paired cell-velocity operator rather than the complete
-conservative Morinishi staggered flux construction, so it is not advertised
-as that full S4 method. The legacy second-order compatible MAC path remains
+This removes the former pressure/continuity mismatch: momentum fluxes,
+continuity, pressure gradient, and the Poisson complex now use the same S4
+staggered geometry. The legacy second-order compatible MAC path remains
 selectable for controlled comparisons.
 
 ## Scalar qualification
@@ -77,8 +95,8 @@ boundedness checks at the selected CFL.
 
 ## Parallel layout
 
-KEP4 needs two neighboring rows; KO6 and MP5 need three.  The y-slab path
-therefore retains `halo_width = 3`.  Velocity and scalar boundary rows are
+Morinishi S4, KO6, and MP5 each reach at most three neighboring rows. The
+y-slab path therefore retains `halo_width = 3`. Velocity and scalar boundary rows are
 flattened into one payload, exchanged once in each direction, and unpacked
 before the fused stage tendency.  The complete vertical column stays local.
 
@@ -111,5 +129,12 @@ decomposition instead of thinner y slabs.
 --fpj2-timestep-ratio-limit FLOAT
 ```
 
-The new defaults are KEP4 momentum, KEP4 pressure, KO6 momentum
+The new defaults are Morinishi S4 momentum, KEP4 pressure, KO6 momentum
 regularization, and complete MP5 scalar transport.
+
+## Primary reference
+
+Y. Morinishi, T. S. Lund, O. V. Vasilyev, and P. Moin, “Fully Conservative
+Higher Order Finite Difference Schemes for Incompressible Flow,” *Journal of
+Computational Physics* 143 (1998), 90–124,
+<https://doi.org/10.1006/jcph.1998.5962>.
