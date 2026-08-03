@@ -42,6 +42,43 @@ INITIAL_TKE = (
 )
 
 
+def _logarithmic_shear(first, second, z):
+    """Differentiate two mean profiles with a logarithm-exact estimator.
+
+    A centred difference of a ``1/z`` shear carries a large geometric bias on the
+    first few levels: on a uniform mesh an exact logarithmic profile returns
+    ``0.549, 1.207, 1.059, 1.029`` for ``kappa z dU/dz / u*`` instead of one, so
+    the near-wall part of any similarity plot is dominated by the estimator
+    rather than by the flow.  Dividing the neighbour difference by
+    ``z ln(z_up / z_down)`` instead of by ``z_up - z_down`` returns ``A / z``
+    exactly for ``U = A ln z`` at every level, including the one-sided ends.
+    """
+
+    import numpy as np
+
+    z = np.asarray(z, dtype=float)
+    below = np.r_[z[0], z[:-1]]
+    above = np.r_[z[1:], z[-1]]
+    span = z * np.log(above / below)
+    shears = []
+    for values in (first, second):
+        values = np.asarray(values, dtype=float)
+        difference = np.r_[values[1:], values[-1]] - np.r_[values[0], values[:-1]]
+        shears.append(difference / span)
+    return shears[0], shears[1]
+
+
+def _cells_from_faces(*face_profiles):
+    """Average wall-normal face profiles onto the cells between them."""
+
+    import numpy as np
+
+    return tuple(
+        0.5 * (np.asarray(profile)[:-1] + np.asarray(profile)[1:])
+        for profile in face_profiles
+    )
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--end-ft", type=float, default=0.1)
@@ -866,22 +903,40 @@ def main() -> None:
     sgs_vw = averaged["sgs_vw"]
     total_uw = resolved_uw + sgs_uw
     total_vw = resolved_vw + sgs_vw
-    z = (np.arange(nz) + 0.5) * height / nz
+    z_faces = np.asarray(solver.grid.z_faces)
+    z = np.asarray(solver.grid.z_centers) - z_faces[0]
+    z_face_height = averaged["face_height_m"]
+    # Total flux on the faces the traction is applied to.  Its wall value is the
+    # imposed surface stress by construction, which the cell-centred columns
+    # cannot reproduce; see amd_diagnostics.PROFILE_NAMES.
+    total_uw_face = averaged["resolved_uw_face"] + averaged["sgs_uw_face"]
+    total_vw_face = averaged["resolved_vw_face"] + averaged["sgs_vw_face"]
     selected_history = [
         row for row in history_rows if row["time_seconds"] >= sample_start
     ] or [history_rows[-1]]
     ustar = float(np.mean([row["ustar"] for row in selected_history]))
     normalized_height = z * coriolis / ustar
-    phi_m = (
-        0.4
-        * z
-        / ustar
-        * np.hypot(np.gradient(mean[:, 0], z), np.gradient(mean[:, 1], z))
+    du_dz, dv_dz = _logarithmic_shear(mean[:, 0], mean[:, 1], z)
+    phi_m = 0.4 * z * np.hypot(du_dz, dv_dz) / ustar
+    # Monin-Obukhov similarity is a local-scaling statement, so the surface
+    # friction velocity is only the right normalization inside the
+    # constant-flux layer.  Above it the stress decays and the wind vector
+    # turns, and only the locally scaled shear can approach unity.
+    local_ustar = np.sqrt(
+        np.maximum(np.hypot(*_cells_from_faces(total_uw_face, total_vw_face)), 0.0)
     )
-    phi_m[0] = 1.0
+    phi_m_local = np.where(
+        local_ustar > 0.0,
+        0.4 * z * np.hypot(du_dz, dv_dz) / np.maximum(local_ustar, 1.0e-30),
+        np.nan,
+    )
     cstar = args.scalar_surface_flux / ustar
-    phi_c = -0.4 * z * np.gradient(averaged["scalar"], z) / cstar
-    phi_c[0] = 1.0
+    scalar_shear, _ = _logarithmic_shear(
+        averaged["scalar"],
+        np.zeros_like(averaged["scalar"]),
+        z,
+    )
+    phi_c = -0.4 * z * scalar_shear / cstar
     resolved_tke = averaged["resolved_tke"]
     sgs_tke = averaged["sgs_tke"]
     component_sgs_variance = (2.0 / 3.0) * sgs_tke
@@ -907,6 +962,7 @@ def main() -> None:
         "w_m_s": mean[:, 2],
         "scalar": averaged["scalar"],
         "phi_m": phi_m,
+        "phi_m_local": phi_m_local,
         "phi_c": phi_c,
         "resolved_u_variance_over_ustar2": variances[:, 0] / ustar2,
         "resolved_v_variance_over_ustar2": variances[:, 1] / ustar2,
@@ -930,6 +986,12 @@ def main() -> None:
         "sgs_vw_over_ustar2": sgs_vw / ustar2,
         "total_uw_over_ustar2": total_uw / ustar2,
         "total_vw_over_ustar2": total_vw / ustar2,
+        "face_total_uw_at_cells_over_ustar2": (
+            _cells_from_faces(total_uw_face)[0] / ustar2
+        ),
+        "face_total_vw_at_cells_over_ustar2": (
+            _cells_from_faces(total_vw_face)[0] / ustar2
+        ),
         "resolved_scalar_variance_over_cstar2": (
             averaged["resolved_scalar_variance"] / cstar**2
         ),
@@ -980,6 +1042,30 @@ def main() -> None:
             header=",".join(normalized_columns),
             comments="",
         )
+
+    # Face profiles carry one more level than the cell profiles and are the only
+    # place the surface stress closes exactly, so they are written separately
+    # rather than interpolated into the cell table.
+    face_columns = {
+        "z_face_m": z_face_height,
+        "z_face_f_over_ustar": z_face_height * coriolis / ustar,
+        "resolved_uw_face_over_ustar2": averaged["resolved_uw_face"] / ustar2,
+        "resolved_vw_face_over_ustar2": averaged["resolved_vw_face"] / ustar2,
+        "sgs_uw_face_over_ustar2": averaged["sgs_uw_face"] / ustar2,
+        "sgs_vw_face_over_ustar2": averaged["sgs_vw_face"] / ustar2,
+        "total_uw_face_over_ustar2": total_uw_face / ustar2,
+        "total_vw_face_over_ustar2": total_vw_face / ustar2,
+        "total_stress_face_over_ustar2": (
+            np.hypot(total_uw_face, total_vw_face) / ustar2
+        ),
+    }
+    np.savetxt(
+        args.output_dir / "face_stress_profiles.csv",
+        np.column_stack(tuple(face_columns.values())),
+        delimiter=",",
+        header=",".join(face_columns),
+        comments="",
+    )
 
     profile_path = args.output_dir / "andren1994_profiles.csv"
     with profile_path.open("w", newline="", encoding="utf-8") as stream:
@@ -1064,7 +1150,7 @@ def main() -> None:
             ustar=ustar,
             scalar_surface_flux=args.scalar_surface_flux,
             coriolis=coriolis,
-            dz=height / nz,
+            heights=z,
         )
         amd_diagnostics.write_budget(
             args.output_dir / "fig12_budget_profiles.csv",

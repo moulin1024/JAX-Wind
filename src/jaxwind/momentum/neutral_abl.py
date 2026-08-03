@@ -1977,6 +1977,18 @@ class NeutralABLMomentum:
         gradient = gradient.at[0, ..., 0, 2].set(wall_shear * direction[..., 0])
         return gradient.at[0, ..., 1, 2].set(wall_shear * direction[..., 1])
 
+    def cell_length_scale(self, dtype=None) -> Array:
+        """Return the local closure length ``(dx dy dz)^(1/3)`` of every cell.
+
+        Diagnostics need the same length the closure uses, and on a stretched
+        grid that varies cell by cell, so it is published here rather than
+        reconstructed from a nominal spacing by each caller.
+        """
+
+        return jnp.prod(_cell_length_scales(self.metrics, dtype), axis=-1) ** (
+            1.0 / 3.0
+        )
+
     def diagnostic_sgs_tke(
         self,
         cell_velocity: Array,
@@ -2014,10 +2026,7 @@ class NeutralABLMomentum:
                 viscosity - self.config.amd.molecular_viscosity,
                 0.0,
             )
-        delta = jnp.prod(
-            _cell_length_scales(self.metrics, viscosity.dtype),
-            axis=-1,
-        ) ** (1.0 / 3.0)
+        delta = self.cell_length_scale(viscosity.dtype)
         return jnp.maximum(
             viscosity * strain_magnitude_squared * delta / dissipation_coefficient,
             0.0,

@@ -293,12 +293,21 @@ def _profile_data(results: Path, statistics_ustar: float) -> dict[str, np.ndarra
     dimensional = np.genfromtxt(dimensional_path, delimiter=",", names=True)
     height = np.asarray(profile["z_f_over_ustar"])
     z = np.asarray(dimensional["z_m"])
-    du_dz = np.gradient(dimensional["u_m_s"], z)
-    dv_dz = np.gradient(dimensional["v_m_s"], z)
+    # A centred difference of a 1/z shear is biased by tens of per cent on the
+    # first levels, so the shear uses the logarithm-exact estimator.  Nothing is
+    # asserted at the wall: the first point is the measurement.
+    below = np.r_[z[0], z[:-1]]
+    above = np.r_[z[1:], z[-1]]
+    span = z * np.log(above / below)
+    du_dz = (
+        np.r_[dimensional["u_m_s"][1:], dimensional["u_m_s"][-1]]
+        - np.r_[dimensional["u_m_s"][0], dimensional["u_m_s"][:-1]]
+    ) / span
+    dv_dz = (
+        np.r_[dimensional["v_m_s"][1:], dimensional["v_m_s"][-1]]
+        - np.r_[dimensional["v_m_s"][0], dimensional["v_m_s"][:-1]]
+    ) / span
     phi_m = 0.4 * z * np.hypot(du_dz, dv_dz) / statistics_ustar
-    # The first cell-centred one-sided difference does not see the wall.  The imposed
-    # neutral log wall gives kappa*z*|dU/dz|/u*=1 exactly at that boundary point.
-    phi_m[0] = 1.0
     names = set(profile.dtype.names or ())
     has_total = "total_u_variance_over_ustar2" in names
     data = {

@@ -62,3 +62,44 @@ def test_paper_overlay_reads_current_amd_profile_schema(tmp_path) -> None:
     assert np.allclose(profile["phi_m"], (0.9, 1.1))
     assert profile["phi_c"] is None
     assert _history_data(tmp_path, statistics_ustar=2.0) is None
+
+
+def test_logarithmic_shear_is_exact_on_a_log_profile_at_every_level() -> None:
+    """A centred difference is not, and the bias is largest where it matters.
+
+    Monin-Obukhov similarity is read off the first few levels, where a centred
+    difference of a ``1/z`` shear is biased by tens of per cent purely from the
+    grid.  This estimator has to be exact there or the near-wall part of the
+    plot describes the operator instead of the flow.
+    """
+
+    kappa, ustar, roughness = 0.4, 0.35, 0.1
+    for faces in (
+        np.linspace(0.0, 1500.0, 41),
+        1500.0 * np.expm1(2.5 * np.linspace(0.0, 1.0, 41)) / np.expm1(2.5),
+    ):
+        z = 0.5 * (faces[:-1] + faces[1:])
+        u = (ustar / kappa) * np.log(z / roughness)
+        v = np.zeros_like(u)
+
+        du_dz, dv_dz = run._logarithmic_shear(u, v, z)
+        phi_m = kappa * z * np.hypot(du_dz, dv_dz) / ustar
+
+        assert np.allclose(phi_m, 1.0, rtol=1.0e-12)
+        assert np.allclose(dv_dz, 0.0)
+
+    # The estimator that was replaced, for the record: it reads 0.549 at the
+    # first level and 1.207 at the second on a uniform mesh.
+    z = 0.5 * (np.linspace(0.0, 1500.0, 41)[:-1] + np.linspace(0.0, 1500.0, 41)[1:])
+    u = (ustar / kappa) * np.log(z / roughness)
+    centred = kappa * z * np.gradient(u, z) / ustar
+    assert not np.isclose(centred[0], 1.0, rtol=0.1)
+    assert not np.isclose(centred[1], 1.0, rtol=0.1)
+
+
+def test_cells_from_faces_averages_onto_the_enclosed_cells() -> None:
+    faces = np.array((1.0, 3.0, 5.0, 9.0))
+
+    (cells,) = run._cells_from_faces(faces)
+
+    assert np.allclose(cells, (2.0, 4.0, 7.0))

@@ -41,6 +41,17 @@ PROFILE_NAMES = (
     "wp_modified_pressure",
     "modified_pressure_std",
     "resolved_tke_sgs_dissipation",
+    # Total momentum flux on the wall-normal faces.  Both parts are exact
+    # there: the staggered vertical velocity sits on the face and the modeled
+    # traction is applied to it, so the wall face carries the imposed surface
+    # stress by construction.  A cell-centred average does not, because the
+    # resolved flux is halved by interpolating a vertical velocity that
+    # vanishes at the wall while the traction is only half weighted.
+    "resolved_uw_face",
+    "resolved_vw_face",
+    "sgs_uw_face",
+    "sgs_vw_face",
+    "face_height_m",
     "spectrum_mode",
     "spectrum_u",
     "spectrum_v",
@@ -71,6 +82,22 @@ def _plane(value):
 
 def _faces_to_cells(faces):
     return 0.5 * (faces[:-1] + faces[1:])
+
+
+def _cells_to_faces(values, centers, faces):
+    """Interpolate cell values onto the wall-normal faces.
+
+    Interior faces use the physical centre distances so the estimate holds on a
+    stretched mesh.  The two wall faces take the adjacent cell value, which is
+    immaterial for a resolved flux because the vertical velocity vanishes
+    there.
+    """
+
+    gap = centers[1:] - centers[:-1]
+    lower = ((centers[1:] - faces[1:-1]) / gap)[:, None, None]
+    upper = ((faces[1:-1] - centers[:-1]) / gap)[:, None, None]
+    interior = lower * values[:-1] + upper * values[1:]
+    return jnp.concatenate((values[:1], interior, values[-1:]), axis=0)
 
 
 def _spectrum(value, level: int):
@@ -105,8 +132,10 @@ def build_profile_kernel(
 ):
     """Build one compiled, non-mutating paper-statistics observer."""
 
-    dz = solver.dz
-    delta = (solver.dx * solver.dy * solver.dz) ** (1.0 / 3.0)
+    z_centers = solver.z_centers
+    z_faces = solver.z_metric.faces
+    dz_center = solver.dz_center[:, None, None]
+    delta = solver.cell_length_scale()
 
     def kernel(velocity, scalar, pressure, sgs_coefficient, wall_velocity):
         cells = solver.cell_centered_velocity(velocity)
@@ -146,6 +175,27 @@ def build_profile_kernel(
         # The solver face quantity is inward-normal traction.  Andrén plots the
         # physical turbulent flux <u_i w>, hence the minus sign.
         momentum_flux = -_faces_to_cells(momentum_faces)
+        sgs_face_flux = -_plane(momentum_faces)
+
+        # Resolved flux on the same faces the traction is applied to.  The
+        # vertical velocity is already there and vanishes at both walls, so the
+        # resolved part of the wall flux is exactly zero and the face total
+        # reduces to the imposed surface stress.
+        face_velocity = jnp.stack(
+            (
+                _cells_to_faces(cells[..., 0], z_centers, z_faces),
+                _cells_to_faces(cells[..., 1], z_centers, z_faces),
+                velocity.z,
+            ),
+            axis=-1,
+        )
+        face_fluctuation = face_velocity - _plane(face_velocity)[:, None, None, :]
+        resolved_face_uw = _plane(
+            face_fluctuation[..., 0] * face_fluctuation[..., 2]
+        )
+        resolved_face_vw = _plane(
+            face_fluctuation[..., 1] * face_fluctuation[..., 2]
+        )
 
         (
             scalar_diffusivity,
@@ -167,13 +217,13 @@ def build_profile_kernel(
                     0.0,
                 )[None, None, None]
                 * jnp.ones_like(scalar[:1]),
-                (scalar[1:] - scalar[:-1]) / dz,
+                (scalar[1:] - scalar[:-1]) / dz_center,
             ),
             axis=0,
         )
         upper_gradient = jnp.concatenate(
             (
-                (scalar[1:] - scalar[:-1]) / dz,
+                (scalar[1:] - scalar[:-1]) / dz_center,
                 jnp.zeros_like(scalar[-1:]),
             ),
             axis=0,
@@ -235,12 +285,17 @@ def build_profile_kernel(
                     gradient=velocity_gradient,
                 )
             ),
+            resolved_face_uw,
+            resolved_face_vw,
+            sgs_face_flux[..., 0],
+            sgs_face_flux[..., 1],
+            z_faces - z_faces[0],
             modes,
             _spectrum(cells[..., 0], spectrum_level),
             _spectrum(cells[..., 1], spectrum_level),
             _spectrum(cells[..., 2], spectrum_level),
             _spectrum(scalar, spectrum_level),
-            jnp.full_like(modes, (spectrum_level + 0.5) * dz),
+            jnp.full_like(modes, z_centers[spectrum_level] - z_faces[0]),
         )
         return values
 
@@ -270,14 +325,15 @@ def build_history_kernel(solver, *, diagnostic_ce: float):
         )
         wall_flux = -jnp.mean(faces[0], axis=(0, 1))
         ustar = jnp.sqrt(jnp.hypot(wall_flux[0], wall_flux[1]))
-        integrated_resolved = jnp.sum(resolved_tke) * solver.dz
-        integrated_sgs = jnp.sum(sgs_tke) * solver.dz
+        widths = solver.dz_cell
+        integrated_resolved = jnp.sum(widths * resolved_tke)
+        integrated_sgs = jnp.sum(widths * sgs_tke)
         tiny = jnp.finfo(cells.dtype).eps
         cu = -solver.config.coriolis_vertical * (
-            jnp.sum(mean[:, 1] - solver.config.geostrophic_wind[1]) * solver.dz
+            jnp.sum(widths * (mean[:, 1] - solver.config.geostrophic_wind[1]))
         ) / jnp.where(jnp.abs(wall_flux[0]) > tiny, wall_flux[0], jnp.nan)
         cv = solver.config.coriolis_vertical * (
-            jnp.sum(mean[:, 0] - solver.config.geostrophic_wind[0]) * solver.dz
+            jnp.sum(widths * (mean[:, 0] - solver.config.geostrophic_wind[0]))
         ) / jnp.where(jnp.abs(wall_flux[1]) > tiny, wall_flux[1], jnp.nan)
         return ustar, integrated_resolved, integrated_sgs, cu, cv
 
@@ -317,7 +373,7 @@ def build_budget_kernel(solver, scalar_solver):
             + fluctuation[..., 2] * advection[..., 0]
         )
         w_variance = _plane(fluctuation[..., 2] ** 2)
-        uw_production = -w_variance * jnp.gradient(mean[:, 0], solver.dz)
+        uw_production = -w_variance * solver.z_metric.derivative(mean[:, 0])
         uw_transport = uw_advective - uw_production
         uw_subgrid = _plane(
             fluctuation[..., 0] * momentum_sgs[..., 2]
@@ -338,7 +394,7 @@ def build_budget_kernel(solver, scalar_solver):
             scalar_fluctuation * advection[..., 2]
             + fluctuation[..., 2] * scalar_advection
         )
-        wc_production = -w_variance * jnp.gradient(scalar_mean, solver.dz)
+        wc_production = -w_variance * solver.z_metric.derivative(scalar_mean)
         wc_transport = wc_advective - wc_production
         wc_subgrid = _plane(
             scalar_fluctuation * momentum_sgs[..., 2]
@@ -405,7 +461,7 @@ def averaged_budget(
     ustar: float,
     scalar_surface_flux: float,
     coriolis: float,
-    dz: float,
+    heights: np.ndarray,
 ) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
     if len(samples) < 2:
         raise ValueError("budget tendency requires at least two samples")
@@ -431,8 +487,7 @@ def averaged_budget(
         result = {name: value / scale for name, value in terms.items()}
         result["tendency"] = tendency / scale
         result["closure_residual"] = (tendency - rhs) / scale
-        z = (np.arange(tendency.size) + 0.5) * dz
-        result["height"] = z * coriolis / ustar
+        result["height"] = np.asarray(heights) * coriolis / ustar
         return result
 
     return (

@@ -437,12 +437,22 @@ def _write_profiles(output: Path, averaged: dict, statistics_ustar: float) -> No
     )
     cstar = (SURFACE_SCALAR_FLUX / AIR_DENSITY) / statistics_ustar
     height = z * andren.F_CORIOLIS / statistics_ustar
-    scalar_gradient = np.gradient(averaged["scalar"], z)
+    # Logarithm-exact shear: a centred difference of a 1/z profile reads tens of
+    # per cent high or low on the first levels, and the wall point is measured
+    # rather than asserted.
+    below = np.r_[z[0], z[:-1]]
+    above = np.r_[z[1:], z[-1]]
+    span = z * np.log(above / below)
+
+    def logarithmic_shear(values: np.ndarray) -> np.ndarray:
+        return (
+            np.r_[values[1:], values[-1]] - np.r_[values[0], values[:-1]]
+        ) / span
+
+    scalar_gradient = logarithmic_shear(averaged["scalar"])
     phi_c = -0.4 * z * scalar_gradient / cstar
-    phi_c[0] = 1.0
-    velocity_gradient = np.hypot(np.gradient(u, z), np.gradient(v, z))
+    velocity_gradient = np.hypot(logarithmic_shear(u), logarithmic_shear(v))
     phi_m = 0.4 * z * velocity_gradient / statistics_ustar
-    phi_m[0] = 1.0
     ustar2 = statistics_ustar**2
     scalar_flux_scale = statistics_ustar * cstar
     columns = {
