@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 import numpy as np
 
 from benchmark.Andren1994 import run
@@ -103,3 +105,55 @@ def test_cells_from_faces_averages_onto_the_enclosed_cells() -> None:
     (cells,) = run._cells_from_faces(faces)
 
     assert np.allclose(cells, (2.0, 4.0, 7.0))
+
+
+def test_initial_tables_are_recovered_exactly_on_the_published_mesh() -> None:
+    from jaxwind.pressure import RectilinearGrid
+
+    grid = RectilinearGrid.uniform(40, 40, 40, lx=4000.0, ly=2000.0, lz=1500.0)
+
+    initial_u, initial_v, initial_tke = run._initial_tables_on_grid(
+        grid,
+        1500.0,
+        0.1,
+    )
+
+    assert np.allclose(initial_u, run.INITIAL_U)
+    assert np.allclose(initial_v, run.INITIAL_V)
+    assert np.allclose(initial_tke, run.INITIAL_TKE)
+
+
+def test_initial_tables_follow_a_wall_refined_mesh_in_height() -> None:
+    """A stretched mesh must read the tables by height, not by index."""
+
+    from jaxwind.pressure import RectilinearGrid
+
+    strength = 2.283724
+    parameter = np.linspace(0.0, 1.0, 41)
+    faces = 1500.0 * np.expm1(strength * parameter) / np.expm1(strength)
+    grid = RectilinearGrid(
+        tuple(np.linspace(0.0, 4000.0, 41)),
+        tuple(np.linspace(0.0, 2000.0, 41)),
+        tuple(float(value) for value in faces),
+    )
+
+    initial_u, _, initial_tke = run._initial_tables_on_grid(grid, 1500.0, 0.1)
+    centers = np.asarray(grid.z_centers)
+
+    # The first centre drops from 18.75 m to 5 m, inside the surface layer, so
+    # the wind is continued logarithmically instead of held at its 18.75 m value.
+    assert np.isclose(centers[0], 5.0, atol=1.0e-6)
+    expected = (
+        run.INITIAL_U[0] * math.log(centers[0] / 0.1) / math.log(18.75 / 0.1)
+    )
+    assert np.isclose(initial_u[0], expected, rtol=1.0e-12)
+    assert initial_u[0] < run.INITIAL_U[0]
+    # The perturbation amplitude is only held constant there.
+    assert np.isclose(initial_tke[0], run.INITIAL_TKE[0])
+    # Above the first published level nothing is extrapolated.
+    assert initial_u.max() <= max(run.INITIAL_U) + 1.0e-12
+
+
+def test_andren_runner_accepts_a_mesh_artifact() -> None:
+    assert run.parse_args([]).mesh is None
+    assert run.parse_args(["--mesh", "m.json"]).mesh.name == "m.json"

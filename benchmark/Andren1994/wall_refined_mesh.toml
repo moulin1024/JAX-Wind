@@ -1,0 +1,29 @@
+# Andren (1994) domain with the wall-normal axis clustered toward the ground.
+#
+# The strength is chosen so the first cell is 10 m thick and its centre sits at
+# 5 m, against 18.75 m on the uniform forty-cell mesh: a 3.75x refinement of the
+# wall matching height at unchanged cell count. The adjacent-width ratio stays
+# at 1.06, so the mesh is smooth enough that the fourth-order vertical stencils
+# are not the limiting error. Horizontal axes stay uniform and periodic.
+
+[mesh.x]
+lower_m = 0.0
+upper_m = 4000.0
+cells = 40
+clustering = "uniform"
+strength = 0.0
+
+[mesh.y]
+lower_m = 0.0
+upper_m = 2000.0
+cells = 40
+clustering = "uniform"
+strength = 0.0
+
+[mesh.z]
+lower_m = 0.0
+upper_m = 1500.0
+cells = 40
+clustering = "single"
+point_m = 0.0
+strength = 2.283724

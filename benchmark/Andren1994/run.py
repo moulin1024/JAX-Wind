@@ -68,6 +68,37 @@ def _logarithmic_shear(first, second, z):
     return shears[0], shears[1]
 
 
+def _initial_tables_on_grid(grid, height: float, roughness: float):
+    """Return the published initial profiles sampled at the grid cell centres.
+
+    The tables in this module are tabulated at the centres of forty uniform
+    cells.  A stretched mesh puts its centres elsewhere, so the tables are read
+    by height rather than by index; a uniform mesh recovers them exactly.
+
+    Below the first published level the two wind components are continued
+    logarithmically rather than held constant, because a mesh refined at the
+    wall asks for values inside the surface layer where holding the value at
+    18.75 m would start the first cells with far too much momentum.  The
+    perturbation energy is held constant there, since it only sets an amplitude.
+    """
+
+    import numpy as np
+
+    published_z = (np.arange(len(INITIAL_U)) + 0.5) * height / len(INITIAL_U)
+    centers = np.asarray(grid.z_centers) - np.asarray(grid.z_faces)[0]
+    surface_layer = centers < published_z[0]
+    shape_ratio = np.log(np.maximum(centers, 1.001 * roughness) / roughness) / np.log(
+        published_z[0] / roughness
+    )
+    tables = []
+    for index, table in enumerate((INITIAL_U, INITIAL_V, INITIAL_TKE)):
+        values = np.interp(centers, published_z, np.asarray(table, dtype=float))
+        if index < 2:
+            values = np.where(surface_layer, table[0] * shape_ratio, values)
+        tables.append(values)
+    return tuple(tables)
+
+
 def _cells_from_faces(*face_profiles):
     """Average wall-normal face profiles onto the cells between them."""
 
@@ -161,6 +192,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="pause cleanly at a checkpoint after this much stepping wall time",
     )
     parser.add_argument(
+        "--mesh",
+        type=Path,
+        help=(
+            "versioned mesh artifact from jaxwind-mesh; its extent must match "
+            "the 4000 x 2000 x 1500 m Andren domain"
+        ),
+    )
+    parser.add_argument(
         "--output-dir",
         type=Path,
         default=Path("benchmark_results/andren1994_40cubed"),
@@ -250,14 +289,26 @@ def main() -> None:
     expected_ustar = 0.425
     dtype = jnp.float32 if args.single else jnp.float64
 
-    grid = RectilinearGrid.uniform(
-        nx,
-        ny,
-        nz,
-        lx=lx,
-        ly=ly,
-        lz=height,
-    )
+    if args.mesh is None:
+        grid = RectilinearGrid.uniform(
+            nx,
+            ny,
+            nz,
+            lx=lx,
+            ly=ly,
+            lz=height,
+        )
+    else:
+        from jaxwind.meshing import load_mesh
+
+        grid = load_mesh(args.mesh).grid
+        for name, extent in (("x", lx), ("y", ly), ("z", height)):
+            faces = np.asarray(getattr(grid, f"{name}_faces"))
+            if not np.isclose(faces[0], 0.0) or not np.isclose(faces[-1], extent):
+                raise SystemExit(
+                    f"Andren mesh {name} extent must be [0, {extent:g}] m"
+                )
+        nz, ny, nx = grid.shape
     periodic = BoundaryCondition("periodic")
     neumann = BoundaryCondition("neumann")
     krylov = (
@@ -377,10 +428,15 @@ def main() -> None:
         return solver.active_wall_velocity(velocity)
 
     if args.restart is None:
+        initial_u, initial_v, initial_tke = _initial_tables_on_grid(
+            grid,
+            height,
+            roughness,
+        )
         velocity = solver.initial_profile(
-            jnp.asarray(INITIAL_U, dtype=dtype),
-            jnp.asarray(INITIAL_V, dtype=dtype),
-            perturbation_tke=jnp.asarray(INITIAL_TKE, dtype=dtype),
+            jnp.asarray(initial_u, dtype=dtype),
+            jnp.asarray(initial_v, dtype=dtype),
+            perturbation_tke=jnp.asarray(initial_tke, dtype=dtype),
             seed=args.seed,
         )
         solver.reset_lasd(velocity)
