@@ -32,8 +32,9 @@ mpiexec -n 4 env \
 ```
 
 The layout is `1 × 4` in `y`: every rank owns `32 × 8 × 32` cells and keeps
-complete ground-to-top vertical columns. AMD and MP5 exchange three periodic
-halo rows with multi-host `ppermute`; stable MOST and vertical SGS fluxes stay
+complete ground-to-top vertical columns. AMD and the nonlinear advection
+correction exchange periodic halo rows with multi-host `ppermute`; MP5 uses
+three rows and MUSCL-MC uses two. Stable MOST and vertical SGS fluxes stay
 local. The matrix-free GMG/PCG pressure solve uses the same y slabs on fine
 levels and globally replicates only its coarse level. Rank 0 reconstructs the
 ordinary full-domain checkpoint and diagnostics, so serial and MPI runs can
@@ -79,6 +80,47 @@ mpiexec -n 4 python benchmark/GABLS1/run_mpi.py --quick \
   --output-dir benchmark_results/gabls1_amd_mpi_quick
 ```
 
+Select the compact sign-preserving MUSCL-MC/Rusanov correction with
+`--advection-limiter muscl-mc`. The default remains `mp5`; both choices add a
+conservative nonlinear correction to the same kinetic-energy-neutral centred
+momentum flux. Set its strength with `--advection-dissipation-strength`;
+`--mp5-strength` remains a backward-compatible alias. Existing checkpoints
+without an `advection_limiter` field are interpreted as MP5 checkpoints.
+
+## Static stretched mesh
+
+The serial AMD runner accepts a versioned artifact from the independent
+meshing application. All three axes may be clustered independently: each
+carries its own metric, and an axis that is uniform keeps the constant-spacing
+kernels so uniform runs are unaffected. The horizontal axes stay periodic, so
+horizontal clustering must return to its starting spacing across the period if
+the fourth-order derivative is to keep its accuracy there.
+
+```bash
+jaxwind-mesh generate benchmark/GABLS1/stretched_mesh.toml \
+  --output benchmark_results/gabls1_stretched_mesh.json
+
+python benchmark/GABLS1/run.py \
+  --mesh benchmark_results/gabls1_stretched_mesh.json \
+  --advection-limiter muscl-mc \
+  --wall-matching-height 6.25 \
+  --output-dir benchmark_results/gabls1_amd_stretched
+```
+
+Stretching selects the AMD closure. LASD is rejected on a stretched grid
+because both its top-hat test filter and its Lagrangian trajectory advection
+are defined on constant spacing.
+
+`--wall-matching-height` is a physical distance from the lower wall. The
+runner selects the nearest cell center and records both the selected level and
+its actual height. Stable MOST uses that actual height; lower momentum and heat
+fluxes are divided by the local first-cell thickness. AMD filter widths,
+vertical diffusion, CFL limits, initial profiles, diagnostic interpolation,
+and volume means use the same physical face coordinates. Checkpoints store all
+three face arrays and reject a restart on a different mesh. The y-slab MPI
+runner deliberately rejects `--mesh` until its distributed operators are
+metric-aware.
+
 ## Performance profiling
 
 Use `64³` when comparing algorithms; `32³` is too small for meaningful CPU
@@ -103,6 +145,14 @@ python benchmark/GABLS1/profile_serial.py \
 `fpj2` uses two exact startup steps and then two pressure predictions plus one
 final Poisson solve. Choose `strang` for the original two scalar half-steps or
 `coupled-ssprk3` for three shared momentum-temperature stages.
+
+On the development CPU, matched fresh-state `64³` FPJ2/coupled-SSPRK3 profiles
+measured `0.248 s/step` with MP5 and `0.157 s/step` with MUSCL-MC, a 36.7%
+step-time reduction. The standalone momentum correction decreased from
+`9.89 ms` to `3.33 ms` per RHS and the scalar correction from `3.48 ms` to
+`1.07 ms`. These are kernel measurements; the canonical profile and spectrum
+comparisons still determine whether the less expensive correction is an
+acceptable LES default.
 
 On the development CPU, the measured `64³` kernel time decreased from about
 `0.604 s/step` (`full`, two GMG pre/post smooths) to about

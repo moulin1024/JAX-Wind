@@ -20,6 +20,11 @@ momentum `--amd-coefficient`. Use `--sgs lasd` for the physical-space LASD
 momentum closure (the scalar is then off by default). The restriction is the volume-weighted
 adjoint of prolongation. Use `--linear-solver gmres` for the restarted GMRES
 reference path.
+The nonlinear correction defaults to MP5. Use
+`--advection-limiter muscl-mc` to select the compact sign-preserving
+MUSCL-MC/Rusanov alternative while retaining the same centred momentum flux;
+set its strength with `--advection-dissipation-strength`. `--mp5-strength`
+remains a backward-compatible alias.
 The stiff vertical part of the SGS principal diffusion defaults to the
 third-order ARS(2,3,3) IMEX path and is solved directly along each vertical
 column. `CFLnu` therefore diagnoses the complete SGS operator; timestep

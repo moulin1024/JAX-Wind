@@ -1,0 +1,25 @@
+# Independent analytic mesh input. All coordinates are physical SI metres.
+
+[mesh.x]
+lower_m = 0.0
+upper_m = 4000.0
+cells = 64
+clustering = "double"
+point_m = 2000.0
+strength = 2.0
+
+[mesh.y]
+lower_m = 0.0
+upper_m = 2000.0
+cells = 64
+clustering = "double"
+point_m = 1000.0
+strength = 2.0
+
+[mesh.z]
+lower_m = 0.0
+upper_m = 1500.0
+cells = 64
+clustering = "single"
+point_m = 0.0
+strength = 3.0

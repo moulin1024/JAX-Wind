@@ -50,8 +50,9 @@ class YSlabAMDBoussinesq:
 
     The pressure backend owns the global y-slab topology. Each process holds
     only its local ``ny / process_count`` cells. Momentum and scalar kernels
-    exchange the three rows required by MP5 through the same global pmap axis;
-    the complete vertical column remains local on every rank.
+    exchange the rows required by the selected nonlinear correction through
+    the same global pmap axis; the complete vertical column remains local on
+    every rank.
     """
 
     halo_width = 3
@@ -71,6 +72,7 @@ class YSlabAMDBoussinesq:
         amd_coefficient: float,
         scalar_amd_coefficient: float,
         mp5_strength: float,
+        advection_limiter: str = "mp5",
         coupling_integrator: str = "strang",
     ) -> None:
         if pressure_solver.operator.grid != grid:
@@ -81,13 +83,20 @@ class YSlabAMDBoussinesq:
         self.device_count = pressure_solver.device_count
         self.local_device_count = pressure_solver.local_device_count
         self.axis_name = pressure_solver.distribution.axis_name
+        if advection_limiter not in ("mp5", "muscl-mc"):
+            raise ValueError(
+                "advection limiter must be 'mp5' or 'muscl-mc'"
+            )
+        self.advection_limiter = advection_limiter
+        self.halo_width = 3 if advection_limiter == "mp5" else 2
         self.nx = grid.shape[2]
         self.ny = grid.shape[1]
         self.nz = grid.shape[0]
         self.local_y = self.ny // self.device_count
         if self.local_y < self.halo_width:
             raise ValueError(
-                "each y slab must contain at least three cells for MP5 halos"
+                "each y slab must contain at least as many cells as the "
+                "selected advection halo"
             )
         self.dx = (grid.x_faces[-1] - grid.x_faces[0]) / self.nx
         self.dy = (grid.y_faces[-1] - grid.y_faces[0]) / self.ny
@@ -138,6 +147,7 @@ class YSlabAMDBoussinesq:
                 coriolis_vertical=coriolis,
                 coriolis_horizontal=0.0,
                 mp5_dissipation_strength=mp5_strength,
+                advection_limiter=advection_limiter,
                 amd=AMDModel(coefficient=amd_coefficient),
                 sgs_time_integration="explicit",
                 projection_method="full",
@@ -150,6 +160,7 @@ class YSlabAMDBoussinesq:
                 lower_surface_flux=0.0,
                 upper_surface_flux=0.0,
                 mp5_dissipation_strength=mp5_strength,
+                advection_limiter=advection_limiter,
             ),
         )
         self.surface_law = MoninObukhovWallLaw(
@@ -269,7 +280,7 @@ class YSlabAMDBoussinesq:
         time: Array,
     ) -> SurfaceLayerFluxes:
         cells = _cell_velocity(velocity)
-        level = self.momentum_kernel.config.wall_matching_level
+        level = self.momentum_kernel.wall_matching_level
         return self.surface_law.surface_fluxes(
             cells[level, ..., :2],
             theta[level],

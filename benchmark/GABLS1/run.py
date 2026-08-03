@@ -74,6 +74,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--nx", type=int, default=32)
     parser.add_argument("--ny", type=int, default=32)
     parser.add_argument("--nz", type=int, default=32)
+    parser.add_argument(
+        "--mesh",
+        type=Path,
+        help="versioned JSON mesh artifact produced by jaxwind-mesh",
+    )
+    parser.add_argument(
+        "--wall-matching-height",
+        type=float,
+        help="target physical height; the nearest cell center is used",
+    )
     parser.add_argument("--end-hours", type=float, default=9.0)
     parser.add_argument("--sample-start-hours", type=float, default=8.0)
     parser.add_argument("--sample-interval-seconds", type=float, default=60.0)
@@ -82,7 +92,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--target-diffusive-cfl", type=float, default=0.5)
     parser.add_argument("--amd-coefficient", type=float, default=0.212)
     parser.add_argument("--scalar-amd-coefficient", type=float)
-    parser.add_argument("--mp5-strength", type=float, default=1.0)
+    parser.add_argument(
+        "--advection-dissipation-strength",
+        "--mp5-strength",
+        dest="mp5_strength",
+        type=float,
+        default=1.0,
+    )
+    parser.add_argument(
+        "--advection-limiter",
+        choices=("mp5", "muscl-mc"),
+        default="mp5",
+        help="nonlinear correction added to the centered momentum/scalar flux",
+    )
     parser.add_argument(
         "--projection-method",
         choices=("full", "fpj2"),
@@ -160,14 +182,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         value = getattr(args, name)
         if not math.isfinite(value) or value < 0.0:
             parser.error(f"{name.replace('_', '-')} must be finite and nonnegative")
-    if min(
-        args.pressure_max_iterations,
-        args.pressure_coarse_smooth,
-        args.y_slab_coarse_cells_per_rank,
-        args.checkpoint_every,
-        args.log_every,
-        args.metrics_every,
-    ) <= 0:
+    if (
+        min(
+            args.pressure_max_iterations,
+            args.pressure_coarse_smooth,
+            args.y_slab_coarse_cells_per_rank,
+            args.checkpoint_every,
+            args.log_every,
+            args.metrics_every,
+        )
+        <= 0
+    ):
         parser.error("iteration and output intervals must be positive")
     if args.pressure_smooth < 0:
         parser.error("pressure-smooth must be nonnegative")
@@ -175,6 +200,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error("max-steps must be positive")
     if args.max_run_seconds is not None and args.max_run_seconds <= 0.0:
         parser.error("max-run-seconds must be positive")
+    if args.wall_matching_height is not None and (
+        not math.isfinite(args.wall_matching_height) or args.wall_matching_height <= 0.0
+    ):
+        parser.error("wall-matching-height must be positive and finite")
     return args
 
 
@@ -184,12 +213,12 @@ def _initial_state(args, coupled, case, dtype):
     from jaxwind.pressure import MACVelocity
 
     nz, ny, nx = coupled.grid.shape
-    z = (jnp.arange(nz, dtype=dtype) + 0.5) * coupled.scalar.dz
+    z = jnp.asarray(coupled.grid.z_centers, dtype=dtype)
+    z -= coupled.grid.z_faces[0]
     profile = jnp.where(
         z <= case.inversion_base,
         case.theta_initial,
-        case.theta_initial
-        + case.inversion_gradient * (z - case.inversion_base),
+        case.theta_initial + case.inversion_gradient * (z - case.inversion_base),
     )
     perturbation = jax.random.uniform(
         jax.random.PRNGKey(args.seed),
@@ -231,10 +260,7 @@ def _unpack_records(checkpoint, prefix: str) -> list[dict]:
     keys = tuple(str(value) for value in checkpoint[f"{prefix}_keys"])
     count = int(checkpoint[f"{prefix}_count"])
     return [
-        {
-            key: np.asarray(checkpoint[f"{prefix}_{key}"][index])
-            for key in keys
-        }
+        {key: np.asarray(checkpoint[f"{prefix}_{key}"][index]) for key in keys}
         for index in range(count)
     ]
 
@@ -249,9 +275,31 @@ def _restore_checkpoint(args, coupled, dtype):
         raise SystemExit("restart checkpoint schema is not supported")
     if not np.array_equal(checkpoint["shape_zyx"], coupled.grid.shape):
         raise SystemExit("restart grid shape does not match")
+    coordinate_keys = ("x_faces", "y_faces", "z_faces")
+    if any(key in checkpoint for key in coordinate_keys):
+        if not all(key in checkpoint for key in coordinate_keys):
+            raise SystemExit("restart checkpoint has incomplete grid coordinates")
+        for key in coordinate_keys:
+            expected = np.asarray(getattr(coupled.grid, key))
+            if not np.array_equal(np.asarray(checkpoint[key]), expected):
+                raise SystemExit(f"restart {key} do not match the active mesh")
+    elif args.mesh is not None:
+        raise SystemExit("legacy checkpoints cannot be restarted on a custom mesh")
     for key in ("amd_coefficient", "scalar_amd_coefficient", "mp5_strength"):
         if not np.isclose(float(checkpoint[key]), getattr(args, key)):
             raise SystemExit(f"restart {key} does not match")
+    checkpoint_limiter = (
+        str(checkpoint["advection_limiter"])
+        if "advection_limiter" in checkpoint
+        else "mp5"
+    )
+    if checkpoint_limiter != args.advection_limiter:
+        raise SystemExit("restart advection limiter does not match")
+    if "wall_matching_height_m" in checkpoint and not np.isclose(
+        float(checkpoint["wall_matching_height_m"]),
+        coupled.momentum.wall_matching_height,
+    ):
+        raise SystemExit("restart wall matching height does not match")
     state = coupled.initial_state(
         MACVelocity(
             jnp.asarray(checkpoint["velocity_x"], dtype=dtype),
@@ -281,9 +329,7 @@ def _restore_checkpoint(args, coupled, dtype):
         "max_cfl": float(checkpoint["max_cfl"]),
         "max_diffusive_cfl": float(checkpoint["max_diffusive_cfl"]),
         "max_divergence": float(checkpoint["max_divergence"]),
-        "max_scalar_budget_residual": float(
-            checkpoint["max_scalar_budget_residual"]
-        ),
+        "max_scalar_budget_residual": float(checkpoint["max_scalar_budget_residual"]),
     }
 
 
@@ -299,25 +345,37 @@ def _build_coupled(args: argparse.Namespace):
         NeutralABLConfig,
         NeutralABLMomentum,
     )
+    from jaxwind.domain import RectilinearGrid
     from jaxwind.pressure import (
         BoundaryCondition,
         GMGConfig,
         MatrixFreePoissonSolver,
         PCGConfig,
         PoissonBoundaryConditions,
-        RectilinearGrid,
     )
 
     case = diagnostics.GABLS1Case()
     dtype = jnp.float32 if args.dtype == "float32" else jnp.float64
-    grid = RectilinearGrid.uniform(
-        args.nx,
-        args.ny,
-        args.nz,
-        lx=case.domain,
-        ly=case.domain,
-        lz=case.domain,
-    )
+    if args.mesh is None:
+        grid = RectilinearGrid.uniform(
+            args.nx,
+            args.ny,
+            args.nz,
+            lx=case.domain,
+            ly=case.domain,
+            lz=case.domain,
+        )
+    else:
+        from jaxwind.meshing import load_mesh
+
+        grid = load_mesh(args.mesh).grid
+        for name in ("x", "y", "z"):
+            faces = np.asarray(getattr(grid, f"{name}_faces"))
+            if not np.isclose(faces[0], 0.0) or not np.isclose(faces[-1], case.domain):
+                raise SystemExit(
+                    f"GABLS1 mesh {name} extent must be [0, {case.domain:g}] m"
+                )
+        args.nz, args.ny, args.nx = grid.shape
     periodic = BoundaryCondition("periodic")
     neumann = BoundaryCondition("neumann")
     pressure_solver = MatrixFreePoissonSolver(
@@ -354,7 +412,9 @@ def _build_coupled(args: argparse.Namespace):
             geostrophic_wind=(case.geostrophic_u, case.geostrophic_v),
             coriolis_vertical=case.coriolis,
             coriolis_horizontal=0.0,
+            wall_matching_height=args.wall_matching_height,
             mp5_dissipation_strength=args.mp5_strength,
+            advection_limiter=args.advection_limiter,
             amd=AMDModel(coefficient=args.amd_coefficient),
             sgs_time_integration="explicit",
             projection_method=args.projection_method,
@@ -367,6 +427,7 @@ def _build_coupled(args: argparse.Namespace):
             lower_surface_flux=0.0,
             upper_surface_flux=0.0,
             mp5_dissipation_strength=args.mp5_strength,
+            advection_limiter=args.advection_limiter,
         ),
     )
     coupled = AMDBoussinesq(
@@ -434,9 +495,7 @@ def run(args: argparse.Namespace) -> dict[str, float | int | str]:
         )
     compiled_fields = diagnostic_kernel(state)
     compiled_rates = coupled.stability_rates(state)
-    compiled_accepted_metrics = coupled.accepted_state_metrics(
-        compiled_state
-    )
+    compiled_accepted_metrics = coupled.accepted_state_metrics(compiled_state)
     jax.block_until_ready(compiled_state.velocity.x)
     jax.block_until_ready(compiled_fields.surface_heat_flux)
     jax.block_until_ready(compiled_rates)
@@ -461,6 +520,9 @@ def run(args: argparse.Namespace) -> dict[str, float | int | str]:
         payload: dict[str, object] = {
             "checkpoint_schema": CHECKPOINT_SCHEMA,
             "shape_zyx": np.asarray(grid.shape),
+            "x_faces": np.asarray(grid.x_faces),
+            "y_faces": np.asarray(grid.y_faces),
+            "z_faces": np.asarray(grid.z_faces),
             "velocity_x": np.asarray(state.velocity.x),
             "velocity_y": np.asarray(state.velocity.y),
             "velocity_z": np.asarray(state.velocity.z),
@@ -472,6 +534,8 @@ def run(args: argparse.Namespace) -> dict[str, float | int | str]:
             "amd_coefficient": args.amd_coefficient,
             "scalar_amd_coefficient": args.scalar_amd_coefficient,
             "mp5_strength": args.mp5_strength,
+            "advection_limiter": args.advection_limiter,
+            "wall_matching_height_m": momentum.wall_matching_height,
             "max_cfl": max_cfl,
             "max_diffusive_cfl": max_diffusive_cfl,
             "max_divergence": max_divergence,
@@ -481,12 +545,8 @@ def run(args: argparse.Namespace) -> dict[str, float | int | str]:
         if fpj2 is not None:
             payload.update(
                 {
-                    "fpj2_current_pressure": np.asarray(
-                        fpj2.current_pressure
-                    ),
-                    "fpj2_previous_pressure": np.asarray(
-                        fpj2.previous_pressure
-                    ),
+                    "fpj2_current_pressure": np.asarray(fpj2.current_pressure),
+                    "fpj2_previous_pressure": np.asarray(fpj2.previous_pressure),
                     "fpj2_current_timestep": fpj2.current_timestep,
                     "fpj2_previous_timestep": fpj2.previous_timestep,
                     "fpj2_history_count": fpj2.history_count,
@@ -514,9 +574,7 @@ def run(args: argparse.Namespace) -> dict[str, float | int | str]:
                 "step": float(state.step),
                 "time_s": state.time,
                 "time_hours": state.time / 3600.0,
-                "boundary_layer_height": float(
-                    statistics["boundary_layer_height"]
-                ),
+                "boundary_layer_height": float(statistics["boundary_layer_height"]),
                 "surface_temperature": case.surface_temperature(state.time),
                 "surface_heat_flux": float(statistics["surface_heat_flux"]),
                 "friction_velocity": float(statistics["friction_velocity"]),
@@ -562,10 +620,8 @@ def run(args: argparse.Namespace) -> dict[str, float | int | str]:
         )
         if metrics_due:
             theta_before = float(
-                jnp.mean(
-                    state.potential_temperature
-                    - coupled.config.reference_potential_temperature
-                )
+                coupled.scalar.volume_mean(state.potential_temperature)
+                - coupled.config.reference_potential_temperature
             )
             heat_flux_before = (
                 float(jnp.mean(coupled.surface_layer_fluxes(state).heat_flux))
@@ -650,7 +706,17 @@ def run(args: argparse.Namespace) -> dict[str, float | int | str]:
             "nx": args.nx,
             "ny": args.ny,
             "nz": args.nz,
-            "grid_spacing_m": case.domain / args.nx,
+            "grid_spacing_m": (case.domain**3 / (args.nx * args.ny * args.nz))
+            ** (1.0 / 3.0),
+            "minimum_dx_m": float(np.min(grid.x_widths)),
+            "maximum_dx_m": float(np.max(grid.x_widths)),
+            "minimum_dy_m": float(np.min(grid.y_widths)),
+            "maximum_dy_m": float(np.max(grid.y_widths)),
+            "minimum_dz_m": float(np.min(grid.z_widths)),
+            "maximum_dz_m": float(np.max(grid.z_widths)),
+            "mesh": "uniform" if args.mesh is None else str(args.mesh),
+            "wall_matching_level": momentum.wall_matching_level,
+            "wall_matching_height_m": momentum.wall_matching_height,
             "end_time_hours": state.time / 3600.0,
             "runtime_s": runtime_s,
             "compilation_s": compilation_s,
@@ -663,6 +729,8 @@ def run(args: argparse.Namespace) -> dict[str, float | int | str]:
             "amd_coefficient": args.amd_coefficient,
             "scalar_amd_coefficient": args.scalar_amd_coefficient,
             "mp5_dissipation_strength": args.mp5_strength,
+            "advection_dissipation_strength": args.mp5_strength,
+            "advection_limiter": args.advection_limiter,
             "projection_method": args.projection_method,
             "coupling_integrator": args.coupling_integrator,
             "pressure_smooth": args.pressure_smooth,

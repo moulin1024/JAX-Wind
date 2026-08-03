@@ -297,7 +297,7 @@ def build_budget_kernel(solver, scalar_solver):
 
         advection = solver.conservative_advection(velocity, cells)
         if solver.config.mp5_dissipation_strength > 0.0:
-            advection += solver.mp5_dissipation(velocity, cells)
+            advection += solver.advection_dissipation(velocity, cells)
         momentum_sgs = solver.sgs_tendency(
             cells,
             sgs_coefficient,

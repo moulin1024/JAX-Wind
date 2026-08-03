@@ -26,6 +26,7 @@ def _coupled_solver(
     *,
     lower_flux: float = 0.01,
     mp5_strength: float = 1.0,
+    advection_limiter: str = "mp5",
     coupling_integrator: str = "strang",
 ) -> AMDBoussinesq:
     grid = RectilinearGrid.uniform(8, 8, 8, lx=2.0, ly=2.0, lz=1.0)
@@ -56,6 +57,7 @@ def _coupled_solver(
             roughness_length=1.0e-3,
             pressure_acceleration=0.0,
             mp5_dissipation_strength=mp5_strength,
+            advection_limiter=advection_limiter,
             amd=AMDModel(coefficient=0.212),
             sgs_time_integration="explicit",
             projection_method="full",
@@ -68,6 +70,7 @@ def _coupled_solver(
             lower_surface_flux=lower_flux,
             upper_surface_flux=0.0,
             mp5_dissipation_strength=mp5_strength,
+            advection_limiter=advection_limiter,
         ),
     )
     return AMDBoussinesq(
@@ -84,8 +87,19 @@ def _coupled_solver(
 def _stable_coupled_solver(
     projection_method: str = "full",
     coupling_integrator: str = "strang",
+    *,
+    stretched: bool = False,
 ) -> AMDBoussinesq:
-    grid = RectilinearGrid.uniform(8, 8, 8, lx=400.0, ly=400.0, lz=400.0)
+    grid = (
+        RectilinearGrid(
+            tuple(50.0 * index for index in range(9)),
+            tuple(50.0 * index for index in range(9)),
+            (0.0, 1.0, 3.0, 7.0, 15.0, 35.0, 80.0, 180.0, 400.0),
+        )
+        if stretched
+        else RectilinearGrid.uniform(8, 8, 8, lx=400.0, ly=400.0, lz=400.0)
+    )
+    advection_limiter = "muscl-mc" if stretched else "mp5"
     periodic = BoundaryCondition("periodic")
     neumann = BoundaryCondition("neumann")
     pressure = MatrixFreePoissonSolver(
@@ -114,6 +128,7 @@ def _stable_coupled_solver(
             pressure_acceleration=0.0,
             geostrophic_wind=(8.0, 0.0),
             coriolis_vertical=1.39e-4,
+            advection_limiter=advection_limiter,
             amd=AMDModel(coefficient=0.212),
             sgs_time_integration="explicit",
             projection_method=projection_method,
@@ -126,6 +141,7 @@ def _stable_coupled_solver(
             lower_surface_flux=0.0,
             upper_surface_flux=0.0,
             mp5_dissipation_strength=1.0,
+            advection_limiter=advection_limiter,
         ),
     )
     return AMDBoussinesq(
@@ -167,10 +183,33 @@ def test_horizontally_uniform_temperature_is_hydrostatic_only() -> None:
 
     buoyancy = coupled.buoyancy_tendency(theta)
 
-    assert all(
-        float(jnp.max(jnp.abs(component))) < 2.0e-9
-        for component in buoyancy
+    assert all(float(jnp.max(jnp.abs(component))) < 2.0e-9 for component in buoyancy)
+
+
+def test_stretched_stable_most_step_is_finite_and_projected() -> None:
+    coupled = _stable_coupled_solver(
+        coupling_integrator="coupled-ssprk3",
+        stretched=True,
     )
+    nz, ny, nx = coupled.grid.shape
+    z = jnp.asarray(coupled.grid.z_centers, dtype=jnp.float32)[:, None, None]
+    theta = jnp.broadcast_to(265.0 + 0.01 * z, coupled.grid.shape)
+    velocity = MACVelocity(
+        8.0 * jnp.ones((nz, ny, nx + 1), dtype=jnp.float32),
+        jnp.zeros((nz, ny + 1, nx), dtype=jnp.float32),
+        jnp.zeros((nz + 1, ny, nx), dtype=jnp.float32),
+    )
+    state = coupled.initial_state(velocity, theta)
+
+    fluxes = coupled.surface_layer_fluxes(state)
+    rates = coupled.stability_rates(state)
+    advanced = coupled.step(state, timestep=0.01)
+    divergence = mac_divergence(advanced.velocity, coupled.grid)
+
+    assert float(jnp.mean(fluxes.heat_flux)) < 0.0
+    assert all(jnp.isfinite(rate) for rate in rates)
+    assert jnp.all(jnp.isfinite(advanced.potential_temperature))
+    assert float(coupled.momentum.pressure_solver.operator.norm(divergence)) < 1.0e-3
 
 
 def test_active_scalar_step_is_conservative_and_projection_is_solenoidal() -> None:
@@ -186,11 +225,10 @@ def test_active_scalar_step_is_conservative_and_projection_is_solenoidal() -> No
 
     advanced = coupled.step(state, timestep=timestep)
 
-    expected_mean = (
-        jnp.mean(theta)
-        + timestep
-        * coupled.scalar.model.lower_surface_flux
-        / (coupled.grid.z_faces[-1] - coupled.grid.z_faces[0])
+    expected_mean = jnp.mean(
+        theta
+    ) + timestep * coupled.scalar.model.lower_surface_flux / (
+        coupled.grid.z_faces[-1] - coupled.grid.z_faces[0]
     )
     divergence = mac_divergence(advanced.velocity, coupled.grid)
     assert jnp.isclose(
@@ -252,12 +290,7 @@ def test_coupled_scalar_rhs_rejects_stage_divergence_background_mode() -> None:
     )
     nz, ny, nx = coupled.grid.shape
     theta = jnp.full((nz, ny, nx), 300.0, dtype=jnp.float32)
-    x = 1.0e-3 * jnp.sin(
-        2.0
-        * jnp.pi
-        * jnp.arange(nx + 1, dtype=jnp.float32)
-        / nx
-    )
+    x = 1.0e-3 * jnp.sin(2.0 * jnp.pi * jnp.arange(nx + 1, dtype=jnp.float32) / nx)
     velocity = MACVelocity(
         jnp.broadcast_to(x, (nz, ny, nx + 1)),
         jnp.zeros((nz, ny + 1, nx), dtype=jnp.float32),
@@ -303,6 +336,21 @@ def test_scalar_advection_split_exposes_mp5_without_changing_tendency() -> None:
     assert jnp.allclose(total, split)
 
 
+def test_scalar_advection_split_selects_muscl_mc() -> None:
+    coupled = _coupled_solver(advection_limiter="muscl-mc")
+    velocity = coupled.momentum.initial_log_profile(perturbation_amplitude=0.05)
+    x = jnp.arange(coupled.grid.shape[2], dtype=jnp.float32)[None, None, :]
+    scalar = jnp.broadcast_to(jnp.sin(0.8 * x), coupled.grid.shape)
+
+    total = coupled.scalar.advective_tendency(scalar, velocity)
+    split = coupled.scalar.centered_advective_tendency(
+        scalar,
+        velocity,
+    ) + coupled.scalar.muscl_mc_dissipation(scalar, velocity)
+
+    assert jnp.allclose(total, split)
+
+
 def test_prescribed_cooling_surface_produces_stable_most_fluxes() -> None:
     coupled = _stable_coupled_solver()
     theta = jnp.full(coupled.grid.shape, 265.0, dtype=jnp.float32)
@@ -320,9 +368,7 @@ def test_prescribed_cooling_surface_produces_stable_most_fluxes() -> None:
     assert jnp.allclose(neutral_fluxes.heat_flux, 0.0)
     assert jnp.all(stable_fluxes.heat_flux < 0.0)
     assert jnp.all(stable_fluxes.obukhov_length > 0.0)
-    assert jnp.all(
-        stable_fluxes.friction_velocity < neutral_fluxes.friction_velocity
-    )
+    assert jnp.all(stable_fluxes.friction_velocity < neutral_fluxes.friction_velocity)
 
 
 def test_stable_surface_step_cools_conservatively_and_remains_projected() -> None:
@@ -363,8 +409,8 @@ def test_coupled_ssprk3_uses_rk_surface_heat_flux_quadrature() -> None:
 
     heat = coupled.last_surface_heat_flux_quadrature
     assert heat is not None
-    expected_change = timestep * heat / (
-        coupled.grid.z_faces[-1] - coupled.grid.z_faces[0]
+    expected_change = (
+        timestep * heat / (coupled.grid.z_faces[-1] - coupled.grid.z_faces[0])
     )
     assert jnp.isclose(
         jnp.mean(advanced.potential_temperature - theta),

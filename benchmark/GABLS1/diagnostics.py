@@ -39,10 +39,24 @@ def _face_to_cell(field: np.ndarray) -> np.ndarray:
     return 0.5 * (field[:-1] + field[1:])
 
 
-def _cell_to_zero_boundary_faces(field: np.ndarray) -> np.ndarray:
+def _cell_to_zero_boundary_faces(
+    field: np.ndarray,
+    z_centers: np.ndarray,
+    z_faces: np.ndarray,
+) -> np.ndarray:
     """Interpolate a cell profile to faces with homogeneous wall fluctuations."""
-    faces = np.zeros(field.shape[0] + 1, dtype=field.dtype)
-    faces[1:-1] = 0.5 * (field[:-1] + field[1:])
+    faces = np.zeros(
+        (field.shape[0] + 1, *field.shape[1:]),
+        dtype=field.dtype,
+    )
+    distance = z_centers[1:] - z_centers[:-1]
+    lower_weight = (z_centers[1:] - z_faces[1:-1]) / distance
+    upper_weight = (z_faces[1:-1] - z_centers[:-1]) / distance
+    shape = (distance.size,) + (1,) * (field.ndim - 1)
+    faces[1:-1] = (
+        lower_weight.reshape(shape) * field[:-1]
+        + upper_weight.reshape(shape) * field[1:]
+    )
     return faces
 
 
@@ -67,9 +81,7 @@ def _boundary_layer_height(
             if abs(denominator) < 1.0e-15
             else (threshold - magnitude[lower]) / denominator
         )
-        crossing = z_faces[lower] + fraction * (
-            z_faces[upper] - z_faces[lower]
-        )
+        crossing = z_faces[lower] + fraction * (z_faces[upper] - z_faces[lower])
     return float(crossing / 0.95)
 
 
@@ -84,8 +96,7 @@ def snapshot_statistics(coupled, state) -> dict[str, np.ndarray | float]:
     diagnostic = {name: np.asarray(value) for name, value in fields._asdict().items()}
 
     z = 0.5 * (
-        np.asarray(coupled.grid.z_faces[:-1])
-        + np.asarray(coupled.grid.z_faces[1:])
+        np.asarray(coupled.grid.z_faces[:-1]) + np.asarray(coupled.grid.z_faces[1:])
     )
     z_faces = np.asarray(coupled.grid.z_faces)
     mean_velocity = np.mean(cells, axis=(1, 2))
@@ -104,9 +115,7 @@ def snapshot_statistics(coupled, state) -> dict[str, np.ndarray | float]:
     velocity_gradient = coupled.momentum.velocity_gradient(
         _cell_velocity(state.velocity)
     )
-    wall_stress = coupled._momentum_wall_stress(
-        coupled.surface_layer_fluxes(state)
-    )
+    wall_stress = coupled._momentum_wall_stress(coupled.surface_layer_fluxes(state))
     stress_faces = np.asarray(
         coupled.momentum.vertical_sgs_stress_flux(
             _cell_velocity(state.velocity),
@@ -136,10 +145,8 @@ def snapshot_statistics(coupled, state) -> dict[str, np.ndarray | float]:
     utheta_sgs_at_cells = diagnostic["scalar_flux_x"].mean(axis=(1, 2))
     vtheta_sgs_at_cells = diagnostic["scalar_flux_y"].mean(axis=(1, 2))
 
-    u_face = np.zeros((len(z_faces), *u_fluctuation.shape[1:]))
-    v_face = np.zeros_like(u_face)
-    u_face[1:-1] = 0.5 * (u_fluctuation[:-1] + u_fluctuation[1:])
-    v_face[1:-1] = 0.5 * (v_fluctuation[:-1] + v_fluctuation[1:])
+    u_face = _cell_to_zero_boundary_faces(u_fluctuation, z, z_faces)
+    v_face = _cell_to_zero_boundary_faces(v_fluctuation, z, z_faces)
     w_faces = np.asarray(state.velocity.z)
     w_face_mean = np.mean(w_faces, axis=(1, 2), keepdims=True)
     w_face_fluctuation = w_faces - w_face_mean
@@ -151,22 +158,35 @@ def snapshot_statistics(coupled, state) -> dict[str, np.ndarray | float]:
         v_face * w_face_fluctuation,
         axis=(1, 2),
     )
-    theta_face = np.zeros_like(w_face_fluctuation)
-    theta_face[1:-1] = 0.5 * (
-        theta_fluctuation[:-1] + theta_fluctuation[1:]
+    theta_face = _cell_to_zero_boundary_faces(
+        theta_fluctuation,
+        z,
+        z_faces,
     )
     wtheta_resolved_faces = np.mean(
         theta_face * w_face_fluctuation,
         axis=(1, 2),
     )
     utheta_resolved_faces = _cell_to_zero_boundary_faces(
-        utheta_resolved_at_cells
+        utheta_resolved_at_cells,
+        z,
+        z_faces,
     )
     vtheta_resolved_faces = _cell_to_zero_boundary_faces(
-        vtheta_resolved_at_cells
+        vtheta_resolved_at_cells,
+        z,
+        z_faces,
     )
-    utheta_sgs_faces = _cell_to_zero_boundary_faces(utheta_sgs_at_cells)
-    vtheta_sgs_faces = _cell_to_zero_boundary_faces(vtheta_sgs_at_cells)
+    utheta_sgs_faces = _cell_to_zero_boundary_faces(
+        utheta_sgs_at_cells,
+        z,
+        z_faces,
+    )
+    vtheta_sgs_faces = _cell_to_zero_boundary_faces(
+        vtheta_sgs_at_cells,
+        z,
+        z_faces,
+    )
     boundary_layer_height = _boundary_layer_height(
         z_faces,
         uw_resolved_faces + uw_sgs_faces,
@@ -193,29 +213,36 @@ def snapshot_statistics(coupled, state) -> dict[str, np.ndarray | float]:
     dvdz = np.gradient(mean_velocity[:, 1], z, edge_order=1)
     uw_resolved_at_cells = _face_to_cell(uw_resolved_faces)
     vw_resolved_at_cells = _face_to_cell(vw_resolved_faces)
-    shear_resolved = -(
-        uw_resolved_at_cells * dudz + vw_resolved_at_cells * dvdz
-    )
-    shear_sgs = -(
-        uw_sgs_at_cells * dudz + vw_sgs_at_cells * dvdz
-    )
-    buoyancy_production = (
-        coupled.config.buoyancy_coefficient
-        * (wtheta_resolved_at_cells + wtheta_sgs_at_cells)
+    shear_resolved = -(uw_resolved_at_cells * dudz + vw_resolved_at_cells * dvdz)
+    shear_sgs = -(uw_sgs_at_cells * dudz + vw_sgs_at_cells * dvdz)
+    buoyancy_production = coupled.config.buoyancy_coefficient * (
+        wtheta_resolved_at_cells + wtheta_sgs_at_cells
     )
     dissipation_amd = diagnostic["amd_energy_dissipation"].mean(axis=(1, 2))
-    dissipation_mp5 = diagnostic["mp5_energy_dissipation"].mean(axis=(1, 2))
+    dissipation_numerical = diagnostic["mp5_energy_dissipation"].mean(axis=(1, 2))
+    limiter = coupled.momentum.config.advection_limiter
+    dissipation_mp5 = (
+        dissipation_numerical
+        if limiter == "mp5"
+        else np.zeros_like(dissipation_numerical)
+    )
+    dissipation_muscl_mc = (
+        dissipation_numerical
+        if limiter == "muscl-mc"
+        else np.zeros_like(dissipation_numerical)
+    )
     resolved_energy = 0.5 * np.sum(fluctuation * fluctuation, axis=-1)
     energy_pressure = resolved_energy + pressure_fluctuation
-    energy_pressure_faces = np.zeros_like(w_face_fluctuation)
-    energy_pressure_faces[1:-1] = 0.5 * (
-        energy_pressure[:-1] + energy_pressure[1:]
+    energy_pressure_faces = _cell_to_zero_boundary_faces(
+        energy_pressure,
+        z,
+        z_faces,
     )
     resolved_transport_flux = np.mean(
         w_face_fluctuation * energy_pressure_faces,
         axis=(1, 2),
     )
-    transport_resolved = -np.diff(resolved_transport_flux) / coupled.scalar.dz
+    transport_resolved = -np.diff(resolved_transport_flux) / np.diff(z_faces)
 
     speed = np.sqrt(mean_velocity[:, 0] ** 2 + mean_velocity[:, 1] ** 2)
     jet_index = int(np.argmax(speed))
@@ -224,12 +251,10 @@ def snapshot_statistics(coupled, state) -> dict[str, np.ndarray | float]:
         diagnostic["surface_momentum_stress"],
         axis=(0, 1),
     )
-    friction_velocity = float(
-        np.sqrt(np.linalg.norm(mean_surface_stress))
-    )
+    friction_velocity = float(np.sqrt(np.linalg.norm(mean_surface_stress)))
     if abs(surface_heat_flux) > 1.0e-15:
         obukhov_length = float(
-            -friction_velocity**3
+            -(friction_velocity**3)
             * coupled.config.reference_potential_temperature
             / (
                 coupled.momentum.config.von_karman
@@ -275,8 +300,10 @@ def snapshot_statistics(coupled, state) -> dict[str, np.ndarray | float]:
         "buoyancy_production": buoyancy_production,
         "transport_total": transport_resolved,
         "dissipation_amd": dissipation_amd,
+        "dissipation_numerical": dissipation_numerical,
         "dissipation_mp5": dissipation_mp5,
-        "dissipation_total": dissipation_amd + dissipation_mp5,
+        "dissipation_muscl_mc": dissipation_muscl_mc,
+        "dissipation_total": dissipation_amd + dissipation_numerical,
         "boundary_layer_height": boundary_layer_height,
         "surface_heat_flux": surface_heat_flux,
         "friction_velocity": friction_velocity,
@@ -383,7 +410,13 @@ def _plot_comparison(
     panel(axes[1, 0], "B", "u_var_resolved", mean["u_var_resolved"], "u variance")
     panel(axes[1, 1], "B", "v_var_resolved", mean["v_var_resolved"], "v variance")
     panel(axes[1, 2], "B", "w_var_resolved", mean["w_var_resolved"], "w variance")
-    panel(axes[1, 3], "B", "theta_var_resolved", mean["theta_var_resolved"], "theta variance")
+    panel(
+        axes[1, 3],
+        "B",
+        "theta_var_resolved",
+        mean["theta_var_resolved"],
+        "theta variance",
+    )
 
     flux_specs = (
         ("uw", "x-momentum flux"),
@@ -446,8 +479,7 @@ def _plot_comparison(
     axes[2, 0].legend(fontsize=8)
     time_axis.legend(fontsize=8)
     figure.suptitle(
-        f"GABLS1: non-spectral AMD {model_resolution_m:g} m "
-        "vs official 12.5 m LES"
+        f"GABLS1: non-spectral AMD {model_resolution_m:g} m vs official 12.5 m LES"
     )
     figure.savefig(output, dpi=180)
     plt.close(figure)
@@ -488,10 +520,7 @@ def save_outputs(
     if time_rows:
         _write_csv(
             output_dir / "time_series.csv",
-            {
-                key: np.asarray([row[key] for row in time_rows])
-                for key in time_rows[0]
-            },
+            {key: np.asarray([row[key] for row in time_rows]) for key in time_rows[0]},
         )
 
     reference = {}

@@ -68,6 +68,10 @@ tmp
 !/runners/nrel5mw_direct_alm_smoke/
 !/runners/nrel5mw_direct_alm_smoke/**
 
+# Standalone analytic meshing application documentation and example input.
+!/meshing/
+!/meshing/**
+
 # The reconstruction is document-first; these specifications and the frozen
 # JAX implementation are source artifacts even when their suffixes match the
 # broad local-output rules above. Cache rules follow the unignore so generated

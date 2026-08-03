@@ -16,6 +16,7 @@ from .domain import (
     OwnedInterval,
     OwnedRegion,
     Partitioned,
+    RectilinearGrid,
     Replicated,
     UniformGrid,
     VerticalBoundary,
@@ -38,9 +39,9 @@ __all__ = [
     "OwnedInterval",
     "OwnedRegion",
     "Partitioned",
+    "RectilinearGrid",
     "Replicated",
     "UniformGrid",
     "VerticalBoundary",
     "ZFace",
 ]
-

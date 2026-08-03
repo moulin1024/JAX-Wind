@@ -3,7 +3,7 @@
 from .axes import DomainAxis, MeshAxis, MeshCoordinate, MeshTopology
 from .boundaries import VerticalBoundary
 from .fields import AddressableField, Field
-from .grid import UniformGrid
+from .grid import RectilinearGrid, UniformGrid
 from .locations import CELL, ZFACE, Cell, Location, ZFace
 from .markers import (
     Accepted,
@@ -93,6 +93,7 @@ __all__ = [
     "PotentialTemperatureTendency",
     "Projected",
     "Replicated",
+    "RectilinearGrid",
     "ScaleSystem",
     "ScalarLasdCoefficient",
     "ScalarLasdLm",

@@ -31,6 +31,14 @@ CHECKPOINT_SCHEMA = serial_run.CHECKPOINT_SCHEMA
 
 def parse_args(argv: list[str] | None = None):
     args = serial_run.parse_args(argv)
+    if args.mesh is not None:
+        raise SystemExit(
+            "the y-slab runner does not yet support stretched mesh artifacts"
+        )
+    if args.wall_matching_height is not None:
+        raise SystemExit(
+            "the y-slab runner does not yet support a custom wall matching height"
+        )
     if args.projection_method != "full":
         raise SystemExit(
             "the y-slab runner currently supports --projection-method full"
@@ -135,6 +143,7 @@ def _build_distributed(args, jax):
         amd_coefficient=args.amd_coefficient,
         scalar_amd_coefficient=args.scalar_amd_coefficient,
         mp5_strength=args.mp5_strength,
+        advection_limiter=args.advection_limiter,
         coupling_integrator=args.coupling_integrator,
     )
     return coupled, case, dtype
@@ -204,6 +213,7 @@ def _build_serial_observer(args, case, dtype):
             coriolis_vertical=case.coriolis,
             coriolis_horizontal=0.0,
             mp5_dissipation_strength=args.mp5_strength,
+            advection_limiter=args.advection_limiter,
             amd=AMDModel(coefficient=args.amd_coefficient),
             sgs_time_integration="explicit",
             projection_method=args.projection_method,
@@ -216,6 +226,7 @@ def _build_serial_observer(args, case, dtype):
             lower_surface_flux=0.0,
             upper_surface_flux=0.0,
             mp5_dissipation_strength=args.mp5_strength,
+            advection_limiter=args.advection_limiter,
         ),
     )
     return AMDBoussinesq(
@@ -244,8 +255,7 @@ def _local_initial_state(args, coupled, case, dtype, rank: int):
     profile = jnp.where(
         z <= case.inversion_base,
         case.theta_initial,
-        case.theta_initial
-        + case.inversion_gradient * (z - case.inversion_base),
+        case.theta_initial + case.inversion_gradient * (z - case.inversion_base),
     )
     perturbation = jax.random.uniform(
         jax.random.PRNGKey(args.seed),
@@ -256,9 +266,7 @@ def _local_initial_state(args, coupled, case, dtype, rank: int):
     )
     perturbation -= jnp.mean(perturbation, axis=(1, 2), keepdims=True)
     perturbation *= (z < 50.0)[:, None, None]
-    theta = (
-        profile[:, None, None] + perturbation
-    )[:, start : start + local_y, :][None]
+    theta = (profile[:, None, None] + perturbation)[:, start : start + local_y, :][None]
     velocity = YSlabMACVelocity(
         jnp.full(
             (1, args.nz, local_y, args.nx + 1),
@@ -283,9 +291,22 @@ def _validate_checkpoint(args, checkpoint, coupled) -> None:
         raise SystemExit("restart checkpoint schema is not supported")
     if not np.array_equal(checkpoint["shape_zyx"], coupled.grid.shape):
         raise SystemExit("restart grid shape does not match")
+    for key in ("x_faces", "y_faces", "z_faces"):
+        if key in checkpoint and not np.array_equal(
+            np.asarray(checkpoint[key]),
+            np.asarray(getattr(coupled.grid, key)),
+        ):
+            raise SystemExit(f"restart {key} do not match the active mesh")
     for key in ("amd_coefficient", "scalar_amd_coefficient", "mp5_strength"):
         if not np.isclose(float(checkpoint[key]), getattr(args, key)):
             raise SystemExit(f"restart {key} does not match")
+    checkpoint_limiter = (
+        str(checkpoint["advection_limiter"])
+        if "advection_limiter" in checkpoint
+        else "mp5"
+    )
+    if checkpoint_limiter != args.advection_limiter:
+        raise SystemExit("restart advection limiter does not match")
 
 
 def _local_restart_state(args, coupled, dtype, rank: int):
@@ -309,7 +330,9 @@ def _local_restart_state(args, coupled, dtype, rank: int):
             checkpoint["potential_temperature"][:, start:end, :],
             dtype=dtype,
         )[None],
-        pressure=jnp.asarray(checkpoint["pressure"][:, start:end, :], dtype=dtype)[None],
+        pressure=jnp.asarray(checkpoint["pressure"][:, start:end, :], dtype=dtype)[
+            None
+        ],
         time=float(checkpoint["time"]),
         step=int(checkpoint["step"]),
         project=False,
@@ -319,8 +342,7 @@ def _local_restart_state(args, coupled, dtype, rank: int):
 
 def _assemble_y_faces(pieces: list[np.ndarray]) -> np.ndarray:
     return np.concatenate(
-        tuple(piece[:, :-1, :] for piece in pieces[:-1])
-        + (pieces[-1],),
+        tuple(piece[:, :-1, :] for piece in pieces[:-1]) + (pieces[-1],),
         axis=1,
     )
 
@@ -392,9 +414,7 @@ def run(args) -> dict[str, float | int | str] | None:
             max_cfl = float(checkpoint["max_cfl"])
             max_diffusive_cfl = float(checkpoint["max_diffusive_cfl"])
             max_divergence = float(checkpoint["max_divergence"])
-            max_scalar_budget_residual = float(
-                checkpoint["max_scalar_budget_residual"]
-            )
+            max_scalar_budget_residual = float(checkpoint["max_scalar_budget_residual"])
         else:
             samples = []
             time_rows = []
@@ -443,12 +463,13 @@ def run(args) -> dict[str, float | int | str] | None:
             "parallel_layout": "mpi-y-slab",
             "parallel_processes": size,
             "shape_zyx": np.asarray(coupled.grid.shape),
+            "x_faces": np.asarray(coupled.grid.x_faces),
+            "y_faces": np.asarray(coupled.grid.y_faces),
+            "z_faces": np.asarray(coupled.grid.z_faces),
             "velocity_x": np.asarray(observed.velocity.x),
             "velocity_y": np.asarray(observed.velocity.y),
             "velocity_z": np.asarray(observed.velocity.z),
-            "potential_temperature": np.asarray(
-                observed.potential_temperature
-            ),
+            "potential_temperature": np.asarray(observed.potential_temperature),
             "pressure": np.asarray(observed.pressure),
             "time": observed.time,
             "step": observed.step,
@@ -456,6 +477,7 @@ def run(args) -> dict[str, float | int | str] | None:
             "amd_coefficient": args.amd_coefficient,
             "scalar_amd_coefficient": args.scalar_amd_coefficient,
             "mp5_strength": args.mp5_strength,
+            "advection_limiter": args.advection_limiter,
             "max_cfl": max_cfl,
             "max_diffusive_cfl": max_diffusive_cfl,
             "max_divergence": max_divergence,
@@ -480,17 +502,13 @@ def run(args) -> dict[str, float | int | str] | None:
             if not np.all(np.isfinite(value)) and key != "obukhov_length"
         ]
         if nonfinite:
-            raise FloatingPointError(
-                "non-finite diagnostic: " + ", ".join(nonfinite)
-            )
+            raise FloatingPointError("non-finite diagnostic: " + ", ".join(nonfinite))
         time_rows.append(
             {
                 "step": float(state.step),
                 "time_s": state.time,
                 "time_hours": state.time / 3600.0,
-                "boundary_layer_height": float(
-                    statistics["boundary_layer_height"]
-                ),
+                "boundary_layer_height": float(statistics["boundary_layer_height"]),
                 "surface_temperature": case.surface_temperature(state.time),
                 "surface_heat_flux": float(statistics["surface_heat_flux"]),
                 "friction_velocity": float(statistics["friction_velocity"]),
@@ -566,16 +584,10 @@ def run(args) -> dict[str, float | int | str] | None:
             heat_flux_after = heat_sum_after / (args.nx * args.ny)
             if coupled.last_surface_heat_flux_quadrature is None:
                 heat_flux_before = heat_sum_before / (args.nx * args.ny)
-                integrated_heat_flux = 0.5 * (
-                    heat_flux_before + heat_flux_after
-                )
+                integrated_heat_flux = 0.5 * (heat_flux_before + heat_flux_after)
             else:
                 integrated_heat_flux = float(
-                    np.mean(
-                        np.asarray(
-                            coupled.last_surface_heat_flux_quadrature
-                        )
-                    )
+                    np.mean(np.asarray(coupled.last_surface_heat_flux_quadrature))
                 )
             budget_residual = abs(
                 theta_after
@@ -620,9 +632,8 @@ def run(args) -> dict[str, float | int | str] | None:
         if args.max_steps is not None and state.step >= args.max_steps:
             stopped_early = state.time < final_time
             if rank == 0:
-                need_diagnostic = (
-                    not time_rows
-                    or time_rows[-1]["step"] != float(state.step)
+                need_diagnostic = not time_rows or time_rows[-1]["step"] != float(
+                    state.step
                 )
             else:
                 need_diagnostic = None
@@ -652,9 +663,7 @@ def run(args) -> dict[str, float | int | str] | None:
     runtime_s = time.perf_counter() - start_wall
     summary = None
     if rank == 0:
-        reference_dir = (
-            args.reference_dir if args.reference_dir.exists() else None
-        )
+        reference_dir = args.reference_dir if args.reference_dir.exists() else None
         summary = diagnostics.save_outputs(
             args.output_dir,
             samples=samples,
@@ -681,6 +690,8 @@ def run(args) -> dict[str, float | int | str] | None:
                 "amd_coefficient": args.amd_coefficient,
                 "scalar_amd_coefficient": args.scalar_amd_coefficient,
                 "mp5_dissipation_strength": args.mp5_strength,
+                "advection_dissipation_strength": args.mp5_strength,
+                "advection_limiter": args.advection_limiter,
                 "projection_method": "full",
                 "coupling_integrator": args.coupling_integrator,
                 "pressure_smooth": args.pressure_smooth,

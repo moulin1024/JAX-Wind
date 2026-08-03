@@ -41,10 +41,30 @@ SHOULD separate these responsibilities:
 - `openfast`: format parsing and conversion into JAX-Wind turbine models;
 - `effects`: config, launch, checkpoint, logging, and postprocessing adapters;
 - `runners`: thin application shells around validated configuration and effects;
+- `meshing`: standalone physical-coordinate generation and versioned mesh I/O;
 - `benchmarks`: semantic cases and comparison criteria, not solver internals.
 
 A single universal `Params` record is prohibited. Each morphism receives the
 smallest immutable environment product that describes its dependencies.
+
+Analytic meshing is an upstream application, not a solver policy. It may read
+configuration and write a versioned artifact, but its output is only validated
+physical face coordinates in the domain-owned `RectilinearGrid`. Solvers and
+interpreters MUST NOT depend on the mapping formula, clustering mode, or the
+meshing CLI. Per-axis uniform, single-boundary, and double-sided interior
+clustering all share these laws: exact domain endpoints, strictly increasing
+faces, the requested cell count, exact uniform behavior at zero strength, and
+artifact round-trip without coordinate changes.
+
+Spacing reaches a solver operator only through a per-axis metric. A gradient
+uses the axis derivative; a divergence of a modeled flux uses the width-weighted
+adjoint of that same derivative, which is what keeps the variational SGS
+operator dissipative and the advection split energy neutral once antisymmetry is
+lost; a face reconstruction uses the axis interface states. An axis that is
+uniform to floating-point precision MUST keep its constant-spacing kernel, so
+uniform grids are unaffected by stretching support. Closures that are defined on
+constant spacing, currently LASD, MUST reject a stretched grid rather than
+silently reinterpret their filter width or trajectory advection.
 
 ### Internal module boundaries
 

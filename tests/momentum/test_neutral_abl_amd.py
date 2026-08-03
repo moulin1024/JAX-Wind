@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 
 import jax.numpy as jnp
+import pytest
 
 import jaxwind.momentum.neutral_abl as neutral_abl
 from jaxwind.momentum import (
@@ -20,6 +21,7 @@ from jaxwind.pressure import (
     MatrixFreePoissonSolver,
     PoissonBoundaryConditions,
     RectilinearGrid,
+    mac_divergence,
 )
 
 
@@ -34,6 +36,7 @@ def _solver(
     wall_matching_level: int = 0,
     wall_filter_width: float | None = None,
     wall_temporal_filter_timescale: float | None = None,
+    advection_limiter: str = "mp5",
 ) -> NeutralABLMomentum:
     grid = RectilinearGrid.uniform(
         nx,
@@ -60,9 +63,7 @@ def _solver(
             restart=20,
             max_iterations=60,
             relative_tolerance=2.0e-6,
-            execution=(
-                "jax" if sgs_time_integration == "imex_ark3" else "python"
-            ),
+            execution=("jax" if sgs_time_integration == "imex_ark3" else "python"),
         ),
     )
     return NeutralABLMomentum(
@@ -74,6 +75,7 @@ def _solver(
             wall_matching_level=wall_matching_level,
             wall_filter_width=wall_filter_width,
             wall_temporal_filter_timescale=wall_temporal_filter_timescale,
+            advection_limiter=advection_limiter,
             amd=AMDModel(
                 coefficient=0.212,
                 molecular_viscosity=molecular_viscosity,
@@ -84,12 +86,346 @@ def _solver(
     )
 
 
+def _stretched_solver(
+    *,
+    wall_matching_height: float | None = None,
+) -> NeutralABLMomentum:
+    grid = RectilinearGrid(
+        tuple(2.0 * index / 8 for index in range(9)),
+        tuple(index / 8 for index in range(9)),
+        (0.0, 0.02, 0.06, 0.14, 0.30, 0.52, 0.72, 0.88, 1.0),
+    )
+    periodic = BoundaryCondition("periodic")
+    neumann = BoundaryCondition("neumann")
+    pressure = MatrixFreePoissonSolver(
+        grid,
+        PoissonBoundaryConditions(
+            periodic,
+            periodic,
+            periodic,
+            periodic,
+            neumann,
+            neumann,
+        ),
+        dtype=jnp.float32,
+        krylov=FGMRESConfig(
+            restart=20,
+            max_iterations=80,
+            relative_tolerance=2.0e-6,
+        ),
+    )
+    return NeutralABLMomentum(
+        grid,
+        pressure,
+        NeutralABLConfig(
+            friction_velocity=0.1,
+            roughness_length=1.0e-3,
+            wall_matching_height=wall_matching_height,
+            advection_limiter="muscl-mc",
+        ),
+    )
+
+
 def test_uniform_spacing_accepts_float32_inexact_domain_ratio() -> None:
     faces = tuple(2.0 * math.pi * index / 64 for index in range(65))
 
     spacing = neutral_abl._uniform_spacing(faces, "x spacing")
 
     assert spacing == (2.0 * math.pi) / 64
+
+
+def test_stretched_grid_resolves_matching_height_to_physical_cell_center() -> None:
+    solver = _stretched_solver(wall_matching_height=0.11)
+
+    assert solver.wall_matching_level == 2
+    assert math.isclose(solver.wall_matching_height, 0.10)
+
+
+def test_stretched_wall_normal_derivative_and_adjoint_use_volume_metric() -> None:
+    solver = _stretched_solver()
+    z = solver.z_centers[:, None, None]
+    quadratic = z**2 + 0.3 * z + 1.0
+    derivative = neutral_abl._wall_normal_derivative(
+        quadratic,
+        solver.z_centers,
+    )
+
+    assert jnp.allclose(derivative[1:-1], 2.0 * z[1:-1] + 0.3, atol=2.0e-6)
+
+    first = jnp.sin(3.1 * z) + 0.2 * z
+    second = jnp.cos(2.3 * z) - 0.1 * z
+    operator_first = solver._negative_derivative_transpose(first, 2)
+    derivative_second = neutral_abl._wall_normal_derivative(
+        second,
+        solver.z_centers,
+    )
+    weights = solver.dz_cell[:, None, None]
+    assert jnp.allclose(
+        jnp.sum(weights * second * operator_first),
+        -jnp.sum(weights * derivative_second * first),
+        atol=2.0e-6,
+    )
+
+
+def test_stretched_scalar_flux_and_muscl_telescope_with_cell_volumes() -> None:
+    solver = _stretched_solver()
+    scalar_solver = AMDPassiveScalar(
+        solver.grid,
+        AMDPassiveScalarModel(
+            coefficient=0.0,
+            lower_surface_flux=1.0e-3,
+            upper_surface_flux=2.0e-4,
+            advection_limiter="muscl-mc",
+        ),
+    )
+    nz, ny, nx = solver.grid.shape
+    z = solver.z_centers[:, None, None]
+    scalar = jnp.broadcast_to(jnp.sin(7.0 * z), solver.grid.shape)
+    vertical_velocity = jnp.zeros((nz + 1, ny, nx), dtype=jnp.float32)
+    vertical_velocity = vertical_velocity.at[1:-1].set(0.2)
+    velocity = MACVelocity(
+        jnp.zeros((nz, ny, nx + 1), dtype=jnp.float32),
+        jnp.zeros((nz, ny + 1, nx), dtype=jnp.float32),
+        vertical_velocity,
+    )
+
+    limiter = scalar_solver.muscl_mc_dissipation(scalar, velocity)
+    tendency = scalar_solver.sgs_tendency(
+        scalar,
+        jnp.zeros(solver.grid.shape + (3, 3), dtype=jnp.float32),
+    )
+    weights = scalar_solver.dz_cell[:, None, None]
+    horizontal_area = scalar_solver.dx * scalar_solver.dy
+    expected_flux = (
+        scalar_solver.model.lower_surface_flux - scalar_solver.model.upper_surface_flux
+    ) * 2.0
+
+    assert jnp.abs(jnp.sum(weights * limiter)) < 1.0e-5
+    assert jnp.isclose(
+        jnp.sum(weights * tendency) * horizontal_area,
+        expected_flux,
+        rtol=2.0e-5,
+        atol=1.0e-8,
+    )
+
+
+def test_stretched_centered_flux_retains_weighted_energy_neutrality() -> None:
+    solver = _stretched_solver()
+    velocity = solver.initial_log_profile(perturbation_amplitude=0.1)
+    cells = solver.cell_centered_velocity(velocity)
+    tendency = solver.conservative_advection(velocity, cells)
+    weights = solver.dz_cell[:, None, None, None]
+
+    work = jnp.sum(weights * cells * tendency)
+
+    assert jnp.abs(work) < 2.0e-5
+
+
+def _triple_stretched_grid() -> RectilinearGrid:
+    """Cluster every axis: both horizontals inward, the vertical to the ground."""
+
+    def periodic_axis(count: int, length: float, strength: float) -> tuple[float, ...]:
+        parameter = [-1.0 + 2.0 * index / count for index in range(count + 1)]
+        scale = math.tanh(strength)
+        return tuple(
+            0.5 * length * (1.0 + math.tanh(strength * value) / scale)
+            for value in parameter
+        )
+
+    def wall_axis(count: int, length: float, strength: float) -> tuple[float, ...]:
+        scale = math.expm1(strength)
+        return tuple(
+            length * math.expm1(strength * index / count) / scale
+            for index in range(count + 1)
+        )
+
+    return RectilinearGrid(
+        periodic_axis(8, 2.0, 1.5),
+        periodic_axis(8, 1.0, 1.2),
+        wall_axis(8, 1.0, 2.0),
+    )
+
+
+def _triple_stretched_solver(
+    *,
+    advection_limiter: str = "muscl-mc",
+    lasd: LASDModel | None = None,
+) -> NeutralABLMomentum:
+    grid = _triple_stretched_grid()
+    periodic = BoundaryCondition("periodic")
+    neumann = BoundaryCondition("neumann")
+    pressure = MatrixFreePoissonSolver(
+        grid,
+        PoissonBoundaryConditions(
+            periodic,
+            periodic,
+            periodic,
+            periodic,
+            neumann,
+            neumann,
+        ),
+        dtype=jnp.float32,
+        krylov=FGMRESConfig(
+            restart=20,
+            max_iterations=120,
+            relative_tolerance=2.0e-7,
+        ),
+    )
+    return NeutralABLMomentum(
+        grid,
+        pressure,
+        NeutralABLConfig(
+            friction_velocity=0.1,
+            roughness_length=1.0e-3,
+            advection_limiter=advection_limiter,
+            lasd=lasd,
+        ),
+    )
+
+
+def _cell_volumes(grid: RectilinearGrid) -> jnp.ndarray:
+    return (
+        jnp.asarray(grid.z_widths, dtype=jnp.float32)[:, None, None]
+        * jnp.asarray(grid.y_widths, dtype=jnp.float32)[None, :, None]
+        * jnp.asarray(grid.x_widths, dtype=jnp.float32)[None, None, :]
+    )
+
+
+def test_all_three_axes_may_be_stretched_independently() -> None:
+    solver = _triple_stretched_solver()
+
+    assert solver.uniform_axes == (False, False, False)
+    assert not solver.x_metric.uniform
+    assert not solver.y_metric.uniform
+    assert not solver.z_metric.uniform
+    # The horizontal axes stay periodic while the wall-normal axis is bounded.
+    assert solver.x_metric.periodic and solver.y_metric.periodic
+    assert not solver.z_metric.periodic
+
+
+def test_horizontally_stretched_advection_conserves_momentum_and_energy() -> None:
+    solver = _triple_stretched_solver()
+    velocity = solver.initial_log_profile(perturbation_amplitude=0.1)
+    cells = solver.cell_centered_velocity(velocity)
+    volumes = _cell_volumes(solver.grid)[..., None]
+
+    tendency = solver.conservative_advection(velocity, cells)
+
+    momentum_drift = jnp.max(jnp.abs(jnp.sum(volumes * tendency, axis=(0, 1, 2))))
+    energy_work = jnp.sum(volumes * cells * tendency)
+    assert float(momentum_drift) < 1.0e-8
+    assert float(jnp.abs(energy_work)) < 1.0e-7
+
+
+def test_horizontally_stretched_muscl_limiter_only_removes_energy() -> None:
+    solver = _triple_stretched_solver()
+    velocity = solver.initial_log_profile(perturbation_amplitude=0.2)
+    cells = solver.cell_centered_velocity(velocity)
+    volumes = _cell_volumes(solver.grid)[..., None]
+
+    dissipation = solver.muscl_mc_dissipation(velocity, cells)
+
+    telescoped = jnp.max(jnp.abs(jnp.sum(volumes * dissipation, axis=(0, 1, 2))))
+    assert float(telescoped) < 1.0e-9
+    assert float(jnp.sum(volumes * cells * dissipation)) <= 0.0
+
+
+def test_horizontally_stretched_variational_sgs_stays_dissipative() -> None:
+    solver = _triple_stretched_solver()
+    velocity = solver.initial_log_profile(perturbation_amplitude=0.2)
+    cells = solver.cell_centered_velocity(velocity)
+    volumes = _cell_volumes(solver.grid)[..., None]
+
+    tendency = solver.sgs_tendency(cells)
+
+    assert float(jnp.sum(volumes * cells * tendency)) < 0.0
+
+
+def test_horizontally_stretched_step_stays_projected_and_finite() -> None:
+    solver = _triple_stretched_solver()
+    velocity = solver.initial_log_profile(perturbation_amplitude=0.1)
+    timestep = solver.timestep_for_cfl(velocity, 0.4)
+
+    advanced = solver.step(velocity, timestep=timestep, time=0.0)
+
+    assert timestep > 0.0
+    assert all(bool(jnp.all(jnp.isfinite(part))) for part in advanced)
+    divergence = mac_divergence(advanced, solver.grid)
+    assert float(jnp.max(jnp.abs(divergence))) < 1.0e-4
+
+
+def test_horizontally_stretched_scalar_transport_is_conservative() -> None:
+    solver = _triple_stretched_solver()
+    scalar_solver = AMDPassiveScalar(
+        solver.grid,
+        AMDPassiveScalarModel(
+            coefficient=0.0,
+            lower_surface_flux=0.0,
+            upper_surface_flux=0.0,
+            advection_limiter="muscl-mc",
+        ),
+    )
+    velocity = solver.initial_log_profile(perturbation_amplitude=0.1)
+    z = solver.z_centers[:, None, None]
+    scalar = jnp.broadcast_to(
+        jnp.sin(5.0 * z) + 1.5,
+        solver.grid.shape,
+    ).astype(jnp.float32)
+    volumes = _cell_volumes(solver.grid)
+
+    advanced = scalar_solver.step(scalar, velocity, 1.0e-3)
+
+    before = float(jnp.sum(volumes * scalar))
+    after = float(jnp.sum(volumes * advanced))
+    assert jnp.isclose(after, before, rtol=2.0e-6)
+    assert float(jnp.min(advanced)) > 0.0
+
+
+def test_amd_length_scale_follows_the_local_horizontal_widths() -> None:
+    solver = _triple_stretched_solver()
+    delta = neutral_abl._cell_length_scales(solver.metrics)
+
+    assert delta.shape == (*solver.grid.shape, 3)
+    assert jnp.allclose(delta[..., 0], jnp.asarray(solver.grid.x_widths))
+    assert jnp.allclose(
+        delta[..., 1],
+        jnp.asarray(solver.grid.y_widths)[None, :, None],
+    )
+    assert jnp.allclose(
+        delta[..., 2],
+        jnp.asarray(solver.grid.z_widths)[:, None, None],
+    )
+
+
+def test_stretched_grids_reject_the_lasd_closure() -> None:
+    with pytest.raises(ValueError, match="AMD closure, not LASD"):
+        _triple_stretched_solver(lasd=LASDModel())
+
+
+def test_wall_drag_stability_rate_uses_first_cell_thickness() -> None:
+    solver = _stretched_solver()
+    horizontal = jnp.ones((8, 8, 2), dtype=jnp.float32)
+    stress = 0.01 * jnp.ones_like(horizontal)
+
+    rate = solver.surface_momentum_stability_rate(horizontal, stress)
+    expected = 2.0 * 0.01 / float(solver.dz_cell[0])
+
+    assert jnp.isclose(rate, expected)
+
+    wall_stress = jnp.zeros((8, 8, 3), dtype=jnp.float32)
+    wall_stress = wall_stress.at[..., 0].set(0.01)
+    cells = jnp.zeros(solver.grid.shape + (3,), dtype=jnp.float32)
+    tendency = solver.variational_sgs_tendency(
+        cells,
+        jnp.zeros(solver.grid.shape, dtype=jnp.float32),
+        wall_stress=wall_stress,
+    )
+    integrated = jnp.sum(
+        solver.dz_cell[:, None, None, None] * tendency,
+        axis=0,
+    )
+
+    assert jnp.allclose(integrated, -wall_stress, atol=2.0e-7)
 
 
 def test_filter_free_amd_is_nonnegative_and_switches_off_for_uniform_flow() -> None:
@@ -152,8 +488,7 @@ def test_passive_scalar_surface_flux_has_exact_finite_volume_balance() -> None:
         jnp.sum(tendency) * scalar_solver.dx * scalar_solver.dy * scalar_solver.dz
     )
     expected = (
-        scalar_solver.model.lower_surface_flux
-        - scalar_solver.model.upper_surface_flux
+        scalar_solver.model.lower_surface_flux - scalar_solver.model.upper_surface_flux
     ) * (2.0 * 1.0)
 
     assert jnp.isclose(volume_integral, expected, rtol=2.0e-6, atol=1.0e-8)
@@ -180,12 +515,8 @@ def test_horizontal_skew_advection_has_zero_resolved_energy_work() -> None:
     x = 2.0 * jnp.pi * jnp.arange(nx, dtype=jnp.float32) / nx
     y = 2.0 * jnp.pi * jnp.arange(ny, dtype=jnp.float32) / ny
     cells = jnp.zeros((nz, ny, nx, 3), dtype=jnp.float32)
-    cells = cells.at[..., 0].set(
-        jnp.sin(x)[None, None, :] * jnp.cos(y)[None, :, None]
-    )
-    cells = cells.at[..., 1].set(
-        -jnp.cos(x)[None, None, :] * jnp.sin(y)[None, :, None]
-    )
+    cells = cells.at[..., 0].set(jnp.sin(x)[None, None, :] * jnp.cos(y)[None, :, None])
+    cells = cells.at[..., 1].set(-jnp.cos(x)[None, None, :] * jnp.sin(y)[None, :, None])
     tendency = solver.skew_advection(cells)
     work = jnp.sum(cells * tendency)
 
@@ -277,12 +608,10 @@ def test_imex_initial_tendency_reuses_gradient_for_frozen_viscosity() -> None:
         return original(cells)
 
     solver.velocity_gradient = counted_gradient
-    explicit, implicit, frozen = (
-        solver._compiled_imex_initial_tendencies(
-            velocity,
-            coefficient,
-            solver.active_wall_velocity(velocity),
-        )
+    explicit, implicit, frozen = solver._compiled_imex_initial_tendencies(
+        velocity,
+        coefficient,
+        solver.active_wall_velocity(velocity),
     )
     jnp.asarray(explicit.x).block_until_ready()
 
@@ -387,6 +716,149 @@ def test_local_mp5_dissipation_acts_only_near_a_jump() -> None:
     assert jnp.all(jnp.isfinite(dissipation))
 
 
+def test_muscl_mc_states_are_bounded_and_ordered_at_each_face() -> None:
+    values = jnp.asarray(
+        (0.0, 0.2, 0.9, 1.0, 0.8, -0.1, -0.2),
+        dtype=jnp.float32,
+    )
+
+    left, right = neutral_abl._muscl_mc_interface_states(
+        values,
+        axis=0,
+        periodic=True,
+    )
+    neighbor = jnp.roll(values, -1)
+    lower = jnp.minimum(values, neighbor)
+    upper = jnp.maximum(values, neighbor)
+
+    assert jnp.all(left >= lower)
+    assert jnp.all(left <= upper)
+    assert jnp.all(right >= lower)
+    assert jnp.all(right <= upper)
+    assert jnp.all((right - left) * (neighbor - values) >= 0.0)
+
+
+def test_muscl_mc_dissipation_is_conservative_and_energy_stable() -> None:
+    solver = _solver(nx=16, ny=4, nz=2, advection_limiter="muscl-mc")
+    nz, ny, nx = solver.grid.shape
+    x = jnp.arange(nx, dtype=jnp.float32)
+    scalar = jnp.broadcast_to(
+        (jnp.sin(0.83 * x) + 0.15 * jnp.cos(1.91 * x))[None, None, :],
+        (nz, ny, nx),
+    )
+    velocity = MACVelocity(
+        jnp.ones((nz, ny, nx + 1), dtype=jnp.float32),
+        jnp.zeros((nz, ny + 1, nx), dtype=jnp.float32),
+        jnp.zeros((nz + 1, ny, nx), dtype=jnp.float32),
+    )
+    scalar_solver = AMDPassiveScalar(
+        solver.grid,
+        AMDPassiveScalarModel(
+            coefficient=0.0,
+            lower_surface_flux=0.0,
+            advection_limiter="muscl-mc",
+        ),
+    )
+
+    dissipation = scalar_solver.advection_dissipation(scalar, velocity)
+
+    assert jnp.abs(jnp.sum(dissipation)) < 2.0e-6
+    assert jnp.sum(scalar * dissipation) <= 2.0e-6
+    assert jnp.allclose(
+        dissipation,
+        scalar_solver.muscl_mc_dissipation(scalar, velocity),
+    )
+
+
+def test_muscl_mc_scalar_euler_step_creates_no_new_extrema() -> None:
+    solver = _solver(nx=16, ny=4, nz=2, advection_limiter="muscl-mc")
+    values = jnp.asarray(
+        (
+            0.02,
+            0.15,
+            0.91,
+            0.77,
+            0.33,
+            0.48,
+            0.99,
+            0.61,
+            0.08,
+            0.24,
+            0.86,
+            0.69,
+            0.11,
+            0.39,
+            0.73,
+            0.55,
+        ),
+        dtype=jnp.float32,
+    )
+    scalar = jnp.broadcast_to(values[None, None, :], solver.grid.shape)
+    nz, ny, nx = solver.grid.shape
+    velocity = MACVelocity(
+        jnp.ones((nz, ny, nx + 1), dtype=jnp.float32),
+        jnp.zeros((nz, ny + 1, nx), dtype=jnp.float32),
+        jnp.zeros((nz + 1, ny, nx), dtype=jnp.float32),
+    )
+    scalar_solver = AMDPassiveScalar(
+        solver.grid,
+        AMDPassiveScalarModel(
+            coefficient=0.0,
+            lower_surface_flux=0.0,
+            advection_limiter="muscl-mc",
+        ),
+    )
+
+    advanced = scalar + 0.9 * scalar_solver.dx * (
+        scalar_solver.advective_tendency(scalar, velocity)
+    )
+
+    assert jnp.min(advanced) >= jnp.min(scalar) - 2.0e-7
+    assert jnp.max(advanced) <= jnp.max(scalar) + 2.0e-7
+
+
+def test_muscl_mc_preserves_constant_momentum() -> None:
+    solver = _solver(advection_limiter="muscl-mc")
+    velocity = MACVelocity(
+        jnp.ones((8, 8, 9), dtype=jnp.float32),
+        0.25 * jnp.ones((8, 9, 8), dtype=jnp.float32),
+        jnp.zeros((9, 8, 8), dtype=jnp.float32),
+    )
+
+    dissipation = solver.advection_dissipation(velocity)
+
+    assert float(jnp.max(jnp.abs(dissipation))) < 1.0e-7
+
+
+def test_muscl_mc_momentum_correction_cannot_inject_energy() -> None:
+    solver = _solver(nx=12, ny=8, nz=6, advection_limiter="muscl-mc")
+    nz, ny, nx = solver.grid.shape
+    z, y, x = jnp.meshgrid(
+        jnp.arange(nz, dtype=jnp.float32),
+        jnp.arange(ny, dtype=jnp.float32),
+        jnp.arange(nx, dtype=jnp.float32),
+        indexing="ij",
+    )
+    cells = jnp.stack(
+        (
+            jnp.sin(0.7 * x + 0.2 * y),
+            jnp.cos(0.4 * y - 0.3 * z),
+            jnp.sin(0.5 * z + 0.1 * x),
+        ),
+        axis=-1,
+    )
+    velocity = MACVelocity(
+        jnp.ones((nz, ny, nx + 1), dtype=jnp.float32),
+        jnp.ones((nz, ny + 1, nx), dtype=jnp.float32),
+        jnp.ones((nz + 1, ny, nx), dtype=jnp.float32).at[0].set(0.0).at[-1].set(0.0),
+    )
+
+    dissipation = solver.muscl_mc_dissipation(velocity, cells)
+
+    assert jnp.max(jnp.abs(jnp.sum(dissipation, axis=(0, 1, 2)))) < 5.0e-5
+    assert jnp.sum(cells * dissipation) <= 2.0e-5
+
+
 def test_log_wall_and_pressure_force_balance_initial_bulk_momentum() -> None:
     solver = _solver()
     velocity = solver.initial_log_profile(perturbation_amplitude=0.0)
@@ -449,9 +921,7 @@ def test_temporal_wall_filter_advances_once_per_accepted_state() -> None:
     assert initial is not None
     cells = solver.cell_centered_velocity(velocity)
     changed = cells.at[0, ..., 0].add(2.0)
-    changed_velocity = solver.enforce_boundaries(
-        neutral_abl._cells_to_faces(changed)
-    )
+    changed_velocity = solver.enforce_boundaries(neutral_abl._cells_to_faces(changed))
     instantaneous = solver.instantaneous_wall_velocity(changed)
 
     solver._advance_wall_model(changed_velocity, 0.5)
@@ -595,9 +1065,7 @@ def test_cfl_rate_uses_cell_local_face_envelopes() -> None:
         velocity.z.at[2, 2, 2].set(2.0),
     )
     expected = max(4.0 / solver.dx, 3.0 / solver.dy, 2.0 / solver.dz)
-    old_global_sum = (
-        4.0 / solver.dx + 3.0 / solver.dy + 2.0 / solver.dz
-    )
+    old_global_sum = 4.0 / solver.dx + 3.0 / solver.dy + 2.0 / solver.dz
 
     actual = float(solver.cfl_rate(velocity))
 
@@ -646,11 +1114,7 @@ def test_implicit_sgs_diffusion_damps_beyond_explicit_cfl_limit() -> None:
         timestep
         * 2.0
         * 5.0
-        * (
-            1.0 / solver.dx**2
-            + 1.0 / solver.dy**2
-            + 1.0 / solver.dz**2
-        )
+        * (1.0 / solver.dx**2 + 1.0 / solver.dy**2 + 1.0 / solver.dz**2)
     )
     advanced = solver.implicit_diffusion_solve(
         velocity,
@@ -685,10 +1149,7 @@ def test_imex_timestep_removes_vertical_sgs_diffusion_limit() -> None:
     assert imex_dt > 10.0 * explicit_dt
     assert diagnostic.maximum_diffusive_cfl > 0.5
     horizontal_diffusive_cfl = (
-        imex_dt
-        * 2.0
-        * 10.0
-        * (1.0 / imex.dx**2 + 1.0 / imex.dy**2)
+        imex_dt * 2.0 * 10.0 * (1.0 / imex.dx**2 + 1.0 / imex.dy**2)
     )
     assert abs(horizontal_diffusive_cfl - 0.5) < 2.0e-6
 
@@ -747,9 +1208,7 @@ def test_ars233_has_third_order_for_general_additive_split() -> None:
                         * neutral_abl._ARK3_IMPLICIT_A[stage_index][previous]
                         * implicit[previous]
                     )
-                diagonal = neutral_abl._ARK3_IMPLICIT_A[stage_index][
-                    stage_index
-                ]
+                diagonal = neutral_abl._ARK3_IMPLICIT_A[stage_index][stage_index]
                 stage = rhs / (1.0 - timestep * diagonal * implicit_rate)
                 stages.append(stage)
                 explicit.append(explicit_rate * stage)
@@ -763,10 +1222,7 @@ def test_ars233_has_third_order_for_general_additive_split() -> None:
 
     exact = math.exp((explicit_rate + implicit_rate) * final_time)
     errors = [abs(integrate(steps) - exact) for steps in (10, 20, 40)]
-    orders = [
-        math.log(errors[index] / errors[index + 1], 2.0)
-        for index in range(2)
-    ]
+    orders = [math.log(errors[index] / errors[index + 1], 2.0) for index in range(2)]
 
     assert min(orders) > 2.8
 

@@ -20,6 +20,7 @@ implementations directly testable.
 ## Capabilities
 
 - incompressible flow on uniform three-dimensional grids;
+- standalone analytic rectilinear meshing with independent x/y/z clustering;
 - cell-centered horizontal velocity and face-centered vertical velocity;
 - compatible gradient, divergence, and pressure-projection operators;
 - independent JAX reference, local, and equal-z-slab interpretations;
@@ -79,6 +80,22 @@ from jaxwind import EqualZSlab, UniformGrid
 ```
 
 Project-specific environment variables use the `JAXWIND_` prefix.
+
+## Analytic mesh generation
+
+The meshing application is independent of simulation runners and may be
+launched from any directory. It generates versioned physical face coordinates;
+solvers do not depend on its analytic mapping formulas:
+
+```bash
+jaxwind-mesh generate /path/to/JAX-Wind/meshing/example.toml \
+  --output "$PWD/mesh.json"
+jaxwind-mesh inspect "$PWD/mesh.json"
+```
+
+Each axis independently selects uniform, single-boundary, or double-sided
+interior-point clustering. See [`meshing/README.md`](meshing/README.md) for the
+configuration semantics and portable artifact format.
 
 ## Runner workflows
 
@@ -211,6 +228,7 @@ semantic core:
 | [`src/jaxwind/integrators`](src/jaxwind/integrators) | AB2 and concurrent-precursor state transitions |
 | [`src/jaxwind/interpreters`](src/jaxwind/interpreters) | Unified JAX z-slab interpretation; one shard is the local case |
 | [`src/jaxwind/openfast`](src/jaxwind/openfast) | OpenFAST-compatible input parsing and turbine model adapters |
+| [`src/jaxwind/meshing`](src/jaxwind/meshing) | Analytic physical mesh generation and versioned artifact I/O |
 | [`src/jaxwind/pressure`](src/jaxwind/pressure) | Semantic adapter around the external pressure solver |
 | [`src/jaxwind/effects`](src/jaxwind/effects) | Checkpoint and execution-side adapters |
 | [`src/jaxwind/runners`](src/jaxwind/runners) | Configuration, initialization, diagnostics, and application orchestration |

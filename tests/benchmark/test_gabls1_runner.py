@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -34,6 +36,7 @@ def test_gabls1_defaults_are_the_official_coarse_case() -> None:
     assert args.target_cfl == 0.9
     assert args.projection_method == "full"
     assert args.coupling_integrator == "strang"
+    assert args.advection_limiter == "mp5"
     assert args.pressure_smooth == 1
     assert args.metrics_every == 300
     assert args.reference_dir == REFERENCE
@@ -54,11 +57,123 @@ def test_gabls1_short_modes_keep_bounded_end_to_end_scope() -> None:
 
 
 def test_gabls1_accepts_coupled_ssprk3() -> None:
-    args = run.parse_args(
-        ["--coupling-integrator", "coupled-ssprk3"]
-    )
+    args = run.parse_args(["--coupling-integrator", "coupled-ssprk3"])
 
     assert args.coupling_integrator == "coupled-ssprk3"
+
+
+def test_gabls1_accepts_muscl_mc_advection_limiter() -> None:
+    args = run.parse_args(
+        [
+            "--advection-limiter",
+            "muscl-mc",
+            "--advection-dissipation-strength",
+            "0.75",
+        ]
+    )
+
+    assert args.advection_limiter == "muscl-mc"
+    assert args.mp5_strength == 0.75
+    assert run.parse_args(["--mp5-strength", "0.5"]).mp5_strength == 0.5
+
+
+def test_gabls1_loads_stretched_mesh_and_physical_wall_height(tmp_path) -> None:
+    from jaxwind.meshing import (
+        AxisMeshSpec,
+        MeshSpec,
+        generate_mesh,
+        write_mesh,
+    )
+
+    mesh_path = tmp_path / "gabls1-mesh.json"
+    write_mesh(
+        generate_mesh(
+            MeshSpec(
+                AxisMeshSpec(0.0, 400.0, 8),
+                AxisMeshSpec(0.0, 400.0, 8),
+                AxisMeshSpec(
+                    0.0,
+                    400.0,
+                    8,
+                    clustering="single",
+                    point=0.0,
+                    strength=2.0,
+                ),
+            )
+        ),
+        mesh_path,
+    )
+    args = run.parse_args(
+        [
+            "--quick",
+            "--mesh",
+            str(mesh_path),
+            "--advection-limiter",
+            "muscl-mc",
+            "--wall-matching-height",
+            "10.0",
+        ]
+    )
+
+    coupled, _, _ = run._build_coupled(args)
+
+    assert coupled.grid.shape == (8, 8, 8)
+    assert not coupled.grid.uniform_axes[2]
+    assert coupled.momentum.wall_matching_height == min(
+        coupled.grid.z_centers,
+        key=lambda height: abs(height - 10.0),
+    )
+
+
+def test_gabls1_accepts_a_mesh_clustered_on_all_three_axes(tmp_path) -> None:
+    from jaxwind.meshing import (
+        AxisMeshSpec,
+        MeshSpec,
+        generate_mesh,
+        write_mesh,
+    )
+
+    def horizontal() -> AxisMeshSpec:
+        # Double-sided clustering keeps the first and last widths equal, which
+        # is what a periodic axis needs across its seam.
+        return AxisMeshSpec(
+            0.0,
+            400.0,
+            8,
+            clustering="double",
+            point=200.0,
+            strength=1.0,
+        )
+
+    mesh_path = tmp_path / "gabls1-mesh-3d.json"
+    write_mesh(
+        generate_mesh(
+            MeshSpec(
+                horizontal(),
+                horizontal(),
+                AxisMeshSpec(
+                    0.0,
+                    400.0,
+                    8,
+                    clustering="single",
+                    point=0.0,
+                    strength=2.0,
+                ),
+            )
+        ),
+        mesh_path,
+    )
+    args = run.parse_args(["--quick", "--mesh", str(mesh_path)])
+
+    coupled, _, _ = run._build_coupled(args)
+
+    assert coupled.grid.uniform_axes == (False, False, False)
+    assert coupled.momentum.uniform_axes == (False, False, False)
+    assert math.isclose(
+        coupled.grid.x_widths[0],
+        coupled.grid.x_widths[-1],
+        rel_tol=1.0e-12,
+    )
 
 
 def test_eta_log_fields_uses_measured_simulation_throughput() -> None:
@@ -72,8 +187,7 @@ def test_eta_log_fields_uses_measured_simulation_throughput() -> None:
     )
 
     assert status == (
-        "wall=00:01:40 speed=0.50x remain=00:03:20 "
-        "ETA=2026-08-02T12:03:20+00:00"
+        "wall=00:01:40 speed=0.50x remain=00:03:20 ETA=2026-08-02T12:03:20+00:00"
     )
 
 

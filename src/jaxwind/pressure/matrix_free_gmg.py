@@ -20,6 +20,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from jaxwind.domain.grid import RectilinearGrid
+
 from .device_gmres import build_device_gmres_solver
 from .device_pcg import build_device_pcg_solver
 from .fgmres import FGMRESConfig, FGMRESResult, fgmres
@@ -104,69 +106,6 @@ class PoissonBoundaryConditions:
             for pair in self.axis_pairs()
             for condition in pair[:2]
         )
-
-
-@dataclass(frozen=True, slots=True)
-class RectilinearGrid:
-    """Tensor-product finite-volume grid described by physical cell faces."""
-
-    x_faces: tuple[float, ...]
-    y_faces: tuple[float, ...]
-    z_faces: tuple[float, ...]
-
-    def __post_init__(self) -> None:
-        for faces, name in (
-            (self.x_faces, "x"),
-            (self.y_faces, "y"),
-            (self.z_faces, "z"),
-        ):
-            if len(faces) < 2:
-                raise ValueError(f"{name} requires at least one cell")
-            if not all(math.isfinite(value) for value in faces):
-                raise ValueError(f"{name} faces must be finite")
-            if not all(right > left for left, right in zip(faces, faces[1:])):
-                raise ValueError(f"{name} faces must be strictly increasing")
-
-    @classmethod
-    def uniform(
-        cls,
-        nx: int,
-        ny: int,
-        nz: int,
-        *,
-        lx: float = 1.0,
-        ly: float = 1.0,
-        lz: float = 1.0,
-        origin: tuple[float, float, float] = (0.0, 0.0, 0.0),
-    ) -> RectilinearGrid:
-        if min(nx, ny, nz) <= 0:
-            raise ValueError("cell counts must be positive")
-        if min(lx, ly, lz) <= 0.0:
-            raise ValueError("domain lengths must be positive")
-
-        def faces(start: float, length: float, count: int) -> tuple[float, ...]:
-            return tuple(
-                start + length * index / count for index in range(count + 1)
-            )
-
-        return cls(
-            faces(origin[0], lx, nx),
-            faces(origin[1], ly, ny),
-            faces(origin[2], lz, nz),
-        )
-
-    @property
-    def shape(self) -> tuple[int, int, int]:
-        return (
-            len(self.z_faces) - 1,
-            len(self.y_faces) - 1,
-            len(self.x_faces) - 1,
-        )
-
-    @property
-    def cell_count(self) -> int:
-        nz, ny, nx = self.shape
-        return nx * ny * nz
 
 
 @dataclass(frozen=True, slots=True)

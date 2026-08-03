@@ -135,9 +135,9 @@ def main(argv: list[str] | None = None) -> None:
             )
         )
     )
-    timings["momentum_mp5_s"], _ = measure(
+    timings["momentum_numerical_dissipation_s"], _ = measure(
         jax.jit(
-            lambda _: coupled.momentum.mp5_dissipation(
+            lambda _: coupled.momentum.advection_dissipation(
                 state.velocity,
                 cells,
             )
@@ -160,9 +160,9 @@ def main(argv: list[str] | None = None) -> None:
             )
         )
     )
-    timings["scalar_mp5_s"], _ = measure(
+    timings["scalar_numerical_dissipation_s"], _ = measure(
         jax.jit(
-            lambda _: coupled.scalar.mp5_dissipation(
+            lambda _: coupled.scalar.advection_dissipation(
                 state.potential_temperature,
                 state.velocity,
             )
@@ -245,6 +245,7 @@ def main(argv: list[str] | None = None) -> None:
         ],
         "pressure_execution": pressure.krylov.execution,
         "projection_method": args.projection_method,
+        "advection_limiter": args.advection_limiter,
         "coupling_integrator": args.coupling_integrator,
         "scalar_rhs_calls_per_step": (
             3 if args.coupling_integrator == "coupled-ssprk3" else 6

@@ -11,6 +11,7 @@ dependencies = ["jax>=0.4.30"]
 
 [project.scripts]
 jaxwind = "jaxwind.cli:main"
+jaxwind-mesh = "jaxwind.meshing.cli:main"
 
 [project.optional-dependencies]
 pressure = ["spectral-fd>=0.2.0"]

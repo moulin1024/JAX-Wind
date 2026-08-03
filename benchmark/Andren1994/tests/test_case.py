@@ -28,6 +28,13 @@ def test_canonical_configuration_matches_paper_time_and_grid() -> None:
     assert solver.horizontal_coriolis == solver.coriolis
     assert solver.roughness == 0.1
     assert solver.smagorinsky == 0.17
+    assert args.advection_limiter == "mp5"
+
+
+def test_runner_accepts_muscl_mc_advection_limiter() -> None:
+    args = run.parse_args(["--advection-limiter", "muscl-mc"])
+
+    assert args.advection_limiter == "muscl-mc"
 
 
 def test_table_a1_and_reference_envelope_are_complete() -> None:
