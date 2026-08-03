@@ -7,10 +7,12 @@ the transported component's staggered control-volume faces before forming
 the products; transported velocities retain the one- or three-mesh average
 belonging to that flux.
 
-Periodic directions use the uniform-grid identities exactly.  At the rigid
-wall the tangential-velocity ghosts, normal-velocity ghosts, and three-mesh
-momentum fluxes implement Eqs. (146)--(151), specialized to zero resolved wall
-velocity and a uniform wall-normal mesh.
+Periodic directions use the uniform-grid identities exactly. At a rigid wall,
+the tangential-velocity ghosts and three-mesh tangential momentum fluxes use
+Eqs. (146)--(150), specialized to zero resolved wall velocity and a uniform
+wall-normal mesh. The first wall-normal self-flux uses the conservative S2
+member of the staggered family to avoid the nonlinear Eq. (151) outer-ghost
+amplification described in design decision 0012.
 """
 
 from __future__ import annotations
@@ -202,7 +204,16 @@ def _vertical_self_transport(
     dy: float,
     dz: float,
 ) -> Array:
-    """Return the wall-normal S4 self-advection on physical MAC faces."""
+    """Return wall-normal self-advection on physical MAC faces.
+
+    The Morinishi S4 flux is used at every face whose three-mesh stencil stays
+    inside the physical domain. At the first prognostic face next to each
+    rigid wall, use the conservative S2 member of the same staggered family.
+    Direct use of the Eq. (151) outer ghost in the nonlinear ``w*w`` flux
+    amplifies grid-cutoff wall noise by its factor 26 and is not energy stable
+    for a wall-modelled LES initialization. The one-face order reduction is
+    the robust solid-wall closure; Eq. (146) remains the S4 inner ghost.
+    """
     extended = _normal_wall_extension(normal_velocity, u, v, dx, dy, dz)
     count = normal_velocity.shape[0] - 1
     transported_one = 0.5 * (extended[1 : count + 3] + extended[2 : count + 4])
@@ -215,6 +226,12 @@ def _vertical_self_transport(
         3.0 * dz
     )
     interior = _ALPHA_ONE * derivative_one + _ALPHA_THREE * derivative_three
+
+    physical_one = 0.5 * (normal_velocity[:-1] + normal_velocity[1:])
+    physical_flux = physical_one * physical_one
+    second_order = (physical_flux[1:] - physical_flux[:-1]) / dz
+    interior = interior.at[0].set(second_order[0])
+    interior = interior.at[-1].set(second_order[-1])
     result = jnp.zeros_like(normal_velocity)
     return result.at[1:-1].set(interior)
 

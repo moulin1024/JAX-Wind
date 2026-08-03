@@ -1944,6 +1944,7 @@ class NeutralABLMomentum:
         mean_v: Array,
         *,
         perturbation_tke: Array | None = None,
+        perturbation_filter_passes: int = 0,
         seed: int = 0,
     ) -> MACVelocity:
         """Build and project a horizontally homogeneous tabulated profile."""
@@ -1953,6 +1954,12 @@ class NeutralABLMomentum:
         mean_v = jnp.asarray(mean_v, dtype=dtype)
         if mean_u.shape != (nz,) or mean_v.shape != (nz,):
             raise ValueError("mean profiles must contain one value per z cell")
+        if (
+            isinstance(perturbation_filter_passes, bool)
+            or not isinstance(perturbation_filter_passes, int)
+            or perturbation_filter_passes < 0
+        ):
+            raise ValueError("perturbation filter passes must be a nonnegative integer")
         cells = jnp.zeros((nz, ny, nx, 3), dtype=dtype)
         cells = cells.at[..., 0].set(mean_u[:, None, None])
         cells = cells.at[..., 1].set(mean_v[:, None, None])
@@ -1969,6 +1976,17 @@ class NeutralABLMomentum:
                 minval=-0.5,
                 maxval=0.5,
             )
+            for _ in range(perturbation_filter_passes):
+                random = (
+                    0.25 * jnp.roll(random, 1, axis=-2)
+                    + 0.5 * random
+                    + 0.25 * jnp.roll(random, -1, axis=-2)
+                )
+                random = (
+                    0.25 * jnp.roll(random, 1, axis=-3)
+                    + 0.5 * random
+                    + 0.25 * jnp.roll(random, -1, axis=-3)
+                )
             random -= jnp.mean(random, axis=(1, 2), keepdims=True)
             current_tke = 0.5 * jnp.mean(
                 jnp.sum(random * random, axis=-1),
@@ -1987,6 +2005,16 @@ class NeutralABLMomentum:
     @staticmethod
     def cell_centered_velocity(velocity: MACVelocity) -> Array:
         return _cell_velocity(velocity)
+
+    @staticmethod
+    def observed_cell_tendency(tendency: Array) -> Array:
+        """Observe a cell RHS after the solver's cell-to-face interpolation.
+
+        Non-advective momentum terms are advanced on the MAC faces. Paper
+        budgets must therefore apply the same interpolation and return map
+        before correlating the term with cell-centred fluctuations.
+        """
+        return _cell_velocity(_cells_to_faces(tendency))
 
     def diagnostic_wall_consistent_gradient(
         self,

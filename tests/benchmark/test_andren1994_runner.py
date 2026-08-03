@@ -15,6 +15,7 @@ def test_andren_runner_defaults_to_filter_free_amd() -> None:
     assert args.sgs == "amd"
     assert args.amd_coefficient == 0.212
     assert args.pressure_discretization == "kep4"
+    assert args.initial_filter_passes == 8
     assert args.end_ft == 0.1
     assert args.sample_start_ft == 0.05
 

@@ -15,7 +15,10 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from jaxwind.pressure import mac_pressure_gradient
+from jaxwind.momentum import (
+    staggered_kinetic_energy_work,
+    staggered_momentum,
+)
 
 
 PROFILE_NAMES = (
@@ -64,6 +67,22 @@ BUDGET_NAMES = (
     "wc_coriolis",
     "wc_numerical",
     "wc_resolved_flux",
+)
+
+HISTORY_NAMES = (
+    "time_seconds",
+    "step",
+    "ustar",
+    "integrated_resolved_tke_m3_s2",
+    "integrated_sgs_tke_m3_s2",
+    "integrated_total_tke_m3_s2",
+    "cu",
+    "cv",
+    "s4_divergence_l2_s-1",
+    "s4_energy_work_m2_s3",
+    "s4_momentum_x_m_s2",
+    "s4_momentum_y_m_s2",
+    "s4_momentum_z_m_s2",
 )
 
 
@@ -278,14 +297,32 @@ def build_history_kernel(solver, *, diagnostic_ce: float):
             * (jnp.sum(mean[:, 0] - solver.config.geostrophic_wind[0]) * solver.dz)
             / jnp.where(jnp.abs(wall_flux[1]) > tiny, wall_flux[1], jnp.nan)
         )
-        return ustar, integrated_resolved, integrated_sgs, cu, cv
+        s4_tendency = solver.advection_face_tendency(velocity, cells)
+        cell_count = cells.shape[0] * cells.shape[1] * cells.shape[2]
+        divergence_norm = solver.pressure_solver.operator.norm(
+            solver.projector.divergence(velocity)
+        )
+        energy_work = (
+            staggered_kinetic_energy_work(velocity, s4_tendency) / cell_count
+        )
+        momentum = staggered_momentum(s4_tendency) / cell_count
+        return (
+            ustar,
+            integrated_resolved,
+            integrated_sgs,
+            cu,
+            cv,
+            divergence_norm,
+            energy_work,
+            momentum[0],
+            momentum[1],
+            momentum[2],
+        )
 
     return jax.jit(kernel)
 
 
 def build_budget_kernel(solver, scalar_solver):
-    pressure_boundaries = solver.pressure_solver.operator.boundaries
-
     def kernel(velocity, scalar, pressure, sgs_coefficient, wall_velocity):
         cells = solver.cell_centered_velocity(velocity)
         mean = _plane(cells)
@@ -295,19 +332,19 @@ def build_budget_kernel(solver, scalar_solver):
         velocity_gradient = solver.velocity_gradient(cells)
 
         advection = solver.advection_tendency(velocity, cells)
-        regularization = solver.regularization_tendency(velocity, cells)
-        momentum_sgs = solver.sgs_tendency(
-            cells,
-            sgs_coefficient,
-            gradient=velocity_gradient,
-            wall_velocity=wall_velocity,
+        regularization = solver.observed_cell_tendency(
+            solver.regularization_tendency(velocity, cells)
         )
-        forcing = solver.forcing_tendency(cells)
-        pressure_faces = mac_pressure_gradient(
-            pressure,
-            solver.grid,
-            pressure_boundaries,
+        momentum_sgs = solver.observed_cell_tendency(
+            solver.sgs_tendency(
+                cells,
+                sgs_coefficient,
+                gradient=velocity_gradient,
+                wall_velocity=wall_velocity,
+            )
         )
+        forcing = solver.observed_cell_tendency(solver.forcing_tendency(cells))
+        pressure_faces = solver.projector.pressure_gradient(pressure)
         pressure_tendency = -solver.cell_centered_velocity(pressure_faces)
 
         uw_advective = _plane(

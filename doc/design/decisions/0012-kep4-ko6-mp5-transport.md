@@ -42,11 +42,15 @@ is satisfied, its resolved velocity work vanishes to roundoff:
 <U, C_S4(U)> = 0  if  Cont-S4(U) = 0.
 ```
 
-At the rigid lower and upper boundaries, tangential velocity, normal velocity,
-and three-mesh momentum-flux ghosts use the uniform-grid forms of Morinishi
-Eqs. (146)--(151). The implementation is regression-tested with both a fully
-periodic horizontal streamfunction and an x-z streamfunction satisfying zero
-wall-normal velocity.
+At rigid lower and upper boundaries, tangential velocity and three-mesh
+momentum-flux ghosts use the uniform-grid forms of Morinishi Eqs. (146)--(150).
+For the first prognostic wall-normal face, the nonlinear normal self-flux uses
+the conservative S2 member of the same staggered family. Feeding the Eq. (151)
+outer ghost, whose coefficient is 26, directly into the nonlinear `w*w` flux
+creates a grid-cutoff wall mode for rough LES initial fields; S4 resumes one
+face farther into the domain. The implementation is regression-tested with a
+fully periodic horizontal streamfunction, an x-z streamfunction satisfying
+zero wall-normal velocity, and grid-cutoff wall noise.
 
 KO6 is assembled from a third-difference operator `B` and a nonnegative local
 coefficient:

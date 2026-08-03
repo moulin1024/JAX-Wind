@@ -325,6 +325,30 @@ def test_morinishi_s4_has_fourth_order_accuracy() -> None:
     assert errors[0] / errors[1] > 12.0
 
 
+def test_morinishi_s4_wall_closure_does_not_amplify_grid_noise() -> None:
+    solver = _solver(nx=8, ny=8, nz=8)
+    key_u, key_v, key_w = jax.random.split(jax.random.PRNGKey(151), 3)
+    u = jax.random.normal(key_u, (8, 8, 8), dtype=jnp.float32)
+    v = jax.random.normal(key_v, (8, 8, 8), dtype=jnp.float32)
+    w = jax.random.normal(key_w, (9, 8, 8), dtype=jnp.float32)
+    velocity = MACVelocity(
+        jnp.concatenate((u, u[..., :1]), axis=-1),
+        jnp.concatenate((v, v[:, :1, :]), axis=1),
+        w.at[0].set(0.0).at[-1].set(0.0),
+    )
+
+    tendency = solver.kep4_advection(velocity)
+    velocity_scale = max(float(jnp.max(jnp.abs(field))) for field in velocity)
+    tendency_scale = max(float(jnp.max(jnp.abs(field))) for field in tendency)
+
+    assert all(bool(jnp.all(jnp.isfinite(field))) for field in tendency)
+    assert tendency_scale < 1.5 * velocity_scale**2 / min(
+        solver.dx,
+        solver.dy,
+        solver.dz,
+    )
+
+
 def test_ko6_is_conservative_and_energy_dissipative() -> None:
     solver = _solver(nx=8, ny=8, nz=8)
     key_x, key_y, key_z = jax.random.split(jax.random.PRNGKey(6), 3)

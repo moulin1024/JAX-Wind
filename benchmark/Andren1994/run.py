@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import csv
 from dataclasses import asdict
+from datetime import datetime, timedelta
 import json
 import math
 import os
@@ -19,6 +20,17 @@ SOURCE = ROOT / "src"
 for source in (ROOT, SOURCE):
     if str(source) not in sys.path:
         sys.path.insert(0, str(source))
+
+
+CHECKPOINT_SCHEMA = "jaxwind.andren1994.morinishi-s4-pressure-ko6-mp5.v6"
+DIAGNOSTIC_SCHEMA = "jaxwind.andren1994.overlay-figures-2-15.v2"
+
+
+def _format_duration(seconds: float) -> str:
+    seconds = max(int(round(seconds)), 0)
+    hours, remainder = divmod(seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
 
 INITIAL_U = (
@@ -231,6 +243,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="jax",
     )
     parser.add_argument("--seed", type=int, default=1994)
+    parser.add_argument("--initial-filter-passes", type=int, default=8)
     parser.add_argument("--single", action="store_true")
     parser.add_argument("--restart", type=Path)
     parser.add_argument("--checkpoint-every", type=int, default=500)
@@ -289,6 +302,8 @@ def main() -> None:
         raise SystemExit("checkpoint interval must be positive")
     if args.fpj2_timestep_ratio_limit < 1.0:
         raise SystemExit("FPJ-2 timestep ratio limit must be at least one")
+    if args.initial_filter_passes < 0:
+        raise SystemExit("initial filter passes must be nonnegative")
     if args.max_run_seconds is not None and args.max_run_seconds <= 0.0:
         raise SystemExit("max-run-seconds must be positive")
 
@@ -461,6 +476,7 @@ def main() -> None:
             jnp.asarray(INITIAL_U, dtype=dtype),
             jnp.asarray(INITIAL_V, dtype=dtype),
             perturbation_tke=jnp.asarray(INITIAL_TKE, dtype=dtype),
+            perturbation_filter_passes=args.initial_filter_passes,
             seed=args.seed,
         )
         solver.reset_lasd(velocity)
@@ -478,7 +494,7 @@ def main() -> None:
         if (
             "checkpoint_schema" not in checkpoint
             or str(checkpoint["checkpoint_schema"])
-            != "jaxwind.andren1994.morinishi-s4-pressure-ko6-mp5.v5"
+            != CHECKPOINT_SCHEMA
         ):
             raise SystemExit(
                 "restart predates the Morinishi staggered S4 transport; "
@@ -524,6 +540,12 @@ def main() -> None:
         ):
             if name not in checkpoint or str(checkpoint[name]) != expected:
                 raise SystemExit(f"restart {name} does not match this run")
+        if (
+            "initial_filter_passes" not in checkpoint
+            or int(checkpoint["initial_filter_passes"])
+            != args.initial_filter_passes
+        ):
+            raise SystemExit("restart initial filter passes do not match this run")
         for name, expected in (
             ("scalar_amd_coefficient", args.scalar_amd_coefficient),
             ("scalar_surface_flux", args.scalar_surface_flux),
@@ -604,21 +626,11 @@ def main() -> None:
             for index in range(budget_arrays[0].shape[0])
         ]
         budget_times = list(np.asarray(checkpoint["budget_times"], dtype=float))
-        history_names = (
-            "time_seconds",
-            "step",
-            "ustar",
-            "integrated_resolved_tke_m3_s2",
-            "integrated_sgs_tke_m3_s2",
-            "integrated_total_tke_m3_s2",
-            "cu",
-            "cv",
-        )
         history_size = len(checkpoint["history_time_seconds"])
         history_rows = [
             {
                 name: float(checkpoint[f"history_{name}"][index])
-                for name in history_names
+                for name in amd_diagnostics.HISTORY_NAMES
             }
             for index in range(history_size)
         ]
@@ -632,7 +644,10 @@ def main() -> None:
         args.target_cfl,
         args.target_diffusive_cfl,
     )
-    compiled_velocity = velocity
+    # Keep the prognostic state distinct from the asynchronous warm-up graph.
+    # This also prevents future buffer donation in compiled kernels from
+    # invalidating the state used by the real first step.
+    compiled_velocity = MACVelocity(*(jnp.copy(component) for component in velocity))
     compiled_scalar = scalar
     warmup_steps = max(
         args.lasd_update_interval if args.sgs == "lasd" else 1,
@@ -706,6 +721,7 @@ def main() -> None:
     final_time = args.end_ft / coriolis
     sample_start = args.sample_start_ft / coriolis
     start = time.perf_counter()
+    run_start_simulation_time = simulation_time
 
     def sample_profiles() -> tuple[np.ndarray, ...]:
         return tuple(
@@ -750,6 +766,11 @@ def main() -> None:
             "integrated_total_tke_m3_s2": integrated_total,
             "cu": values[3],
             "cv": values[4],
+            "s4_divergence_l2_s-1": values[5],
+            "s4_energy_work_m2_s3": values[6],
+            "s4_momentum_x_m_s2": values[7],
+            "s4_momentum_y_m_s2": values[8],
+            "s4_momentum_z_m_s2": values[9],
         }
 
     def save_checkpoint() -> None:
@@ -779,7 +800,8 @@ def main() -> None:
                 for _ in amd_diagnostics.BUDGET_NAMES
             )
         payload = {
-            "checkpoint_schema": "jaxwind.andren1994.morinishi-s4-pressure-ko6-mp5.v5",
+            "checkpoint_schema": CHECKPOINT_SCHEMA,
+            "diagnostic_schema": DIAGNOSTIC_SCHEMA,
             "velocity_x": np.asarray(velocity.x),
             "velocity_y": np.asarray(velocity.y),
             "velocity_z": np.asarray(velocity.z),
@@ -798,6 +820,7 @@ def main() -> None:
             "momentum_regularization": args.momentum_regularization,
             "scalar_advection": args.scalar_advection,
             "pressure_discretization": args.pressure_discretization,
+            "initial_filter_passes": args.initial_filter_passes,
             "sample_times": np.asarray(sample_times),
             "budget_times": np.asarray(budget_times),
         }
@@ -807,16 +830,7 @@ def main() -> None:
                     [row[name] for row in history_rows]
                 )
         else:
-            for name in (
-                "time_seconds",
-                "step",
-                "ustar",
-                "integrated_resolved_tke_m3_s2",
-                "integrated_sgs_tke_m3_s2",
-                "integrated_total_tke_m3_s2",
-                "cu",
-                "cv",
-            ):
+            for name in amd_diagnostics.HISTORY_NAMES:
                 payload[f"history_{name}"] = np.empty((0,))
         if lasd is not None:
             lasd_step, interval_time = solver.lasd_progress
@@ -920,6 +934,19 @@ def main() -> None:
                 lasd_coefficient=step_sgs_coefficient,
             )
             diagnostics.append(diagnostic)
+            elapsed_run = time.perf_counter() - start
+            advanced_time = simulation_time - run_start_simulation_time
+            if advanced_time > 0.0:
+                remaining_seconds = (
+                    elapsed_run * (final_time - simulation_time) / advanced_time
+                )
+                eta = datetime.now().astimezone() + timedelta(seconds=remaining_seconds)
+                progress = (
+                    f"remaining={_format_duration(remaining_seconds)} "
+                    f"ETA={eta:%Y-%m-%d %H:%M:%S %Z}"
+                )
+            else:
+                progress = "remaining=unknown ETA=unknown"
             print(
                 f"step={step} ft={coriolis * simulation_time:.4f}/"
                 f"{args.end_ft:g} CFL={diagnostic.maximum_cfl:.4f} "
@@ -930,7 +957,8 @@ def main() -> None:
                 f"nu_sgs_max={diagnostic.maximum_sgs_viscosity:.3e} "
                 f"Csgs_mean/max={diagnostic.mean_sgs_coefficient:.3e}/"
                 f"{diagnostic.maximum_sgs_coefficient:.3e} "
-                f"clipped={diagnostic.clipped_sgs_coefficient_fraction:.3f}"
+                f"clipped={diagnostic.clipped_sgs_coefficient_fraction:.3f} "
+                f"{progress}"
             )
         if step % args.checkpoint_every == 0:
             save_checkpoint()
@@ -1178,7 +1206,8 @@ def main() -> None:
             )
 
     summary = {
-        "schema": "jaxwind.andren1994.morinishi-s4-pressure-amd-scalar.v4",
+        "schema": "jaxwind.andren1994.morinishi-s4-pressure-amd-scalar.v5",
+        "diagnostic_schema": DIAGNOSTIC_SCHEMA,
         "reference": "Andren et al. (1994), QJRMS 120, 1457-1484",
         "backend": jax.default_backend(),
         "dtype": str(dtype),
@@ -1190,6 +1219,11 @@ def main() -> None:
         "coriolis_horizontal_s-1": coriolis,
         "end_ft": coriolis * simulation_time,
         "sample_start_ft": args.sample_start_ft,
+        "profile_sample_count": len(samples),
+        "budget_sample_count": len(budget_samples),
+        "profile_diagnostic_fields": list(amd_diagnostics.PROFILE_NAMES),
+        "budget_diagnostic_fields": list(amd_diagnostics.BUDGET_NAMES),
+        "overlay_figures_recorded": list(range(2, 16)),
         "steps": step,
         "minimum_dt_seconds": min(timesteps),
         "maximum_dt_seconds": max(timesteps),
@@ -1235,6 +1269,7 @@ def main() -> None:
         ),
         "horizontal_sgs_diffusion_is_explicit": True,
         "target_advective_cfl": args.target_cfl,
+        "initial_filter_passes": args.initial_filter_passes,
         "target_diffusive_cfl": args.target_diffusive_cfl,
         "linear_solver": args.linear_solver,
         "pressure_relative_tolerance": args.pressure_rtol,

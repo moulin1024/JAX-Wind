@@ -14,6 +14,9 @@ python benchmark/Andren1994/run.py \
 The current runner defaults to fully conservative Morinishi staggered S4
 momentum, conservative KO6 cutoff damping, a matrix-free symmetric-GMG/PCG pressure
 solver with a compatible fourth-order `D4/G4` projection, and filter-free AMD.
+The two first/last wall-normal self-flux points use the conservative S2 wall
+closure documented in decision 0012; all tangential and interior fluxes remain
+Morinishi S4.
 The Krylov operator is exact `-D4G4`; the compact second-order GMG is only its
 preconditioner. The AMD run also advances the paper's passive
 scalar with a complete MP5 transport flux, conservative AMD flux, and a
@@ -63,7 +66,9 @@ The AMD runner observes the complete resolved momentum- and scalar-flux
 budgets online over the configured averaging window and writes
 `fig12_budget_profiles.csv` and `fig13_budget_profiles.csv`. It forms
 production, SGS, transport, pressure, Coriolis, and tendency from the solver's
-actual discrete tendencies. The
+actual discrete tendencies. Cell-defined SGS, Coriolis, and KO6 terms pass
+through the same cell-to-face-to-cell observation map used by the prognostic
+MAC update before their budget correlations are accumulated. The
 projection Lagrange multiplier is already the modified pressure
 `p_r/rho + 2 e_sgs/3`, because isotropic SGS stress is not separately applied
 to momentum; adding diagnostic SGS energy to it again would double count that
@@ -125,7 +130,11 @@ drift is not turbulent variance.
 
 Both paths use the complete 45°N rotation vector (`fh=f`), the tabulated 40-level
 initial mean/TKE profiles, an impermeable stress-free top, and no Rayleigh
-damping. The scalar is passive and therefore has no momentum feedback.
+damping. The random perturbations receive eight compact horizontal 1-2-1 filter
+passes before being renormalized independently at every level to the tabulated
+TKE. This removes grid-cutoff white noise that is incompatible with the S4 wall
+ghost construction without changing the prescribed initial TKE profile. The
+scalar is passive and therefore has no momentum feedback.
 
 The compact public specification and extracted factual data are under
 [`reference/`](reference/Andren1994.md). The original article is linked there
