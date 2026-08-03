@@ -195,13 +195,48 @@ def test_stretched_muscl_states_stay_inside_the_neighbouring_cell_values(
     )
     lower = jnp.minimum(values, neighbour)
     upper = jnp.maximum(values, neighbour)
+    # A bounded axis returns one entry per cell, so its last entry is the far
+    # wall.  That face has no neighbour and therefore no cell jump, which is
+    # asserted separately below: it carries exactly no correction, so the states
+    # reported there are never consumed.
+    faces = slice(None) if periodic else slice(0, -1)
 
-    assert bool(jnp.all(left >= lower - 1.0e-12))
-    assert bool(jnp.all(left <= upper + 1.0e-12))
-    assert bool(jnp.all(right >= lower - 1.0e-12))
-    assert bool(jnp.all(right <= upper + 1.0e-12))
+    assert bool(jnp.all(left[faces] >= lower[faces] - 1.0e-12))
+    assert bool(jnp.all(left[faces] <= upper[faces] + 1.0e-12))
+    assert bool(jnp.all(right[faces] >= lower[faces] - 1.0e-12))
+    assert bool(jnp.all(right[faces] <= upper[faces] + 1.0e-12))
     # The Rusanov correction may not oppose the cell jump.
     assert bool(jnp.all((right - left) * (neighbour - values) >= -1.0e-12))
+    if not periodic:
+        assert float(jnp.abs(right[-1] - left[-1])) == 0.0
+
+
+def test_bounded_muscl_uses_a_one_sided_slope_in_the_boundary_cell() -> None:
+    """A zero slope there is first-order exactly where the wall model works.
+
+    On a neutral logarithmic profile this reconstruction is exact everywhere, so
+    the first interior face is the only place it produces any dissipation at
+    all.  Holding the boundary slope at zero makes that one face deliver most of
+    first-order upwind's dissipation, which near a wall competes with the
+    modeled surface stress rather than correcting an oscillation.
+    """
+
+    kappa, ustar, roughness, length = 0.4, 0.425, 0.1, 1500.0
+    faces = np.linspace(0.0, length, 41)
+    metric = AxisMetric(faces, axis=0, periodic=False, dtype=jnp.float64)
+    centers = np.asarray(metric.centers)
+    profile = jnp.asarray((ustar / kappa) * np.log(centers / roughness))
+
+    left, right = metric.interface_states(profile, "muscl-mc")
+    jump = np.abs(np.asarray(right - left))
+    cell_jump = np.abs(np.diff(np.asarray(profile)))
+    relative = jump[:-1] / cell_jump
+
+    # First-order upwind would be 1.0 at every face; a zero boundary slope gave
+    # 0.63 at the first one.
+    assert relative[0] < 0.2
+    # Above the boundary the reconstruction is exact on a logarithmic profile.
+    assert np.all(relative[1:] < 1.0e-12)
 
 
 def test_diffusion_diagonal_matches_the_uniform_limit_and_drops_wall_faces() -> None:

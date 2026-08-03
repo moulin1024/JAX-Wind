@@ -903,6 +903,19 @@ class AxisMetric:
                         self._leading(upper_factor[1:-1], ndim, dtype) * upper_slope,
                     )
                 )
+            if values.shape[0] > 1:
+                # A boundary cell has one neighbour, so the centred slope is
+                # undefined there, but the one-sided slope is available and can
+                # never overshoot that neighbour: reaching the face costs half a
+                # cell width while the slope is measured over a full centre gap.
+                # Leaving the slope at zero instead makes the reconstruction
+                # piecewise constant exactly at the wall, which is where a
+                # logarithmic profile is most curved.  On such a profile it is
+                # the only place this scheme produces any dissipation at all,
+                # and it produces most of first-order upwind's.
+                gap = self._leading(self.center_gaps, ndim, dtype)
+                slope = slope.at[0].set((values[1] - values[0]) / gap[0])
+                slope = slope.at[-1].set((values[-1] - values[-2]) / gap[-1])
             next_value = jnp.concatenate((values[1:], values[-1:]), axis=0)
             next_slope = jnp.concatenate((slope[1:], slope[-1:]), axis=0)
 
