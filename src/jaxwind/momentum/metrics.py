@@ -276,6 +276,17 @@ def mp5_interface_states(
 
     Constant-spacing form.  A bounded axis clamps its outermost samples, which
     collapses the limiter to its one-sided branch at the first and last cell.
+
+    The pair is passed through the interface-jump projection before it is
+    returned.  MP5 was designed for an upwind flux, where two states crossing at
+    a face is harmless, but this solver consumes only their difference and adds
+    it as a correction to a kinetic-energy-neutral centred flux.  Left uncrossed
+    that difference opposes the cell jump on about a third of the faces of a real
+    field, which makes the correction inject variance instead of removing it; on
+    an active scalar that injection is spurious buoyancy rather than a cosmetic
+    wiggle.  Only the difference is touched, never the centred flux, so this
+    cannot cost the base scheme any accuracy: it bounds the correction by
+    first-order upwind and forbids it from changing sign.
     """
 
     values = jnp.moveaxis(field, axis, -1)
@@ -289,8 +300,11 @@ def mp5_interface_states(
     vp1 = sample(1)
     vp2 = sample(2)
     vp3 = sample(3)
-    left = _uniform_mp5_reconstruct(vm2, vm1, value, vp1, vp2)
-    right = _uniform_mp5_reconstruct(vp3, vp2, vp1, value, vm1)
+    left, right = _limit_interface_jump(
+        _uniform_mp5_reconstruct(vm2, vm1, value, vp1, vp2),
+        _uniform_mp5_reconstruct(vp3, vp2, vp1, value, vm1),
+        vp1 - value,
+    )
     return jnp.moveaxis(left, -1, axis), jnp.moveaxis(right, -1, axis)
 
 
@@ -829,6 +843,7 @@ class AxisMetric:
             gap_p1=gap[-1],
             theta=1.0 - theta,
         )
+        left, right = _limit_interface_jump(left, right, sample[1] - values)
         return jnp.moveaxis(left, 0, self.axis), jnp.moveaxis(right, 0, self.axis)
 
     def _center_gap(self, offset: int) -> Array:

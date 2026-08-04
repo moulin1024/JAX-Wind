@@ -269,3 +269,53 @@ def test_upper_face_flux_divergence_telescopes_over_cell_volumes() -> None:
 
     # Integrating the divergence leaves only the flux through the top face.
     assert np.isclose(float(np.sum(widths * divergence)), float(flux[-1]))
+
+
+@pytest.mark.parametrize("scheme", ["mp5", "muscl-mc"])
+@pytest.mark.parametrize("periodic", [True, False])
+def test_the_correction_is_dissipative_by_construction(
+    scheme: str,
+    periodic: bool,
+) -> None:
+    """Only the difference of the two states is consumed, as a Rusanov flux.
+
+    A correction that opposes the cell jump injects variance rather than
+    removing it, and one that exceeds the jump dissipates harder than first-order
+    upwind.  Both are excluded for either scheme, on smooth data and on data with
+    grid-scale structure, so an active scalar cannot pick up spurious buoyancy
+    from the advection correction.
+    """
+
+    count = 24
+    faces = (
+        _double_sided(count, 1.0, 1.4)
+        if periodic
+        else _single_sided(count, 1.0, 2.2)
+    )
+    metric = AxisMetric(faces, axis=0, periodic=periodic, dtype=jnp.float64)
+    centers = np.asarray(metric.centers)
+    generator = np.random.default_rng(19940101)
+
+    fields = [
+        np.sin(9.0 * centers),                        # smooth
+        np.where(centers < 0.5, 1.0, 0.0),            # a front
+        263.0 + 4.0 * centers + 0.05 * np.sin(31.0 * centers),  # inversion-like
+    ]
+    fields.extend(generator.standard_normal(count) for _ in range(20))
+
+    for values in fields:
+        field = jnp.asarray(values)
+        left, right = metric.interface_states(field, scheme)
+        neighbour = (
+            jnp.roll(field, -1)
+            if periodic
+            else jnp.concatenate((field[1:], field[-1:]))
+        )
+        cell_jump = neighbour - field
+        correction = right - left
+        scale = float(jnp.max(jnp.abs(cell_jump))) + 1.0e-30
+
+        assert bool(jnp.all(correction * cell_jump >= -1.0e-12 * scale**2))
+        assert bool(
+            jnp.all(jnp.abs(correction) <= jnp.abs(cell_jump) + 1.0e-12 * scale)
+        )
