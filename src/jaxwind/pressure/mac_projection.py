@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import functools
 from typing import Callable, NamedTuple
 
 import jax
@@ -191,11 +192,38 @@ def mac_pressure_gradient(
     )
 
 
+@functools.lru_cache(maxsize=None)
+def _compiled_velocity_sum(count: int):
+    """Return a compiled weighted sum of ``count`` MAC velocities.
+
+    The stage combinations of a Runge-Kutta step are field-sized arithmetic that
+    used to run one primitive at a time outside any compiled region, so a single
+    stage cost a dozen separate dispatches and as many passes over memory.
+    Compiling the sum fuses them.  Weights are traced rather than baked in,
+    because they carry the timestep and would otherwise force a recompilation on
+    every step the controller changes it.
+    """
+
+    def kernel(weights, *velocities):
+        return MACVelocity(
+            *(
+                sum(
+                    weights[index] * velocity[component]
+                    for index, velocity in enumerate(velocities)
+                )
+                for component in range(3)
+            )
+        )
+
+    return jax.jit(kernel)
+
+
 def _velocity_sum(*terms: tuple[float, MACVelocity]) -> MACVelocity:
-    return MACVelocity(
-        sum(weight * velocity.x for weight, velocity in terms),
-        sum(weight * velocity.y for weight, velocity in terms),
-        sum(weight * velocity.z for weight, velocity in terms),
+    weights, velocities = zip(*terms)
+    dtype = velocities[0].x.dtype
+    return _compiled_velocity_sum(len(terms))(
+        jnp.asarray(weights, dtype=dtype),
+        *velocities,
     )
 
 

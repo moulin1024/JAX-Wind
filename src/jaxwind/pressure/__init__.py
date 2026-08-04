@@ -30,6 +30,7 @@ from .matrix_free_gmg import (
     pcg,
 )
 from .mac_projection import (
+    _velocity_sum,
     VelocityPressureProjection,
     fpj2_pressure_prediction,
     fpj2_ssprk3_velocity_step,

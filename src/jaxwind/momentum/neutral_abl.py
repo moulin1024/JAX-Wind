@@ -19,6 +19,7 @@ import jax
 import jax.numpy as jnp
 
 from jaxwind.pressure import (
+    _velocity_sum,
     fpj2_pressure_prediction,
     fpj2_ssprk3_velocity_step,
     MACStageProjector,
@@ -356,12 +357,7 @@ def _cells_to_faces(tendency: Array) -> MACVelocity:
     return MACVelocity(x, y, z)
 
 
-def _velocity_sum(*terms: tuple[float, MACVelocity]) -> MACVelocity:
-    return MACVelocity(
-        sum(weight * velocity.x for weight, velocity in terms),
-        sum(weight * velocity.y for weight, velocity in terms),
-        sum(weight * velocity.z for weight, velocity in terms),
-    )
+
 
 
 # Ascher-Ruuth-Spiteri ARS(2,3,3).  This third-order pair needs the same
@@ -1766,10 +1762,10 @@ class NeutralABLMomentum:
             )
             projection_timestep = _ARK3_C[stage_index] * timestep
             if use_fast_projection:
-                gradient = mac_pressure_gradient(
+                # The projector owns a compiled gradient; the free function ran
+                # a scatter per face component outside any compiled region.
+                gradient = self.projector.pressure_gradient(
                     predicted_pressures[stage_index - 1],
-                    self.grid,
-                    self.pressure_solver.operator.boundaries,
                 )
                 stage = self.enforce_boundaries(
                     _velocity_sum(
@@ -1845,7 +1841,14 @@ class NeutralABLMomentum:
         self._lasd_step = accepted_step
 
     @staticmethod
+    @jax.jit
     def enforce_boundaries(velocity: MACVelocity) -> MACVelocity:
+        """Restore the periodic seam and the impermeable walls.
+
+        Compiled because it is six scatters over face arrays and runs twice per
+        step; uncompiled each one was its own dispatch and memory pass.
+        """
+
         x_boundary = 0.5 * (velocity.x[..., 0] + velocity.x[..., -1])
         y_boundary = 0.5 * (velocity.y[:, 0, :] + velocity.y[:, -1, :])
         return MACVelocity(
