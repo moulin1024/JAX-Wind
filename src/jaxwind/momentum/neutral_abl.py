@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
-from typing import Literal, NamedTuple
+from typing import Callable, Literal, NamedTuple
 
 import jax
 import jax.numpy as jnp
@@ -508,7 +508,9 @@ class NeutralABLMomentum:
             gradient: Array,
             frozen_viscosity: Array,
             lasd_coefficient: Array,
-            wall_velocity: Array,
+            *,
+            wall_velocity: Array | None = None,
+            wall_stress: Array | None = None,
         ) -> tuple[MACVelocity, MACVelocity]:
             principal, cross = self.sgs_split_tendency(
                 cells,
@@ -516,6 +518,7 @@ class NeutralABLMomentum:
                 lasd_coefficient,
                 gradient=gradient,
                 wall_velocity=wall_velocity,
+                wall_stress=wall_stress,
             )
             explicit = (
                 self.conservative_advection(velocity, cells)
@@ -543,7 +546,7 @@ class NeutralABLMomentum:
                 gradient,
                 frozen_viscosity,
                 lasd_coefficient,
-                wall_velocity,
+                wall_velocity=wall_velocity,
             )
             return explicit, implicit, frozen_viscosity
 
@@ -565,10 +568,56 @@ class NeutralABLMomentum:
                 gradient,
                 frozen_viscosity,
                 lasd_coefficient,
-                wall_velocity,
+                wall_velocity=wall_velocity,
             )
 
         self._compiled_imex_tendencies = jax.jit(compiled_imex_tendencies)
+
+        def compiled_imex_initial_tendencies_with_wall_stress(
+            velocity: MACVelocity,
+            lasd_coefficient: Array,
+            wall_stress: Array,
+        ) -> tuple[MACVelocity, MACVelocity, Array]:
+            cells = _cell_velocity(velocity)
+            gradient = self.velocity_gradient(cells)
+            frozen_viscosity = self._sgs_viscosity_from_gradient(
+                gradient,
+                lasd_coefficient,
+            )
+            explicit, implicit = imex_tendencies_from_gradient(
+                velocity,
+                cells,
+                gradient,
+                frozen_viscosity,
+                lasd_coefficient,
+                wall_stress=wall_stress,
+            )
+            return explicit, implicit, frozen_viscosity
+
+        self._compiled_imex_initial_tendencies_with_wall_stress = jax.jit(
+            compiled_imex_initial_tendencies_with_wall_stress
+        )
+
+        def compiled_imex_tendencies_with_wall_stress(
+            velocity: MACVelocity,
+            frozen_viscosity: Array,
+            lasd_coefficient: Array,
+            wall_stress: Array,
+        ) -> tuple[MACVelocity, MACVelocity]:
+            cells = _cell_velocity(velocity)
+            gradient = self.velocity_gradient(cells)
+            return imex_tendencies_from_gradient(
+                velocity,
+                cells,
+                gradient,
+                frozen_viscosity,
+                lasd_coefficient,
+                wall_stress=wall_stress,
+            )
+
+        self._compiled_imex_tendencies_with_wall_stress = jax.jit(
+            compiled_imex_tendencies_with_wall_stress
+        )
 
         def compiled_implicit_diffusion(
             velocity: MACVelocity,
@@ -861,6 +910,7 @@ class NeutralABLMomentum:
         *,
         gradient: Array | None = None,
         wall_velocity: Array | None = None,
+        wall_stress: Array | None = None,
     ) -> tuple[Array, Array]:
         """Split a frozen vertical reference from the full nonlinear SGS."""
         if gradient is None:
@@ -877,9 +927,13 @@ class NeutralABLMomentum:
             cell_velocity,
             dynamic_viscosity,
             gradient=gradient,
-            wall_stress=self.wall_stress(
-                cell_velocity,
-                wall_velocity=wall_velocity,
+            wall_stress=(
+                self.wall_stress(
+                    cell_velocity,
+                    wall_velocity=wall_velocity,
+                )
+                if wall_stress is None
+                else wall_stress
             ),
         )
         return principal, full - principal
@@ -1693,19 +1747,34 @@ class NeutralABLMomentum:
         lasd_coefficient: Array,
         wall_velocity: Array,
         explicit_forcing: MACVelocity | None = None,
+        wall_stress_provider: Callable[[MACVelocity, float], Array] | None = None,
     ) -> VelocityPressureProjection:
         """Advance ARS(2,3,3) with frozen vertical SGS diffusion implicit.
 
         ``explicit_forcing`` is a stage-independent acceleration, such as
-        buoyancy frozen at the midpoint of a Strang-coupled scalar step.
+        buoyancy frozen at the midpoint of a Strang-coupled scalar step.  A
+        ``wall_stress_provider`` is evaluated with each ARK stage velocity and
+        physical stage time, keeping nonlinear surface-layer coupling explicit.
         """
-        initial_explicit, initial_implicit, frozen_viscosity = (
-            self._compiled_imex_initial_tendencies(
-                velocity,
-                lasd_coefficient,
-                wall_velocity,
+        if wall_stress_provider is None:
+            initial_explicit, initial_implicit, frozen_viscosity = (
+                self._compiled_imex_initial_tendencies(
+                    velocity,
+                    lasd_coefficient,
+                    wall_velocity,
+                )
             )
-        )
+        else:
+            initial_explicit, initial_implicit, frozen_viscosity = (
+                self._compiled_imex_initial_tendencies_with_wall_stress(
+                    velocity,
+                    lasd_coefficient,
+                    wall_stress_provider(
+                        velocity,
+                        time + _ARK3_C[0] * timestep,
+                    ),
+                )
+            )
         if explicit_forcing is not None:
             initial_explicit = _velocity_sum(
                 (1.0, initial_explicit),
@@ -1714,13 +1783,24 @@ class NeutralABLMomentum:
         explicit_tendencies: list[MACVelocity] = [initial_explicit]
         implicit_tendencies: list[MACVelocity] = [initial_implicit]
 
-        def evaluate(stage_velocity: MACVelocity) -> None:
-            explicit, implicit = self._compiled_imex_tendencies(
-                stage_velocity,
-                frozen_viscosity,
-                lasd_coefficient,
-                wall_velocity,
-            )
+        def evaluate(stage_velocity: MACVelocity, stage_index: int) -> None:
+            if wall_stress_provider is None:
+                explicit, implicit = self._compiled_imex_tendencies(
+                    stage_velocity,
+                    frozen_viscosity,
+                    lasd_coefficient,
+                    wall_velocity,
+                )
+            else:
+                explicit, implicit = self._compiled_imex_tendencies_with_wall_stress(
+                    stage_velocity,
+                    frozen_viscosity,
+                    lasd_coefficient,
+                    wall_stress_provider(
+                        stage_velocity,
+                        time + _ARK3_C[stage_index] * timestep,
+                    ),
+                )
             if explicit_forcing is not None:
                 explicit = _velocity_sum(
                     (1.0, explicit),
@@ -1796,7 +1876,7 @@ class NeutralABLMomentum:
                 )
                 stage = projected.velocity
                 pressure_guess = projected.pressure
-            evaluate(stage)
+            evaluate(stage, stage_index)
 
         final_terms: list[tuple[float, MACVelocity]] = [(1.0, velocity)]
         for stage_index in range(len(_ARK3_C)):

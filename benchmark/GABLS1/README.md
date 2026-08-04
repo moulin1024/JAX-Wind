@@ -72,6 +72,32 @@ scalar transport because their pressure is predicted rather than exactly
 projected. The full-PPE path uses the same formulation, where the correction
 vanishes to the pressure-solve tolerance.
 
+For the GPU MP5 + sign-projection setup with vertically implicit momentum SGS,
+run:
+
+```bash
+env CUDA_VISIBLE_DEVICES=0 JAX_PLATFORMS=cuda JAX_ENABLE_X64=0 \
+  XLA_PYTHON_CLIENT_PREALLOCATE=false PYTHONUNBUFFERED=1 \
+python benchmark/GABLS1/run.py \
+  --nx 32 --ny 32 --nz 32 --dtype float32 \
+  --end-hours 9 --sample-start-hours 8 --dt-max 1 \
+  --target-cfl 0.8 --target-diffusive-cfl 0.5 \
+  --amd-coefficient .212 --scalar-amd-coefficient .212 \
+  --advection-limiter mp5 --mp5-strength 1 \
+  --sgs-time-integration imex_ark3 \
+  --projection-method fpj2 --coupling-integrator strang \
+  --pressure-rtol 1e-4 --pressure-max-iterations 20 \
+  --pressure-smooth 1 --pressure-coarse-smooth 20 \
+  --output-dir benchmark_results/gabls1_mp5_signprojection_gpu
+```
+
+The IMEX path freezes AMD viscosity for one ARK3 step and solves its vertical
+principal diffusion by independent column solves. Horizontal and cross SGS
+terms, buoyancy, and stable-MOST wall stress remain explicit; the wall stress
+is recomputed from each ARK stage velocity, midpoint temperature, and physical
+stage time. Temperature retains the two explicit SSPRK3 half-steps, so this
+mode requires `--coupling-integrator strang`.
+
 The corresponding four-rank quick run uses `16³` so each MP5 slab owns at
 least three y cells:
 

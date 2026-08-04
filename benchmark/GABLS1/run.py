@@ -115,6 +115,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         choices=("strang", "coupled-ssprk3"),
         default="strang",
     )
+    parser.add_argument(
+        "--sgs-time-integration",
+        choices=("explicit", "imex_ark3"),
+        default="explicit",
+        help="treat the frozen vertical momentum SGS operator implicitly",
+    )
     parser.add_argument("--pressure-rtol", type=float, default=1.0e-5)
     parser.add_argument("--pressure-max-iterations", type=int, default=40)
     parser.add_argument("--pressure-smooth", type=int, default=1)
@@ -204,6 +210,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         not math.isfinite(args.wall_matching_height) or args.wall_matching_height <= 0.0
     ):
         parser.error("wall-matching-height must be positive and finite")
+    if (
+        args.sgs_time_integration == "imex_ark3"
+        and args.coupling_integrator != "strang"
+    ):
+        parser.error(
+            "--sgs-time-integration imex_ark3 requires --coupling-integrator strang"
+        )
     return args
 
 
@@ -295,6 +308,13 @@ def _restore_checkpoint(args, coupled, dtype):
     )
     if checkpoint_limiter != args.advection_limiter:
         raise SystemExit("restart advection limiter does not match")
+    checkpoint_sgs_time_integration = (
+        str(checkpoint["sgs_time_integration"])
+        if "sgs_time_integration" in checkpoint
+        else "explicit"
+    )
+    if checkpoint_sgs_time_integration != args.sgs_time_integration:
+        raise SystemExit("restart SGS time integration does not match")
     if "wall_matching_height_m" in checkpoint and not np.isclose(
         float(checkpoint["wall_matching_height_m"]),
         coupled.momentum.wall_matching_height,
@@ -416,7 +436,7 @@ def _build_coupled(args: argparse.Namespace):
             mp5_dissipation_strength=args.mp5_strength,
             advection_limiter=args.advection_limiter,
             amd=AMDModel(coefficient=args.amd_coefficient),
-            sgs_time_integration="explicit",
+            sgs_time_integration=args.sgs_time_integration,
             projection_method=args.projection_method,
         ),
     )
@@ -535,6 +555,7 @@ def run(args: argparse.Namespace) -> dict[str, float | int | str]:
             "scalar_amd_coefficient": args.scalar_amd_coefficient,
             "mp5_strength": args.mp5_strength,
             "advection_limiter": args.advection_limiter,
+            "sgs_time_integration": args.sgs_time_integration,
             "wall_matching_height_m": momentum.wall_matching_height,
             "max_cfl": max_cfl,
             "max_diffusive_cfl": max_diffusive_cfl,
@@ -733,6 +754,7 @@ def run(args: argparse.Namespace) -> dict[str, float | int | str]:
             "advection_limiter": args.advection_limiter,
             "projection_method": args.projection_method,
             "coupling_integrator": args.coupling_integrator,
+            "sgs_time_integration": args.sgs_time_integration,
             "pressure_smooth": args.pressure_smooth,
         },
     )

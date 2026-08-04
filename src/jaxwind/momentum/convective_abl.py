@@ -171,17 +171,13 @@ class AMDBoussinesq:
             raise ValueError(
                 "prescribed-temperature coupling requires zero fixed lower scalar flux"
             )
-        if (
-            momentum.config.sgs_time_integration == "imex_ark3"
-            and self.surface_law is not None
-        ):
-            raise ValueError(
-                "IMEX Boussinesq coupling currently requires prescribed heat flux"
-            )
         self._compiled_surface_scalar_tendency = jax.jit(self._surface_scalar_tendency)
         self._compiled_surface_scalar_step = self._dispatched_surface_scalar_step
         self._compiled_surface_momentum_tendency = jax.jit(
             self._surface_momentum_tendency
+        )
+        self._compiled_surface_momentum_wall_stress = jax.jit(
+            self._surface_momentum_wall_stress
         )
         self._compiled_coupled_surface_tendency = jax.jit(
             self._coupled_surface_tendency
@@ -297,6 +293,20 @@ class AMDBoussinesq:
         return jnp.concatenate(
             (tangential, jnp.zeros_like(tangential[..., :1])),
             axis=-1,
+        )
+
+    def _surface_momentum_wall_stress(
+        self,
+        velocity: MACVelocity,
+        potential_temperature: Array,
+        time: Array,
+    ) -> Array:
+        return self._momentum_wall_stress(
+            self._surface_layer_fluxes(
+                velocity,
+                potential_temperature,
+                time,
+            )
         )
 
     def _surface_scalar_tendency(
@@ -728,6 +738,17 @@ class AMDBoussinesq:
             )
 
         if self.momentum.config.sgs_time_integration == "imex_ark3":
+            wall_stress_provider = (
+                None
+                if self.surface_law is None
+                else lambda stage_velocity, stage_time: (
+                    self._compiled_surface_momentum_wall_stress(
+                        stage_velocity,
+                        midpoint_temperature,
+                        jnp.asarray(stage_time, dtype=midpoint_temperature.dtype),
+                    )
+                )
+            )
             projected = self.momentum._imex_ark3_step(
                 state.velocity,
                 timestep=timestep,
@@ -737,6 +758,7 @@ class AMDBoussinesq:
                 ),
                 wall_velocity=self.momentum.active_wall_velocity(state.velocity),
                 explicit_forcing=buoyancy,
+                wall_stress_provider=wall_stress_provider,
             )
         else:
             history = self.momentum.fpj2_state

@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from benchmark.GABLS1 import run
 from benchmark.GABLS1.reference import (
@@ -36,6 +37,7 @@ def test_gabls1_defaults_are_the_official_coarse_case() -> None:
     assert args.target_cfl == 0.9
     assert args.projection_method == "full"
     assert args.coupling_integrator == "strang"
+    assert args.sgs_time_integration == "explicit"
     assert args.advection_limiter == "mp5"
     assert args.pressure_smooth == 1
     assert args.metrics_every == 300
@@ -60,6 +62,36 @@ def test_gabls1_accepts_coupled_ssprk3() -> None:
     args = run.parse_args(["--coupling-integrator", "coupled-ssprk3"])
 
     assert args.coupling_integrator == "coupled-ssprk3"
+
+
+def test_gabls1_accepts_imex_ark3_with_fpj2() -> None:
+    args = run.parse_args(
+        [
+            "--quick",
+            "--sgs-time-integration",
+            "imex_ark3",
+            "--projection-method",
+            "fpj2",
+        ]
+    )
+
+    coupled, _, _ = run._build_coupled(args)
+
+    assert coupled.momentum.config.sgs_time_integration == "imex_ark3"
+    assert coupled.momentum.config.projection_method == "fpj2"
+    assert coupled.surface_law is not None
+
+
+def test_gabls1_rejects_imex_with_coupled_ssprk3() -> None:
+    with pytest.raises(SystemExit):
+        run.parse_args(
+            [
+                "--sgs-time-integration",
+                "imex_ark3",
+                "--coupling-integrator",
+                "coupled-ssprk3",
+            ]
+        )
 
 
 def test_gabls1_accepts_muscl_mc_advection_limiter() -> None:
