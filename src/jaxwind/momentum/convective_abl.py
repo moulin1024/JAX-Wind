@@ -139,8 +139,11 @@ class AMDBoussinesq:
             raise ValueError("momentum and scalar advection limiters must match")
         if momentum.lasd_closure is not None:
             raise ValueError("AMDBoussinesq requires the AMD momentum closure")
-        if momentum.config.sgs_time_integration != "explicit":
-            raise ValueError("the first coupled reference path requires explicit SGS")
+        if (
+            momentum.config.sgs_time_integration == "imex_ark3"
+            and config.coupling_integrator != "strang"
+        ):
+            raise ValueError("IMEX Boussinesq coupling requires Strang integration")
         if momentum.config.wall_temporal_filter_timescale is not None:
             raise ValueError("coupled reference path requires a memoryless wall input")
         self.momentum = momentum
@@ -167,6 +170,13 @@ class AMDBoussinesq:
         if self.surface_law is not None and scalar.model.lower_surface_flux != 0.0:
             raise ValueError(
                 "prescribed-temperature coupling requires zero fixed lower scalar flux"
+            )
+        if (
+            momentum.config.sgs_time_integration == "imex_ark3"
+            and self.surface_law is not None
+        ):
+            raise ValueError(
+                "IMEX Boussinesq coupling currently requires prescribed heat flux"
             )
         self._compiled_surface_scalar_tendency = jax.jit(self._surface_scalar_tendency)
         self._compiled_surface_scalar_step = self._dispatched_surface_scalar_step
@@ -668,7 +678,7 @@ class AMDBoussinesq:
         *,
         timestep: float,
     ) -> AMDBoussinesqState:
-        """Advance one accepted active-scalar step with full stage projection."""
+        """Advance one accepted active-scalar step with configured projection."""
         if not math.isfinite(timestep) or timestep <= 0.0:
             raise ValueError("timestep must be positive and finite")
         self._last_surface_heat_flux_quadrature = None
@@ -717,34 +727,46 @@ class AMDBoussinesq:
                 (1.0, buoyancy),
             )
 
-        history = self.momentum.fpj2_state
-        if (
-            self.momentum.config.projection_method == "fpj2"
-            and self.momentum._fpj2_history_is_usable(timestep)
-        ):
-            projected = fpj2_ssprk3_velocity_step(
+        if self.momentum.config.sgs_time_integration == "imex_ark3":
+            projected = self.momentum._imex_ark3_step(
                 state.velocity,
-                tendency=stage_tendency,
-                projector=self.momentum.projector,
                 timestep=timestep,
-                current_pressure=history.current_pressure,
-                previous_pressure=history.previous_pressure,
-                current_timestep=history.current_timestep,
-                previous_timestep=history.previous_timestep,
                 time=state.time,
+                lasd_coefficient=self.momentum._active_lasd_coefficient(
+                    state.velocity
+                ),
+                wall_velocity=self.momentum.active_wall_velocity(state.velocity),
+                explicit_forcing=buoyancy,
             )
         else:
-            initial_pressure = (
-                state.pressure if history is None else history.current_pressure
-            )
-            projected = projected_ssprk3_velocity_pressure_step(
-                state.velocity,
-                tendency=stage_tendency,
-                projector=self.momentum.projector,
-                timestep=timestep,
-                time=state.time,
-                initial_pressure=initial_pressure,
-            )
+            history = self.momentum.fpj2_state
+            if (
+                self.momentum.config.projection_method == "fpj2"
+                and self.momentum._fpj2_history_is_usable(timestep)
+            ):
+                projected = fpj2_ssprk3_velocity_step(
+                    state.velocity,
+                    tendency=stage_tendency,
+                    projector=self.momentum.projector,
+                    timestep=timestep,
+                    current_pressure=history.current_pressure,
+                    previous_pressure=history.previous_pressure,
+                    current_timestep=history.current_timestep,
+                    previous_timestep=history.previous_timestep,
+                    time=state.time,
+                )
+            else:
+                initial_pressure = (
+                    state.pressure if history is None else history.current_pressure
+                )
+                projected = projected_ssprk3_velocity_pressure_step(
+                    state.velocity,
+                    tendency=stage_tendency,
+                    projector=self.momentum.projector,
+                    timestep=timestep,
+                    time=state.time,
+                    initial_pressure=initial_pressure,
+                )
         if self.momentum.config.projection_method == "fpj2":
             self.momentum._accept_fpj2_pressure(
                 projected.pressure,
@@ -862,7 +884,12 @@ class AMDBoussinesq:
                 self.momentum.cfl_rate(velocity),
                 jnp.maximum(wall_rate, thermal_rate),
             ),
-            self.momentum.explicit_sgs_diffusion_rate(momentum_diffusivity),
+            self.momentum.explicit_sgs_diffusion_rate(
+                momentum_diffusivity,
+                include_vertical=(
+                    self.momentum.config.sgs_time_integration != "imex_ark3"
+                ),
+            ),
             self.scalar.explicit_diffusion_rate(scalar_diffusivity),
         )
 

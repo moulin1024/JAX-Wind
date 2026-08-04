@@ -28,6 +28,9 @@ def _coupled_solver(
     mp5_strength: float = 1.0,
     advection_limiter: str = "mp5",
     coupling_integrator: str = "strang",
+    sgs_time_integration: str = "explicit",
+    projection_method: str = "full",
+    molecular_viscosity: float = 0.0,
 ) -> AMDBoussinesq:
     grid = RectilinearGrid.uniform(8, 8, 8, lx=2.0, ly=2.0, lz=1.0)
     periodic = BoundaryCondition("periodic")
@@ -58,9 +61,12 @@ def _coupled_solver(
             pressure_acceleration=0.0,
             mp5_dissipation_strength=mp5_strength,
             advection_limiter=advection_limiter,
-            amd=AMDModel(coefficient=0.212),
-            sgs_time_integration="explicit",
-            projection_method="full",
+            amd=AMDModel(
+                coefficient=0.212,
+                molecular_viscosity=molecular_viscosity,
+            ),
+            sgs_time_integration=sgs_time_integration,
+            projection_method=projection_method,
         ),
     )
     scalar = AMDPassiveScalar(
@@ -239,6 +245,54 @@ def test_active_scalar_step_is_conservative_and_projection_is_solenoidal() -> No
     )
     assert float(coupled.momentum.pressure_solver.operator.norm(divergence)) < 1.0e-3
     assert float(jnp.max(jnp.abs(advanced.velocity.z))) > 0.0
+
+
+def test_imex_active_scalar_step_is_conservative_and_projection_is_solenoidal() -> None:
+    coupled = _coupled_solver(
+        lower_flux=0.01,
+        sgs_time_integration="imex_ark3",
+        molecular_viscosity=2.0,
+    )
+    nz, ny, nx = coupled.grid.shape
+    x = 2.0 * jnp.pi * jnp.arange(nx, dtype=jnp.float32) / nx
+    theta = jnp.broadcast_to(0.1 * jnp.sin(x)[None, None, :], (nz, ny, nx))
+    state = coupled.initial_state(_zero_velocity(coupled), theta)
+    timestep = 0.005
+
+    advanced = coupled.step(state, timestep=timestep)
+
+    expected_mean = jnp.mean(
+        theta
+    ) + timestep * coupled.scalar.model.lower_surface_flux / (
+        coupled.grid.z_faces[-1] - coupled.grid.z_faces[0]
+    )
+    divergence = mac_divergence(advanced.velocity, coupled.grid)
+    assert jnp.isclose(
+        jnp.mean(advanced.potential_temperature),
+        expected_mean,
+        rtol=2.0e-5,
+        atol=2.0e-7,
+    )
+    assert float(coupled.momentum.pressure_solver.operator.norm(divergence)) < 1.0e-3
+    assert float(jnp.max(jnp.abs(advanced.velocity.z))) > 0.0
+    assert jnp.all(jnp.isfinite(advanced.velocity.z))
+
+
+def test_imex_coupled_stability_rate_excludes_vertical_momentum_diffusion() -> None:
+    explicit = _coupled_solver(molecular_viscosity=2.0)
+    imex = _coupled_solver(
+        sgs_time_integration="imex_ark3",
+        molecular_viscosity=2.0,
+    )
+    theta = jnp.zeros(explicit.grid.shape, dtype=jnp.float32)
+    velocity = explicit.momentum.initial_log_profile(perturbation_amplitude=0.0)
+    explicit_state = explicit.initial_state(velocity, theta)
+    imex_state = imex.initial_state(velocity, theta)
+
+    explicit_rate = explicit.stability_rates(explicit_state)[1]
+    imex_rate = imex.stability_rates(imex_state)[1]
+
+    assert float(imex_rate) < float(explicit_rate)
 
 
 def test_coupled_ssprk3_shares_three_scalar_stages_and_conserves() -> None:
@@ -433,6 +487,29 @@ def test_active_scalar_fpj2_uses_one_ppe_after_two_startup_steps() -> None:
     first = coupled.step(state, timestep=0.25)
     second = coupled.step(first, timestep=0.25)
     advanced = coupled.step(second, timestep=0.25)
+
+    history = coupled.momentum.fpj2_state
+    divergence = mac_divergence(advanced.velocity, coupled.grid)
+    assert history is not None
+    assert history.history_count == 2
+    assert advanced.step == 3
+    assert jnp.all(jnp.isfinite(advanced.potential_temperature))
+    assert float(coupled.momentum.pressure_solver.operator.norm(divergence)) < 1e-3
+
+
+def test_imex_active_scalar_fpj2_builds_pressure_history() -> None:
+    coupled = _coupled_solver(
+        lower_flux=0.01,
+        sgs_time_integration="imex_ark3",
+        projection_method="fpj2",
+        molecular_viscosity=2.0,
+    )
+    theta = jnp.zeros(coupled.grid.shape, dtype=jnp.float32)
+    state = coupled.initial_state(_zero_velocity(coupled), theta)
+
+    first = coupled.step(state, timestep=0.005)
+    second = coupled.step(first, timestep=0.005)
+    advanced = coupled.step(second, timestep=0.005)
 
     history = coupled.momentum.fpj2_state
     divergence = mac_divergence(advanced.velocity, coupled.grid)

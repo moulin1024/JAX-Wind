@@ -1692,8 +1692,13 @@ class NeutralABLMomentum:
         time: float,
         lasd_coefficient: Array,
         wall_velocity: Array,
+        explicit_forcing: MACVelocity | None = None,
     ) -> VelocityPressureProjection:
-        """Advance ARS(2,3,3) with frozen vertical SGS diffusion implicit."""
+        """Advance ARS(2,3,3) with frozen vertical SGS diffusion implicit.
+
+        ``explicit_forcing`` is a stage-independent acceleration, such as
+        buoyancy frozen at the midpoint of a Strang-coupled scalar step.
+        """
         initial_explicit, initial_implicit, frozen_viscosity = (
             self._compiled_imex_initial_tendencies(
                 velocity,
@@ -1701,6 +1706,11 @@ class NeutralABLMomentum:
                 wall_velocity,
             )
         )
+        if explicit_forcing is not None:
+            initial_explicit = _velocity_sum(
+                (1.0, initial_explicit),
+                (1.0, explicit_forcing),
+            )
         explicit_tendencies: list[MACVelocity] = [initial_explicit]
         implicit_tendencies: list[MACVelocity] = [initial_implicit]
 
@@ -1711,6 +1721,11 @@ class NeutralABLMomentum:
                 lasd_coefficient,
                 wall_velocity,
             )
+            if explicit_forcing is not None:
+                explicit = _velocity_sum(
+                    (1.0, explicit),
+                    (1.0, explicit_forcing),
+                )
             explicit_tendencies.append(explicit)
             implicit_tendencies.append(implicit)
 

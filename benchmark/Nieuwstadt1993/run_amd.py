@@ -52,6 +52,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--pressure-rtol", type=float, default=1.0e-5)
     parser.add_argument("--pressure-max-iterations", type=int, default=40)
     parser.add_argument("--pressure-coarse-smooth", type=int, default=20)
+    parser.add_argument(
+        "--sgs-time-integration",
+        choices=("explicit", "imex_ark3"),
+        default="explicit",
+    )
+    parser.add_argument(
+        "--projection-method",
+        choices=("full", "fpj2"),
+        default="full",
+    )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--single", action="store_true")
     parser.add_argument("--restart", type=Path)
@@ -171,6 +181,20 @@ def _restore_checkpoint(args, coupled, dtype):
     ):
         if not np.isclose(float(checkpoint[key]), expected, rtol=0.0, atol=1.0e-12):
             raise SystemExit(f"restart {key} does not match")
+    checkpoint_sgs_time_integration = (
+        str(checkpoint["sgs_time_integration"])
+        if "sgs_time_integration" in checkpoint.files
+        else "explicit"
+    )
+    checkpoint_projection_method = (
+        str(checkpoint["projection_method"])
+        if "projection_method" in checkpoint.files
+        else "full"
+    )
+    if checkpoint_sgs_time_integration != args.sgs_time_integration:
+        raise SystemExit("restart SGS time integration does not match")
+    if checkpoint_projection_method != args.projection_method:
+        raise SystemExit("restart projection method does not match")
     state = coupled.initial_state(
         MACVelocity(
             jnp.asarray(checkpoint["velocity_x"], dtype=dtype),
@@ -182,6 +206,21 @@ def _restore_checkpoint(args, coupled, dtype):
         time=float(checkpoint["time"]),
         step=int(checkpoint["step"]),
     )
+    if (
+        args.projection_method == "fpj2"
+        and "fpj2_current_pressure" in checkpoint.files
+    ):
+        from jaxwind.momentum import FPJ2State
+
+        coupled.momentum.restore_fpj2(
+            FPJ2State(
+                jnp.asarray(checkpoint["fpj2_current_pressure"], dtype=dtype),
+                jnp.asarray(checkpoint["fpj2_previous_pressure"], dtype=dtype),
+                float(checkpoint["fpj2_current_timestep"]),
+                float(checkpoint["fpj2_previous_timestep"]),
+                int(checkpoint["fpj2_history_count"]),
+            )
+        )
     sample_keys = tuple(str(value) for value in checkpoint["sample_keys"])
     sample_count = int(checkpoint["sample_count"])
     samples = [
@@ -283,8 +322,8 @@ def run(args: argparse.Namespace) -> dict[str, float | str]:
             coriolis_horizontal=0.0,
             mp5_dissipation_strength=args.mp5_strength,
             amd=AMDModel(coefficient=args.amd_coefficient),
-            sgs_time_integration="explicit",
-            projection_method="full",
+            sgs_time_integration=args.sgs_time_integration,
+            projection_method=args.projection_method,
         ),
     )
     scalar = AMDPassiveScalar(
@@ -340,12 +379,17 @@ def run(args: argparse.Namespace) -> dict[str, float | str]:
     spectrum_edges = np.linspace(0.0, maximum_mode, args.nx // 2 + 2)
 
     compile_dt = min(args.dt_max, 0.25 if args.quick else args.dt_max)
+    saved_fpj2 = momentum.fpj2_state
     compile_start = time.perf_counter()
     compiled_state = coupled.step(state, timestep=compile_dt)
     compiled_fields = diagnostic_kernel(state)
     jax.block_until_ready(compiled_state.velocity.x)
     jax.block_until_ready(compiled_fields.sgs_tke)
     compilation_s = time.perf_counter() - compile_start
+    if saved_fpj2 is None:
+        momentum.reset_fpj2()
+    else:
+        momentum.restore_fpj2(saved_fpj2)
     print(f"[compile] non-spectral CBL kernels ready in {compilation_s:.3f}s", flush=True)
 
     def collect_sample() -> dict:
@@ -392,6 +436,8 @@ def run(args: argparse.Namespace) -> dict[str, float | str]:
             "amd_coefficient": args.amd_coefficient,
             "scalar_amd_coefficient": args.scalar_amd_coefficient,
             "mp5_strength": args.mp5_strength,
+            "sgs_time_integration": args.sgs_time_integration,
+            "projection_method": args.projection_method,
             "sample_keys": np.asarray(sample_keys),
             "sample_count": len(samples),
             "sample_times": np.asarray(sample_times),
@@ -402,6 +448,17 @@ def run(args: argparse.Namespace) -> dict[str, float | str]:
             "max_divergence": max_divergence,
             "max_scalar_budget_error": max_scalar_budget_error,
         }
+        fpj2 = momentum.fpj2_state
+        if fpj2 is not None:
+            payload.update(
+                {
+                    "fpj2_current_pressure": np.asarray(fpj2.current_pressure),
+                    "fpj2_previous_pressure": np.asarray(fpj2.previous_pressure),
+                    "fpj2_current_timestep": fpj2.current_timestep,
+                    "fpj2_previous_timestep": fpj2.previous_timestep,
+                    "fpj2_history_count": fpj2.history_count,
+                }
+            )
         for key in sample_keys:
             payload[f"samples_{key}"] = np.stack(
                 [np.asarray(sample[key]) for sample in samples]
