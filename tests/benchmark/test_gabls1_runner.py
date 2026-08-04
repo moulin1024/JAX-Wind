@@ -43,6 +43,7 @@ def test_gabls1_defaults_are_the_official_coarse_case() -> None:
     assert args.scalar_amd_coefficient == 0.212
     assert args.target_cfl == 0.9
     assert args.projection_method == "full"
+    assert args.fpj2_energy_correction
     assert args.coupling_integrator == "strang"
     assert args.sgs_time_integration == "explicit"
     assert args.rayleigh_sponge_start_height is None
@@ -88,7 +89,23 @@ def test_gabls1_accepts_imex_ark3_with_fpj2() -> None:
 
     assert coupled.momentum.config.sgs_time_integration == "imex_ark3"
     assert coupled.momentum.config.projection_method == "fpj2"
+    assert coupled.momentum.config.fpj2_energy_correction
     assert coupled.surface_law is not None
+
+
+def test_gabls1_allows_fpj2_energy_correction_ablation() -> None:
+    args = run.parse_args(
+        [
+            "--quick",
+            "--projection-method",
+            "fpj2",
+            "--no-fpj2-energy-correction",
+        ]
+    )
+
+    coupled, _, _ = run._build_coupled(args)
+
+    assert not coupled.momentum.config.fpj2_energy_correction
 
 
 def test_gabls1_builds_optional_rayleigh_sponge() -> None:

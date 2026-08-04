@@ -111,6 +111,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="full",
     )
     parser.add_argument(
+        "--fpj2-energy-correction",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="apply the local kinetic-energy split correction at FPJ2 stages",
+    )
+    parser.add_argument(
         "--coupling-integrator",
         choices=("strang", "coupled-ssprk3"),
         default="strang",
@@ -337,6 +343,16 @@ def _restore_checkpoint(args, coupled, dtype):
     )
     if checkpoint_sgs_time_integration != args.sgs_time_integration:
         raise SystemExit("restart SGS time integration does not match")
+    checkpoint_fpj2_energy_correction = (
+        bool(checkpoint["fpj2_energy_correction"])
+        if "fpj2_energy_correction" in checkpoint
+        else False
+    )
+    if (
+        args.projection_method == "fpj2"
+        and checkpoint_fpj2_energy_correction != args.fpj2_energy_correction
+    ):
+        raise SystemExit("restart FPJ2 energy correction does not match")
     checkpoint_sponge_start = (
         float(checkpoint["rayleigh_sponge_start_height_m"])
         if "rayleigh_sponge_start_height_m" in checkpoint
@@ -484,6 +500,7 @@ def _build_coupled(args: argparse.Namespace):
             amd=AMDModel(coefficient=args.amd_coefficient),
             sgs_time_integration=args.sgs_time_integration,
             projection_method=args.projection_method,
+            fpj2_energy_correction=args.fpj2_energy_correction,
         ),
     )
     scalar = AMDPassiveScalar(
@@ -615,6 +632,7 @@ def run(args: argparse.Namespace) -> dict[str, float | int | str]:
             "mp5_strength": args.mp5_strength,
             "advection_limiter": args.advection_limiter,
             "sgs_time_integration": args.sgs_time_integration,
+            "fpj2_energy_correction": args.fpj2_energy_correction,
             "rayleigh_sponge_start_height_m": (
                 math.nan
                 if args.rayleigh_sponge_start_height is None
@@ -835,6 +853,7 @@ def run(args: argparse.Namespace) -> dict[str, float | int | str]:
             "projection_method": args.projection_method,
             "coupling_integrator": args.coupling_integrator,
             "sgs_time_integration": args.sgs_time_integration,
+            "fpj2_energy_correction": str(args.fpj2_energy_correction).lower(),
             "rayleigh_sponge_start_height_m": (
                 "disabled"
                 if args.rayleigh_sponge_start_height is None

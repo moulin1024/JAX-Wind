@@ -120,6 +120,7 @@ class NeutralABLConfig:
     sgs_time_integration: Literal["explicit", "imex_ark3"] = "explicit"
     projection_method: Literal["full", "fpj2"] = "full"
     fpj2_timestep_ratio_limit: float = 2.0
+    fpj2_energy_correction: bool = True
     advection_limiter: Literal["mp5", "muscl-mc"] = "mp5"
 
     def __post_init__(self) -> None:
@@ -176,6 +177,8 @@ class NeutralABLConfig:
             raise ValueError("horizontal Coriolis parameter must be finite")
         if self.projection_method not in {"full", "fpj2"}:
             raise ValueError("projection method must be 'full' or 'fpj2'")
+        if not isinstance(self.fpj2_energy_correction, bool):
+            raise ValueError("FPJ2 energy correction flag must be boolean")
         if self.sgs_time_integration not in {"explicit", "imex_ark3"}:
             raise ValueError("SGS time integration must be 'explicit' or 'imex_ark3'")
         if (
@@ -522,7 +525,7 @@ class NeutralABLMomentum:
                 wall_stress=wall_stress,
             )
             explicit = (
-                self.conservative_advection(velocity, cells)
+                self.stage_advection(velocity, cells)
                 + cross
                 + self.forcing_tendency(cells)
             )
@@ -1127,6 +1130,38 @@ class NeutralABLMomentum:
             + (z_flux[1:] - z_flux[:-1]) / self.z_metric.cell_widths(rank, dtype)
         )
 
+    def fpj2_energy_correction(
+        self,
+        velocity: MACVelocity,
+        cell_velocity: Array | None = None,
+    ) -> Array:
+        """Cancel centered-advection work caused by FPJ2 stage divergence.
+
+        The compatible conservative flux is kinetic-energy neutral for a
+        solenoidal MAC velocity.  Pressure-predicted FPJ2 stages are not
+        exactly solenoidal; their residual work is cancelled pointwise by the
+        skew-symmetric split correction ``0.5 * u * div(u)``.  This adds no
+        reductions or pressure solves and fuses into the existing RHS kernel.
+        """
+        cells = _cell_velocity(velocity) if cell_velocity is None else cell_velocity
+        divergence = mac_divergence(velocity, self.grid)
+        return 0.5 * cells * divergence[..., None]
+
+    def stage_advection(
+        self,
+        velocity: MACVelocity,
+        cell_velocity: Array | None = None,
+    ) -> Array:
+        """Return centered advection appropriate for the projection method."""
+        cells = _cell_velocity(velocity) if cell_velocity is None else cell_velocity
+        tendency = self.conservative_advection(velocity, cells)
+        if (
+            self.config.projection_method == "fpj2"
+            and self.config.fpj2_energy_correction
+        ):
+            tendency += self.fpj2_energy_correction(velocity, cells)
+        return tendency
+
     def vertical_advective_flux(
         self,
         velocity: MACVelocity,
@@ -1542,7 +1577,7 @@ class NeutralABLMomentum:
         if gradient is None:
             gradient = self.velocity_gradient(cells)
         tendency = (
-            self.conservative_advection(velocity, cells)
+            self.stage_advection(velocity, cells)
             + self.sgs_tendency(
                 cells,
                 lasd_coefficient,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 
+import jax
 import jax.numpy as jnp
 import pytest
 
@@ -533,6 +534,66 @@ def test_mac_conservative_advection_preserves_momentum_and_energy() -> None:
 
     assert jnp.max(jnp.abs(mean_tendency)) < 1.0e-7
     assert jnp.abs(energy_work) < 1.0e-6
+
+
+@pytest.mark.parametrize("stretched", (False, True))
+def test_fpj2_local_correction_cancels_non_solenoidal_advection_work(
+    stretched: bool,
+) -> None:
+    solver = (
+        _triple_stretched_solver()
+        if stretched
+        else _solver(nx=8, ny=8, nz=8, projection_method="fpj2")
+    )
+    if stretched:
+        solver = NeutralABLMomentum(
+            solver.grid,
+            solver.pressure_solver,
+            NeutralABLConfig(
+                friction_velocity=solver.config.friction_velocity,
+                roughness_length=solver.config.roughness_length,
+                pressure_acceleration=0.0,
+                projection_method="fpj2",
+            ),
+        )
+    nz, ny, nx = solver.grid.shape
+    key = jax.random.PRNGKey(19)
+    x = jax.random.normal(key, (nz, ny, nx + 1), dtype=jnp.float32)
+    x = x.at[..., -1].set(x[..., 0])
+    y = jax.random.normal(
+        jax.random.fold_in(key, 1),
+        (nz, ny + 1, nx),
+        dtype=jnp.float32,
+    )
+    y = y.at[:, -1].set(y[:, 0])
+    z = jax.random.normal(
+        jax.random.fold_in(key, 2),
+        (nz + 1, ny, nx),
+        dtype=jnp.float32,
+    )
+    z = z.at[0].set(0.0).at[-1].set(0.0)
+    velocity = MACVelocity(x, y, z)
+    cells = solver.cell_centered_velocity(velocity)
+    volumes = _cell_volumes(solver.grid)[..., None]
+
+    conservative = solver.conservative_advection(velocity, cells)
+    corrected = solver.stage_advection(velocity, cells)
+    conservative_work = jnp.sum(volumes * cells * conservative)
+    corrected_work = jnp.sum(volumes * cells * corrected)
+
+    assert float(jnp.abs(conservative_work)) > 1.0e-3
+    assert float(jnp.abs(corrected_work)) < 2.0e-5
+
+
+def test_full_projection_keeps_the_conservative_stage_advection() -> None:
+    solver = _solver(nx=8, ny=8, nz=8, projection_method="full")
+    velocity = solver.initial_log_profile(perturbation_amplitude=0.1)
+    cells = solver.cell_centered_velocity(velocity)
+
+    assert jnp.array_equal(
+        solver.stage_advection(velocity, cells),
+        solver.conservative_advection(velocity, cells),
+    )
 
 
 def test_shared_gradient_paths_match_standalone_sgs_and_advection() -> None:

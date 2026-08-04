@@ -234,6 +234,14 @@ runner time was within measurement noise on the development CPU, so
 
 The first two accepted steps after switching from a full-PPE checkpoint use
 the exact three-PPE startup path to build the variable-step pressure history.
+FPJ2 pressure-predicted stages are not exactly solenoidal, so their centred
+conservative momentum flux includes the local skew-split correction
+`0.5 * velocity * divergence`. This cancels the otherwise nonzero stage
+advection work without another pressure solve, device reduction, or host
+synchronization. It is enabled by default for FPJ2; use
+`--no-fpj2-energy-correction` only for controlled ablation against legacy
+results. Checkpoints record the choice and reject a restart with different
+FPJ2 energy semantics.
 
 Continue an interrupted run without losing accumulated samples:
 
