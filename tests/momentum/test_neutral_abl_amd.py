@@ -35,7 +35,6 @@ def _solver(
     wall_matching_level: int = 0,
     wall_filter_width: float | None = None,
     wall_temporal_filter_timescale: float | None = None,
-    advection_limiter: str = "mp5",
 ) -> NeutralABLMomentum:
     grid = RectilinearGrid.uniform(
         nx,
@@ -74,7 +73,6 @@ def _solver(
             wall_matching_level=wall_matching_level,
             wall_filter_width=wall_filter_width,
             wall_temporal_filter_timescale=wall_temporal_filter_timescale,
-            advection_limiter=advection_limiter,
             amd=AMDModel(
                 coefficient=0.212,
                 molecular_viscosity=molecular_viscosity,
@@ -119,7 +117,6 @@ def _stretched_solver(
             friction_velocity=0.1,
             roughness_length=1.0e-3,
             wall_matching_height=wall_matching_height,
-            advection_limiter="muscl-mc",
         ),
     )
 
@@ -165,7 +162,7 @@ def test_stretched_wall_normal_derivative_and_adjoint_use_volume_metric() -> Non
     )
 
 
-def test_stretched_scalar_flux_and_muscl_telescope_with_cell_volumes() -> None:
+def test_stretched_scalar_flux_and_mp5_telescope_with_cell_volumes() -> None:
     solver = _stretched_solver()
     scalar_solver = AMDPassiveScalar(
         solver.grid,
@@ -173,7 +170,6 @@ def test_stretched_scalar_flux_and_muscl_telescope_with_cell_volumes() -> None:
             coefficient=0.0,
             lower_surface_flux=1.0e-3,
             upper_surface_flux=2.0e-4,
-            advection_limiter="muscl-mc",
         ),
     )
     nz, ny, nx = solver.grid.shape
@@ -187,7 +183,7 @@ def test_stretched_scalar_flux_and_muscl_telescope_with_cell_volumes() -> None:
         vertical_velocity,
     )
 
-    limiter = scalar_solver.muscl_mc_dissipation(scalar, velocity)
+    limiter = scalar_solver.mp5_dissipation(scalar, velocity)
     tendency = scalar_solver.sgs_tendency(
         scalar,
         jnp.zeros(solver.grid.shape + (3, 3), dtype=jnp.float32),
@@ -246,7 +242,6 @@ def _triple_stretched_grid() -> RectilinearGrid:
 
 def _triple_stretched_solver(
     *,
-    advection_limiter: str = "muscl-mc",
     lasd: LASDModel | None = None,
 ) -> NeutralABLMomentum:
     grid = _triple_stretched_grid()
@@ -275,7 +270,6 @@ def _triple_stretched_solver(
         NeutralABLConfig(
             friction_velocity=0.1,
             roughness_length=1.0e-3,
-            advection_limiter=advection_limiter,
             lasd=lasd,
         ),
     )
@@ -315,13 +309,13 @@ def test_horizontally_stretched_advection_conserves_momentum_and_energy() -> Non
     assert float(jnp.abs(energy_work)) < 1.0e-7
 
 
-def test_horizontally_stretched_muscl_limiter_only_removes_energy() -> None:
+def test_horizontally_stretched_mp5_limiter_only_removes_energy() -> None:
     solver = _triple_stretched_solver()
     velocity = solver.initial_log_profile(perturbation_amplitude=0.2)
     cells = solver.cell_centered_velocity(velocity)
     volumes = _cell_volumes(solver.grid)[..., None]
 
-    dissipation = solver.muscl_mc_dissipation(velocity, cells)
+    dissipation = solver.mp5_dissipation(velocity, cells)
 
     telescoped = jnp.max(jnp.abs(jnp.sum(volumes * dissipation, axis=(0, 1, 2))))
     assert float(telescoped) < 1.0e-9
@@ -360,7 +354,6 @@ def test_horizontally_stretched_scalar_transport_is_conservative() -> None:
             coefficient=0.0,
             lower_surface_flux=0.0,
             upper_surface_flux=0.0,
-            advection_limiter="muscl-mc",
         ),
     )
     velocity = solver.initial_log_profile(perturbation_amplitude=0.1)
@@ -712,149 +705,6 @@ def test_local_mp5_dissipation_acts_only_near_a_jump() -> None:
     assert int(jnp.sum(active_columns)) <= 8
     assert int(jnp.sum(active_columns)) >= 2
     assert jnp.all(jnp.isfinite(dissipation))
-
-
-def test_muscl_mc_states_are_bounded_and_ordered_at_each_face() -> None:
-    values = jnp.asarray(
-        (0.0, 0.2, 0.9, 1.0, 0.8, -0.1, -0.2),
-        dtype=jnp.float32,
-    )
-
-    left, right = neutral_abl._muscl_mc_interface_states(
-        values,
-        axis=0,
-        periodic=True,
-    )
-    neighbor = jnp.roll(values, -1)
-    lower = jnp.minimum(values, neighbor)
-    upper = jnp.maximum(values, neighbor)
-
-    assert jnp.all(left >= lower)
-    assert jnp.all(left <= upper)
-    assert jnp.all(right >= lower)
-    assert jnp.all(right <= upper)
-    assert jnp.all((right - left) * (neighbor - values) >= 0.0)
-
-
-def test_muscl_mc_dissipation_is_conservative_and_energy_stable() -> None:
-    solver = _solver(nx=16, ny=4, nz=2, advection_limiter="muscl-mc")
-    nz, ny, nx = solver.grid.shape
-    x = jnp.arange(nx, dtype=jnp.float32)
-    scalar = jnp.broadcast_to(
-        (jnp.sin(0.83 * x) + 0.15 * jnp.cos(1.91 * x))[None, None, :],
-        (nz, ny, nx),
-    )
-    velocity = MACVelocity(
-        jnp.ones((nz, ny, nx + 1), dtype=jnp.float32),
-        jnp.zeros((nz, ny + 1, nx), dtype=jnp.float32),
-        jnp.zeros((nz + 1, ny, nx), dtype=jnp.float32),
-    )
-    scalar_solver = AMDPassiveScalar(
-        solver.grid,
-        AMDPassiveScalarModel(
-            coefficient=0.0,
-            lower_surface_flux=0.0,
-            advection_limiter="muscl-mc",
-        ),
-    )
-
-    dissipation = scalar_solver.advection_dissipation(scalar, velocity)
-
-    assert jnp.abs(jnp.sum(dissipation)) < 2.0e-6
-    assert jnp.sum(scalar * dissipation) <= 2.0e-6
-    assert jnp.allclose(
-        dissipation,
-        scalar_solver.muscl_mc_dissipation(scalar, velocity),
-    )
-
-
-def test_muscl_mc_scalar_euler_step_creates_no_new_extrema() -> None:
-    solver = _solver(nx=16, ny=4, nz=2, advection_limiter="muscl-mc")
-    values = jnp.asarray(
-        (
-            0.02,
-            0.15,
-            0.91,
-            0.77,
-            0.33,
-            0.48,
-            0.99,
-            0.61,
-            0.08,
-            0.24,
-            0.86,
-            0.69,
-            0.11,
-            0.39,
-            0.73,
-            0.55,
-        ),
-        dtype=jnp.float32,
-    )
-    scalar = jnp.broadcast_to(values[None, None, :], solver.grid.shape)
-    nz, ny, nx = solver.grid.shape
-    velocity = MACVelocity(
-        jnp.ones((nz, ny, nx + 1), dtype=jnp.float32),
-        jnp.zeros((nz, ny + 1, nx), dtype=jnp.float32),
-        jnp.zeros((nz + 1, ny, nx), dtype=jnp.float32),
-    )
-    scalar_solver = AMDPassiveScalar(
-        solver.grid,
-        AMDPassiveScalarModel(
-            coefficient=0.0,
-            lower_surface_flux=0.0,
-            advection_limiter="muscl-mc",
-        ),
-    )
-
-    advanced = scalar + 0.9 * scalar_solver.dx * (
-        scalar_solver.advective_tendency(scalar, velocity)
-    )
-
-    assert jnp.min(advanced) >= jnp.min(scalar) - 2.0e-7
-    assert jnp.max(advanced) <= jnp.max(scalar) + 2.0e-7
-
-
-def test_muscl_mc_preserves_constant_momentum() -> None:
-    solver = _solver(advection_limiter="muscl-mc")
-    velocity = MACVelocity(
-        jnp.ones((8, 8, 9), dtype=jnp.float32),
-        0.25 * jnp.ones((8, 9, 8), dtype=jnp.float32),
-        jnp.zeros((9, 8, 8), dtype=jnp.float32),
-    )
-
-    dissipation = solver.advection_dissipation(velocity)
-
-    assert float(jnp.max(jnp.abs(dissipation))) < 1.0e-7
-
-
-def test_muscl_mc_momentum_correction_cannot_inject_energy() -> None:
-    solver = _solver(nx=12, ny=8, nz=6, advection_limiter="muscl-mc")
-    nz, ny, nx = solver.grid.shape
-    z, y, x = jnp.meshgrid(
-        jnp.arange(nz, dtype=jnp.float32),
-        jnp.arange(ny, dtype=jnp.float32),
-        jnp.arange(nx, dtype=jnp.float32),
-        indexing="ij",
-    )
-    cells = jnp.stack(
-        (
-            jnp.sin(0.7 * x + 0.2 * y),
-            jnp.cos(0.4 * y - 0.3 * z),
-            jnp.sin(0.5 * z + 0.1 * x),
-        ),
-        axis=-1,
-    )
-    velocity = MACVelocity(
-        jnp.ones((nz, ny, nx + 1), dtype=jnp.float32),
-        jnp.ones((nz, ny + 1, nx), dtype=jnp.float32),
-        jnp.ones((nz + 1, ny, nx), dtype=jnp.float32).at[0].set(0.0).at[-1].set(0.0),
-    )
-
-    dissipation = solver.muscl_mc_dissipation(velocity, cells)
-
-    assert jnp.max(jnp.abs(jnp.sum(dissipation, axis=(0, 1, 2)))) < 5.0e-5
-    assert jnp.sum(cells * dissipation) <= 2.0e-5
 
 
 def test_log_wall_and_pressure_force_balance_initial_bulk_momentum() -> None:

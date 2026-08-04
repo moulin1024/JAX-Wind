@@ -26,7 +26,6 @@ def _coupled_solver(
     *,
     lower_flux: float = 0.01,
     mp5_strength: float = 1.0,
-    advection_limiter: str = "mp5",
     coupling_integrator: str = "strang",
     sgs_time_integration: str = "explicit",
     molecular_viscosity: float = 0.0,
@@ -59,7 +58,6 @@ def _coupled_solver(
             roughness_length=1.0e-3,
             pressure_acceleration=0.0,
             mp5_dissipation_strength=mp5_strength,
-            advection_limiter=advection_limiter,
             amd=AMDModel(
                 coefficient=0.212,
                 molecular_viscosity=molecular_viscosity,
@@ -74,7 +72,6 @@ def _coupled_solver(
             lower_surface_flux=lower_flux,
             upper_surface_flux=0.0,
             mp5_dissipation_strength=mp5_strength,
-            advection_limiter=advection_limiter,
         ),
     )
     return AMDBoussinesq(
@@ -104,7 +101,6 @@ def _stable_coupled_solver(
         if stretched
         else RectilinearGrid.uniform(8, 8, 8, lx=400.0, ly=400.0, lz=400.0)
     )
-    advection_limiter = "muscl-mc" if stretched else "mp5"
     periodic = BoundaryCondition("periodic")
     neumann = BoundaryCondition("neumann")
     pressure = MatrixFreePoissonSolver(
@@ -133,7 +129,6 @@ def _stable_coupled_solver(
             pressure_acceleration=0.0,
             geostrophic_wind=(8.0, 0.0),
             coriolis_vertical=1.39e-4,
-            advection_limiter=advection_limiter,
             amd=AMDModel(coefficient=0.212),
             sgs_time_integration=sgs_time_integration,
         ),
@@ -145,7 +140,6 @@ def _stable_coupled_solver(
             lower_surface_flux=0.0,
             upper_surface_flux=0.0,
             mp5_dissipation_strength=1.0,
-            advection_limiter=advection_limiter,
         ),
     )
     return AMDBoussinesq(
@@ -485,8 +479,8 @@ def test_rayleigh_sponge_steps_are_finite_for_explicit_and_imex() -> None:
         assert jnp.all(jnp.isfinite(advanced.velocity.x))
 
 
-def test_scalar_advection_split_selects_muscl_mc() -> None:
-    coupled = _coupled_solver(advection_limiter="muscl-mc")
+def test_scalar_advection_split_uses_mp5() -> None:
+    coupled = _coupled_solver()
     velocity = coupled.momentum.initial_log_profile(perturbation_amplitude=0.05)
     x = jnp.arange(coupled.grid.shape[2], dtype=jnp.float32)[None, None, :]
     scalar = jnp.broadcast_to(jnp.sin(0.8 * x), coupled.grid.shape)
@@ -495,7 +489,7 @@ def test_scalar_advection_split_selects_muscl_mc() -> None:
     split = coupled.scalar.centered_advective_tendency(
         scalar,
         velocity,
-    ) + coupled.scalar.muscl_mc_dissipation(scalar, velocity)
+    ) + coupled.scalar.mp5_dissipation(scalar, velocity)
 
     assert jnp.allclose(total, split)
 

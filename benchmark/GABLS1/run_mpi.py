@@ -143,7 +143,6 @@ def _build_distributed(args, jax):
         amd_coefficient=args.amd_coefficient,
         scalar_amd_coefficient=args.scalar_amd_coefficient,
         mp5_strength=args.mp5_strength,
-        advection_limiter=args.advection_limiter,
         coupling_integrator=args.coupling_integrator,
     )
     return coupled, case, dtype
@@ -213,7 +212,6 @@ def _build_serial_observer(args, case, dtype):
             coriolis_vertical=case.coriolis,
             coriolis_horizontal=0.0,
             mp5_dissipation_strength=args.mp5_strength,
-            advection_limiter=args.advection_limiter,
             amd=AMDModel(coefficient=args.amd_coefficient),
             sgs_time_integration="explicit",
         ),
@@ -225,7 +223,6 @@ def _build_serial_observer(args, case, dtype):
             lower_surface_flux=0.0,
             upper_surface_flux=0.0,
             mp5_dissipation_strength=args.mp5_strength,
-            advection_limiter=args.advection_limiter,
         ),
     )
     return AMDBoussinesq(
@@ -304,8 +301,8 @@ def _validate_checkpoint(args, checkpoint, coupled) -> None:
         if "advection_limiter" in checkpoint
         else "mp5"
     )
-    if checkpoint_limiter != args.advection_limiter:
-        raise SystemExit("restart advection limiter does not match")
+    if checkpoint_limiter != "mp5":
+        raise SystemExit("cannot restart a non-MP5 advection checkpoint")
 
 
 def _local_restart_state(args, coupled, dtype, rank: int):
@@ -476,7 +473,7 @@ def run(args) -> dict[str, float | int | str] | None:
             "amd_coefficient": args.amd_coefficient,
             "scalar_amd_coefficient": args.scalar_amd_coefficient,
             "mp5_strength": args.mp5_strength,
-            "advection_limiter": args.advection_limiter,
+            "advection_limiter": "mp5",
             "max_cfl": max_cfl,
             "max_diffusive_cfl": max_diffusive_cfl,
             "max_divergence": max_divergence,
@@ -690,7 +687,7 @@ def run(args) -> dict[str, float | int | str] | None:
                 "scalar_amd_coefficient": args.scalar_amd_coefficient,
                 "mp5_dissipation_strength": args.mp5_strength,
                 "advection_dissipation_strength": args.mp5_strength,
-                "advection_limiter": args.advection_limiter,
+                "advection_limiter": "mp5",
                 "projection_method": "full",
                 "coupling_integrator": args.coupling_integrator,
                 "pressure_smooth": args.pressure_smooth,

@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 
 import numpy as np
+import pytest
 
 from benchmark.Andren1994 import run
 from benchmark.Andren1994.overlay_paper_figures import (
@@ -40,6 +41,12 @@ def test_andren_runner_accepts_lasd_and_canonical_amd_controls() -> None:
     assert amd.amd_coefficient == 0.3
     assert amd.end_ft == 10.0
     assert amd.sample_start_ft == 7.0
+
+
+def test_andren_runner_exposes_only_mp5_advection() -> None:
+    assert not hasattr(run.parse_args([]), "advection_limiter")
+    with pytest.raises(SystemExit):
+        run.parse_args(["--advection-limiter", "muscl-mc"])
 
 
 def test_paper_overlay_reads_current_amd_profile_schema(tmp_path) -> None:

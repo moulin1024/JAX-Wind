@@ -47,7 +47,7 @@ def test_gabls1_defaults_are_the_official_coarse_case() -> None:
     assert args.sgs_time_integration == "explicit"
     assert args.rayleigh_sponge_start_height is None
     assert args.rayleigh_sponge_maximum_rate == 0.2
-    assert args.advection_limiter == "mp5"
+    assert not hasattr(args, "advection_limiter")
     assert args.pressure_smooth == 1
     assert args.metrics_every == 300
     assert args.reference_dir == REFERENCE
@@ -122,17 +122,11 @@ def test_gabls1_rejects_imex_with_coupled_ssprk3() -> None:
         )
 
 
-def test_gabls1_accepts_muscl_mc_advection_limiter() -> None:
-    args = run.parse_args(
-        [
-            "--advection-limiter",
-            "muscl-mc",
-            "--advection-dissipation-strength",
-            "0.75",
-        ]
-    )
+def test_gabls1_exposes_only_mp5_advection() -> None:
+    with pytest.raises(SystemExit):
+        run.parse_args(["--advection-limiter", "muscl-mc"])
 
-    assert args.advection_limiter == "muscl-mc"
+    args = run.parse_args(["--advection-dissipation-strength", "0.75"])
     assert args.mp5_strength == 0.75
     assert run.parse_args(["--mp5-strength", "0.5"]).mp5_strength == 0.5
 
@@ -168,8 +162,6 @@ def test_gabls1_loads_stretched_mesh_and_physical_wall_height(tmp_path) -> None:
             "--quick",
             "--mesh",
             str(mesh_path),
-            "--advection-limiter",
-            "muscl-mc",
             "--wall-matching-height",
             "10.0",
         ]

@@ -29,16 +29,12 @@ term by term to the classical form when the spacing is constant.
 from __future__ import annotations
 
 import math
-from typing import Literal
-
 import jax
 import jax.numpy as jnp
 import numpy as np
 
 
 Array = jax.Array
-
-ReconstructionScheme = Literal["mp5", "muscl-mc"]
 
 _MP5_ALPHA = 4.0
 _FOURTH_ORDER_WIDTH = 5
@@ -303,41 +299,6 @@ def mp5_interface_states(
     left, right = _limit_interface_jump(
         _uniform_mp5_reconstruct(vm2, vm1, value, vp1, vp2),
         _uniform_mp5_reconstruct(vp3, vp2, vp1, value, vm1),
-        vp1 - value,
-    )
-    return jnp.moveaxis(left, -1, axis), jnp.moveaxis(right, -1, axis)
-
-
-def muscl_mc_interface_states(
-    field: Array,
-    *,
-    axis: int,
-    periodic: bool,
-) -> tuple[Array, Array]:
-    """Return bounded, sign-preserving MUSCL-MC states on constant spacing."""
-
-    values = jnp.moveaxis(field, axis, -1)
-
-    def sample(offset: int) -> Array:
-        return _sample_offset(values, offset, periodic=periodic)
-
-    vm1 = sample(-1)
-    value = sample(0)
-    vp1 = sample(1)
-    vp2 = sample(2)
-    slope = minmod(
-        2.0 * (value - vm1),
-        0.5 * (vp1 - vm1),
-        2.0 * (vp1 - value),
-    )
-    slope_p1 = minmod(
-        2.0 * (vp1 - value),
-        0.5 * (vp2 - value),
-        2.0 * (vp2 - vp1),
-    )
-    left, right = _limit_interface_jump(
-        value + 0.5 * slope,
-        vp1 - 0.5 * slope_p1,
         vp1 - value,
     )
     return jnp.moveaxis(left, -1, axis), jnp.moveaxis(right, -1, axis)
@@ -786,27 +747,16 @@ class AxisMetric:
     def interface_states(
         self,
         field: Array,
-        scheme: ReconstructionScheme,
     ) -> tuple[Array, Array]:
-        """Return one-sided states on the upper face of every cell."""
+        """Return MP5 one-sided states on the upper face of every cell."""
 
-        if scheme == "mp5":
-            if self.uniform:
-                return mp5_interface_states(
-                    field,
-                    axis=self.axis,
-                    periodic=self.periodic,
-                )
-            return self._variable_mp5_states(field)
-        if scheme == "muscl-mc":
-            if self.uniform and self.periodic:
-                return muscl_mc_interface_states(
-                    field,
-                    axis=self.axis,
-                    periodic=True,
-                )
-            return self._variable_muscl_states(field)
-        raise ValueError("reconstruction scheme must be 'mp5' or 'muscl-mc'")
+        if self.uniform:
+            return mp5_interface_states(
+                field,
+                axis=self.axis,
+                periodic=self.periodic,
+            )
+        return self._variable_mp5_states(field)
 
     def _variable_mp5_states(self, field: Array) -> tuple[Array, Array]:
         values = jnp.moveaxis(field, self.axis, 0)
@@ -864,123 +814,14 @@ class AxisMetric:
         )
         return jnp.asarray((face - home) / (upper - home), dtype=self.dtype)
 
-    def _monotonicity_factors(self) -> tuple[Array, Array]:
-        """Return the per-cell MC limiter factors on the lower and upper side.
-
-        The factor of two in the classical monotonized-central limiter is the
-        ratio of the neighbour centre distance to the half width of the cell,
-        which is what bounds a one-sided extrapolation by the neighbouring cell
-        value.  Where the widths change that ratio is no longer two, and keeping
-        it explicit is what stops the reconstruction from overshooting into a
-        refining region.  Constant spacing gives back two on both sides.
-        """
-
-        lower_gap = self._offset_centers(0) - self._offset_centers(-1)
-        upper_gap = self._offset_centers(1) - self._offset_centers(0)
-        half_width = 0.5 * self._host_widths
-        return (
-            jnp.asarray(lower_gap / half_width, dtype=self.dtype),
-            jnp.asarray(upper_gap / half_width, dtype=self.dtype),
-        )
-
-    def _variable_muscl_states(self, field: Array) -> tuple[Array, Array]:
-        values = jnp.moveaxis(field, self.axis, 0)
-        ndim = values.ndim
-        dtype = values.dtype
-        lower_factor, upper_factor = self._monotonicity_factors()
-        slope = jnp.zeros_like(values)
-        if self.periodic:
-            lower = self._leading(self._center_gap(-1), ndim, dtype)
-            upper = self._leading(self._center_gap(0), ndim, dtype)
-            lower_slope = (values - self._sample(values, -1)) / lower
-            upper_slope = (self._sample(values, 1) - values) / upper
-            centered = (upper * lower_slope + lower * upper_slope) / (lower + upper)
-            slope = minmod(
-                self._leading(lower_factor, ndim, dtype) * lower_slope,
-                centered,
-                self._leading(upper_factor, ndim, dtype) * upper_slope,
-            )
-            next_value = self._sample(values, 1)
-            next_slope = self._sample(slope, 1)
-        else:
-            if values.shape[0] > 2:
-                lower = self._leading(self.center_gaps[:-1], ndim, dtype)
-                upper = self._leading(self.center_gaps[1:], ndim, dtype)
-                lower_slope = (values[1:-1] - values[:-2]) / lower
-                upper_slope = (values[2:] - values[1:-1]) / upper
-                centered = (upper * lower_slope + lower * upper_slope) / (
-                    lower + upper
-                )
-                slope = slope.at[1:-1].set(
-                    minmod(
-                        self._leading(lower_factor[1:-1], ndim, dtype) * lower_slope,
-                        centered,
-                        self._leading(upper_factor[1:-1], ndim, dtype) * upper_slope,
-                    )
-                )
-            if values.shape[0] > 1:
-                # A boundary cell has one neighbour, so the centred slope is
-                # undefined there, but the one-sided slope is available and can
-                # never overshoot that neighbour: reaching the face costs half a
-                # cell width while the slope is measured over a full centre gap.
-                # Leaving the slope at zero instead makes the reconstruction
-                # piecewise constant exactly at the wall, which is where a
-                # logarithmic profile is most curved.  On such a profile it is
-                # the only place this scheme produces any dissipation at all,
-                # and it produces most of first-order upwind's.
-                gap = self._leading(self.center_gaps, ndim, dtype)
-                slope = slope.at[0].set((values[1] - values[0]) / gap[0])
-                slope = slope.at[-1].set((values[-1] - values[-2]) / gap[-1])
-            next_value = jnp.concatenate((values[1:], values[-1:]), axis=0)
-            next_slope = jnp.concatenate((slope[1:], slope[-1:]), axis=0)
-
-        upper_offset = self._leading(self._upper_face_offset(), ndim, dtype)
-        next_lower_offset = self._leading(
-            self._next_lower_face_offset(),
-            ndim,
-            dtype,
-        )
-        left, right = _limit_interface_jump(
-            values + slope * upper_offset,
-            next_value - next_slope * next_lower_offset,
-            next_value - values,
-        )
-        return jnp.moveaxis(left, 0, self.axis), jnp.moveaxis(right, 0, self.axis)
-
-    def _upper_face_offset(self) -> Array:
-        """Return the distance from every cell centre up to its upper face."""
-
-        offsets = np.array(
-            [
-                self._host_face_at(cell + 1) - self._host_centers[cell]
-                for cell in range(self.count)
-            ],
-            dtype=np.float64,
-        )
-        return jnp.asarray(offsets, dtype=self.dtype)
-
-    def _next_lower_face_offset(self) -> Array:
-        """Return the distance from the next cell centre down to that face."""
-
-        offsets = np.zeros(self.count, dtype=np.float64)
-        for cell in range(self.count):
-            if not self.periodic and cell == self.count - 1:
-                continue
-            offsets[cell] = self._host_center_at(cell + 1) - self._host_face_at(
-                cell + 1
-            )
-        return jnp.asarray(offsets, dtype=self.dtype)
-
-
 def reconstruction_flux(
     field: Array,
     face_speed: Array,
     metric: AxisMetric,
     strength: float,
-    scheme: ReconstructionScheme,
 ) -> Array:
-    """Return the Rusanov correction flux through one axis' upper faces."""
-    left, right = metric.interface_states(field, scheme)
+    """Return the MP5/Rusanov correction flux through upper faces."""
+    left, right = metric.interface_states(field)
     speed = jnp.abs(face_speed)
     if speed.ndim < field.ndim:
         speed = speed[..., None]
@@ -991,23 +832,20 @@ def reconstruction_dissipation(
     field: Array,
     directions: tuple[tuple[Array, AxisMetric], ...],
     strength: float,
-    scheme: ReconstructionScheme,
 ) -> Array:
-    """Return the conservative Rusanov correction of a reconstruction."""
+    """Return the conservative MP5/Rusanov correction."""
 
     tendency = jnp.zeros_like(field)
     for face_speed, metric in directions:
-        flux = reconstruction_flux(field, face_speed, metric, strength, scheme)
+        flux = reconstruction_flux(field, face_speed, metric, strength)
         tendency -= metric.upper_face_flux_divergence(flux)
     return tendency
 
 
 __all__ = [
     "AxisMetric",
-    "ReconstructionScheme",
     "minmod",
     "mp5_interface_states",
-    "muscl_mc_interface_states",
     "reconstruction_flux",
     "reconstruction_dissipation",
     "wall_normal_derivative",

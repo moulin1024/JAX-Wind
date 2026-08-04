@@ -165,8 +165,6 @@ class AMDBoussinesq:
     ) -> None:
         if momentum.grid != scalar.grid:
             raise ValueError("momentum and scalar grids must match")
-        if momentum.config.advection_limiter != scalar.model.advection_limiter:
-            raise ValueError("momentum and scalar advection limiters must match")
         if momentum.lasd_closure is not None:
             raise ValueError("AMDBoussinesq requires the AMD momentum closure")
         if (

@@ -33,9 +33,7 @@ from jaxwind.pressure import (
 from .lasd import LASDModel, LASDState, PhysicalSpaceLASD
 from .metrics import (
     AxisMetric,
-    ReconstructionScheme,
     minmod as _minmod,
-    muscl_mc_interface_states as _muscl_mc_interface_states,
     reconstruction_dissipation,
     reconstruction_flux,
     wall_normal_derivative as _wall_normal_derivative,
@@ -74,7 +72,6 @@ class AMDPassiveScalarModel:
     lower_surface_flux: float = 1.0e-3
     upper_surface_flux: float = 0.0
     mp5_dissipation_strength: float = 1.0
-    advection_limiter: Literal["mp5", "muscl-mc"] = "mp5"
 
     def __post_init__(self) -> None:
         nonnegative = {
@@ -91,8 +88,6 @@ class AMDPassiveScalarModel:
         ):
             if not math.isfinite(value):
                 raise ValueError(f"{name} must be finite")
-        if self.advection_limiter not in {"mp5", "muscl-mc"}:
-            raise ValueError("scalar advection limiter must be 'mp5' or 'muscl-mc'")
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,7 +109,6 @@ class NeutralABLConfig:
     amd: AMDModel = AMDModel()
     lasd: LASDModel | None = None
     sgs_time_integration: Literal["explicit", "imex_ark3"] = "explicit"
-    advection_limiter: Literal["mp5", "muscl-mc"] = "mp5"
 
     def __post_init__(self) -> None:
         if self.friction_velocity <= 0.0:
@@ -154,8 +148,6 @@ class NeutralABLConfig:
             or self.mp5_dissipation_strength < 0.0
         ):
             raise ValueError("MP5 dissipation strength must be finite and nonnegative")
-        if self.advection_limiter not in {"mp5", "muscl-mc"}:
-            raise ValueError("momentum advection limiter must be 'mp5' or 'muscl-mc'")
         if self.pressure_acceleration is not None and not math.isfinite(
             self.pressure_acceleration
         ):
@@ -1312,14 +1304,12 @@ class NeutralABLMomentum:
         self,
         velocity: MACVelocity,
         cell_velocity: Array | None,
-        scheme: ReconstructionScheme,
     ) -> Array:
         cells = _cell_velocity(velocity) if cell_velocity is None else cell_velocity
         return reconstruction_dissipation(
             cells,
             self._upper_face_speeds(velocity),
             self.config.mp5_dissipation_strength,
-            scheme,
         )
 
     def mp5_dissipation(
@@ -1328,27 +1318,15 @@ class NeutralABLMomentum:
         cell_velocity: Array | None = None,
     ) -> Array:
         """Return local MP5/Rusanov face dissipation for all momenta."""
-        return self._reconstruction_dissipation(velocity, cell_velocity, "mp5")
-
-    def muscl_mc_dissipation(
-        self,
-        velocity: MACVelocity,
-        cell_velocity: Array | None = None,
-    ) -> Array:
-        """Return compact MUSCL-MC/Rusanov momentum stabilization."""
-        return self._reconstruction_dissipation(velocity, cell_velocity, "muscl-mc")
+        return self._reconstruction_dissipation(velocity, cell_velocity)
 
     def advection_dissipation(
         self,
         velocity: MACVelocity,
         cell_velocity: Array | None = None,
     ) -> Array:
-        """Return the configured conservative advection stabilization."""
-        return self._reconstruction_dissipation(
-            velocity,
-            cell_velocity,
-            self.config.advection_limiter,
-        )
+        """Return the conservative MP5 advection stabilization."""
+        return self._reconstruction_dissipation(velocity, cell_velocity)
 
     def vertical_advection_dissipation_flux(
         self,
@@ -1366,7 +1344,6 @@ class NeutralABLMomentum:
             velocity.z[1:],
             self.z_metric,
             self.config.mp5_dissipation_strength,
-            self.config.advection_limiter,
         )
         return flux.at[1:].set(upper_flux)
 
@@ -2408,7 +2385,6 @@ class AMDPassiveScalar:
         self,
         scalar: Array,
         velocity: MACVelocity,
-        scheme: ReconstructionScheme,
     ) -> Array:
         self._validate_scalar(scalar)
         strength = self.model.mp5_dissipation_strength
@@ -2419,7 +2395,7 @@ class AMDPassiveScalar:
             (velocity.y[:, 1:, :], self.y_metric),
             (velocity.z[1:], self.z_metric),
         )
-        return reconstruction_dissipation(scalar, directions, strength, scheme)
+        return reconstruction_dissipation(scalar, directions, strength)
 
     def mp5_dissipation(
         self,
@@ -2427,27 +2403,15 @@ class AMDPassiveScalar:
         velocity: MACVelocity,
     ) -> Array:
         """Return only the conservative MP5/Rusanov scalar dissipation."""
-        return self._reconstruction_dissipation(scalar, velocity, "mp5")
-
-    def muscl_mc_dissipation(
-        self,
-        scalar: Array,
-        velocity: MACVelocity,
-    ) -> Array:
-        """Return compact MUSCL-MC/Rusanov scalar stabilization."""
-        return self._reconstruction_dissipation(scalar, velocity, "muscl-mc")
+        return self._reconstruction_dissipation(scalar, velocity)
 
     def advection_dissipation(
         self,
         scalar: Array,
         velocity: MACVelocity,
     ) -> Array:
-        """Return the configured conservative scalar stabilization."""
-        return self._reconstruction_dissipation(
-            scalar,
-            velocity,
-            self.model.advection_limiter,
-        )
+        """Return the conservative MP5 scalar stabilization."""
+        return self._reconstruction_dissipation(scalar, velocity)
 
     def vertical_advection_dissipation_flux(
         self,
@@ -2465,7 +2429,6 @@ class AMDPassiveScalar:
             velocity.z[1:],
             self.z_metric,
             self.model.mp5_dissipation_strength,
-            self.model.advection_limiter,
         )
         return flux.at[1:].set(upper_flux)
 

@@ -243,7 +243,7 @@ def main(argv: list[str] | None = None) -> None:
         ],
         "pressure_execution": pressure.krylov.execution,
         "projection_method": "full",
-        "advection_limiter": args.advection_limiter,
+        "advection_limiter": "mp5",
         "coupling_integrator": args.coupling_integrator,
         "scalar_rhs_calls_per_step": (
             3 if args.coupling_integrator == "coupled-ssprk3" else 6

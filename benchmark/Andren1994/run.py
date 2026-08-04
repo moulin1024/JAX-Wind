@@ -149,12 +149,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=1.0,
     )
     parser.add_argument(
-        "--advection-limiter",
-        choices=("mp5", "muscl-mc"),
-        default="mp5",
-        help="nonlinear correction added to the centered momentum/scalar flux",
-    )
-    parser.add_argument(
         "--sgs-time-integration",
         choices=("imex_ark3", "explicit"),
         default="imex_ark3",
@@ -337,7 +331,6 @@ def main() -> None:
             coriolis_vertical=coriolis,
             coriolis_horizontal=coriolis,
             mp5_dissipation_strength=args.mp5_strength,
-            advection_limiter=args.advection_limiter,
             amd=AMDModel(coefficient=args.amd_coefficient),
             sgs_time_integration=args.sgs_time_integration,
             lasd=(
@@ -360,7 +353,6 @@ def main() -> None:
             coefficient=args.scalar_amd_coefficient,
             lower_surface_flux=args.scalar_surface_flux,
             mp5_dissipation_strength=args.mp5_strength,
-            advection_limiter=args.advection_limiter,
         ),
     )
 
@@ -500,10 +492,8 @@ def main() -> None:
             if "advection_limiter" in checkpoint
             else "mp5"
         )
-        if checkpoint_limiter != args.advection_limiter:
-            raise SystemExit(
-                "restart advection limiter does not match this run"
-            )
+        if checkpoint_limiter != "mp5":
+            raise SystemExit("cannot restart a non-MP5 advection checkpoint")
         for name, expected in (
             ("scalar_amd_coefficient", args.scalar_amd_coefficient),
             ("scalar_surface_flux", args.scalar_surface_flux),
@@ -761,7 +751,7 @@ def main() -> None:
             "scalar_amd_coefficient": args.scalar_amd_coefficient,
             "scalar_surface_flux": args.scalar_surface_flux,
             "mp5_strength": args.mp5_strength,
-            "advection_limiter": args.advection_limiter,
+            "advection_limiter": "mp5",
             "sample_times": np.asarray(sample_times),
             "budget_times": np.asarray(budget_times),
         }
@@ -1260,7 +1250,7 @@ def main() -> None:
         ),
         "mp5_dissipation_strength": args.mp5_strength,
         "advection_dissipation_strength": args.mp5_strength,
-        "advection_limiter": args.advection_limiter,
+        "advection_limiter": "mp5",
         "sgs_time_integration": args.sgs_time_integration,
         "vertical_sgs_diffusion_is_implicit": (
             args.sgs_time_integration == "imex_ark3"

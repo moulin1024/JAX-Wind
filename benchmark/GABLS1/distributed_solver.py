@@ -72,7 +72,6 @@ class YSlabAMDBoussinesq:
         amd_coefficient: float,
         scalar_amd_coefficient: float,
         mp5_strength: float,
-        advection_limiter: str = "mp5",
         coupling_integrator: str = "strang",
     ) -> None:
         if pressure_solver.operator.grid != grid:
@@ -83,12 +82,7 @@ class YSlabAMDBoussinesq:
         self.device_count = pressure_solver.device_count
         self.local_device_count = pressure_solver.local_device_count
         self.axis_name = pressure_solver.distribution.axis_name
-        if advection_limiter not in ("mp5", "muscl-mc"):
-            raise ValueError(
-                "advection limiter must be 'mp5' or 'muscl-mc'"
-            )
-        self.advection_limiter = advection_limiter
-        self.halo_width = 3 if advection_limiter == "mp5" else 2
+        self.halo_width = 3
         self.nx = grid.shape[2]
         self.ny = grid.shape[1]
         self.nz = grid.shape[0]
@@ -147,7 +141,6 @@ class YSlabAMDBoussinesq:
                 coriolis_vertical=coriolis,
                 coriolis_horizontal=0.0,
                 mp5_dissipation_strength=mp5_strength,
-                advection_limiter=advection_limiter,
                 amd=AMDModel(coefficient=amd_coefficient),
                 sgs_time_integration="explicit",
             ),
@@ -159,7 +152,6 @@ class YSlabAMDBoussinesq:
                 lower_surface_flux=0.0,
                 upper_surface_flux=0.0,
                 mp5_dissipation_strength=mp5_strength,
-                advection_limiter=advection_limiter,
             ),
         )
         self.surface_law = MoninObukhovWallLaw(

@@ -100,12 +100,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=1.0,
     )
     parser.add_argument(
-        "--advection-limiter",
-        choices=("mp5", "muscl-mc"),
-        default="mp5",
-        help="nonlinear correction added to the centered momentum/scalar flux",
-    )
-    parser.add_argument(
         "--coupling-integrator",
         choices=("strang", "coupled-ssprk3"),
         default="strang",
@@ -322,8 +316,8 @@ def _restore_checkpoint(args, coupled, dtype):
         if "advection_limiter" in checkpoint
         else "mp5"
     )
-    if checkpoint_limiter != args.advection_limiter:
-        raise SystemExit("restart advection limiter does not match")
+    if checkpoint_limiter != "mp5":
+        raise SystemExit("cannot restart a non-MP5 advection checkpoint")
     checkpoint_sgs_time_integration = (
         str(checkpoint["sgs_time_integration"])
         if "sgs_time_integration" in checkpoint
@@ -464,7 +458,6 @@ def _build_coupled(args: argparse.Namespace):
             coriolis_horizontal=0.0,
             wall_matching_height=args.wall_matching_height,
             mp5_dissipation_strength=args.mp5_strength,
-            advection_limiter=args.advection_limiter,
             amd=AMDModel(coefficient=args.amd_coefficient),
             sgs_time_integration=args.sgs_time_integration,
         ),
@@ -476,7 +469,6 @@ def _build_coupled(args: argparse.Namespace):
             lower_surface_flux=0.0,
             upper_surface_flux=0.0,
             mp5_dissipation_strength=args.mp5_strength,
-            advection_limiter=args.advection_limiter,
         ),
     )
     coupled = AMDBoussinesq(
@@ -580,7 +572,7 @@ def run(args: argparse.Namespace) -> dict[str, float | int | str]:
             "amd_coefficient": args.amd_coefficient,
             "scalar_amd_coefficient": args.scalar_amd_coefficient,
             "mp5_strength": args.mp5_strength,
-            "advection_limiter": args.advection_limiter,
+            "advection_limiter": "mp5",
             "sgs_time_integration": args.sgs_time_integration,
             "rayleigh_sponge_start_height_m": (
                 math.nan
@@ -787,7 +779,7 @@ def run(args: argparse.Namespace) -> dict[str, float | int | str]:
             "scalar_amd_coefficient": args.scalar_amd_coefficient,
             "mp5_dissipation_strength": args.mp5_strength,
             "advection_dissipation_strength": args.mp5_strength,
-            "advection_limiter": args.advection_limiter,
+            "advection_limiter": "mp5",
             "projection_method": "full",
             "coupling_integrator": args.coupling_integrator,
             "sgs_time_integration": args.sgs_time_integration,

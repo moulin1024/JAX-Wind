@@ -34,8 +34,8 @@ mpiexec -n 4 env \
 The layout is `1 × 4` in `y`: every rank owns `32 × 8 × 32` cells and keeps
 complete ground-to-top vertical columns. AMD and the nonlinear advection
 correction exchange periodic halo rows with multi-host `ppermute`; MP5 uses
-three rows and MUSCL-MC uses two. Stable MOST and vertical SGS fluxes stay
-local. The matrix-free GMG/PCG pressure solve uses the same y slabs on fine
+three rows. Stable MOST and vertical SGS fluxes stay local. The matrix-free
+GMG/PCG pressure solve uses the same y slabs on fine
 levels and globally replicates only its coarse level. Rank 0 reconstructs the
 ordinary full-domain checkpoint and diagnostics, so serial and MPI runs can
 restart each other's checkpoints.
@@ -79,7 +79,7 @@ python benchmark/GABLS1/run.py \
   --end-hours 9 --sample-start-hours 8 --dt-max 1 \
   --target-cfl 0.8 --target-diffusive-cfl 0.5 \
   --amd-coefficient .212 --scalar-amd-coefficient .212 \
-  --advection-limiter mp5 --mp5-strength 1 \
+  --mp5-strength 1 \
   --sgs-time-integration imex_ark3 \
   --coupling-integrator strang \
   --pressure-rtol 1e-4 --pressure-max-iterations 20 \
@@ -119,12 +119,12 @@ mpiexec -n 4 python benchmark/GABLS1/run_mpi.py --quick \
   --output-dir benchmark_results/gabls1_amd_mpi_quick
 ```
 
-Select the compact sign-preserving MUSCL-MC/Rusanov correction with
-`--advection-limiter muscl-mc`. The default remains `mp5`; both choices add a
-conservative nonlinear correction to the same kinetic-energy-neutral centred
-momentum flux. Set its strength with `--advection-dissipation-strength`;
-`--mp5-strength` remains a backward-compatible alias. Existing checkpoints
-without an `advection_limiter` field are interpreted as MP5 checkpoints.
+MP5 provides the conservative nonlinear correction to the
+kinetic-energy-neutral centred momentum flux. Set its strength with
+`--advection-dissipation-strength`; `--mp5-strength` remains a
+backward-compatible alias. Existing checkpoints without an
+`advection_limiter` field are interpreted as MP5 checkpoints; checkpoints
+recorded with another limiter are rejected.
 
 ## Static stretched mesh
 
@@ -141,7 +141,6 @@ jaxwind-mesh generate benchmark/GABLS1/stretched_mesh.toml \
 
 python benchmark/GABLS1/run.py \
   --mesh benchmark_results/gabls1_stretched_mesh.json \
-  --advection-limiter muscl-mc \
   --wall-matching-height 6.25 \
   --output-dir benchmark_results/gabls1_amd_stretched
 ```

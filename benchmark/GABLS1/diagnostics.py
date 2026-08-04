@@ -234,17 +234,6 @@ def snapshot_statistics(coupled, state) -> dict[str, np.ndarray | float]:
     )
     dissipation_amd = diagnostic["amd_energy_dissipation"].mean(axis=(1, 2))
     dissipation_numerical = diagnostic["mp5_energy_dissipation"].mean(axis=(1, 2))
-    limiter = coupled.momentum.config.advection_limiter
-    dissipation_mp5 = (
-        dissipation_numerical
-        if limiter == "mp5"
-        else np.zeros_like(dissipation_numerical)
-    )
-    dissipation_muscl_mc = (
-        dissipation_numerical
-        if limiter == "muscl-mc"
-        else np.zeros_like(dissipation_numerical)
-    )
     resolved_energy = 0.5 * np.sum(fluctuation * fluctuation, axis=-1)
     energy_pressure = resolved_energy + pressure_fluctuation
     energy_pressure_faces = _cell_to_zero_boundary_faces(
@@ -324,8 +313,7 @@ def snapshot_statistics(coupled, state) -> dict[str, np.ndarray | float]:
         "transport_total": transport_resolved,
         "dissipation_amd": dissipation_amd,
         "dissipation_numerical": dissipation_numerical,
-        "dissipation_mp5": dissipation_mp5,
-        "dissipation_muscl_mc": dissipation_muscl_mc,
+        "dissipation_mp5": dissipation_numerical,
         "dissipation_total": dissipation_amd + dissipation_numerical,
         "boundary_layer_height": boundary_layer_height,
         "surface_heat_flux": surface_heat_flux,

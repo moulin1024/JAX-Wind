@@ -190,7 +190,7 @@ def main(argv: list[str] | None = None) -> None:
         "profile_repeats": profile.profile_repeats,
         "pressure_execution": coupled.pressure_solver.krylov.execution,
         "coupling_integrator": args.coupling_integrator,
-        "advection_limiter": args.advection_limiter,
+        "advection_limiter": "mp5",
         "advection_halo_width": coupled.halo_width,
         "scalar_rhs_calls_per_step": (
             3 if args.coupling_integrator == "coupled-ssprk3" else 6

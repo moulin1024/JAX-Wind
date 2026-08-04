@@ -8,7 +8,6 @@ import pytest
 from jaxwind.momentum.metrics import (
     AxisMetric,
     mp5_interface_states,
-    muscl_mc_interface_states,
 )
 
 
@@ -133,10 +132,8 @@ def test_periodic_three_point_stencil_is_rejected() -> None:
         )
 
 
-@pytest.mark.parametrize("scheme", ["mp5", "muscl-mc"])
 @pytest.mark.parametrize("periodic", [True, False])
 def test_variable_states_match_the_constant_spacing_kernel(
-    scheme: str,
     periodic: bool,
 ) -> None:
     """The variable-spacing reconstruction is a generalization, not a rewrite."""
@@ -150,7 +147,6 @@ def test_variable_states_match_the_constant_spacing_kernel(
             dtype=jnp.float64,
         )
     )
-    reference = mp5_interface_states if scheme == "mp5" else muscl_mc_interface_states
     # A bounded axis shifts its stencil inward instead of clamping samples, so
     # only faces whose full stencil is interior can agree term by term.
     window = slice(None) if periodic else slice(2, count - 3)
@@ -158,12 +154,8 @@ def test_variable_states_match_the_constant_spacing_kernel(
 
     for _ in range(25):
         values = jnp.asarray(generator.standard_normal(count))
-        expected = reference(values, axis=0, periodic=periodic)
-        obtained = (
-            metric._variable_mp5_states(values)
-            if scheme == "mp5"
-            else metric._variable_muscl_states(values)
-        )
+        expected = mp5_interface_states(values, axis=0, periodic=periodic)
+        obtained = metric._variable_mp5_states(values)
         for expected_side, obtained_side in zip(expected, obtained, strict=True):
             assert np.allclose(
                 np.asarray(obtained_side)[window],
@@ -171,72 +163,6 @@ def test_variable_states_match_the_constant_spacing_kernel(
                 rtol=0.0,
                 atol=1.0e-13,
             )
-
-
-@pytest.mark.parametrize("periodic", [True, False])
-def test_stretched_muscl_states_stay_inside_the_neighbouring_cell_values(
-    periodic: bool,
-) -> None:
-    faces = (
-        _double_sided(24, 1.0, 1.5) if periodic else _single_sided(24, 1.0, 2.5)
-    )
-    metric = AxisMetric(faces, axis=0, periodic=periodic, dtype=jnp.float64)
-    assert not metric.uniform
-    centers = np.asarray(metric.centers)
-    values = jnp.asarray(
-        np.where(centers < 0.4, 1.0, 0.0) + 0.2 * np.sin(11.0 * centers)
-    )
-
-    left, right = metric.interface_states(values, "muscl-mc")
-    neighbour = (
-        jnp.roll(values, -1)
-        if periodic
-        else jnp.concatenate((values[1:], values[-1:]))
-    )
-    lower = jnp.minimum(values, neighbour)
-    upper = jnp.maximum(values, neighbour)
-    # A bounded axis returns one entry per cell, so its last entry is the far
-    # wall.  That face has no neighbour and therefore no cell jump, which is
-    # asserted separately below: it carries exactly no correction, so the states
-    # reported there are never consumed.
-    faces = slice(None) if periodic else slice(0, -1)
-
-    assert bool(jnp.all(left[faces] >= lower[faces] - 1.0e-12))
-    assert bool(jnp.all(left[faces] <= upper[faces] + 1.0e-12))
-    assert bool(jnp.all(right[faces] >= lower[faces] - 1.0e-12))
-    assert bool(jnp.all(right[faces] <= upper[faces] + 1.0e-12))
-    # The Rusanov correction may not oppose the cell jump.
-    assert bool(jnp.all((right - left) * (neighbour - values) >= -1.0e-12))
-    if not periodic:
-        assert float(jnp.abs(right[-1] - left[-1])) == 0.0
-
-
-def test_bounded_muscl_uses_a_one_sided_slope_in_the_boundary_cell() -> None:
-    """A zero slope there is first-order exactly where the wall model works.
-
-    On a neutral logarithmic profile this reconstruction is exact everywhere, so
-    the first interior face is the only place it produces any dissipation at
-    all.  Holding the boundary slope at zero makes that one face deliver most of
-    first-order upwind's dissipation, which near a wall competes with the
-    modeled surface stress rather than correcting an oscillation.
-    """
-
-    kappa, ustar, roughness, length = 0.4, 0.425, 0.1, 1500.0
-    faces = np.linspace(0.0, length, 41)
-    metric = AxisMetric(faces, axis=0, periodic=False, dtype=jnp.float64)
-    centers = np.asarray(metric.centers)
-    profile = jnp.asarray((ustar / kappa) * np.log(centers / roughness))
-
-    left, right = metric.interface_states(profile, "muscl-mc")
-    jump = np.abs(np.asarray(right - left))
-    cell_jump = np.abs(np.diff(np.asarray(profile)))
-    relative = jump[:-1] / cell_jump
-
-    # First-order upwind would be 1.0 at every face; a zero boundary slope gave
-    # 0.63 at the first one.
-    assert relative[0] < 0.2
-    # Above the boundary the reconstruction is exact on a logarithmic profile.
-    assert np.all(relative[1:] < 1.0e-12)
 
 
 def test_diffusion_diagonal_matches_the_uniform_limit_and_drops_wall_faces() -> None:
@@ -271,17 +197,15 @@ def test_upper_face_flux_divergence_telescopes_over_cell_volumes() -> None:
     assert np.isclose(float(np.sum(widths * divergence)), float(flux[-1]))
 
 
-@pytest.mark.parametrize("scheme", ["mp5", "muscl-mc"])
 @pytest.mark.parametrize("periodic", [True, False])
 def test_the_correction_is_dissipative_by_construction(
-    scheme: str,
     periodic: bool,
 ) -> None:
     """Only the difference of the two states is consumed, as a Rusanov flux.
 
     A correction that opposes the cell jump injects variance rather than
     removing it, and one that exceeds the jump dissipates harder than first-order
-    upwind.  Both are excluded for either scheme, on smooth data and on data with
+    upwind. Both are excluded for MP5 on smooth data and on data with
     grid-scale structure, so an active scalar cannot pick up spurious buoyancy
     from the advection correction.
     """
@@ -305,7 +229,7 @@ def test_the_correction_is_dissipative_by_construction(
 
     for values in fields:
         field = jnp.asarray(values)
-        left, right = metric.interface_states(field, scheme)
+        left, right = metric.interface_states(field)
         neighbour = (
             jnp.roll(field, -1)
             if periodic
