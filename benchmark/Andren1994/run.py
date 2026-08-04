@@ -427,6 +427,33 @@ def main() -> None:
     def active_wall_velocity():
         return solver.active_wall_velocity(velocity)
 
+    momentum_rate_kernel = (
+        solver._compiled_imex_timestep_rates
+        if solver.config.sgs_time_integration == "imex_ark3"
+        else solver._compiled_timestep_rates
+    )
+
+    @jax.jit
+    def stability_rates(velocity, scalar, sgs_coefficient):
+        """Return all three timestep rates in one device vector."""
+
+        advective_rate, momentum_diffusive_rate = momentum_rate_kernel(
+            velocity,
+            sgs_coefficient,
+        )
+        scalar_diffusive_rate = (
+            scalar_solver.diffusive_rate(scalar, velocity)
+            if args.passive_scalar
+            else jnp.asarray(0.0, dtype=advective_rate.dtype)
+        )
+        return jnp.stack(
+            (
+                advective_rate,
+                momentum_diffusive_rate,
+                scalar_diffusive_rate,
+            )
+        )
+
     if args.restart is None:
         initial_u, initial_v, initial_tke = _initial_tables_on_grid(
             grid,
@@ -633,8 +660,14 @@ def main() -> None:
                 compiled_velocity,
                 timestep=0.5 * warmup_timestep,
             )
+    compiled_rates = stability_rates(
+        compiled_velocity,
+        compiled_scalar,
+        active_sgs_coefficient(),
+    )
     jax.block_until_ready(compiled_velocity.x)
     jax.block_until_ready(compiled_scalar)
+    jax.block_until_ready(compiled_rates)
     if args.restart is None:
         solver.reset_lasd(velocity)
         solver.reset_fpj2()
@@ -845,20 +878,26 @@ def main() -> None:
     if not history_rows:
         history_rows.append(sample_history())
 
+    pending_rates = stability_rates(velocity, scalar, active_sgs_coefficient())
+
     while simulation_time < final_time:
-        timestep = solver.timestep_for_cfl(
-            velocity,
-            args.target_cfl,
-            args.target_diffusive_cfl,
+        # One vector transfer replaces three scalar transfers.  This is the
+        # only host synchronization needed to choose the next timestep.
+        advective_rate, momentum_diffusive_rate, scalar_diffusive_rate = (
+            float(rate) for rate in np.asarray(pending_rates)
         )
-        if args.passive_scalar:
+        if advective_rate <= 0.0:
+            raise ValueError("cannot choose a CFL step for zero velocity")
+        timestep = args.target_cfl / advective_rate
+        if momentum_diffusive_rate > 0.0:
             timestep = min(
                 timestep,
-                scalar_solver.timestep_for_diffusive_cfl(
-                    scalar,
-                    velocity,
-                    args.target_diffusive_cfl,
-                ),
+                args.target_diffusive_cfl / momentum_diffusive_rate,
+            )
+        if args.passive_scalar and scalar_diffusive_rate > 0.0:
+            timestep = min(
+                timestep,
+                args.target_diffusive_cfl / scalar_diffusive_rate,
             )
         timestep = min(timestep, final_time - simulation_time)
         step_sgs_coefficient = active_sgs_coefficient()
@@ -879,7 +918,16 @@ def main() -> None:
                 velocity,
                 timestep=0.5 * timestep,
             )
-        simulation_time += timestep
+        next_simulation_time = simulation_time + timestep
+        if next_simulation_time < final_time:
+            # The next loop-top read waits on this result.  Until then the
+            # device computes it while the host records the accepted step.
+            pending_rates = stability_rates(
+                velocity,
+                scalar,
+                active_sgs_coefficient(),
+            )
+        simulation_time = next_simulation_time
         timesteps.append(timestep)
         step += 1
         if (
