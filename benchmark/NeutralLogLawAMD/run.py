@@ -67,11 +67,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         choices=("jax", "python"),
         default="jax",
     )
-    parser.add_argument(
-        "--projection-method",
-        choices=("full", "fpj2"),
-        default="full",
-    )
     parser.add_argument("--steps", type=int, default=100)
     parser.add_argument(
         "--sample-start-step",
@@ -214,7 +209,6 @@ def main() -> None:
 
     from jaxwind.momentum import (
         AMDModel,
-        FPJ2State,
         LASDModel,
         LASDState,
         NeutralABLConfig,
@@ -304,7 +298,6 @@ def main() -> None:
             if args.sgs == "lasd"
             else None
         ),
-        projection_method=args.projection_method,
     )
     solver = NeutralABLMomentum(grid, pressure, config)
 
@@ -530,16 +523,8 @@ def main() -> None:
                 accepted_step=int(checkpoint["lasd_accepted_step"]),
                 interval_time=float(checkpoint["lasd_interval_time"]),
             )
-        if args.projection_method == "fpj2" and "fpj2_current_pressure" in checkpoint:
-            solver.restore_fpj2(
-                FPJ2State(
-                    jnp.asarray(checkpoint["fpj2_current_pressure"], dtype=dtype),
-                    jnp.asarray(checkpoint["fpj2_previous_pressure"], dtype=dtype),
-                    float(checkpoint["fpj2_current_timestep"]),
-                    float(checkpoint["fpj2_previous_timestep"]),
-                    int(checkpoint["fpj2_history_count"]),
-                )
-            )
+        if "pressure" in checkpoint:
+            solver.restore_pressure(checkpoint["pressure"])
         if wall_temporal_filter_timescale is not None:
             if "wall_filtered_velocity" not in checkpoint:
                 raise SystemExit("temporal wall-model restart is missing memory")
@@ -576,7 +561,7 @@ def main() -> None:
             args.target_diffusive_cfl,
         )
 
-    saved_fpj2 = solver.fpj2_state
+    saved_pressure = solver.pressure
     saved_lasd = solver.lasd_state
     saved_lasd_progress = solver.lasd_progress
     saved_wall_model = solver.wall_model_state
@@ -588,10 +573,7 @@ def main() -> None:
         time=simulation_time,
     )
     jax.block_until_ready(compiled_velocity.x)
-    if saved_fpj2 is None:
-        solver.reset_fpj2()
-    else:
-        solver.restore_fpj2(saved_fpj2)
+    solver.restore_pressure(saved_pressure)
     if saved_lasd is not None:
         solver.restore_lasd(
             saved_lasd,
@@ -652,17 +634,7 @@ def main() -> None:
                 for index, value in enumerate(statistic_sums)
             }
         )
-        fpj2 = solver.fpj2_state
-        if fpj2 is not None:
-            payload.update(
-                {
-                    "fpj2_current_pressure": np.asarray(fpj2.current_pressure),
-                    "fpj2_previous_pressure": np.asarray(fpj2.previous_pressure),
-                    "fpj2_current_timestep": fpj2.current_timestep,
-                    "fpj2_previous_timestep": fpj2.previous_timestep,
-                    "fpj2_history_count": fpj2.history_count,
-                }
-            )
+        payload["pressure"] = np.asarray(solver.pressure)
         lasd = solver.lasd_state
         if lasd is not None:
             accepted_step, interval_time = solver.lasd_progress
@@ -953,7 +925,7 @@ def main() -> None:
         "pressure_relative_tolerance": args.pressure_rtol,
         "pressure_max_iterations": args.pressure_max_iterations,
         "krylov_execution": args.krylov_execution,
-        "projection_method": args.projection_method,
+        "projection_method": "full",
         "flow_frames": len(flow_frame_steps),
         "flow_frame_start_step": (
             args.flow_frame_start_step if flow_frame_steps else None

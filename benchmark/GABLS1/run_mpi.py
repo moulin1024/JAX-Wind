@@ -43,10 +43,6 @@ def parse_args(argv: list[str] | None = None):
         raise SystemExit(
             "the y-slab runner does not yet support the Rayleigh sponge"
         )
-    if args.projection_method != "full":
-        raise SystemExit(
-            "the y-slab runner currently supports --projection-method full"
-        )
     if args.quick:
         # Four MP5 ranks require at least three owned y cells per rank.
         args.nx = args.ny = args.nz = 16
@@ -220,7 +216,6 @@ def _build_serial_observer(args, case, dtype):
             advection_limiter=args.advection_limiter,
             amd=AMDModel(coefficient=args.amd_coefficient),
             sgs_time_integration="explicit",
-            projection_method=args.projection_method,
         ),
     )
     scalar = AMDPassiveScalar(

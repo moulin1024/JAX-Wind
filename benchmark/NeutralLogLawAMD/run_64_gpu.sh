@@ -16,7 +16,6 @@ exec "${PYTHON:-python}" benchmark/NeutralLogLawAMD/run.py \
   --single --target-cfl 0.5 \
   --linear-solver pcg --krylov-execution jax \
   --pressure-rtol 1e-6 --pressure-max-iterations 20 \
-  --projection-method full \
   --wall-matching-level 2 --wall-filter-width 3 \
   --wall-temporal-filter-gamma 1 \
   --steps 10000 --sample-start-step 5000 \

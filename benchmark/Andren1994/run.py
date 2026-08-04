@@ -168,16 +168,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="pcg",
     )
     parser.add_argument(
-        "--projection-method",
-        choices=("full", "fpj2"),
-        default="fpj2",
-    )
-    parser.add_argument(
-        "--fpj2-timestep-ratio-limit",
-        type=float,
-        default=2.0,
-    )
-    parser.add_argument(
         "--krylov-execution",
         choices=("jax", "python"),
         default="jax",
@@ -237,16 +227,10 @@ def main() -> None:
             "the non-spectral passive-scalar closure is currently paired with AMD; "
             "use --no-passive-scalar for a momentum-only LASD run"
         )
-    if args.passive_scalar and args.projection_method != "fpj2":
-        raise SystemExit(
-            "paper pressure/scalar diagnostics require --projection-method fpj2"
-        )
     if args.lasd_update_interval <= 0:
         raise SystemExit("LASD update interval must be positive")
     if args.checkpoint_every <= 0:
         raise SystemExit("checkpoint interval must be positive")
-    if args.fpj2_timestep_ratio_limit < 1.0:
-        raise SystemExit("FPJ-2 timestep ratio limit must be at least one")
     if args.max_run_seconds is not None and args.max_run_seconds <= 0.0:
         raise SystemExit("max-run-seconds must be positive")
 
@@ -263,7 +247,6 @@ def main() -> None:
         AMDModel,
         AMDPassiveScalar,
         AMDPassiveScalarModel,
-        FPJ2State,
         LASDModel,
         LASDState,
         NeutralABLConfig,
@@ -357,8 +340,6 @@ def main() -> None:
             advection_limiter=args.advection_limiter,
             amd=AMDModel(coefficient=args.amd_coefficient),
             sgs_time_integration=args.sgs_time_integration,
-            projection_method=args.projection_method,
-            fpj2_timestep_ratio_limit=args.fpj2_timestep_ratio_limit,
             lasd=(
                 LASDModel(
                     filter_grid_ratio=args.lasd_filter_grid_ratio,
@@ -419,10 +400,7 @@ def main() -> None:
         )
 
     def active_pressure():
-        fpj2 = solver.fpj2_state
-        if fpj2 is None:
-            return jnp.zeros(grid.shape, dtype=dtype)
-        return fpj2.current_pressure
+        return solver.pressure
 
     def active_wall_velocity():
         return solver.active_wall_velocity(velocity)
@@ -570,25 +548,8 @@ def main() -> None:
                 accepted_step=int(checkpoint["lasd_step"]),
                 interval_time=float(checkpoint["lasd_interval_time"]),
             )
-        if (
-            args.projection_method == "fpj2"
-            and "fpj2_current_pressure" in checkpoint.files
-        ):
-            solver.restore_fpj2(
-                FPJ2State(
-                    jnp.asarray(
-                        checkpoint["fpj2_current_pressure"],
-                        dtype=dtype,
-                    ),
-                    jnp.asarray(
-                        checkpoint["fpj2_previous_pressure"],
-                        dtype=dtype,
-                    ),
-                    float(checkpoint["fpj2_current_timestep"]),
-                    float(checkpoint["fpj2_previous_timestep"]),
-                    int(checkpoint["fpj2_history_count"]),
-                )
-            )
+        if "pressure" in checkpoint.files:
+            solver.restore_pressure(checkpoint["pressure"])
         timesteps = list(np.asarray(checkpoint["timesteps"], dtype=float))
         sample_arrays = tuple(
             np.asarray(checkpoint[f"sample_{index}"])
@@ -629,7 +590,7 @@ def main() -> None:
 
     saved_lasd = solver.lasd_state
     saved_lasd_progress = solver.lasd_progress
-    saved_fpj2 = solver.fpj2_state
+    saved_pressure = solver.pressure
     compile_start = time.perf_counter()
     warmup_timestep = solver.timestep_for_cfl(
         velocity,
@@ -640,7 +601,7 @@ def main() -> None:
     compiled_scalar = scalar
     warmup_steps = max(
         args.lasd_update_interval if args.sgs == "lasd" else 1,
-        3 if args.projection_method == "fpj2" else 1,
+        1,
     )
     for warmup_step in range(warmup_steps):
         if args.passive_scalar:
@@ -670,7 +631,7 @@ def main() -> None:
     jax.block_until_ready(compiled_rates)
     if args.restart is None:
         solver.reset_lasd(velocity)
-        solver.reset_fpj2()
+        solver.reset_pressure()
     else:
         if saved_lasd is not None:
             solver.restore_lasd(
@@ -678,10 +639,7 @@ def main() -> None:
                 accepted_step=saved_lasd_progress[0],
                 interval_time=saved_lasd_progress[1],
             )
-        if saved_fpj2 is None:
-            solver.reset_fpj2()
-        else:
-            solver.restore_fpj2(saved_fpj2)
+        solver.restore_pressure(saved_pressure)
     compiled_samples = compiled_sample_profiles(
         velocity,
         scalar,
@@ -840,21 +798,7 @@ def main() -> None:
                     "lasd_interval_time": interval_time,
                 }
             )
-        fpj2 = solver.fpj2_state
-        if fpj2 is not None:
-            payload.update(
-                {
-                    "fpj2_current_pressure": np.asarray(
-                        fpj2.current_pressure
-                    ),
-                    "fpj2_previous_pressure": np.asarray(
-                        fpj2.previous_pressure
-                    ),
-                    "fpj2_current_timestep": fpj2.current_timestep,
-                    "fpj2_previous_timestep": fpj2.previous_timestep,
-                    "fpj2_history_count": fpj2.history_count,
-                }
-            )
+        payload["pressure"] = np.asarray(solver.pressure)
         payload.update(
             {
                 f"sample_{index}": values
@@ -936,7 +880,7 @@ def main() -> None:
         ):
             samples.append(sample_profiles())
             sample_times.append(simulation_time)
-            if args.projection_method == "fpj2":
+            if args.passive_scalar:
                 budget_samples.append(sample_budget())
                 budget_times.append(simulation_time)
         if step % args.history_every == 0 or simulation_time >= final_time:
@@ -1134,7 +1078,7 @@ def main() -> None:
             "scalar_diffusivity_m2_s",
         ):
             normalized_columns.pop(name)
-    if args.projection_method != "fpj2":
+    if not args.passive_scalar:
         normalized_columns.pop("wp_modified_pressure_over_ustar3")
         normalized_columns.pop("modified_pressure_std_over_ustar2")
     normalized_matrix = np.column_stack(tuple(normalized_columns.values()))
@@ -1329,8 +1273,7 @@ def main() -> None:
         "pressure_max_iterations": args.pressure_max_iterations,
         "pressure_restart": args.pressure_restart,
         "krylov_execution": args.krylov_execution,
-        "projection_method": args.projection_method,
-        "fpj2_timestep_ratio_limit": args.fpj2_timestep_ratio_limit,
+        "projection_method": "full",
         "elapsed_seconds_scope": (
             "fresh canonical invocation"
             if args.restart is None

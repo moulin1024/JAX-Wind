@@ -150,7 +150,6 @@ class YSlabAMDBoussinesq:
                 advection_limiter=advection_limiter,
                 amd=AMDModel(coefficient=amd_coefficient),
                 sgs_time_integration="explicit",
-                projection_method="full",
             ),
         )
         self.scalar_kernel = AMDPassiveScalar(

@@ -197,7 +197,6 @@ run_args=(
     --scalar-amd-coefficient "$SCALAR_AMD_COEFFICIENT"
     --advection-dissipation-strength "$ADVECTION_DISSIPATION_STRENGTH"
     --advection-limiter "$ADVECTION_LIMITER"
-    --projection-method fpj2
     --coupling-integrator coupled-ssprk3
     --pressure-rtol "$PRESSURE_RTOL"
     --pressure-max-iterations "$PRESSURE_MAX_ITERATIONS"
@@ -235,7 +234,7 @@ echo "MPI version    : $("$MPI_MPICC" --showme:version)"
 echo "MPI library    : $OPENMPI_LIBRARY"
 echo "JAX preload    : $JAX_LD_PRELOAD"
 echo "Grid           : ${NX}x${NY}x${NZ}"
-echo "Integrator     : coupled-ssprk3 + FPJ2"
+echo "Integrator     : coupled-ssprk3 + full stage projection"
 echo "Advection      : limiter=$ADVECTION_LIMITER strength=$ADVECTION_DISSIPATION_STRENGTH"
 echo "CFL targets    : advective=$TARGET_CFL diffusive=$TARGET_DIFFUSIVE_CFL"
 echo "Metrics cadence: every $METRICS_EVERY steps"

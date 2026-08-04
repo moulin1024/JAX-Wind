@@ -495,11 +495,7 @@ def projected_ssprk3_velocity_pressure_step(
     time: float = 0.0,
     initial_pressure: Array | None = None,
 ) -> VelocityPressureProjection:
-    """Full three-PPE SSPRK3 in Butcher form, retaining the final pressure.
-
-    This is the startup and reference path for FPJ-2.  Writing SSPRK3 in
-    Butcher form makes the stage abscissae explicit: ``c=(0, 1, 1/2)``.
-    """
+    """Full three-PPE SSPRK3 in Butcher form, retaining the final pressure."""
     first_tendency = tendency(initial, time)
     second = projector.project_velocity_and_pressure(
         _velocity_sum(
@@ -531,91 +527,8 @@ def projected_ssprk3_velocity_pressure_step(
         initial_pressure=third.pressure,
     )
 
-
-def fpj2_pressure_prediction(
-    current_pressure: Array,
-    previous_pressure: Array,
-    *,
-    current_timestep: float,
-    previous_timestep: float,
-    next_timestep: float,
-    stage_abscissa: float,
-) -> Array:
-    """Variable-step FPJ-2 extrapolation of a stage pseudo-pressure."""
-    if min(current_timestep, previous_timestep, next_timestep) <= 0.0:
-        raise ValueError("FPJ-2 timesteps must be positive")
-    if not 0.0 <= stage_abscissa <= 1.0:
-        raise ValueError("FPJ-2 stage abscissa must lie in [0, 1]")
-    extrapolation = (
-        current_timestep + stage_abscissa * next_timestep
-    ) / (current_timestep + previous_timestep)
-    return current_pressure + extrapolation * (
-        current_pressure - previous_pressure
-    )
-
-
-def fpj2_ssprk3_velocity_step(
-    initial: MACVelocity,
-    *,
-    tendency: Callable[[MACVelocity, float], MACVelocity],
-    projector: MACStageProjector,
-    timestep: float,
-    current_pressure: Array,
-    previous_pressure: Array,
-    current_timestep: float,
-    previous_timestep: float,
-    time: float = 0.0,
-) -> VelocityPressureProjection:
-    """Third-order FPJ-2 SSPRK3 with one final pressure Poisson solve."""
-    second_pressure = fpj2_pressure_prediction(
-        current_pressure,
-        previous_pressure,
-        current_timestep=current_timestep,
-        previous_timestep=previous_timestep,
-        next_timestep=timestep,
-        stage_abscissa=1.0,
-    )
-    third_pressure = fpj2_pressure_prediction(
-        current_pressure,
-        previous_pressure,
-        current_timestep=current_timestep,
-        previous_timestep=previous_timestep,
-        next_timestep=timestep,
-        stage_abscissa=0.5,
-    )
-    second_gradient = projector.pressure_gradient(second_pressure)
-    first_tendency = tendency(initial, time)
-    second = _velocity_sum(
-        (1.0, initial),
-        (timestep, first_tendency),
-        (-timestep, second_gradient),
-    )
-    second_tendency = tendency(second, time + timestep)
-    third_gradient = projector.pressure_gradient(third_pressure)
-    third = _velocity_sum(
-        (1.0, initial),
-        (0.25 * timestep, first_tendency),
-        (0.25 * timestep, second_tendency),
-        (-0.5 * timestep, third_gradient),
-    )
-    third_tendency = tendency(third, time + 0.5 * timestep)
-    provisional = _velocity_sum(
-        (1.0, initial),
-        (timestep / 6.0, first_tendency),
-        (timestep / 6.0, second_tendency),
-        (2.0 * timestep / 3.0, third_tendency),
-    )
-    return projector.project_velocity_and_pressure(
-        provisional,
-        timestep=timestep,
-        initial_pressure=second_pressure,
-    )
-
-
 __all__ = [
     "VelocityPressureProjection",
-    "fpj2_pressure_prediction",
-    "fpj2_ssprk3_velocity_step",
     "MACProjectionResult",
     "MACStageProjector",
     "MACVelocity",

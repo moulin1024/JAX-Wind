@@ -47,13 +47,9 @@ field-sized 21-component intermediate between executables. The default
 advances to `ft=0.1`; use
 `--end-ft 10 --sample-start-ft 7` for the canonical final averaging window.
 
-The default projection mode is the third-order FPJ-2 fast projection. The
-first two accepted steps use the full three-PPE SSPRK3 startup, after which
-intermediate stages use variable-step extrapolated pseudo-pressure and only
-the final stage solves a PPE. Pressure history and its two actual timesteps are
-checkpointed. Use `--projection-method full` for the three-PPE reference path;
-an abrupt timestep change beyond `--fpj2-timestep-ratio-limit` also triggers
-one exact fallback step automatically.
+Momentum uses full pressure projection at every SSPRK3 or ARK3 stage. The
+accepted pressure field is checkpointed and reused as the initial guess for
+the next pressure solve.
 
 `run_lasd.py` is retained as the legacy coupled momentum/scalar z-slab
 implementation for reference. New AMD benchmark work should use `run.py`.

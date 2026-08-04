@@ -9,12 +9,9 @@ from jaxwind.pressure import (
     MatrixFreePoissonSolver,
     PoissonBoundaryConditions,
     RectilinearGrid,
-    fpj2_pressure_prediction,
-    fpj2_ssprk3_velocity_step,
     mac_divergence,
     mac_pressure_gradient,
     projected_ssprk3_step,
-    projected_ssprk3_velocity_pressure_step,
 )
 
 
@@ -145,94 +142,3 @@ def test_ssprk3_projects_every_stage() -> None:
         float(solver.operator.norm(stage.divergence_after)) < 4.0e-4
         for stage in result.stages
     )
-
-
-def test_fpj2_pressure_prediction_matches_constant_and_variable_steps() -> None:
-    current = jnp.asarray((3.0,), dtype=jnp.float32)
-    previous = jnp.asarray((1.0,), dtype=jnp.float32)
-
-    second = fpj2_pressure_prediction(
-        current,
-        previous,
-        current_timestep=2.0,
-        previous_timestep=2.0,
-        next_timestep=2.0,
-        stage_abscissa=1.0,
-    )
-    third = fpj2_pressure_prediction(
-        current,
-        previous,
-        current_timestep=2.0,
-        previous_timestep=2.0,
-        next_timestep=2.0,
-        stage_abscissa=0.5,
-    )
-    variable = fpj2_pressure_prediction(
-        current,
-        previous,
-        current_timestep=2.0,
-        previous_timestep=1.0,
-        next_timestep=3.0,
-        stage_abscissa=0.5,
-    )
-
-    assert jnp.allclose(second, 5.0)
-    assert jnp.allclose(third, 4.5)
-    assert jnp.allclose(variable, 3.0 + (3.5 / 3.0) * 2.0)
-
-
-def test_fpj2_uses_one_final_projection_and_remains_divergence_free() -> None:
-    grid = RectilinearGrid.uniform(6, 4, 8)
-    solver = _wall_solver(grid)
-    projector = MACStageProjector(solver)
-    initial = projector.project(
-        _closed_velocity(grid),
-        timestep=0.01,
-    ).velocity
-    forcing = _closed_velocity(grid, phase=0.4)
-
-    def tendency(_velocity, _time):
-        return forcing
-
-    timestep = 0.005
-
-    first = projected_ssprk3_velocity_pressure_step(
-        initial,
-        tendency=tendency,
-        projector=projector,
-        timestep=timestep,
-    )
-    second = projected_ssprk3_velocity_pressure_step(
-        first.velocity,
-        tendency=tendency,
-        projector=projector,
-        timestep=timestep,
-        initial_pressure=first.pressure,
-    )
-    fast = fpj2_ssprk3_velocity_step(
-        second.velocity,
-        tendency=tendency,
-        projector=projector,
-        timestep=timestep,
-        current_pressure=second.pressure,
-        previous_pressure=first.pressure,
-        current_timestep=timestep,
-        previous_timestep=timestep,
-    )
-    reference = projected_ssprk3_velocity_pressure_step(
-        second.velocity,
-        tendency=tendency,
-        projector=projector,
-        timestep=timestep,
-        initial_pressure=second.pressure,
-    )
-
-    fast_divergence = solver.operator.norm(
-        mac_divergence(fast.velocity, grid)
-    )
-    difference = max(
-        float(jnp.max(jnp.abs(left - right)))
-        for left, right in zip(fast.velocity, reference.velocity, strict=True)
-    )
-    assert float(fast_divergence) < 5.0e-4
-    assert difference < 2.0e-4

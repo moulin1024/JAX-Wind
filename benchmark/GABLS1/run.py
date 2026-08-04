@@ -106,17 +106,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="nonlinear correction added to the centered momentum/scalar flux",
     )
     parser.add_argument(
-        "--projection-method",
-        choices=("full", "fpj2"),
-        default="full",
-    )
-    parser.add_argument(
-        "--fpj2-energy-correction",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="apply the local kinetic-energy split correction at FPJ2 stages",
-    )
-    parser.add_argument(
         "--coupling-integrator",
         choices=("strang", "coupled-ssprk3"),
         default="strang",
@@ -308,7 +297,6 @@ def _unpack_records(checkpoint, prefix: str) -> list[dict]:
 
 def _restore_checkpoint(args, coupled, dtype):
     import jax.numpy as jnp
-    from jaxwind.momentum import FPJ2State
     from jaxwind.pressure import MACVelocity
 
     checkpoint = np.load(args.restart, allow_pickle=False)
@@ -343,16 +331,6 @@ def _restore_checkpoint(args, coupled, dtype):
     )
     if checkpoint_sgs_time_integration != args.sgs_time_integration:
         raise SystemExit("restart SGS time integration does not match")
-    checkpoint_fpj2_energy_correction = (
-        bool(checkpoint["fpj2_energy_correction"])
-        if "fpj2_energy_correction" in checkpoint
-        else False
-    )
-    if (
-        args.projection_method == "fpj2"
-        and checkpoint_fpj2_energy_correction != args.fpj2_energy_correction
-    ):
-        raise SystemExit("restart FPJ2 energy correction does not match")
     checkpoint_sponge_start = (
         float(checkpoint["rayleigh_sponge_start_height_m"])
         if "rayleigh_sponge_start_height_m" in checkpoint
@@ -393,16 +371,6 @@ def _restore_checkpoint(args, coupled, dtype):
         time=float(checkpoint["time"]),
         step=int(checkpoint["step"]),
     )
-    if args.projection_method == "fpj2" and "fpj2_current_pressure" in checkpoint:
-        coupled.momentum.restore_fpj2(
-            FPJ2State(
-                jnp.asarray(checkpoint["fpj2_current_pressure"], dtype=dtype),
-                jnp.asarray(checkpoint["fpj2_previous_pressure"], dtype=dtype),
-                float(checkpoint["fpj2_current_timestep"]),
-                float(checkpoint["fpj2_previous_timestep"]),
-                int(checkpoint["fpj2_history_count"]),
-            )
-        )
     return {
         "state": state,
         "samples": _unpack_records(checkpoint, "samples"),
@@ -499,8 +467,6 @@ def _build_coupled(args: argparse.Namespace):
             advection_limiter=args.advection_limiter,
             amd=AMDModel(coefficient=args.amd_coefficient),
             sgs_time_integration=args.sgs_time_integration,
-            projection_method=args.projection_method,
-            fpj2_energy_correction=args.fpj2_energy_correction,
         ),
     )
     scalar = AMDPassiveScalar(
@@ -576,19 +542,7 @@ def run(args: argparse.Namespace) -> dict[str, float | int | str]:
 
     diagnostic_kernel = jax.jit(coupled.diagnostic_fields)
     compile_start = time.perf_counter()
-    saved_fpj2 = momentum.fpj2_state
-    if args.projection_method == "fpj2":
-        momentum.reset_fpj2()
     compiled_state = coupled.step(state, timestep=min(args.dt_max, 0.25))
-    if args.projection_method == "fpj2":
-        compiled_state = coupled.step(
-            compiled_state,
-            timestep=min(args.dt_max, 0.25),
-        )
-        compiled_state = coupled.step(
-            compiled_state,
-            timestep=min(args.dt_max, 0.25),
-        )
     compiled_fields = diagnostic_kernel(state)
     compiled_rates = coupled.stability_rates(state)
     compiled_accepted_metrics = coupled.accepted_state_metrics(compiled_state)
@@ -596,10 +550,6 @@ def run(args: argparse.Namespace) -> dict[str, float | int | str]:
     jax.block_until_ready(compiled_fields.surface_heat_flux)
     jax.block_until_ready(compiled_rates)
     jax.block_until_ready(compiled_accepted_metrics)
-    if saved_fpj2 is None:
-        momentum.reset_fpj2()
-    else:
-        momentum.restore_fpj2(saved_fpj2)
     compilation_s = time.perf_counter() - compile_start
     print(f"[compile] GABLS1 kernels ready in {compilation_s:.3f}s", flush=True)
 
@@ -632,7 +582,6 @@ def run(args: argparse.Namespace) -> dict[str, float | int | str]:
             "mp5_strength": args.mp5_strength,
             "advection_limiter": args.advection_limiter,
             "sgs_time_integration": args.sgs_time_integration,
-            "fpj2_energy_correction": args.fpj2_energy_correction,
             "rayleigh_sponge_start_height_m": (
                 math.nan
                 if args.rayleigh_sponge_start_height is None
@@ -649,17 +598,6 @@ def run(args: argparse.Namespace) -> dict[str, float | int | str]:
             "max_divergence": max_divergence,
             "max_scalar_budget_residual": max_scalar_budget_residual,
         }
-        fpj2 = momentum.fpj2_state
-        if fpj2 is not None:
-            payload.update(
-                {
-                    "fpj2_current_pressure": np.asarray(fpj2.current_pressure),
-                    "fpj2_previous_pressure": np.asarray(fpj2.previous_pressure),
-                    "fpj2_current_timestep": fpj2.current_timestep,
-                    "fpj2_previous_timestep": fpj2.previous_timestep,
-                    "fpj2_history_count": fpj2.history_count,
-                }
-            )
         _pack_records(payload, "samples", samples)
         _pack_records(payload, "time_rows", time_rows)
         destination = args.output_dir / "checkpoint.npz"
@@ -850,10 +788,9 @@ def run(args: argparse.Namespace) -> dict[str, float | int | str]:
             "mp5_dissipation_strength": args.mp5_strength,
             "advection_dissipation_strength": args.mp5_strength,
             "advection_limiter": args.advection_limiter,
-            "projection_method": args.projection_method,
+            "projection_method": "full",
             "coupling_integrator": args.coupling_integrator,
             "sgs_time_integration": args.sgs_time_integration,
-            "fpj2_energy_correction": str(args.fpj2_energy_correction).lower(),
             "rayleigh_sponge_start_height_m": (
                 "disabled"
                 if args.rayleigh_sponge_start_height is None

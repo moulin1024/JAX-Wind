@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import math
 
-import jax
 import jax.numpy as jnp
 import pytest
 
@@ -31,7 +30,6 @@ def _solver(
     nx: int = 8,
     ny: int = 8,
     nz: int = 8,
-    projection_method: str = "full",
     sgs_time_integration: str = "explicit",
     molecular_viscosity: float = 0.0,
     wall_matching_level: int = 0,
@@ -82,7 +80,6 @@ def _solver(
                 molecular_viscosity=molecular_viscosity,
             ),
             sgs_time_integration=sgs_time_integration,
-            projection_method=projection_method,
         ),
     )
 
@@ -534,66 +531,6 @@ def test_mac_conservative_advection_preserves_momentum_and_energy() -> None:
 
     assert jnp.max(jnp.abs(mean_tendency)) < 1.0e-7
     assert jnp.abs(energy_work) < 1.0e-6
-
-
-@pytest.mark.parametrize("stretched", (False, True))
-def test_fpj2_local_correction_cancels_non_solenoidal_advection_work(
-    stretched: bool,
-) -> None:
-    solver = (
-        _triple_stretched_solver()
-        if stretched
-        else _solver(nx=8, ny=8, nz=8, projection_method="fpj2")
-    )
-    if stretched:
-        solver = NeutralABLMomentum(
-            solver.grid,
-            solver.pressure_solver,
-            NeutralABLConfig(
-                friction_velocity=solver.config.friction_velocity,
-                roughness_length=solver.config.roughness_length,
-                pressure_acceleration=0.0,
-                projection_method="fpj2",
-            ),
-        )
-    nz, ny, nx = solver.grid.shape
-    key = jax.random.PRNGKey(19)
-    x = jax.random.normal(key, (nz, ny, nx + 1), dtype=jnp.float32)
-    x = x.at[..., -1].set(x[..., 0])
-    y = jax.random.normal(
-        jax.random.fold_in(key, 1),
-        (nz, ny + 1, nx),
-        dtype=jnp.float32,
-    )
-    y = y.at[:, -1].set(y[:, 0])
-    z = jax.random.normal(
-        jax.random.fold_in(key, 2),
-        (nz + 1, ny, nx),
-        dtype=jnp.float32,
-    )
-    z = z.at[0].set(0.0).at[-1].set(0.0)
-    velocity = MACVelocity(x, y, z)
-    cells = solver.cell_centered_velocity(velocity)
-    volumes = _cell_volumes(solver.grid)[..., None]
-
-    conservative = solver.conservative_advection(velocity, cells)
-    corrected = solver.stage_advection(velocity, cells)
-    conservative_work = jnp.sum(volumes * cells * conservative)
-    corrected_work = jnp.sum(volumes * cells * corrected)
-
-    assert float(jnp.abs(conservative_work)) > 1.0e-3
-    assert float(jnp.abs(corrected_work)) < 2.0e-5
-
-
-def test_full_projection_keeps_the_conservative_stage_advection() -> None:
-    solver = _solver(nx=8, ny=8, nz=8, projection_method="full")
-    velocity = solver.initial_log_profile(perturbation_amplitude=0.1)
-    cells = solver.cell_centered_velocity(velocity)
-
-    assert jnp.array_equal(
-        solver.stage_advection(velocity, cells),
-        solver.conservative_advection(velocity, cells),
-    )
 
 
 def test_shared_gradient_paths_match_standalone_sgs_and_advection() -> None:
@@ -1072,13 +1009,8 @@ def test_short_neutral_abl_run_remains_projected_and_finite() -> None:
     assert jnp.all(jnp.isfinite(velocity.z))
 
 
-def test_fpj2_builds_pressure_history_and_projects_each_accepted_step() -> None:
-    solver = _solver(
-        nx=6,
-        ny=4,
-        nz=4,
-        projection_method="fpj2",
-    )
+def test_full_projection_tracks_the_accepted_pressure() -> None:
+    solver = _solver(nx=6, ny=4, nz=4)
     velocity = solver.initial_log_profile(perturbation_amplitude=0.05)
     for step in range(3):
         velocity = solver.step(
@@ -1087,15 +1019,13 @@ def test_fpj2_builds_pressure_history_and_projects_each_accepted_step() -> None:
             time=step * 1.0e-3,
         )
 
-    state = solver.fpj2_state
     diagnostic = solver.diagnostic(
         velocity,
         timestep=1.0e-3,
         time=3.0e-3,
     )
-    assert state is not None
-    assert state.history_count == 2
-    assert state.current_timestep == 1.0e-3
+    assert solver.pressure.shape == solver.grid.shape
+    assert jnp.all(jnp.isfinite(solver.pressure))
     assert diagnostic.divergence_norm < 8.0e-4
 
 
@@ -1215,12 +1145,11 @@ def test_imex_timestep_removes_vertical_sgs_diffusion_limit() -> None:
     assert abs(horizontal_diffusive_cfl - 0.5) < 2.0e-6
 
 
-def test_imex_ark3_fpj2_remains_projected_at_large_diffusive_cfl() -> None:
+def test_imex_ark3_remains_projected_at_large_diffusive_cfl() -> None:
     solver = _solver(
         nx=6,
         ny=4,
         nz=4,
-        projection_method="fpj2",
         sgs_time_integration="imex_ark3",
         molecular_viscosity=2.0,
     )
@@ -1241,7 +1170,7 @@ def test_imex_ark3_fpj2_remains_projected_at_large_diffusive_cfl() -> None:
     assert diagnostic.maximum_diffusive_cfl > 0.5
     assert diagnostic.divergence_norm < 2.0e-3
     assert jnp.all(jnp.isfinite(velocity.x))
-    assert solver.fpj2_state is not None
+    assert jnp.all(jnp.isfinite(solver.pressure))
 
 
 def test_ars233_has_third_order_for_general_additive_split() -> None:

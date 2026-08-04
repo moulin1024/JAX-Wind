@@ -20,8 +20,6 @@ import jax.numpy as jnp
 
 from jaxwind.pressure import (
     _velocity_sum,
-    fpj2_pressure_prediction,
-    fpj2_ssprk3_velocity_step,
     MACStageProjector,
     MACVelocity,
     MatrixFreePoissonSolver,
@@ -30,8 +28,6 @@ from jaxwind.pressure import (
     mac_divergence,
     mac_pressure_gradient,
     projected_ssprk3_velocity_pressure_step,
-    projected_ssprk3_step,
-    projected_ssprk3_velocity_step,
 )
 
 from .lasd import LASDModel, LASDState, PhysicalSpaceLASD
@@ -118,9 +114,6 @@ class NeutralABLConfig:
     amd: AMDModel = AMDModel()
     lasd: LASDModel | None = None
     sgs_time_integration: Literal["explicit", "imex_ark3"] = "explicit"
-    projection_method: Literal["full", "fpj2"] = "full"
-    fpj2_timestep_ratio_limit: float = 2.0
-    fpj2_energy_correction: bool = True
     advection_limiter: Literal["mp5", "muscl-mc"] = "mp5"
 
     def __post_init__(self) -> None:
@@ -175,27 +168,8 @@ class NeutralABLConfig:
             raise ValueError("vertical Coriolis parameter must be finite")
         if not math.isfinite(self.coriolis_horizontal):
             raise ValueError("horizontal Coriolis parameter must be finite")
-        if self.projection_method not in {"full", "fpj2"}:
-            raise ValueError("projection method must be 'full' or 'fpj2'")
-        if not isinstance(self.fpj2_energy_correction, bool):
-            raise ValueError("FPJ2 energy correction flag must be boolean")
         if self.sgs_time_integration not in {"explicit", "imex_ark3"}:
             raise ValueError("SGS time integration must be 'explicit' or 'imex_ark3'")
-        if (
-            not math.isfinite(self.fpj2_timestep_ratio_limit)
-            or self.fpj2_timestep_ratio_limit < 1.0
-        ):
-            raise ValueError("FPJ-2 timestep ratio limit must be at least one")
-
-
-class FPJ2State(NamedTuple):
-    """Two accepted pseudo-pressures and their actual step sizes."""
-
-    current_pressure: Array
-    previous_pressure: Array
-    current_timestep: float
-    previous_timestep: float
-    history_count: int
 
 
 class WallModelState(NamedTuple):
@@ -471,7 +445,10 @@ class NeutralABLMomentum:
         self._lasd_state: LASDState | None = None
         self._lasd_step = 0
         self._lasd_interval_time = 0.0
-        self._fpj2_state: FPJ2State | None = None
+        self._pressure = jnp.zeros(
+            grid.shape,
+            dtype=self.pressure_solver.operator.dtype,
+        )
         self._wall_model_state: WallModelState | None = None
 
         def compiled_tendency(
@@ -525,7 +502,7 @@ class NeutralABLMomentum:
                 wall_stress=wall_stress,
             )
             explicit = (
-                self.stage_advection(velocity, cells)
+                self.conservative_advection(velocity, cells)
                 + cross
                 + self.forcing_tendency(cells)
             )
@@ -1130,38 +1107,6 @@ class NeutralABLMomentum:
             + (z_flux[1:] - z_flux[:-1]) / self.z_metric.cell_widths(rank, dtype)
         )
 
-    def fpj2_energy_correction(
-        self,
-        velocity: MACVelocity,
-        cell_velocity: Array | None = None,
-    ) -> Array:
-        """Cancel centered-advection work caused by FPJ2 stage divergence.
-
-        The compatible conservative flux is kinetic-energy neutral for a
-        solenoidal MAC velocity.  Pressure-predicted FPJ2 stages are not
-        exactly solenoidal; their residual work is cancelled pointwise by the
-        skew-symmetric split correction ``0.5 * u * div(u)``.  This adds no
-        reductions or pressure solves and fuses into the existing RHS kernel.
-        """
-        cells = _cell_velocity(velocity) if cell_velocity is None else cell_velocity
-        divergence = mac_divergence(velocity, self.grid)
-        return 0.5 * cells * divergence[..., None]
-
-    def stage_advection(
-        self,
-        velocity: MACVelocity,
-        cell_velocity: Array | None = None,
-    ) -> Array:
-        """Return centered advection appropriate for the projection method."""
-        cells = _cell_velocity(velocity) if cell_velocity is None else cell_velocity
-        tendency = self.conservative_advection(velocity, cells)
-        if (
-            self.config.projection_method == "fpj2"
-            and self.config.fpj2_energy_correction
-        ):
-            tendency += self.fpj2_energy_correction(velocity, cells)
-        return tendency
-
     def vertical_advective_flux(
         self,
         velocity: MACVelocity,
@@ -1577,7 +1522,7 @@ class NeutralABLMomentum:
         if gradient is None:
             gradient = self.velocity_gradient(cells)
         tendency = (
-            self.stage_advection(velocity, cells)
+            self.conservative_advection(velocity, cells)
             + self.sgs_tendency(
                 cells,
                 lasd_coefficient,
@@ -1725,59 +1670,20 @@ class NeutralABLMomentum:
         self._lasd_interval_time = interval_time
 
     @property
-    def fpj2_state(self) -> FPJ2State | None:
-        """Return accepted FPJ-2 pressure history, if available."""
-        return self._fpj2_state
+    def pressure(self) -> Array:
+        """Return the pressure accepted by the last full-projection step."""
+        return self._pressure
 
-    def reset_fpj2(self) -> None:
-        """Discard pressure history so that two exact startup steps are used."""
-        self._fpj2_state = None
+    def restore_pressure(self, pressure: Array) -> None:
+        """Restore a gauge-fixed full-projection pressure from a checkpoint."""
+        pressure = jnp.asarray(pressure, dtype=self.pressure_solver.operator.dtype)
+        if tuple(pressure.shape) != self.grid.shape:
+            raise ValueError("pressure checkpoint shape does not match grid")
+        self._pressure = self.pressure_solver.operator.project_nullspace(pressure)
 
-    def restore_fpj2(self, state: FPJ2State) -> None:
-        """Restore gauge-fixed pressure history from a checkpoint."""
-        expected = self.grid.shape
-        if (
-            tuple(state.current_pressure.shape) != expected
-            or tuple(state.previous_pressure.shape) != expected
-        ):
-            raise ValueError("FPJ-2 checkpoint pressure shape does not match grid")
-        if min(state.current_timestep, state.previous_timestep) <= 0.0:
-            raise ValueError("FPJ-2 checkpoint timesteps must be positive")
-        if state.history_count not in {1, 2}:
-            raise ValueError("FPJ-2 history count must be one or two")
-        self._fpj2_state = state
-
-    def _accept_fpj2_pressure(
-        self,
-        pressure: Array,
-        timestep: float,
-    ) -> None:
-        pressure = self.pressure_solver.operator.project_nullspace(pressure)
-        if self._fpj2_state is None:
-            self._fpj2_state = FPJ2State(
-                pressure,
-                pressure,
-                timestep,
-                timestep,
-                1,
-            )
-            return
-        old = self._fpj2_state
-        self._fpj2_state = FPJ2State(
-            pressure,
-            old.current_pressure,
-            timestep,
-            old.current_timestep,
-            2,
-        )
-
-    def _fpj2_history_is_usable(self, timestep: float) -> bool:
-        state = self._fpj2_state
-        if state is None or state.history_count < 2:
-            return False
-        limit = self.config.fpj2_timestep_ratio_limit
-        ratio = timestep / state.current_timestep
-        return 1.0 / limit <= ratio <= limit
+    def reset_pressure(self) -> None:
+        """Reset the full-projection pressure initial guess to zero."""
+        self._pressure = jnp.zeros_like(self._pressure)
 
     def implicit_diffusion_solve(
         self,
@@ -1802,6 +1708,7 @@ class NeutralABLMomentum:
         time: float,
         lasd_coefficient: Array,
         wall_velocity: Array,
+        initial_pressure: Array | None = None,
         explicit_forcing: MACVelocity | None = None,
         explicit_forcing_provider: Callable[[MACVelocity, float], MACVelocity]
         | None = None,
@@ -1890,27 +1797,7 @@ class NeutralABLMomentum:
             explicit_tendencies.append(explicit)
             implicit_tendencies.append(implicit)
 
-        history = self._fpj2_state
-        use_fast_projection = (
-            self.config.projection_method == "fpj2"
-            and self._fpj2_history_is_usable(timestep)
-        )
-        predicted_pressures = (
-            tuple(
-                fpj2_pressure_prediction(
-                    history.current_pressure,
-                    history.previous_pressure,
-                    current_timestep=history.current_timestep,
-                    previous_timestep=history.previous_timestep,
-                    next_timestep=timestep,
-                    stage_abscissa=_ARK3_C[index],
-                )
-                for index in range(1, len(_ARK3_C))
-            )
-            if use_fast_projection and history is not None
-            else ()
-        )
-        pressure_guess = None if history is None else history.current_pressure
+        pressure_guess = initial_pressure
 
         for stage_index in range(1, len(_ARK3_C)):
             terms: list[tuple[float, MACVelocity]] = [(1.0, velocity)]
@@ -1937,26 +1824,13 @@ class NeutralABLMomentum:
                 _ARK3_GAMMA * timestep,
             )
             projection_timestep = _ARK3_C[stage_index] * timestep
-            if use_fast_projection:
-                # The projector owns a compiled gradient; the free function ran
-                # a scatter per face component outside any compiled region.
-                gradient = self.projector.pressure_gradient(
-                    predicted_pressures[stage_index - 1],
-                )
-                stage = self.enforce_boundaries(
-                    _velocity_sum(
-                        (1.0, stage),
-                        (-projection_timestep, gradient),
-                    )
-                )
-            else:
-                projected = self.projector.project_velocity_and_pressure(
-                    stage,
-                    timestep=projection_timestep,
-                    initial_pressure=pressure_guess,
-                )
-                stage = projected.velocity
-                pressure_guess = projected.pressure
+            projected = self.projector.project_velocity_and_pressure(
+                stage,
+                timestep=projection_timestep,
+                initial_pressure=pressure_guess,
+            )
+            stage = projected.velocity
+            pressure_guess = projected.pressure
             evaluate(stage, stage_index)
 
         final_terms: list[tuple[float, MACVelocity]] = [(1.0, velocity)]
@@ -1973,13 +1847,10 @@ class NeutralABLMomentum:
                     implicit_tendencies[stage_index],
                 )
             )
-        initial_pressure = (
-            predicted_pressures[-1] if use_fast_projection else pressure_guess
-        )
         return self.projector.project_velocity_and_pressure(
             _velocity_sum(*final_terms),
             timestep=timestep,
-            initial_pressure=initial_pressure,
+            initial_pressure=pressure_guess,
         )
 
     def _advance_lasd(
@@ -2256,10 +2127,10 @@ class NeutralABLMomentum:
                 time=time,
                 lasd_coefficient=coefficient,
                 wall_velocity=wall_velocity,
+                initial_pressure=self._pressure,
             )
             advanced = self.enforce_boundaries(projected.velocity)
-            if self.config.projection_method == "fpj2":
-                self._accept_fpj2_pressure(projected.pressure, timestep)
+            self._pressure = projected.pressure
             self._advance_lasd(advanced, timestep)
             self._advance_wall_model(advanced, timestep)
             return advanced
@@ -2274,48 +2145,16 @@ class NeutralABLMomentum:
                 wall_velocity,
             )
 
-        if self.config.projection_method == "fpj2":
-            history = self._fpj2_state
-            if self._fpj2_history_is_usable(timestep):
-                projected = fpj2_ssprk3_velocity_step(
-                    velocity,
-                    tendency=stage_tendency,
-                    projector=self.projector,
-                    timestep=timestep,
-                    current_pressure=history.current_pressure,
-                    previous_pressure=history.previous_pressure,
-                    current_timestep=history.current_timestep,
-                    previous_timestep=history.previous_timestep,
-                    time=time,
-                )
-            else:
-                initial_pressure = None if history is None else history.current_pressure
-                projected = projected_ssprk3_velocity_pressure_step(
-                    velocity,
-                    tendency=stage_tendency,
-                    projector=self.projector,
-                    timestep=timestep,
-                    time=time,
-                    initial_pressure=initial_pressure,
-                )
-            advanced = projected.velocity
-            self._accept_fpj2_pressure(projected.pressure, timestep)
-        elif self.pressure_solver.krylov.execution == "jax":
-            advanced = projected_ssprk3_velocity_step(
-                velocity,
-                tendency=stage_tendency,
-                projector=self.projector,
-                timestep=timestep,
-                time=time,
-            )
-        else:
-            advanced = projected_ssprk3_step(
-                velocity,
-                tendency=stage_tendency,
-                projector=self.projector,
-                timestep=timestep,
-                time=time,
-            ).velocity
+        projected = projected_ssprk3_velocity_pressure_step(
+            velocity,
+            tendency=stage_tendency,
+            projector=self.projector,
+            timestep=timestep,
+            time=time,
+            initial_pressure=self._pressure,
+        )
+        advanced = projected.velocity
+        self._pressure = projected.pressure
         advanced = self.enforce_boundaries(advanced)
         self._advance_lasd(advanced, timestep)
         self._advance_wall_model(advanced, timestep)
@@ -2828,7 +2667,6 @@ __all__ = [
     "AMDModel",
     "AMDPassiveScalar",
     "AMDPassiveScalarModel",
-    "FPJ2State",
     "NeutralABLConfig",
     "NeutralABLDiagnostic",
     "NeutralABLMomentum",

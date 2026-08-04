@@ -10,8 +10,6 @@ import jax
 import jax.numpy as jnp
 
 from jaxwind.pressure import (
-    fpj2_pressure_prediction,
-    fpj2_ssprk3_velocity_step,
     MACVelocity,
     mac_divergence,
     projected_ssprk3_velocity_pressure_step,
@@ -517,10 +515,10 @@ class AMDBoussinesq:
             potential_temperature,
             velocity,
         )
-        # FPJ2 pressure-predicted stage velocities are not exactly solenoidal.
-        # Convert conservative transport to its constant-preserving advective
-        # equivalent at those stages, then remove the correction's mean so the
-        # accepted scalar remains globally conservative.
+        # Pressure solves are finite-tolerance operations. Convert conservative
+        # transport to its constant-preserving advective equivalent at each
+        # stage, then remove the correction's mean so the accepted scalar stays
+        # globally conservative.
         divergence_correction = potential_temperature * mac_divergence(
             velocity, self.grid
         )
@@ -607,110 +605,15 @@ class AMDBoussinesq:
             heat_quadrature,
         )
 
-    def _fpj2_coupled_ssprk3_step(
-        self,
-        state: AMDBoussinesqState,
-        timestep: float,
-    ) -> _CoupledSSPRK3Result:
-        """Advance coupled SSPRK3 with FPJ2 stage-pressure predictions."""
-        history = self.momentum.fpj2_state
-        if history is None:
-            raise RuntimeError("FPJ2 pressure history is unavailable")
-        theta = state.potential_temperature
-        dtype = theta.dtype
-        second_pressure = fpj2_pressure_prediction(
-            history.current_pressure,
-            history.previous_pressure,
-            current_timestep=history.current_timestep,
-            previous_timestep=history.previous_timestep,
-            next_timestep=timestep,
-            stage_abscissa=1.0,
-        )
-        third_pressure = fpj2_pressure_prediction(
-            history.current_pressure,
-            history.previous_pressure,
-            current_timestep=history.current_timestep,
-            previous_timestep=history.previous_timestep,
-            next_timestep=timestep,
-            stage_abscissa=0.5,
-        )
-        first_momentum, first_scalar, first_heat = (
-            self._compiled_coupled_surface_tendency(
-                state.velocity,
-                theta,
-                jnp.asarray(state.time, dtype=dtype),
-            )
-        )
-        second_gradient = self.momentum.projector.pressure_gradient(second_pressure)
-        second_velocity = _velocity_sum(
-            (1.0, state.velocity),
-            (timestep, first_momentum),
-            (-timestep, second_gradient),
-        )
-        second_theta = theta + timestep * first_scalar
-        second_momentum, second_scalar, second_heat = (
-            self._compiled_coupled_surface_tendency(
-                second_velocity,
-                second_theta,
-                jnp.asarray(state.time + timestep, dtype=dtype),
-            )
-        )
-        third_gradient = self.momentum.projector.pressure_gradient(third_pressure)
-        third_velocity = _velocity_sum(
-            (1.0, state.velocity),
-            (0.25 * timestep, first_momentum),
-            (0.25 * timestep, second_momentum),
-            (-0.5 * timestep, third_gradient),
-        )
-        third_theta = theta + 0.25 * timestep * (first_scalar + second_scalar)
-        third_momentum, third_scalar, third_heat = (
-            self._compiled_coupled_surface_tendency(
-                third_velocity,
-                third_theta,
-                jnp.asarray(state.time + 0.5 * timestep, dtype=dtype),
-            )
-        )
-        final = self.momentum.projector.project_velocity_and_pressure(
-            _velocity_sum(
-                (1.0, state.velocity),
-                (timestep / 6.0, first_momentum),
-                (timestep / 6.0, second_momentum),
-                (2.0 * timestep / 3.0, third_momentum),
-            ),
-            timestep=timestep,
-            initial_pressure=second_pressure,
-        )
-        final_theta = theta + timestep * (
-            first_scalar / 6.0 + second_scalar / 6.0 + (2.0 / 3.0) * third_scalar
-        )
-        heat_quadrature = (
-            first_heat / 6.0 + second_heat / 6.0 + (2.0 / 3.0) * third_heat
-        )
-        return _CoupledSSPRK3Result(
-            final.velocity,
-            final_theta,
-            final.pressure,
-            heat_quadrature,
-        )
-
     def _coupled_ssprk3_step(
         self,
         state: AMDBoussinesqState,
         timestep: float,
     ) -> _CoupledSSPRK3Result:
-        history = self.momentum.fpj2_state
-        if (
-            self.momentum.config.projection_method == "fpj2"
-            and self.momentum._fpj2_history_is_usable(timestep)
-        ):
-            return self._fpj2_coupled_ssprk3_step(state, timestep)
-        initial_pressure = (
-            state.pressure if history is None else history.current_pressure
-        )
         return self._full_coupled_ssprk3_step(
             state,
             timestep,
-            initial_pressure,
+            state.pressure,
         )
 
     @property
@@ -781,11 +684,6 @@ class AMDBoussinesq:
         self._last_surface_heat_flux_quadrature = None
         if self.config.coupling_integrator == "coupled-ssprk3":
             result = self._coupled_ssprk3_step(state, timestep)
-            if self.momentum.config.projection_method == "fpj2":
-                self.momentum._accept_fpj2_pressure(
-                    result.pressure,
-                    timestep,
-                )
             self._last_surface_heat_flux_quadrature = (
                 result.surface_heat_flux_quadrature
             )
@@ -844,6 +742,7 @@ class AMDBoussinesq:
                     state.velocity
                 ),
                 wall_velocity=self.momentum.active_wall_velocity(state.velocity),
+                initial_pressure=state.pressure,
                 explicit_forcing=buoyancy,
                 explicit_forcing_provider=(
                     self._compiled_rayleigh_momentum_tendency
@@ -853,38 +752,13 @@ class AMDBoussinesq:
                 wall_stress_provider=wall_stress_provider,
             )
         else:
-            history = self.momentum.fpj2_state
-            if (
-                self.momentum.config.projection_method == "fpj2"
-                and self.momentum._fpj2_history_is_usable(timestep)
-            ):
-                projected = fpj2_ssprk3_velocity_step(
-                    state.velocity,
-                    tendency=stage_tendency,
-                    projector=self.momentum.projector,
-                    timestep=timestep,
-                    current_pressure=history.current_pressure,
-                    previous_pressure=history.previous_pressure,
-                    current_timestep=history.current_timestep,
-                    previous_timestep=history.previous_timestep,
-                    time=state.time,
-                )
-            else:
-                initial_pressure = (
-                    state.pressure if history is None else history.current_pressure
-                )
-                projected = projected_ssprk3_velocity_pressure_step(
-                    state.velocity,
-                    tendency=stage_tendency,
-                    projector=self.momentum.projector,
-                    timestep=timestep,
-                    time=state.time,
-                    initial_pressure=initial_pressure,
-                )
-        if self.momentum.config.projection_method == "fpj2":
-            self.momentum._accept_fpj2_pressure(
-                projected.pressure,
-                timestep,
+            projected = projected_ssprk3_velocity_pressure_step(
+                state.velocity,
+                tendency=stage_tendency,
+                projector=self.momentum.projector,
+                timestep=timestep,
+                time=state.time,
+                initial_pressure=state.pressure,
             )
         velocity = self.momentum.enforce_boundaries(projected.velocity)
         if self.surface_law is None:

@@ -32,8 +32,6 @@ from .matrix_free_gmg import (
 from .mac_projection import (
     _velocity_sum,
     VelocityPressureProjection,
-    fpj2_pressure_prediction,
-    fpj2_ssprk3_velocity_step,
     MACProjectionResult,
     MACStageProjector,
     MACVelocity,
@@ -73,8 +71,6 @@ __all__ = [
     "build_spectral_fd_pressure_adapter",
     "fgmres",
     "pcg",
-    "fpj2_pressure_prediction",
-    "fpj2_ssprk3_velocity_step",
     "gather_y_field",
     "gather_y_mac_velocity",
     "mac_divergence",

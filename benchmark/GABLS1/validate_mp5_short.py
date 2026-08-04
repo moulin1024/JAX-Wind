@@ -65,7 +65,6 @@ def _build_continuation(
     mp5_strength: float,
 ):
     import jax.numpy as jnp
-    from jaxwind.momentum import FPJ2State
     from jaxwind.pressure import MACVelocity
 
     nz, ny, nx = (int(value) for value in checkpoint["shape_zyx"])
@@ -78,7 +77,6 @@ def _build_continuation(
             "--scalar-amd-coefficient",
             str(float(checkpoint["scalar_amd_coefficient"])),
             "--mp5-strength", str(mp5_strength),
-            "--projection-method", "fpj2",
             "--coupling-integrator", "coupled-ssprk3",
             "--pressure-rtol", str(validation.pressure_rtol),
             "--pressure-max-iterations",
@@ -100,16 +98,6 @@ def _build_continuation(
         time=float(checkpoint["time"]),
         step=int(checkpoint["step"]),
     )
-    if "fpj2_current_pressure" in checkpoint:
-        coupled.momentum.restore_fpj2(
-            FPJ2State(
-                jnp.asarray(checkpoint["fpj2_current_pressure"], dtype=dtype),
-                jnp.asarray(checkpoint["fpj2_previous_pressure"], dtype=dtype),
-                float(checkpoint["fpj2_current_timestep"]),
-                float(checkpoint["fpj2_previous_timestep"]),
-                int(checkpoint["fpj2_history_count"]),
-            )
-        )
     return coupled, case, state
 
 
@@ -135,15 +123,10 @@ def _advance(
         dtype=state.potential_temperature.dtype,
     )
     initial_rates = coupled.stability_rates(state)
-    saved_fpj2 = coupled.momentum.fpj2_state
     compile_start = time.perf_counter()
     compiled_state = coupled.step(state, timestep=validation.dt)
     jax.block_until_ready(compiled_state.velocity.x)
     compilation = time.perf_counter() - compile_start
-    if saved_fpj2 is None:
-        coupled.momentum.reset_fpj2()
-    else:
-        coupled.momentum.restore_fpj2(saved_fpj2)
     jax.block_until_ready((initial_theta, initial_rates))
     start = time.perf_counter()
     for _ in range(validation.steps):

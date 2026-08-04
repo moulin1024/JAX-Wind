@@ -57,11 +57,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         choices=("explicit", "imex_ark3"),
         default="explicit",
     )
-    parser.add_argument(
-        "--projection-method",
-        choices=("full", "fpj2"),
-        default="full",
-    )
     parser.add_argument("--restart", type=Path)
     parser.add_argument("--checkpoint-every", type=int, default=500)
     parser.add_argument("--max-run-seconds", type=float)
@@ -141,8 +136,6 @@ def main() -> None:
                 str(args.target_diffusive_cfl),
                 "--sgs-time-integration",
                 args.sgs_time_integration,
-                "--projection-method",
-                args.projection_method,
                 "--amd-coefficient",
                 str(args.amd_coefficient),
                 "--scalar-amd-coefficient",

@@ -29,7 +29,6 @@ def _coupled_solver(
     advection_limiter: str = "mp5",
     coupling_integrator: str = "strang",
     sgs_time_integration: str = "explicit",
-    projection_method: str = "full",
     molecular_viscosity: float = 0.0,
 ) -> AMDBoussinesq:
     grid = RectilinearGrid.uniform(8, 8, 8, lx=2.0, ly=2.0, lz=1.0)
@@ -66,7 +65,6 @@ def _coupled_solver(
                 molecular_viscosity=molecular_viscosity,
             ),
             sgs_time_integration=sgs_time_integration,
-            projection_method=projection_method,
         ),
     )
     scalar = AMDPassiveScalar(
@@ -91,7 +89,6 @@ def _coupled_solver(
 
 
 def _stable_coupled_solver(
-    projection_method: str = "full",
     coupling_integrator: str = "strang",
     *,
     stretched: bool = False,
@@ -139,7 +136,6 @@ def _stable_coupled_solver(
             advection_limiter=advection_limiter,
             amd=AMDModel(coefficient=0.212),
             sgs_time_integration=sgs_time_integration,
-            projection_method=projection_method,
         ),
     )
     scalar = AMDPassiveScalar(
@@ -575,9 +571,8 @@ def test_stable_surface_imex_recomputes_most_at_each_ark_stage() -> None:
     assert float(coupled.momentum.pressure_solver.operator.norm(divergence)) < 1e-3
 
 
-def test_stable_surface_imex_fpj2_builds_pressure_history() -> None:
+def test_stable_surface_imex_tracks_full_pressure() -> None:
     coupled = _stable_coupled_solver(
-        projection_method="fpj2",
         sgs_time_integration="imex_ark3",
     )
     nz, ny, nx = coupled.grid.shape
@@ -592,17 +587,15 @@ def test_stable_surface_imex_fpj2_builds_pressure_history() -> None:
     for _ in range(3):
         state = coupled.step(state, timestep=0.25)
 
-    history = coupled.momentum.fpj2_state
     divergence = mac_divergence(state.velocity, coupled.grid)
-    assert history is not None
-    assert history.history_count == 2
     assert state.step == 3
+    assert jnp.all(jnp.isfinite(state.pressure))
     assert jnp.all(jnp.isfinite(state.potential_temperature))
     assert float(coupled.momentum.pressure_solver.operator.norm(divergence)) < 1e-3
 
 
 def test_coupled_ssprk3_uses_rk_surface_heat_flux_quadrature() -> None:
-    coupled = _stable_coupled_solver("full", "coupled-ssprk3")
+    coupled = _stable_coupled_solver("coupled-ssprk3")
     nz, ny, nx = coupled.grid.shape
     theta = jnp.full((nz, ny, nx), 265.0, dtype=jnp.float32)
     velocity = MACVelocity(
@@ -627,35 +620,10 @@ def test_coupled_ssprk3_uses_rk_surface_heat_flux_quadrature() -> None:
     )
 
 
-def test_active_scalar_fpj2_uses_one_ppe_after_two_startup_steps() -> None:
-    coupled = _stable_coupled_solver("fpj2")
-    nz, ny, nx = coupled.grid.shape
-    theta = jnp.full((nz, ny, nx), 265.0, dtype=jnp.float32)
-    velocity = MACVelocity(
-        jnp.full((nz, ny, nx + 1), 8.0, dtype=jnp.float32),
-        jnp.zeros((nz, ny + 1, nx), dtype=jnp.float32),
-        jnp.zeros((nz + 1, ny, nx), dtype=jnp.float32),
-    )
-    state = coupled.initial_state(velocity, theta, time=3600.0)
-
-    first = coupled.step(state, timestep=0.25)
-    second = coupled.step(first, timestep=0.25)
-    advanced = coupled.step(second, timestep=0.25)
-
-    history = coupled.momentum.fpj2_state
-    divergence = mac_divergence(advanced.velocity, coupled.grid)
-    assert history is not None
-    assert history.history_count == 2
-    assert advanced.step == 3
-    assert jnp.all(jnp.isfinite(advanced.potential_temperature))
-    assert float(coupled.momentum.pressure_solver.operator.norm(divergence)) < 1e-3
-
-
-def test_imex_active_scalar_fpj2_builds_pressure_history() -> None:
+def test_imex_active_scalar_tracks_full_pressure() -> None:
     coupled = _coupled_solver(
         lower_flux=0.01,
         sgs_time_integration="imex_ark3",
-        projection_method="fpj2",
         molecular_viscosity=2.0,
     )
     theta = jnp.zeros(coupled.grid.shape, dtype=jnp.float32)
@@ -665,17 +633,15 @@ def test_imex_active_scalar_fpj2_builds_pressure_history() -> None:
     second = coupled.step(first, timestep=0.005)
     advanced = coupled.step(second, timestep=0.005)
 
-    history = coupled.momentum.fpj2_state
     divergence = mac_divergence(advanced.velocity, coupled.grid)
-    assert history is not None
-    assert history.history_count == 2
     assert advanced.step == 3
+    assert jnp.all(jnp.isfinite(advanced.pressure))
     assert jnp.all(jnp.isfinite(advanced.potential_temperature))
     assert float(coupled.momentum.pressure_solver.operator.norm(divergence)) < 1e-3
 
 
-def test_coupled_ssprk3_fpj2_builds_pressure_history() -> None:
-    coupled = _stable_coupled_solver("fpj2", "coupled-ssprk3")
+def test_coupled_ssprk3_projects_every_rk_stage() -> None:
+    coupled = _stable_coupled_solver("coupled-ssprk3")
     nz, ny, nx = coupled.grid.shape
     theta = jnp.full((nz, ny, nx), 265.0, dtype=jnp.float32)
     velocity = MACVelocity(
@@ -698,11 +664,9 @@ def test_coupled_ssprk3_fpj2_builds_pressure_history() -> None:
     second = coupled.step(first, timestep=0.25)
     advanced = coupled.step(second, timestep=0.25)
 
-    history = coupled.momentum.fpj2_state
     divergence = mac_divergence(advanced.velocity, coupled.grid)
-    assert history is not None
-    assert history.history_count == 2
-    assert pressure_solves == 7
+    assert pressure_solves == 9
+    assert jnp.all(jnp.isfinite(advanced.pressure))
     assert jnp.all(jnp.isfinite(advanced.potential_temperature))
     assert coupled.last_surface_heat_flux_quadrature is not None
     assert float(coupled.momentum.pressure_solver.operator.norm(divergence)) < 1e-3

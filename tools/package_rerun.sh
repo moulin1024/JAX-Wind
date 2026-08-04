@@ -187,7 +187,6 @@ Quick single-process GABLS1 verification:
 
     python benchmark/GABLS1/run.py \
         --quick \
-        --projection-method fpj2 \
         --coupling-integrator coupled-ssprk3 \
         --output-dir benchmark_results/gabls1_quick
 
@@ -197,7 +196,6 @@ Current optimized 64-cubed GABLS1 configuration from a fresh initial state:
         --nx 64 --ny 64 --nz 64 \
         --end-hours 9 \
         --target-cfl 0.9 \
-        --projection-method fpj2 \
         --coupling-integrator coupled-ssprk3 \
         --pressure-rtol 1e-5 \
         --pressure-smooth 1 \

@@ -60,17 +60,13 @@ three SSPRK3 stages, reducing scalar RHS evaluations from six to three:
 
 ```bash
 python benchmark/GABLS1/run.py \
-  --projection-method fpj2 \
   --coupling-integrator coupled-ssprk3 \
   --output-dir benchmark_results/gabls1_amd_coupled_ssprk3
 ```
 
 Each coupled stage shares the MOST flux, cell-centred velocity, and velocity
-gradient between the momentum and scalar closures. FPJ2 intermediate
-velocities use a conservative, constant-preserving divergence correction for
-scalar transport because their pressure is predicted rather than exactly
-projected. The full-PPE path uses the same formulation, where the correction
-vanishes to the pressure-solve tolerance.
+gradient between the momentum and scalar closures. Every momentum stage is
+fully pressure projected before its velocity is used by the next stage.
 
 For the GPU MP5 + sign-projection setup with vertically implicit momentum SGS,
 run:
@@ -85,7 +81,7 @@ python benchmark/GABLS1/run.py \
   --amd-coefficient .212 --scalar-amd-coefficient .212 \
   --advection-limiter mp5 --mp5-strength 1 \
   --sgs-time-integration imex_ark3 \
-  --projection-method fpj2 --coupling-integrator strang \
+  --coupling-integrator strang \
   --pressure-rtol 1e-4 --pressure-max-iterations 20 \
   --pressure-smooth 1 --pressure-coarse-smooth 20 \
   --output-dir benchmark_results/gabls1_mp5_signprojection_gpu
@@ -173,75 +169,26 @@ or a freshly initialized grid:
 ```bash
 python benchmark/GABLS1/profile_serial.py \
   --nx 64 --ny 64 --nz 64 \
-  --projection-method full \
   --pressure-smooth 2 \
-  --profile-repeats 5
-
-python benchmark/GABLS1/profile_serial.py \
-  --nx 64 --ny 64 --nz 64 \
-  --projection-method fpj2 \
-  --pressure-smooth 1 \
   --profile-repeats 5
 ```
 
-`full` performs a pressure Poisson solve after every SSPRK3 momentum stage.
-`fpj2` uses two exact startup steps and then two pressure predictions plus one
-final Poisson solve. Choose `strang` for the original two scalar half-steps or
-`coupled-ssprk3` for three shared momentum-temperature stages.
+The solver performs a pressure Poisson solve after every SSPRK3 or ARK3
+momentum stage. Choose `strang` for the original two scalar half-steps or
+`coupled-ssprk3` for three shared momentum-temperature stages. The one-smooth
+configuration retains the same PCG tolerance; zero smooths were tested and
+rejected because the weaker preconditioner made the complete solve slower.
 
-On the development CPU, matched fresh-state `64³` FPJ2/coupled-SSPRK3 profiles
-measured `0.248 s/step` with MP5 and `0.157 s/step` with MUSCL-MC, a 36.7%
-step-time reduction. The standalone momentum correction decreased from
-`9.89 ms` to `3.33 ms` per RHS and the scalar correction from `3.48 ms` to
-`1.07 ms`. These are kernel measurements; the canonical profile and spectrum
-comparisons still determine whether the less expensive correction is an
-acceptable LES default.
-
-On the development CPU, the measured `64³` kernel time decreased from about
-`0.604 s/step` (`full`, two GMG pre/post smooths) to about
-`0.277 s/step` (`fpj2`, one smooth), a roughly 54% reduction. With the same
-three-PPE `full` integrator, the optimized MP5 and scalar-stage kernels take
-about `0.334 s/step`, so the formula-preserving kernel work accounts for most
-of the gain. The one-smooth configuration retains the same PCG tolerance;
-zero smooths were tested and rejected because the weaker preconditioner made
-the complete solve slower.
-
-The same comparison on a developed `64³` GABLS1 checkpoint (3.13 h) gives
-`0.354 s/step` for `full` and `0.269 s/step` for `fpj2`. A 300-step fork from
-that checkpoint reduced complete-runner time from 119.6 s to 93.3 s while
-retaining an `L2` divergence of `4.31e-8`; total momentum and heat-flux profile
-differences were below `4e-4` relative. Over the same 101.3 s of simulated time,
-the `0.9` CFL target required 239 instead of 300 steps and reduced loop time
-from 93.3 s to 78.3 s; final divergence remained `8.16e-8` and the maximum
-scalar-budget residual was unchanged at about `6.5e-6`. For a long `64³` run,
-resume the saved full-PPE checkpoint on the validated fast path with:
+Resume a saved `64³` run with:
 
 ```bash
 python benchmark/GABLS1/run.py \
   --nx 64 --ny 64 --nz 64 \
-  --projection-method fpj2 \
   --restart benchmark_results/gabls1_amd_64cubed/checkpoint.npz \
   --output-dir benchmark_results/gabls1_amd_64cubed
 ```
 
-On the same developed checkpoint, a paired seven-repeat kernel profile reduced
-the FPJ2 step from `0.376 s` (`strang`) to `0.340 s`
-(`coupled-ssprk3`), about 9%. An equal-time 239-step fork remained stable with
-final divergence `8.30e-8`; boundary-layer height, friction velocity, and
-surface heat flux agreed with the Strang fork to better than 0.01%. Complete
-runner time was within measurement noise on the development CPU, so
 `coupled-ssprk3` remains opt-in rather than the benchmark default.
-
-The first two accepted steps after switching from a full-PPE checkpoint use
-the exact three-PPE startup path to build the variable-step pressure history.
-FPJ2 pressure-predicted stages are not exactly solenoidal, so their centred
-conservative momentum flux includes the local skew-split correction
-`0.5 * velocity * divergence`. This cancels the otherwise nonzero stage
-advection work without another pressure solve, device reduction, or host
-synchronization. It is enabled by default for FPJ2; use
-`--no-fpj2-energy-correction` only for controlled ablation against legacy
-results. Checkpoints record the choice and reject a restart with different
-FPJ2 energy semantics.
 
 Continue an interrupted run without losing accumulated samples:
 

@@ -178,7 +178,6 @@ def main(argv: list[str] | None = None) -> None:
 
     timings["pressure_projection_s"], _ = measure(pressure_projection)
     advanced = state
-    coupled.momentum.reset_fpj2()
     for _ in range(2):
         advanced = coupled.step(advanced, timestep=0.5)
         ready(advanced)
@@ -222,7 +221,6 @@ def main(argv: list[str] | None = None) -> None:
         return result
 
     coupled.momentum.projector.project_velocity_and_pressure = timed_projection
-    coupled.momentum.reset_fpj2()
     detailed_state = state
     for _ in range(2):
         detailed_state = coupled.step(detailed_state, timestep=0.5)
@@ -244,7 +242,7 @@ def main(argv: list[str] | None = None) -> None:
             list(shape) for shape in pressure.preconditioner.level_shapes
         ],
         "pressure_execution": pressure.krylov.execution,
-        "projection_method": args.projection_method,
+        "projection_method": "full",
         "advection_limiter": args.advection_limiter,
         "coupling_integrator": args.coupling_integrator,
         "scalar_rhs_calls_per_step": (
