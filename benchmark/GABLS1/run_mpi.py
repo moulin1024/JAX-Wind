@@ -39,6 +39,10 @@ def parse_args(argv: list[str] | None = None):
         raise SystemExit(
             "the y-slab runner does not yet support a custom wall matching height"
         )
+    if args.rayleigh_sponge_start_height is not None:
+        raise SystemExit(
+            "the y-slab runner does not yet support the Rayleigh sponge"
+        )
     if args.projection_method != "full":
         raise SystemExit(
             "the y-slab runner currently supports --projection-method full"

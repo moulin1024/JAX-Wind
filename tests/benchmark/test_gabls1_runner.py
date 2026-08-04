@@ -24,6 +24,13 @@ REFERENCE = (
     / "reference"
     / "official_12p5m"
 )
+REFERENCE_6P25 = (
+    Path(__file__).resolve().parents[2]
+    / "benchmark"
+    / "GABLS1"
+    / "reference"
+    / "official_6p25m"
+)
 
 
 def test_gabls1_defaults_are_the_official_coarse_case() -> None:
@@ -38,6 +45,8 @@ def test_gabls1_defaults_are_the_official_coarse_case() -> None:
     assert args.projection_method == "full"
     assert args.coupling_integrator == "strang"
     assert args.sgs_time_integration == "explicit"
+    assert args.rayleigh_sponge_start_height is None
+    assert args.rayleigh_sponge_maximum_rate == 0.2
     assert args.advection_limiter == "mp5"
     assert args.pressure_smooth == 1
     assert args.metrics_every == 300
@@ -80,6 +89,23 @@ def test_gabls1_accepts_imex_ark3_with_fpj2() -> None:
     assert coupled.momentum.config.sgs_time_integration == "imex_ark3"
     assert coupled.momentum.config.projection_method == "fpj2"
     assert coupled.surface_law is not None
+
+
+def test_gabls1_builds_optional_rayleigh_sponge() -> None:
+    args = run.parse_args(
+        [
+            "--quick",
+            "--rayleigh-sponge-start-height",
+            "300",
+            "--rayleigh-sponge-maximum-rate",
+            "0.2",
+        ]
+    )
+
+    coupled, _, _ = run._build_coupled(args)
+
+    assert coupled.config.rayleigh_sponge_start_height == 300.0
+    assert coupled.config.rayleigh_sponge_maximum_rate == 0.2
 
 
 def test_gabls1_rejects_imex_with_coupled_ssprk3() -> None:
@@ -243,6 +269,21 @@ def test_official_12p5m_archive_parses_all_sets_and_participants() -> None:
         assert len(datasets) == 7
         assert tuple(datasets[0].values) == SET_COLUMNS[set_name]
     assert len(load_time_series(REFERENCE)) == 7
+
+
+def test_official_6p25m_archive_parses_all_sets_and_participants() -> None:
+    for set_name in "ABCD":
+        datasets = load_period_sets(REFERENCE_6P25, set_name, period=9)
+        assert len(datasets) == 10
+        assert tuple(datasets[0].values) == SET_COLUMNS[set_name]
+    assert len(load_time_series(REFERENCE_6P25)) == 10
+    target = np.asarray((100.0, 200.0, 300.0))
+    variance = ensemble_on_grid(
+        load_period_sets(REFERENCE_6P25, "B", period=9),
+        "z",
+        target,
+    )["w_var_resolved"]
+    assert np.all(variance["minimum"] >= 0.0)
 
 
 def test_reference_ensemble_interpolates_without_extrapolation() -> None:

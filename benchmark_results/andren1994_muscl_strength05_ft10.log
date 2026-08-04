@@ -1,0 +1,14 @@
+[compile] kernels ready in 8.123s
+step=2000 ft=0.8349/10 CFL=0.7944 CFLnu_step=0.1021 CFLnu_next=0.1021 ustar/Ug=0.03960 divL2=1.241e-02 nu_sgs_max=9.755e+00 Csgs_mean/max=2.120e-01/2.120e-01 clipped=0.000
+step=4000 ft=1.7408/10 CFL=0.8101 CFLnu_step=0.1125 CFLnu_next=0.1125 ustar/Ug=0.03802 divL2=4.353e-03 nu_sgs_max=1.441e+01 Csgs_mean/max=2.120e-01/2.120e-01 clipped=0.000
+step=6000 ft=2.5982/10 CFL=0.8417 CFLnu_step=0.1395 CFLnu_next=0.1395 ustar/Ug=0.03991 divL2=2.182e-02 nu_sgs_max=1.568e+01 Csgs_mean/max=2.120e-01/2.120e-01 clipped=0.000
+step=8000 ft=3.4416/10 CFL=0.8040 CFLnu_step=0.1349 CFLnu_next=0.1349 ustar/Ug=0.03773 divL2=1.207e-02 nu_sgs_max=1.497e+01 Csgs_mean/max=2.120e-01/2.120e-01 clipped=0.000
+step=10000 ft=4.2763/10 CFL=0.7970 CFLnu_step=0.1011 CFLnu_next=0.1011 ustar/Ug=0.04075 divL2=4.469e-03 nu_sgs_max=1.124e+01 Csgs_mean/max=2.120e-01/2.120e-01 clipped=0.000
+step=12000 ft=5.1200/10 CFL=0.7988 CFLnu_step=0.1358 CFLnu_next=0.1358 ustar/Ug=0.03770 divL2=1.748e-02 nu_sgs_max=1.588e+01 Csgs_mean/max=2.120e-01/2.120e-01 clipped=0.000
+step=14000 ft=5.9821/10 CFL=0.7937 CFLnu_step=0.1379 CFLnu_next=0.1379 ustar/Ug=0.04070 divL2=5.701e-03 nu_sgs_max=1.347e+01 Csgs_mean/max=2.120e-01/2.120e-01 clipped=0.000
+step=16000 ft=6.8747/10 CFL=0.8109 CFLnu_step=0.1114 CFLnu_next=0.1114 ustar/Ug=0.03707 divL2=1.239e-02 nu_sgs_max=1.172e+01 Csgs_mean/max=2.120e-01/2.120e-01 clipped=0.000
+step=18000 ft=7.7384/10 CFL=0.8025 CFLnu_step=0.1228 CFLnu_next=0.1228 ustar/Ug=0.03758 divL2=8.785e-03 nu_sgs_max=1.477e+01 Csgs_mean/max=2.120e-01/2.120e-01 clipped=0.000
+step=20000 ft=8.5945/10 CFL=0.8038 CFLnu_step=0.0877 CFLnu_next=0.0877 ustar/Ug=0.03662 divL2=1.208e-02 nu_sgs_max=9.645e+00 Csgs_mean/max=2.120e-01/2.120e-01 clipped=0.000
+step=22000 ft=9.4336/10 CFL=0.7909 CFLnu_step=0.1092 CFLnu_next=0.1092 ustar/Ug=0.03903 divL2=2.666e-02 nu_sgs_max=1.428e+01 Csgs_mean/max=2.120e-01/2.120e-01 clipped=0.000
+step=23360 ft=10.0000/10 CFL=0.1359 CFLnu_step=0.0148 CFLnu_next=0.0148 ustar/Ug=0.03759 divL2=1.267e-04 nu_sgs_max=9.904e+00 Csgs_mean/max=2.120e-01/2.120e-01 clipped=0.000
+[done] elapsed=1514.820s summary=benchmark_results/andren1994_muscl_strength05_ft10/summary.json

@@ -86,7 +86,7 @@ def _boundary_layer_height(
 
 
 def snapshot_statistics(coupled, state) -> dict[str, np.ndarray | float]:
-    """Collect one horizontally averaged resolved-plus-SGS state."""
+    """Collect resolved, SGS, and numerical horizontally averaged diagnostics."""
     from jaxwind.momentum.neutral_abl import _cell_velocity
 
     cells = np.asarray(_cell_velocity(state.velocity))
@@ -142,6 +142,14 @@ def snapshot_statistics(coupled, state) -> dict[str, np.ndarray | float]:
     )
     wtheta_sgs_faces = diagnostic["scalar_flux_z"].mean(axis=(1, 2))
     wtheta_sgs_at_cells = _face_to_cell(wtheta_sgs_faces)
+    momentum_numerical_faces = diagnostic["momentum_numerical_flux_z"].mean(
+        axis=(1, 2)
+    )
+    uw_numerical_faces = momentum_numerical_faces[..., 0]
+    vw_numerical_faces = momentum_numerical_faces[..., 1]
+    wtheta_numerical_faces = diagnostic["scalar_numerical_flux_z"].mean(
+        axis=(1, 2)
+    )
     utheta_sgs_at_cells = diagnostic["scalar_flux_x"].mean(axis=(1, 2))
     vtheta_sgs_at_cells = diagnostic["scalar_flux_y"].mean(axis=(1, 2))
 
@@ -189,8 +197,8 @@ def snapshot_statistics(coupled, state) -> dict[str, np.ndarray | float]:
     )
     boundary_layer_height = _boundary_layer_height(
         z_faces,
-        uw_resolved_faces + uw_sgs_faces,
-        vw_resolved_faces + vw_sgs_faces,
+        uw_resolved_faces + uw_sgs_faces + uw_numerical_faces,
+        vw_resolved_faces + vw_sgs_faces + vw_numerical_faces,
     )
 
     u_variance = np.mean(u_fluctuation * u_fluctuation, axis=(1, 2))
@@ -215,8 +223,14 @@ def snapshot_statistics(coupled, state) -> dict[str, np.ndarray | float]:
     vw_resolved_at_cells = _face_to_cell(vw_resolved_faces)
     shear_resolved = -(uw_resolved_at_cells * dudz + vw_resolved_at_cells * dvdz)
     shear_sgs = -(uw_sgs_at_cells * dudz + vw_sgs_at_cells * dvdz)
+    shear_numerical = -(
+        _face_to_cell(uw_numerical_faces) * dudz
+        + _face_to_cell(vw_numerical_faces) * dvdz
+    )
     buoyancy_production = coupled.config.buoyancy_coefficient * (
-        wtheta_resolved_at_cells + wtheta_sgs_at_cells
+        wtheta_resolved_at_cells
+        + wtheta_sgs_at_cells
+        + _face_to_cell(wtheta_numerical_faces)
     )
     dissipation_amd = diagnostic["amd_energy_dissipation"].mean(axis=(1, 2))
     dissipation_numerical = diagnostic["mp5_energy_dissipation"].mean(axis=(1, 2))
@@ -280,13 +294,21 @@ def snapshot_statistics(coupled, state) -> dict[str, np.ndarray | float]:
         "theta_var_sgs": diagnostic["scalar_variance"].mean(axis=(1, 2)),
         "uw_resolved": uw_resolved_faces,
         "uw_sgs": uw_sgs_faces,
-        "uw_total": uw_resolved_faces + uw_sgs_faces,
+        "uw_numerical": uw_numerical_faces,
+        "uw_turbulent_total": uw_resolved_faces + uw_sgs_faces,
+        "uw_total": uw_resolved_faces + uw_sgs_faces + uw_numerical_faces,
         "vw_resolved": vw_resolved_faces,
         "vw_sgs": vw_sgs_faces,
-        "vw_total": vw_resolved_faces + vw_sgs_faces,
+        "vw_numerical": vw_numerical_faces,
+        "vw_turbulent_total": vw_resolved_faces + vw_sgs_faces,
+        "vw_total": vw_resolved_faces + vw_sgs_faces + vw_numerical_faces,
         "wtheta_resolved": wtheta_resolved_faces,
         "wtheta_sgs": wtheta_sgs_faces,
-        "wtheta_total": wtheta_resolved_faces + wtheta_sgs_faces,
+        "wtheta_numerical": wtheta_numerical_faces,
+        "wtheta_turbulent_total": wtheta_resolved_faces + wtheta_sgs_faces,
+        "wtheta_total": (
+            wtheta_resolved_faces + wtheta_sgs_faces + wtheta_numerical_faces
+        ),
         "utheta_resolved": utheta_resolved_faces,
         "utheta_sgs": utheta_sgs_faces,
         "utheta_total": utheta_resolved_faces + utheta_sgs_faces,
@@ -297,6 +319,7 @@ def snapshot_statistics(coupled, state) -> dict[str, np.ndarray | float]:
         "tke_total": resolved_tke + sgs_tke,
         "shear_production_resolved": shear_resolved,
         "shear_production_sgs": shear_sgs,
+        "shear_production_numerical": shear_numerical,
         "buoyancy_production": buoyancy_production,
         "transport_total": transport_resolved,
         "dissipation_amd": dissipation_amd,
@@ -366,12 +389,31 @@ def _reference_ensembles(
     return result
 
 
+def _reference_resolution_m(reference_dir: Path | None) -> float | None:
+    if reference_dir is None:
+        return None
+    metadata_path = reference_dir / "SOURCE.json"
+    if metadata_path.exists():
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        if "resolution_m" in metadata:
+            return float(metadata["resolution_m"])
+    name = reference_dir.name
+    if name.startswith("official_") and name.endswith("m"):
+        encoded = name.removeprefix("official_").removesuffix("m")
+        try:
+            return float(encoded.replace("p", "."))
+        except ValueError:
+            pass
+    return None
+
+
 def _plot_comparison(
     output: Path,
     mean: dict[str, np.ndarray | float],
     reference: dict,
     reference_dir: Path | None,
     model_resolution_m: float,
+    official_resolution_m: float | None,
 ) -> None:
     import matplotlib
 
@@ -390,7 +432,11 @@ def _plot_comparison(
                 ensemble["minimum"],
                 ensemble["maximum"],
                 color="0.85",
-                label="official 12.5 m range",
+                label=(
+                    f"official {official_resolution_m:g} m range"
+                    if official_resolution_m is not None
+                    else "official LES range"
+                ),
             )
             axis.plot(ensemble["mean"], z, "k--", label="official mean")
         axis.plot(
@@ -455,6 +501,13 @@ def _plot_comparison(
             ls="--",
             label="SGS",
         )
+        axis.plot(
+            mean[f"{prefix}_numerical"],
+            z_flux,
+            color="darkorange",
+            ls="-.",
+            label="numerical",
+        )
         axis.set(xlabel=label, ylabel="z (m)", ylim=(0.0, 400.0))
         axis.grid(alpha=0.25)
 
@@ -478,8 +531,13 @@ def _plot_comparison(
     axes[0, 0].legend(fontsize=8)
     axes[2, 0].legend(fontsize=8)
     time_axis.legend(fontsize=8)
+    official_label = (
+        f"official {official_resolution_m:g} m LES"
+        if official_resolution_m is not None
+        else "official LES"
+    )
     figure.suptitle(
-        f"GABLS1: non-spectral AMD {model_resolution_m:g} m vs official 12.5 m LES"
+        f"GABLS1: non-spectral AMD {model_resolution_m:g} m vs {official_label}"
     )
     figure.savefig(output, dpi=180)
     plt.close(figure)
@@ -524,7 +582,9 @@ def save_outputs(
         )
 
     reference = {}
+    official_resolution_m = None
     if reference_dir is not None and reference_dir.exists():
+        official_resolution_m = _reference_resolution_m(reference_dir)
         z = np.asarray(mean["z"])
         z_flux = np.asarray(mean["z_flux"])
         reference = _reference_ensembles(reference_dir, z, z_flux)
@@ -559,6 +619,9 @@ def save_outputs(
             if reference_dir is not None and reference_dir.exists()
             else 0
         ),
+        "official_reference_resolution_m": (
+            official_resolution_m if official_resolution_m is not None else "unknown"
+        ),
         **metadata,
         **scalar_mean,
     }
@@ -575,12 +638,16 @@ def save_outputs(
         **{f"mean_{key}": np.asarray(value) for key, value in mean.items()},
     )
     model_resolution_m = float(metadata.get("grid_spacing_m", 12.5))
-    if np.isclose(model_resolution_m, 12.5):
-        comparison_name = "GABLS1_AMD_12p5m_comparison.png"
+    resolution_tag = f"{model_resolution_m:g}".replace(".", "p")
+    if official_resolution_m is None or np.isclose(
+        model_resolution_m,
+        official_resolution_m,
+    ):
+        comparison_name = f"GABLS1_AMD_{resolution_tag}m_comparison.png"
     else:
-        resolution_tag = f"{model_resolution_m:g}".replace(".", "p")
+        official_tag = f"{official_resolution_m:g}".replace(".", "p")
         comparison_name = (
-            f"GABLS1_AMD_{resolution_tag}m_vs_official_12p5m_comparison.png"
+            f"GABLS1_AMD_{resolution_tag}m_vs_official_{official_tag}m_comparison.png"
         )
     _plot_comparison(
         output_dir / comparison_name,
@@ -588,6 +655,7 @@ def save_outputs(
         reference,
         reference_dir,
         model_resolution_m,
+        official_resolution_m,
     )
     return summary
 

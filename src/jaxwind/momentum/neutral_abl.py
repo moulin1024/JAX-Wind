@@ -41,6 +41,7 @@ from .metrics import (
     minmod as _minmod,
     muscl_mc_interface_states as _muscl_mc_interface_states,
     reconstruction_dissipation,
+    reconstruction_flux,
     wall_normal_derivative as _wall_normal_derivative,
     wall_normal_derivative_transpose as _wall_normal_derivative_transpose,
 )
@@ -1369,6 +1370,26 @@ class NeutralABLMomentum:
             self.config.advection_limiter,
         )
 
+    def vertical_advection_dissipation_flux(
+        self,
+        velocity: MACVelocity,
+        cell_velocity: Array | None = None,
+    ) -> Array:
+        """Return the configured numerical momentum flux on vertical faces."""
+        cells = _cell_velocity(velocity) if cell_velocity is None else cell_velocity
+        flux = jnp.zeros(
+            (cells.shape[0] + 1, *cells.shape[1:]),
+            dtype=cells.dtype,
+        )
+        upper_flux = reconstruction_flux(
+            cells,
+            velocity.z[1:],
+            self.z_metric,
+            self.config.mp5_dissipation_strength,
+            self.config.advection_limiter,
+        )
+        return flux.at[1:].set(upper_flux)
+
     @property
     def wall_matching_height(self) -> float:
         return self._wall_matching_height
@@ -1747,12 +1768,15 @@ class NeutralABLMomentum:
         lasd_coefficient: Array,
         wall_velocity: Array,
         explicit_forcing: MACVelocity | None = None,
+        explicit_forcing_provider: Callable[[MACVelocity, float], MACVelocity]
+        | None = None,
         wall_stress_provider: Callable[[MACVelocity, float], Array] | None = None,
     ) -> VelocityPressureProjection:
         """Advance ARS(2,3,3) with frozen vertical SGS diffusion implicit.
 
         ``explicit_forcing`` is a stage-independent acceleration, such as
         buoyancy frozen at the midpoint of a Strang-coupled scalar step.  A
+        state-dependent ``explicit_forcing_provider`` and the
         ``wall_stress_provider`` is evaluated with each ARK stage velocity and
         physical stage time, keeping nonlinear surface-layer coupling explicit.
         """
@@ -1780,6 +1804,17 @@ class NeutralABLMomentum:
                 (1.0, initial_explicit),
                 (1.0, explicit_forcing),
             )
+        if explicit_forcing_provider is not None:
+            initial_explicit = _velocity_sum(
+                (1.0, initial_explicit),
+                (
+                    1.0,
+                    explicit_forcing_provider(
+                        velocity,
+                        time + _ARK3_C[0] * timestep,
+                    ),
+                ),
+            )
         explicit_tendencies: list[MACVelocity] = [initial_explicit]
         implicit_tendencies: list[MACVelocity] = [initial_implicit]
 
@@ -1805,6 +1840,17 @@ class NeutralABLMomentum:
                 explicit = _velocity_sum(
                     (1.0, explicit),
                     (1.0, explicit_forcing),
+                )
+            if explicit_forcing_provider is not None:
+                explicit = _velocity_sum(
+                    (1.0, explicit),
+                    (
+                        1.0,
+                        explicit_forcing_provider(
+                            stage_velocity,
+                            time + _ARK3_C[stage_index] * timestep,
+                        ),
+                    ),
                 )
             explicit_tendencies.append(explicit)
             implicit_tendencies.append(implicit)
@@ -2528,6 +2574,26 @@ class AMDPassiveScalar:
             velocity,
             self.model.advection_limiter,
         )
+
+    def vertical_advection_dissipation_flux(
+        self,
+        scalar: Array,
+        velocity: MACVelocity,
+    ) -> Array:
+        """Return the configured numerical scalar flux on vertical faces."""
+        self._validate_scalar(scalar)
+        flux = jnp.zeros(
+            (scalar.shape[0] + 1, *scalar.shape[1:]),
+            dtype=scalar.dtype,
+        )
+        upper_flux = reconstruction_flux(
+            scalar,
+            velocity.z[1:],
+            self.z_metric,
+            self.model.mp5_dissipation_strength,
+            self.model.advection_limiter,
+        )
+        return flux.at[1:].set(upper_flux)
 
     def sgs_fluxes(
         self,

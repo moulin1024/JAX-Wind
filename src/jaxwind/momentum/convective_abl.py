@@ -43,6 +43,10 @@ class AMDBoussinesqConfig:
     surface_temperature_tendency: float = 0.0
     thermal_roughness_length: float | None = None
     coupling_integrator: str = "strang"
+    rayleigh_sponge_start_height: float | None = None
+    rayleigh_sponge_maximum_rate: float = 0.0
+    rayleigh_reference_temperature_at_zero: float | None = None
+    rayleigh_reference_temperature_gradient: float = 0.0
 
     def __post_init__(self) -> None:
         positive = (
@@ -73,6 +77,32 @@ class AMDBoussinesqConfig:
             raise ValueError("thermal roughness length must be positive and finite")
         if self.coupling_integrator not in ("strang", "coupled-ssprk3"):
             raise ValueError("coupling integrator must be 'strang' or 'coupled-ssprk3'")
+        sponge_values = (
+            self.rayleigh_sponge_maximum_rate,
+            self.rayleigh_reference_temperature_gradient,
+        )
+        if not all(math.isfinite(value) for value in sponge_values):
+            raise ValueError("Rayleigh sponge controls must be finite")
+        if self.rayleigh_sponge_maximum_rate < 0.0:
+            raise ValueError("Rayleigh sponge maximum rate must be nonnegative")
+        if self.rayleigh_sponge_start_height is None:
+            if self.rayleigh_sponge_maximum_rate != 0.0:
+                raise ValueError("Rayleigh sponge rate requires a start height")
+            if self.rayleigh_reference_temperature_at_zero is not None:
+                raise ValueError("Rayleigh reference requires an active sponge")
+        else:
+            if (
+                not math.isfinite(self.rayleigh_sponge_start_height)
+                or self.rayleigh_sponge_start_height < 0.0
+            ):
+                raise ValueError("Rayleigh sponge start height must be nonnegative")
+            if self.rayleigh_sponge_maximum_rate <= 0.0:
+                raise ValueError("active Rayleigh sponge rate must be positive")
+            if (
+                self.rayleigh_reference_temperature_at_zero is None
+                or not math.isfinite(self.rayleigh_reference_temperature_at_zero)
+            ):
+                raise ValueError("active Rayleigh sponge requires a temperature target")
 
     @property
     def buoyancy_coefficient(self) -> float:
@@ -104,6 +134,8 @@ class AMDBoussinesqDiagnosticFields(NamedTuple):
     mp5_energy_dissipation: Array
     amd_scalar_dissipation: Array
     mp5_scalar_dissipation: Array
+    momentum_numerical_flux_z: Array
+    scalar_numerical_flux_z: Array
     surface_momentum_stress: Array
     surface_heat_flux: Array
     surface_friction_velocity: Array
@@ -171,6 +203,24 @@ class AMDBoussinesq:
             raise ValueError(
                 "prescribed-temperature coupling requires zero fixed lower scalar flux"
             )
+        self._rayleigh_rate: Array | None = None
+        self._rayleigh_temperature_target: Array | None = None
+        if config.rayleigh_sponge_start_height is not None:
+            if self.surface_law is None:
+                raise ValueError("Rayleigh scalar sponge requires surface coupling")
+            if momentum.config.geostrophic_wind is None:
+                raise ValueError("Rayleigh momentum sponge requires geostrophic wind")
+            top = float(self.grid.z_faces[-1])
+            start = config.rayleigh_sponge_start_height
+            if start >= top:
+                raise ValueError("Rayleigh sponge start height must be below the domain top")
+            z = jnp.asarray(self.grid.z_centers)
+            ramp = jnp.clip((z - start) / (top - start), 0.0, 1.0)
+            self._rayleigh_rate = config.rayleigh_sponge_maximum_rate * ramp**2
+            self._rayleigh_temperature_target = (
+                config.rayleigh_reference_temperature_at_zero
+                + config.rayleigh_reference_temperature_gradient * z
+            )
         self._compiled_surface_scalar_tendency = jax.jit(self._surface_scalar_tendency)
         self._compiled_surface_scalar_step = self._dispatched_surface_scalar_step
         self._compiled_surface_momentum_tendency = jax.jit(
@@ -178,6 +228,9 @@ class AMDBoussinesq:
         )
         self._compiled_surface_momentum_wall_stress = jax.jit(
             self._surface_momentum_wall_stress
+        )
+        self._compiled_rayleigh_momentum_tendency = jax.jit(
+            self._rayleigh_momentum_tendency
         )
         self._compiled_coupled_surface_tendency = jax.jit(
             self._coupled_surface_tendency
@@ -316,11 +369,42 @@ class AMDBoussinesq:
         time: Array,
     ) -> Array:
         fluxes = self._surface_layer_fluxes(velocity, scalar, time)
-        return self.scalar.tendency(
+        tendency = self.scalar.tendency(
             scalar,
             velocity,
             lower_surface_flux=fluxes.heat_flux,
         )
+        return tendency + self._rayleigh_scalar_tendency(scalar)
+
+    def _rayleigh_scalar_tendency(self, scalar: Array) -> Array:
+        if self._rayleigh_rate is None or self._rayleigh_temperature_target is None:
+            return jnp.zeros_like(scalar)
+        return self._rayleigh_rate[:, None, None] * (
+            self._rayleigh_temperature_target[:, None, None] - scalar
+        )
+
+    def rayleigh_scalar_volume_rate(self, scalar: Array) -> Array:
+        """Return the domain-mean scalar source supplied by the top sponge."""
+        return self.scalar.volume_mean(self._rayleigh_scalar_tendency(scalar))
+
+    def _rayleigh_momentum_tendency(
+        self,
+        velocity: MACVelocity,
+        _time: float | Array = 0.0,
+    ) -> MACVelocity:
+        if self._rayleigh_rate is None:
+            return MACVelocity(
+                jnp.zeros_like(velocity.x),
+                jnp.zeros_like(velocity.y),
+                jnp.zeros_like(velocity.z),
+            )
+        cells = _cell_velocity(velocity)
+        geostrophic_u, geostrophic_v = self.momentum.config.geostrophic_wind
+        target = jnp.zeros_like(cells)
+        target = target.at[..., 0].set(geostrophic_u)
+        target = target.at[..., 1].set(geostrophic_v)
+        tendency = self._rayleigh_rate[:, None, None, None] * (target - cells)
+        return _cells_to_faces(tendency)
 
     def _surface_scalar_step(
         self,
@@ -399,6 +483,7 @@ class AMDBoussinesq:
         return _velocity_sum(
             (1.0, momentum),
             (1.0, buoyancy),
+            (1.0, self._rayleigh_momentum_tendency(velocity, time)),
         )
 
     def _coupled_surface_tendency(
@@ -426,6 +511,7 @@ class AMDBoussinesq:
         momentum = _velocity_sum(
             (1.0, _cells_to_faces(momentum_cells)),
             (1.0, self.buoyancy_tendency(potential_temperature)),
+            (1.0, self._rayleigh_momentum_tendency(velocity, time)),
         )
         scalar_advection = self.scalar.advective_tendency(
             potential_temperature,
@@ -446,6 +532,7 @@ class AMDBoussinesq:
             velocity_gradient,
             lower_surface_flux=fluxes.heat_flux,
         )
+        scalar += self._rayleigh_scalar_tendency(potential_temperature)
         return momentum, scalar, jnp.mean(fluxes.heat_flux)
 
     def _full_coupled_ssprk3_step(
@@ -758,6 +845,11 @@ class AMDBoussinesq:
                 ),
                 wall_velocity=self.momentum.active_wall_velocity(state.velocity),
                 explicit_forcing=buoyancy,
+                explicit_forcing_provider=(
+                    self._compiled_rayleigh_momentum_tendency
+                    if self._rayleigh_rate is not None
+                    else None
+                ),
                 wall_stress_provider=wall_stress_provider,
             )
         else:
@@ -904,7 +996,13 @@ class AMDBoussinesq:
         return (
             jnp.maximum(
                 self.momentum.cfl_rate(velocity),
-                jnp.maximum(wall_rate, thermal_rate),
+                jnp.maximum(
+                    jnp.maximum(wall_rate, thermal_rate),
+                    jnp.asarray(
+                        self.config.rayleigh_sponge_maximum_rate,
+                        dtype=potential_temperature.dtype,
+                    ),
+                ),
             ),
             self.momentum.explicit_sgs_diffusion_rate(
                 momentum_diffusivity,
@@ -1110,6 +1208,13 @@ class AMDBoussinesq:
             keepdims=True,
         )
         scalar_numerical = self.scalar.advection_dissipation(theta, velocity)
+        momentum_numerical_flux_z = (
+            self.momentum.vertical_advection_dissipation_flux(velocity, cells)
+        )
+        scalar_numerical_flux_z = self.scalar.vertical_advection_dissipation_flux(
+            theta,
+            velocity,
+        )
         amd_energy_dissipation = -self.momentum.resolved_tke_sgs_dissipation(
             cells,
             gradient=velocity_gradient,
@@ -1135,6 +1240,8 @@ class AMDBoussinesq:
             numerical_energy_dissipation,
             amd_scalar_dissipation,
             numerical_scalar_dissipation,
+            momentum_numerical_flux_z,
+            scalar_numerical_flux_z,
             surface_fluxes.momentum_stress,
             surface_fluxes.heat_flux,
             surface_fluxes.friction_velocity,

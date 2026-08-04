@@ -1,0 +1,14 @@
+[compile] kernels ready in 16.082s
+Traceback (most recent call last):
+  File "/Users/moulin/Workspace/JAX-Wind/benchmark/Andren1994/run.py", line 1323, in <module>
+    main()
+    ~~~~^^
+  File "/Users/moulin/Workspace/JAX-Wind/benchmark/Andren1994/run.py", line 864, in main
+    timestep = solver.timestep_for_cfl(
+        velocity,
+        args.target_cfl,
+        args.target_diffusive_cfl,
+    )
+  File "/Users/moulin/Workspace/JAX-Wind/src/jaxwind/momentum/neutral_abl.py", line 2241, in timestep_for_cfl
+    raise ValueError("cannot choose a CFL step for zero velocity")
+ValueError: cannot choose a CFL step for zero velocity

@@ -121,6 +121,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="explicit",
         help="treat the frozen vertical momentum SGS operator implicitly",
     )
+    parser.add_argument(
+        "--rayleigh-sponge-start-height",
+        type=float,
+        help="activate a quadratic top sponge above this physical height (m)",
+    )
+    parser.add_argument(
+        "--rayleigh-sponge-maximum-rate",
+        type=float,
+        default=0.2,
+        help="relaxation rate at the domain top (1/s; inactive without start height)",
+    )
     parser.add_argument("--pressure-rtol", type=float, default=1.0e-5)
     parser.add_argument("--pressure-max-iterations", type=int, default=40)
     parser.add_argument("--pressure-smooth", type=int, default=1)
@@ -210,6 +221,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         not math.isfinite(args.wall_matching_height) or args.wall_matching_height <= 0.0
     ):
         parser.error("wall-matching-height must be positive and finite")
+    if args.rayleigh_sponge_start_height is not None and (
+        not math.isfinite(args.rayleigh_sponge_start_height)
+        or args.rayleigh_sponge_start_height < 0.0
+        or args.rayleigh_sponge_start_height >= diagnostics.GABLS1Case().domain
+    ):
+        parser.error("rayleigh-sponge-start-height must lie in [0, domain top)")
+    if (
+        not math.isfinite(args.rayleigh_sponge_maximum_rate)
+        or args.rayleigh_sponge_maximum_rate <= 0.0
+    ):
+        parser.error("rayleigh-sponge-maximum-rate must be positive and finite")
     if (
         args.sgs_time_integration == "imex_ark3"
         and args.coupling_integrator != "strang"
@@ -315,6 +337,30 @@ def _restore_checkpoint(args, coupled, dtype):
     )
     if checkpoint_sgs_time_integration != args.sgs_time_integration:
         raise SystemExit("restart SGS time integration does not match")
+    checkpoint_sponge_start = (
+        float(checkpoint["rayleigh_sponge_start_height_m"])
+        if "rayleigh_sponge_start_height_m" in checkpoint
+        else math.nan
+    )
+    active_sponge_start = (
+        math.nan
+        if args.rayleigh_sponge_start_height is None
+        else args.rayleigh_sponge_start_height
+    )
+    if not (
+        math.isnan(checkpoint_sponge_start)
+        and math.isnan(active_sponge_start)
+    ) and not np.isclose(checkpoint_sponge_start, active_sponge_start):
+        raise SystemExit("restart Rayleigh sponge start height does not match")
+    if "rayleigh_sponge_maximum_rate_s-1" in checkpoint and not np.isclose(
+        float(checkpoint["rayleigh_sponge_maximum_rate_s-1"]),
+        (
+            args.rayleigh_sponge_maximum_rate
+            if args.rayleigh_sponge_start_height is not None
+            else 0.0
+        ),
+    ):
+        raise SystemExit("restart Rayleigh sponge maximum rate does not match")
     if "wall_matching_height_m" in checkpoint and not np.isclose(
         float(checkpoint["wall_matching_height_m"]),
         coupled.momentum.wall_matching_height,
@@ -460,6 +506,19 @@ def _build_coupled(args: argparse.Namespace):
             surface_temperature_tendency=case.surface_cooling_rate,
             thermal_roughness_length=case.roughness_length,
             coupling_integrator=args.coupling_integrator,
+            rayleigh_sponge_start_height=args.rayleigh_sponge_start_height,
+            rayleigh_sponge_maximum_rate=(
+                args.rayleigh_sponge_maximum_rate
+                if args.rayleigh_sponge_start_height is not None
+                else 0.0
+            ),
+            rayleigh_reference_temperature_at_zero=(
+                case.theta_initial
+                - case.inversion_gradient * case.inversion_base
+                if args.rayleigh_sponge_start_height is not None
+                else None
+            ),
+            rayleigh_reference_temperature_gradient=case.inversion_gradient,
         ),
     )
     return coupled, case, dtype
@@ -556,6 +615,16 @@ def run(args: argparse.Namespace) -> dict[str, float | int | str]:
             "mp5_strength": args.mp5_strength,
             "advection_limiter": args.advection_limiter,
             "sgs_time_integration": args.sgs_time_integration,
+            "rayleigh_sponge_start_height_m": (
+                math.nan
+                if args.rayleigh_sponge_start_height is None
+                else args.rayleigh_sponge_start_height
+            ),
+            "rayleigh_sponge_maximum_rate_s-1": (
+                args.rayleigh_sponge_maximum_rate
+                if args.rayleigh_sponge_start_height is not None
+                else 0.0
+            ),
             "wall_matching_height_m": momentum.wall_matching_height,
             "max_cfl": max_cfl,
             "max_diffusive_cfl": max_diffusive_cfl,
@@ -649,10 +718,20 @@ def run(args: argparse.Namespace) -> dict[str, float | int | str]:
                 if args.coupling_integrator == "strang"
                 else math.nan
             )
+            sponge_source_before = float(
+                coupled.rayleigh_scalar_volume_rate(
+                    state.potential_temperature
+                )
+            )
         state = coupled.step(state, timestep=timestep)
         if metrics_due:
             theta_after, heat_flux_after, divergence = (
                 float(value) for value in coupled.accepted_state_metrics(state)
+            )
+            sponge_source_after = float(
+                coupled.rayleigh_scalar_volume_rate(
+                    state.potential_temperature
+                )
             )
             budget_residual = abs(
                 theta_after
@@ -664,6 +743,7 @@ def run(args: argparse.Namespace) -> dict[str, float | int | str]:
                     else float(coupled.last_surface_heat_flux_quadrature)
                 )
                 / case.domain
+                - timestep * 0.5 * (sponge_source_before + sponge_source_after)
             )
         timesteps.append(timestep)
         cfl = timestep * advective_rate
@@ -755,6 +835,16 @@ def run(args: argparse.Namespace) -> dict[str, float | int | str]:
             "projection_method": args.projection_method,
             "coupling_integrator": args.coupling_integrator,
             "sgs_time_integration": args.sgs_time_integration,
+            "rayleigh_sponge_start_height_m": (
+                "disabled"
+                if args.rayleigh_sponge_start_height is None
+                else args.rayleigh_sponge_start_height
+            ),
+            "rayleigh_sponge_maximum_rate_s-1": (
+                args.rayleigh_sponge_maximum_rate
+                if args.rayleigh_sponge_start_height is not None
+                else 0.0
+            ),
             "pressure_smooth": args.pressure_smooth,
         },
     )

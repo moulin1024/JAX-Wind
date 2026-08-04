@@ -972,6 +972,21 @@ class AxisMetric:
         return jnp.asarray(offsets, dtype=self.dtype)
 
 
+def reconstruction_flux(
+    field: Array,
+    face_speed: Array,
+    metric: AxisMetric,
+    strength: float,
+    scheme: ReconstructionScheme,
+) -> Array:
+    """Return the Rusanov correction flux through one axis' upper faces."""
+    left, right = metric.interface_states(field, scheme)
+    speed = jnp.abs(face_speed)
+    if speed.ndim < field.ndim:
+        speed = speed[..., None]
+    return -0.5 * strength * speed * (right - left)
+
+
 def reconstruction_dissipation(
     field: Array,
     directions: tuple[tuple[Array, AxisMetric], ...],
@@ -982,11 +997,7 @@ def reconstruction_dissipation(
 
     tendency = jnp.zeros_like(field)
     for face_speed, metric in directions:
-        left, right = metric.interface_states(field, scheme)
-        speed = jnp.abs(face_speed)
-        if speed.ndim < field.ndim:
-            speed = speed[..., None]
-        flux = -0.5 * strength * speed * (right - left)
+        flux = reconstruction_flux(field, face_speed, metric, strength, scheme)
         tendency -= metric.upper_face_flux_divergence(flux)
     return tendency
 
@@ -997,6 +1008,7 @@ __all__ = [
     "minmod",
     "mp5_interface_states",
     "muscl_mc_interface_states",
+    "reconstruction_flux",
     "reconstruction_dissipation",
     "wall_normal_derivative",
     "wall_normal_derivative_transpose",

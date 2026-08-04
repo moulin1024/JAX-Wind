@@ -98,6 +98,23 @@ is recomputed from each ARK stage velocity, midpoint temperature, and physical
 stage time. Temperature retains the two explicit SSPRK3 half-steps, so this
 mode requires `--coupling-integrator strang`.
 
+The runner can optionally apply a quadratic Rayleigh sponge between a selected
+height and the 400 m lid. Momentum relaxes toward the geostrophic wind and
+potential temperature toward the initial free-atmosphere profile. Both sources
+are reevaluated from every explicit or IMEX stage state. For the 6.25 m
+comparison, enable the 300--400 m layer with:
+
+```bash
+--rayleigh-sponge-start-height 300 \
+--rayleigh-sponge-maximum-rate 0.2
+```
+
+The sponge is disabled unless `--rayleigh-sponge-start-height` is supplied.
+Flux outputs report resolved, SGS, and limiter-induced numerical vertical
+fluxes separately; `uw_total`, `vw_total`, and `wtheta_total` are their effective
+three-part sums and the diagnosed boundary-layer height uses that effective
+momentum flux.
+
 The corresponding four-rank quick run uses `16³` so each MP5 slab owns at
 least three y cells:
 
@@ -232,20 +249,22 @@ checkpoint on four y-slab ranks.
 The runner writes `checkpoint.npz`, cell-centred `profiles.csv`, face-centred
 `flux_profiles.csv`, `time_series.csv`, `benchmark_stats.npz`,
 `summary.{csv,json}`, `resolved_config.json`, and a resolution-labelled
-comparison PNG (`GABLS1_AMD_12p5m_comparison.png` for `32³`, or
-`GABLS1_AMD_6p25m_vs_official_12p5m_comparison.png` for `64³`). Flux profiles
+comparison PNG (`GABLS1_AMD_12p5m_comparison.png` for a matched `32³`
+comparison, or `GABLS1_AMD_6p25m_comparison.png` for matched `64³`). Flux profiles
 contain separate resolved, SGS, and total contributions on their native
 vertical-face coordinates; the comparison plot uses the total momentum and
 heat flux, rather than comparing the resolved part alone with the official LES
 totals. The official total envelope is formed participant by participant
 before taking its range. The plot overlays our 8--9 h mean on the range and
-mean of the seven official `12.5 m` submissions.
+mean of the official submissions at the selected reference resolution.
 
 The archived official text files live under `reference/official_12p5m` with a
 pinned SHA-256 and citation in `SOURCE.json`. To reproduce that extraction:
 
 ```bash
 python benchmark/GABLS1/fetch_reference.py
+
+python benchmark/GABLS1/fetch_reference.py --resolution 6.25m
 ```
 
 The legacy Met Office host currently presents a mismatched TLS certificate;

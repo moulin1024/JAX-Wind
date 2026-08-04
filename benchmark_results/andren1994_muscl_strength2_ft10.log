@@ -1,0 +1,13 @@
+[compile] kernels ready in 8.659s
+step=2000 ft=0.8866/10 CFL=0.8016 CFLnu_step=0.0708 CFLnu_next=0.0708 ustar/Ug=0.03319 divL2=7.909e-03 nu_sgs_max=6.361e+00 Csgs_mean/max=2.120e-01/2.120e-01 clipped=0.000
+step=4000 ft=1.8461/10 CFL=0.7969 CFLnu_step=0.0337 CFLnu_next=0.0337 ustar/Ug=0.03524 divL2=1.263e-02 nu_sgs_max=5.460e+00 Csgs_mean/max=2.120e-01/2.120e-01 clipped=0.000
+step=6000 ft=2.7504/10 CFL=0.7955 CFLnu_step=0.1008 CFLnu_next=0.1008 ustar/Ug=0.03731 divL2=2.758e-03 nu_sgs_max=1.041e+01 Csgs_mean/max=2.120e-01/2.120e-01 clipped=0.000
+step=8000 ft=3.7091/10 CFL=0.7939 CFLnu_step=0.0284 CFLnu_next=0.0284 ustar/Ug=0.02996 divL2=1.228e-02 nu_sgs_max=2.748e+00 Csgs_mean/max=2.120e-01/2.120e-01 clipped=0.000
+step=10000 ft=4.6424/10 CFL=0.8036 CFLnu_step=0.0265 CFLnu_next=0.0265 ustar/Ug=0.03360 divL2=2.092e-02 nu_sgs_max=2.703e+00 Csgs_mean/max=2.120e-01/2.120e-01 clipped=0.000
+step=12000 ft=5.5846/10 CFL=0.7937 CFLnu_step=0.0332 CFLnu_next=0.0332 ustar/Ug=0.03058 divL2=2.532e-02 nu_sgs_max=3.031e+00 Csgs_mean/max=2.120e-01/2.120e-01 clipped=0.000
+step=14000 ft=6.5209/10 CFL=0.7940 CFLnu_step=0.0533 CFLnu_next=0.0533 ustar/Ug=0.03362 divL2=1.152e-02 nu_sgs_max=5.056e+00 Csgs_mean/max=2.120e-01/2.120e-01 clipped=0.000
+step=16000 ft=7.4504/10 CFL=0.8002 CFLnu_step=0.0406 CFLnu_next=0.0406 ustar/Ug=0.03493 divL2=1.955e-02 nu_sgs_max=4.582e+00 Csgs_mean/max=2.120e-01/2.120e-01 clipped=0.000
+step=18000 ft=8.3742/10 CFL=0.8059 CFLnu_step=0.0199 CFLnu_next=0.0199 ustar/Ug=0.02949 divL2=6.514e-03 nu_sgs_max=2.167e+00 Csgs_mean/max=2.120e-01/2.120e-01 clipped=0.000
+step=20000 ft=9.2556/10 CFL=0.7996 CFLnu_step=0.0319 CFLnu_next=0.0319 ustar/Ug=0.03195 divL2=3.312e-02 nu_sgs_max=3.396e+00 Csgs_mean/max=2.120e-01/2.120e-01 clipped=0.000
+step=21625 ft=10.0000/10 CFL=0.7810 CFLnu_step=0.0487 CFLnu_next=0.0487 ustar/Ug=0.03251 divL2=2.617e-02 nu_sgs_max=5.006e+00 Csgs_mean/max=2.120e-01/2.120e-01 clipped=0.000
+[done] elapsed=1397.147s summary=benchmark_results/andren1994_muscl_strength2_ft10/summary.json

@@ -84,7 +84,7 @@ def read_reference_set(path: Path) -> ReferenceSet:
             f"expected {expected} values in {path}, found {flat.size}"
         )
     arrays = flat.reshape(len(columns), count)
-    arrays[arrays < -1.0e6] = np.nan
+    arrays[(arrays < -1.0e6) | np.isclose(arrays, -9999.0)] = np.nan
     participant = path.parent.name
     return ReferenceSet(
         participant,

@@ -96,6 +96,7 @@ def _stable_coupled_solver(
     *,
     stretched: bool = False,
     sgs_time_integration: str = "explicit",
+    rayleigh_sponge: bool = False,
 ) -> AMDBoussinesq:
     grid = (
         RectilinearGrid(
@@ -161,6 +162,12 @@ def _stable_coupled_solver(
             surface_temperature_tendency=-0.25 / 3600.0,
             thermal_roughness_length=0.1,
             coupling_integrator=coupling_integrator,
+            rayleigh_sponge_start_height=300.0 if rayleigh_sponge else None,
+            rayleigh_sponge_maximum_rate=0.2 if rayleigh_sponge else 0.0,
+            rayleigh_reference_temperature_at_zero=(
+                264.0 if rayleigh_sponge else None
+            ),
+            rayleigh_reference_temperature_gradient=0.01,
         ),
     )
 
@@ -389,6 +396,97 @@ def test_scalar_advection_split_exposes_mp5_without_changing_tendency() -> None:
     ) + coupled.scalar.mp5_dissipation(scalar, velocity)
 
     assert jnp.allclose(total, split)
+
+
+def test_vertical_numerical_fluxes_reproduce_the_solver_correction() -> None:
+    coupled = _coupled_solver()
+    velocity = coupled.momentum.initial_log_profile(perturbation_amplitude=0.05)
+    cells = jnp.stack(
+        (
+            jnp.broadcast_to(
+                jnp.sin(jnp.arange(8, dtype=jnp.float32))[:, None, None],
+                coupled.grid.shape,
+            ),
+            jnp.broadcast_to(
+                jnp.cos(jnp.arange(8, dtype=jnp.float32))[:, None, None],
+                coupled.grid.shape,
+            ),
+            jnp.zeros(coupled.grid.shape, dtype=jnp.float32),
+        ),
+        axis=-1,
+    )
+    scalar = cells[..., 0]
+
+    momentum_flux = coupled.momentum.vertical_advection_dissipation_flux(
+        velocity,
+        cells,
+    )
+    scalar_flux = coupled.scalar.vertical_advection_dissipation_flux(
+        scalar,
+        velocity,
+    )
+    dz = jnp.asarray(coupled.grid.z_widths, dtype=jnp.float32)
+
+    assert jnp.allclose(
+        -(momentum_flux[1:] - momentum_flux[:-1]) / dz[:, None, None, None],
+        coupled.momentum.z_metric.upper_face_flux_divergence(
+            -momentum_flux[1:]
+        ),
+    )
+    assert jnp.allclose(
+        -(scalar_flux[1:] - scalar_flux[:-1]) / dz[:, None, None],
+        coupled.scalar.z_metric.upper_face_flux_divergence(-scalar_flux[1:]),
+    )
+
+
+def test_rayleigh_sponge_is_zero_below_start_and_targets_background() -> None:
+    coupled = _stable_coupled_solver(rayleigh_sponge=True)
+    velocity = _zero_velocity(coupled)
+    z = jnp.asarray(coupled.grid.z_centers, dtype=jnp.float32)
+    target_theta = 264.0 + 0.01 * z
+    theta = jnp.broadcast_to(target_theta[:, None, None] + 1.0, coupled.grid.shape)
+
+    momentum = coupled._rayleigh_momentum_tendency(velocity)
+    scalar = coupled._rayleigh_scalar_tendency(theta)
+    momentum_cells = jnp.stack(
+        (
+            0.5 * (momentum.x[..., :-1] + momentum.x[..., 1:]),
+            0.5 * (momentum.y[:, :-1, :] + momentum.y[:, 1:, :]),
+            0.5 * (momentum.z[:-1] + momentum.z[1:]),
+        ),
+        axis=-1,
+    )
+    below = z <= 300.0
+    above = z > 300.0
+
+    assert float(jnp.max(jnp.abs(momentum_cells[below]))) == 0.0
+    assert float(jnp.max(jnp.abs(scalar[below]))) == 0.0
+    assert jnp.all(momentum_cells[above, ..., 0] > 0.0)
+    assert jnp.allclose(momentum_cells[above, ..., 1:], 0.0)
+    assert jnp.all(scalar[above] < 0.0)
+
+
+def test_rayleigh_sponge_steps_are_finite_for_explicit_and_imex() -> None:
+    for integration in ("explicit", "imex_ark3"):
+        coupled = _stable_coupled_solver(
+            rayleigh_sponge=True,
+            sgs_time_integration=integration,
+        )
+        z = jnp.asarray(coupled.grid.z_centers, dtype=jnp.float32)
+        theta = jnp.broadcast_to(
+            (265.0 + 0.01 * jnp.maximum(z - 100.0, 0.0))[:, None, None],
+            coupled.grid.shape,
+        )
+        velocity = MACVelocity(
+            jnp.full((8, 8, 9), 7.0, dtype=jnp.float32),
+            jnp.zeros((8, 9, 8), dtype=jnp.float32),
+            jnp.zeros((9, 8, 8), dtype=jnp.float32),
+        )
+
+        advanced = coupled.step(coupled.initial_state(velocity, theta), timestep=0.1)
+
+        assert jnp.all(jnp.isfinite(advanced.potential_temperature))
+        assert jnp.all(jnp.isfinite(advanced.velocity.x))
 
 
 def test_scalar_advection_split_selects_muscl_mc() -> None:
