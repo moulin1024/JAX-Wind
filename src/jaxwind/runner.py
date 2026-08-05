@@ -156,7 +156,7 @@ class Simulation:
             dtype=self.dtype,
         )
         if spec.get("plane_mean_zero", False):
-            random -= jnp.mean(random, axis=(1, 2), keepdims=True)
+            random -= self.momentum.horizontal_mean(random, keepdims=True)
         if not self.thermodynamics_enabled:
             return None, random
 
@@ -223,6 +223,7 @@ def build_simulation(config: CaseConfig) -> Simulation:
         jax_config.update("jax_enable_x64", True)
 
     import jax.numpy as jnp
+    from jaxwind.domain import AnalyticAxisMapping
     from jaxwind.momentum import (
         ABLSolver,
         AMDModel,
@@ -245,7 +246,33 @@ def build_simulation(config: CaseConfig) -> Simulation:
     grid_spec = config.section("grid")
     nx, ny, nz = (int(value) for value in grid_spec["shape"])
     lx, ly, lz = (float(value) for value in grid_spec["extent"])
-    grid = RectilinearGrid.uniform(nx, ny, nz, lx=lx, ly=ly, lz=lz)
+    mapping_spec = grid_spec.get("mapping", {})
+
+    def axis_mapping(name: str) -> AnalyticAxisMapping:
+        specification = mapping_spec.get(name)
+        if specification is None:
+            return AnalyticAxisMapping()
+        return AnalyticAxisMapping(
+            function=str(specification["function"]),
+            focus=(
+                None
+                if specification.get("focus") is None
+                else float(specification["focus"])
+            ),
+            strength=float(specification.get("strength", 0.0)),
+        )
+
+    grid = RectilinearGrid.analytic(
+        nx,
+        ny,
+        nz,
+        lx=lx,
+        ly=ly,
+        lz=lz,
+        x=axis_mapping("x"),
+        y=axis_mapping("y"),
+        z=axis_mapping("z"),
+    )
     dtype = jnp.float32 if numerics["dtype"] == "float32" else jnp.float64
     periodic = BoundaryCondition("periodic")
     neumann = BoundaryCondition("neumann")
@@ -564,6 +591,16 @@ def _write_outputs(
         "sgs_model": simulation.config.section("sgs")["model"],
         "shape_zyx": list(simulation.grid.shape),
         "domain_m": list(simulation.config.section("grid")["extent"]),
+        "minimum_spacing_m": [
+            min(simulation.grid.x_widths),
+            min(simulation.grid.y_widths),
+            min(simulation.grid.z_widths),
+        ],
+        "maximum_spacing_m": [
+            max(simulation.grid.x_widths),
+            max(simulation.grid.y_widths),
+            max(simulation.grid.z_widths),
+        ],
         "friction_velocity_m_s": simulation.config.section("momentum")[
             "friction_velocity"
         ],

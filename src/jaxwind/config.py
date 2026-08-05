@@ -39,6 +39,41 @@ def _positive_integer(table: dict[str, Any], *names: str) -> None:
             raise ValueError(f"{name} must be a positive integer")
 
 
+def _validate_axis_mapping(name: str, table: Any) -> None:
+    if not isinstance(table, dict):
+        raise ValueError(f"grid.mapping.{name} must be a table")
+    unknown = set(table) - {"function", "focus", "strength"}
+    if unknown:
+        raise ValueError(f"unknown grid.mapping.{name} keys: {sorted(unknown)}")
+    function = table.get("function")
+    if function not in {"uniform", "exponential"}:
+        raise ValueError(
+            f"grid.mapping.{name}.function must be uniform or exponential"
+        )
+    strength = table.get("strength", 0.0)
+    if (
+        isinstance(strength, bool)
+        or not isinstance(strength, (int, float))
+        or not math.isfinite(strength)
+        or not 0.0 <= strength <= 50.0
+    ):
+        raise ValueError(f"grid.mapping.{name}.strength must lie in [0, 50]")
+    focus = table.get("focus")
+    if function == "uniform":
+        if focus is not None or strength != 0.0:
+            raise ValueError(
+                f"uniform grid.mapping.{name} accepts no focus and zero strength"
+            )
+        return
+    if (
+        isinstance(focus, bool)
+        or not isinstance(focus, (int, float))
+        or not math.isfinite(focus)
+        or not 0.0 <= focus <= 1.0
+    ):
+        raise ValueError(f"grid.mapping.{name}.focus must lie in [0, 1]")
+
+
 @dataclass(frozen=True, slots=True)
 class CaseConfig:
     """Validated, serializable case description loaded from TOML."""
@@ -100,9 +135,24 @@ def validate_case(data: dict[str, Any]) -> None:
     if not (
         isinstance(extent, list)
         and len(extent) == 3
-        and all(isinstance(value, (int, float)) and value > 0 for value in extent)
+        and all(
+            not isinstance(value, bool)
+            and isinstance(value, (int, float))
+            and math.isfinite(value)
+            and value > 0
+            for value in extent
+        )
     ):
         raise ValueError("grid.extent must contain positive lx, ly, lz")
+    mapping = grid.get("mapping")
+    if mapping is not None:
+        if not isinstance(mapping, dict):
+            raise ValueError("grid.mapping must be a table")
+        unknown_axes = set(mapping) - {"x", "y", "z"}
+        if unknown_axes:
+            raise ValueError(f"unknown grid.mapping axes: {sorted(unknown_axes)}")
+        for name, table in mapping.items():
+            _validate_axis_mapping(name, table)
 
     numerics = _require_table(data, "numerics")
     if numerics.get("dtype") not in {"float32", "float64"}:

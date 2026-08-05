@@ -20,6 +20,7 @@ CASES = {
     "nieuwstadt": ROOT / "benchmark" / "Nieuwstadt1993" / "case.toml",
     "gabls1": ROOT / "benchmark" / "GABLS1" / "case.toml",
 }
+STRETCHED_GABLS1 = ROOT / "benchmark" / "GABLS1" / "case_64_stretched.toml"
 
 
 def _quick(path: Path):
@@ -64,6 +65,31 @@ def test_configs_encode_the_canonical_cases() -> None:
     for config in (andren, nieuwstadt, gabls1):
         assert "scalar" not in config.data
         assert "boussinesq" not in config.data
+
+
+def test_gabls1_64_case_uses_independent_analytic_stretching() -> None:
+    config = load_case(STRETCHED_GABLS1)
+    mapping = config.section("grid")["mapping"]
+
+    assert config.section("grid")["shape"] == [64, 64, 64]
+    assert mapping["x"] == {
+        "function": "exponential",
+        "focus": 0.5,
+        "strength": 2.0,
+    }
+    assert mapping["y"] == mapping["x"]
+    assert mapping["z"]["focus"] == 0.0
+
+    simulation = build_simulation(_quick(STRETCHED_GABLS1))
+    assert simulation.grid.uniform_axes == (False, False, False)
+    assert simulation.grid.x_faces[4] == 200.0
+    assert simulation.grid.y_faces[4] == 200.0
+    assert simulation.grid.z_widths[0] < simulation.grid.z_widths[-1]
+    state = simulation.initial_state()
+    advanced = simulation.step(state, min(simulation.timestep(state), 0.25))
+    assert advanced.step == 1
+    assert np.all(np.isfinite(np.asarray(advanced.velocity.x)))
+    assert np.all(np.isfinite(np.asarray(advanced.potential_temperature)))
 
 
 def test_config_overrides_are_typed_and_must_name_existing_keys() -> None:

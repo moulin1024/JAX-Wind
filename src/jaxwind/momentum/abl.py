@@ -492,9 +492,8 @@ class ABLSolver:
     def buoyancy_tendency(self, potential_temperature: Array) -> MACVelocity:
         """Return face acceleration after removing the hydrostatic plane mean."""
         self.scalar._validate_scalar(potential_temperature)
-        anomaly = potential_temperature - jnp.mean(
+        anomaly = potential_temperature - self.momentum.horizontal_mean(
             potential_temperature,
-            axis=(1, 2),
             keepdims=True,
         )
         cells = jnp.zeros(
@@ -806,7 +805,7 @@ class ABLSolver:
             (
                 self.momentum.cfl_rate(velocity),
                 self.momentum.pressure_solver.operator.norm(divergence),
-                0.5 * jnp.mean(jnp.sum(cells * cells, axis=-1)),
+                0.5 * self.momentum.volume_mean(jnp.sum(cells * cells, axis=-1)),
                 jnp.asarray(jnp.nan, dtype=cells.dtype),
             )
         )
@@ -822,8 +821,8 @@ class ABLSolver:
             (
                 self.momentum.cfl_rate(velocity),
                 self.momentum.pressure_solver.operator.norm(divergence),
-                0.5 * jnp.mean(jnp.sum(cells * cells, axis=-1)),
-                jnp.mean(potential_temperature),
+                0.5 * self.momentum.volume_mean(jnp.sum(cells * cells, axis=-1)),
+                self.scalar.volume_mean(potential_temperature),
             )
         )
 
@@ -886,23 +885,21 @@ class ABLSolver:
         viscosity: Array,
         scalar: Array | None,
     ) -> Array:
-        mean = jnp.mean(cells, axis=(1, 2))
+        mean = self.momentum.horizontal_mean(cells)
         fluctuation = cells - mean[:, None, None, :]
-        variance = jnp.mean(fluctuation * fluctuation, axis=(1, 2))
+        variance = self.momentum.horizontal_mean(fluctuation * fluctuation)
         if scalar is None:
             scalar_mean = jnp.full(mean.shape[0], jnp.nan, dtype=cells.dtype)
             scalar_variance = jnp.full_like(scalar_mean, jnp.nan)
             resolved_wscalar = jnp.full_like(scalar_mean, jnp.nan)
         else:
-            scalar_mean = jnp.mean(scalar, axis=(1, 2))
+            scalar_mean = self.momentum.horizontal_mean(scalar)
             scalar_fluctuation = scalar - scalar_mean[:, None, None]
-            scalar_variance = jnp.mean(
-                scalar_fluctuation * scalar_fluctuation,
-                axis=(1, 2),
+            scalar_variance = self.momentum.horizontal_mean(
+                scalar_fluctuation * scalar_fluctuation
             )
-            resolved_wscalar = jnp.mean(
-                fluctuation[..., 2] * scalar_fluctuation,
-                axis=(1, 2),
+            resolved_wscalar = self.momentum.horizontal_mean(
+                fluctuation[..., 2] * scalar_fluctuation
             )
         return jnp.column_stack(
             (
@@ -911,16 +908,14 @@ class ABLSolver:
                 variance,
                 scalar_mean,
                 scalar_variance,
-                jnp.mean(
-                    fluctuation[..., 0] * fluctuation[..., 2],
-                    axis=(1, 2),
+                self.momentum.horizontal_mean(
+                    fluctuation[..., 0] * fluctuation[..., 2]
                 ),
-                jnp.mean(
-                    fluctuation[..., 1] * fluctuation[..., 2],
-                    axis=(1, 2),
+                self.momentum.horizontal_mean(
+                    fluctuation[..., 1] * fluctuation[..., 2]
                 ),
                 resolved_wscalar,
-                jnp.mean(viscosity, axis=(1, 2)),
+                self.momentum.horizontal_mean(viscosity),
             )
         )
 
@@ -1062,8 +1057,8 @@ class ABLSolver:
         interior_gradient = (theta[1:] - theta[:-1]) / self.scalar.dz_center[
             :, None, None
         ]
-        wall_diffusivity = jnp.mean(scalar_diffusivity[0])
-        lower_surface_flux = jnp.mean(surface_fluxes.heat_flux)
+        wall_diffusivity = self.momentum.surface_mean(scalar_diffusivity[0])
+        lower_surface_flux = self.momentum.surface_mean(surface_fluxes.heat_flux)
         lower_gradient_plane = jnp.where(
             wall_diffusivity > 0.0,
             -lower_surface_flux
@@ -1109,15 +1104,14 @@ class ABLSolver:
             0.0,
         )
 
-        velocity_mean = jnp.mean(cells, axis=(1, 2), keepdims=True)
+        velocity_mean = self.momentum.horizontal_mean(cells, keepdims=True)
         velocity_fluctuation = cells - velocity_mean
         momentum_numerical = self.momentum.advection_dissipation(
             velocity,
             cells,
         )
-        theta_fluctuation = theta - jnp.mean(
+        theta_fluctuation = theta - self.momentum.horizontal_mean(
             theta,
-            axis=(1, 2),
             keepdims=True,
         )
         scalar_numerical = self.scalar.advection_dissipation(theta, velocity)

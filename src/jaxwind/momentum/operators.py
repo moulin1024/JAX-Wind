@@ -255,6 +255,59 @@ def _cell_length_scales(
     return stacked
 
 
+def _horizontal_mean(
+    field: Array,
+    x_metric: AxisMetric,
+    y_metric: AxisMetric,
+    *,
+    keepdims: bool = False,
+) -> Array:
+    """Area-average a ``(z,y,x,...)`` field without changing uniform results."""
+
+    if x_metric.uniform and y_metric.uniform:
+        return jnp.mean(field, axis=(1, 2), keepdims=keepdims)
+    trailing = (1,) * (field.ndim - 3)
+    area = (y_metric.widths[:, None] * x_metric.widths[None, :]).astype(
+        field.dtype
+    )
+    weights = jnp.reshape(area, (1, *area.shape, *trailing))
+    mean = jnp.sum(field * weights, axis=(1, 2), keepdims=keepdims)
+    return mean / jnp.asarray(x_metric.length * y_metric.length, field.dtype)
+
+
+def _surface_mean(field: Array, x_metric: AxisMetric, y_metric: AxisMetric) -> Array:
+    """Area-average a ``(y,x,...)`` surface field."""
+
+    if x_metric.uniform and y_metric.uniform:
+        return jnp.mean(field, axis=(0, 1))
+    trailing = (1,) * (field.ndim - 2)
+    area = (y_metric.widths[:, None] * x_metric.widths[None, :]).astype(
+        field.dtype
+    )
+    weights = jnp.reshape(area, (*area.shape, *trailing))
+    return jnp.sum(field * weights, axis=(0, 1)) / jnp.asarray(
+        x_metric.length * y_metric.length,
+        field.dtype,
+    )
+
+
+def _volume_mean(
+    field: Array,
+    metrics: tuple[AxisMetric, AxisMetric, AxisMetric],
+) -> Array:
+    """Volume-average a cell scalar, retaining the uniform fast path."""
+
+    x_metric, y_metric, z_metric = metrics
+    if x_metric.uniform and y_metric.uniform and z_metric.uniform:
+        return jnp.mean(field)
+    plane_mean = _horizontal_mean(field, x_metric, y_metric)
+    normalized_height = z_metric.widths.astype(field.dtype) / jnp.asarray(
+        z_metric.length,
+        field.dtype,
+    )
+    return jnp.sum(plane_mean * normalized_height)
+
+
 def _z_vector(values: Array, ndim: int, dtype=None) -> Array:
     """Reshape one z vector for broadcasting over a z-first field.
 
@@ -634,7 +687,7 @@ class MomentumOperators:
         ) -> tuple[Array, ...]:
             cells = _cell_velocity(velocity)
             viscosity = self.sgs_viscosity(cells, lasd_coefficient)
-            energy = 0.5 * jnp.mean(jnp.sum(cells * cells, axis=-1))
+            energy = 0.5 * self.volume_mean(jnp.sum(cells * cells, axis=-1))
             divergence = mac_divergence(velocity, self.grid)
             if self.lasd_closure is None:
                 mean_coefficient = jnp.asarray(
@@ -644,10 +697,13 @@ class MomentumOperators:
                 maximum_coefficient = mean_coefficient
                 clipped_fraction = jnp.asarray(0.0, dtype=cells.dtype)
             else:
-                mean_coefficient = jnp.mean(lasd_coefficient)
+                mean_coefficient = self.volume_mean(lasd_coefficient)
                 maximum_coefficient = jnp.max(lasd_coefficient)
-                clipped_fraction = jnp.mean(
-                    lasd_coefficient >= 0.999 * self.config.lasd.maximum_coefficient
+                clipped_fraction = self.volume_mean(
+                    (
+                        lasd_coefficient
+                        >= 0.999 * self.config.lasd.maximum_coefficient
+                    ).astype(cells.dtype)
                 )
             return (
                 energy,
@@ -661,8 +717,10 @@ class MomentumOperators:
                 ),
                 timestep * self.explicit_sgs_diffusion_rate(viscosity),
                 self.pressure_solver.operator.norm(divergence),
-                jnp.mean(self.wall_ustar(cells, wall_velocity=wall_velocity)),
-                jnp.mean(viscosity),
+                self.surface_mean(
+                    self.wall_ustar(cells, wall_velocity=wall_velocity)
+                ),
+                self.volume_mean(viscosity),
                 jnp.max(viscosity),
                 mean_coefficient,
                 maximum_coefficient,
@@ -1982,10 +2040,9 @@ class MomentumOperators:
                 minval=-0.5,
                 maxval=0.5,
             )
-            random -= jnp.mean(random, axis=(1, 2), keepdims=True)
-            current_tke = 0.5 * jnp.mean(
+            random -= self.horizontal_mean(random, keepdims=True)
+            current_tke = 0.5 * self.horizontal_mean(
                 jnp.sum(random * random, axis=-1),
-                axis=(1, 2),
             )
             scale = jnp.sqrt(
                 target_tke / jnp.maximum(current_tke, jnp.finfo(dtype).eps)
@@ -2262,25 +2319,42 @@ class MomentumOperators:
             target_diffusive_cfl / diffusive_rate,
         )
 
-    @staticmethod
-    def plane_mean_profile(velocity: MACVelocity) -> Array:
-        return jnp.mean(_cell_velocity(velocity)[..., 0], axis=(1, 2))
+    def horizontal_mean(self, field: Array, *, keepdims: bool = False) -> Array:
+        """Return a physical-area horizontal mean at each z level."""
 
-    @staticmethod
+        return _horizontal_mean(
+            field,
+            self.x_metric,
+            self.y_metric,
+            keepdims=keepdims,
+        )
+
+    def surface_mean(self, field: Array) -> Array:
+        """Return a physical-area mean of a horizontal surface field."""
+
+        return _surface_mean(field, self.x_metric, self.y_metric)
+
+    def volume_mean(self, field: Array) -> Array:
+        """Return a physical-volume mean of a cell scalar."""
+
+        return _volume_mean(field, self.metrics)
+
+    def plane_mean_profile(self, velocity: MACVelocity) -> Array:
+        return self.horizontal_mean(_cell_velocity(velocity)[..., 0])
+
     def plane_statistics(
+        self,
         velocity: MACVelocity,
     ) -> tuple[Array, Array, Array]:
         """Return mean velocity, resolved TKE and minus-uw profiles."""
         cells = _cell_velocity(velocity)
-        mean = jnp.mean(cells, axis=(1, 2))
+        mean = self.horizontal_mean(cells)
         fluctuations = cells - mean[:, None, None, :]
-        resolved_tke = 0.5 * jnp.mean(
-            jnp.sum(fluctuations * fluctuations, axis=-1),
-            axis=(1, 2),
+        resolved_tke = 0.5 * self.horizontal_mean(
+            jnp.sum(fluctuations * fluctuations, axis=-1)
         )
-        minus_uw = -jnp.mean(
-            fluctuations[..., 0] * fluctuations[..., 2],
-            axis=(1, 2),
+        minus_uw = -self.horizontal_mean(
+            fluctuations[..., 0] * fluctuations[..., 2]
         )
         return mean, resolved_tke, minus_uw
 
@@ -2638,9 +2712,9 @@ class ScalarOperators:
         return jnp.max(rate + vertical)
 
     def volume_mean(self, scalar: Array) -> Array:
-        """Return the finite-volume mean on a possibly stretched z mesh."""
+        """Return the finite-volume mean on a rectilinear mesh."""
         self._validate_scalar(scalar)
-        plane_mean = jnp.mean(scalar, axis=(1, 2))
+        plane_mean = _horizontal_mean(scalar, self.x_metric, self.y_metric)
         normalized_volume = self.dz_cell / jnp.sum(self.dz_cell)
         return jnp.sum(normalized_volume * plane_mean)
 
