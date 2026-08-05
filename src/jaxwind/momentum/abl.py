@@ -281,12 +281,12 @@ class ABLSolver:
             )
         cells = _cell_velocity(velocity)
         horizontal_velocity = self.momentum.wall_velocity(cells)
-        matching_temperature = potential_temperature[self.momentum.wall_matching_level]
+        first_cell_temperature = potential_temperature[0]
         return self.surface_law.surface_fluxes(
             horizontal_velocity,
-            matching_temperature,
+            first_cell_temperature,
             self.surface_potential_temperature(time),
-            self.momentum.wall_matching_height,
+            self.momentum.wall_cell_height,
         )
 
     def surface_layer_fluxes(
@@ -686,11 +686,9 @@ class ABLSolver:
         )
         thermal_rate = jnp.asarray(0.0, dtype=potential_temperature.dtype)
         if self.surface_law is not None:
-            matching_temperature = potential_temperature[
-                self.momentum.wall_matching_level
-            ]
+            first_cell_temperature = potential_temperature[0]
             temperature_difference = (
-                matching_temperature - self.surface_potential_temperature(time)
+                first_cell_temperature - self.surface_potential_temperature(time)
             )
             epsilon = jnp.finfo(potential_temperature.dtype).tiny
             thermal_rate = jnp.max(

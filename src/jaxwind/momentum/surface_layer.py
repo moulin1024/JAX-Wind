@@ -10,13 +10,35 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
-from typing import NamedTuple
+from typing import Callable, NamedTuple
 
 import jax
 import jax.numpy as jnp
 
 
 Array = jax.Array
+
+
+_GAUSS_LEGENDRE_NODES = (
+    -0.9602898564975363,
+    -0.7966664774136267,
+    -0.5255324099163290,
+    -0.1834346424956498,
+    0.1834346424956498,
+    0.5255324099163290,
+    0.7966664774136267,
+    0.9602898564975363,
+)
+_GAUSS_LEGENDRE_WEIGHTS = (
+    0.1012285362903763,
+    0.2223810344533745,
+    0.3137066458778873,
+    0.3626837833783620,
+    0.3626837833783620,
+    0.3137066458778873,
+    0.2223810344533745,
+    0.1012285362903763,
+)
 
 
 class SurfaceLayerFluxes(NamedTuple):
@@ -52,9 +74,66 @@ def _stress_from_scale(horizontal_velocity: Array, ustar: Array) -> Array:
     return (ustar * ustar)[..., None] * direction
 
 
+def _effective_cell_top(
+    first_cell_height: float,
+    roughness_length: float,
+    displacement_height: float,
+) -> float:
+    if not math.isfinite(first_cell_height) or first_cell_height <= 0.0:
+        raise ValueError("first-cell height must be positive and finite")
+    effective_top = first_cell_height - displacement_height
+    if effective_top <= roughness_length:
+        raise ValueError(
+            "first cell must extend above displacement plus roughness"
+        )
+    return effective_top
+
+
+def _cell_average_log_denominator(
+    first_cell_height: float,
+    roughness_length: float,
+    displacement_height: float,
+) -> float:
+    """Average the rough-wall log profile over the first control volume.
+
+    The resolved profile is taken as zero below ``d + z0`` and logarithmic
+    above it.  Dividing by the complete finite-volume height makes the transfer
+    relation act on the prognostic cell average rather than on a point sample.
+    """
+
+    effective_top = _effective_cell_top(
+        first_cell_height,
+        roughness_length,
+        displacement_height,
+    )
+    return (
+        effective_top * math.log(effective_top / roughness_length)
+        - effective_top
+        + roughness_length
+    ) / first_cell_height
+
+
+def _cell_average_stable_slope(
+    first_cell_height: float,
+    roughness_length: float,
+    displacement_height: float,
+    beta: float,
+) -> float:
+    effective_top = _effective_cell_top(
+        first_cell_height,
+        roughness_length,
+        displacement_height,
+    )
+    return (
+        beta
+        * (effective_top - roughness_length) ** 2
+        / (2.0 * first_cell_height)
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class NeutralLogWallLaw:
-    """Rough-wall logarithmic law, the neutral ``L -> infinity`` limit."""
+    """First-control-volume filtered neutral rough-wall logarithmic law."""
 
     roughness_length: float
     von_karman: float = 0.4
@@ -67,28 +146,54 @@ class NeutralLogWallLaw:
             self.displacement_height,
         )
 
-    def _log_denominator(self, matching_height: float) -> float:
-        effective_height = matching_height - self.displacement_height
-        if effective_height <= self.roughness_length:
-            raise ValueError(
-                "matching height must exceed displacement plus roughness"
-            )
-        return math.log(effective_height / self.roughness_length)
+    def cell_average_log_denominator(self, first_cell_height: float) -> float:
+        return _cell_average_log_denominator(
+            first_cell_height,
+            self.roughness_length,
+            self.displacement_height,
+        )
+
+    def cell_average_log_denominators(
+        self,
+        lower_heights: Array,
+        upper_heights: Array,
+    ) -> Array:
+        """Average the neutral profile independently over multiple z cells."""
+        widths = upper_heights - lower_heights
+        effective_lower = lower_heights - self.displacement_height
+        effective_upper = upper_heights - self.displacement_height
+        roughness = jnp.asarray(self.roughness_length, dtype=widths.dtype)
+        integration_lower = jnp.maximum(effective_lower, roughness)
+        integration_upper = jnp.maximum(effective_upper, roughness)
+
+        def primitive(height: Array) -> Array:
+            return height * jnp.log(height / roughness) - height
+
+        integral = jnp.where(
+            effective_upper > roughness,
+            primitive(integration_upper) - primitive(integration_lower),
+            0.0,
+        )
+        return integral / widths
 
     def friction_velocity(
         self,
         horizontal_velocity: Array,
-        matching_height: float,
+        first_cell_height: float,
     ) -> Array:
         speed = jnp.linalg.norm(horizontal_velocity, axis=-1)
-        return self.von_karman * speed / self._log_denominator(matching_height)
+        return (
+            self.von_karman
+            * speed
+            / self.cell_average_log_denominator(first_cell_height)
+        )
 
     def surface_fluxes(
         self,
         horizontal_velocity: Array,
-        matching_height: float,
+        first_cell_height: float,
     ) -> SurfaceLayerFluxes:
-        ustar = self.friction_velocity(horizontal_velocity, matching_height)
+        ustar = self.friction_velocity(horizontal_velocity, first_cell_height)
         zeros = jnp.zeros_like(ustar)
         return SurfaceLayerFluxes(
             _stress_from_scale(horizontal_velocity, ustar),
@@ -101,12 +206,14 @@ class NeutralLogWallLaw:
 
 @dataclass(frozen=True, slots=True)
 class MoninObukhovWallLaw:
-    """Coupled Businger--Dyer MOST law for prescribed surface temperature.
+    """First-control-volume filtered Businger--Dyer MOST wall law.
 
     ``surface_fluxes`` solves the local implicit dependence of the momentum and
-    heat fluxes on the Obukhov length.  Stable linear corrections and unstable
-    Businger--Dyer corrections are used.  A zero temperature difference
-    recovers :class:`NeutralLogWallLaw` to roundoff.
+    heat fluxes on the Obukhov length.  The logarithmic profile and its
+    stability corrections are averaged over the actual first finite volume.
+    Stable linear corrections and unstable Businger--Dyer corrections are
+    used.  A zero temperature difference recovers
+    :class:`NeutralLogWallLaw` to roundoff.
     """
 
     momentum_roughness_length: float
@@ -154,16 +261,17 @@ class MoninObukhovWallLaw:
         if not 0.0 < self.relaxation <= 1.0:
             raise ValueError("MOST relaxation must lie in (0, 1]")
 
-    def _validate_height(self, matching_height: float) -> float:
-        effective_height = matching_height - self.displacement_height
-        if effective_height <= max(
+    def _validate_height(self, first_cell_height: float) -> float:
+        _effective_cell_top(
+            first_cell_height,
             self.momentum_roughness_length,
+            self.displacement_height,
+        )
+        return _effective_cell_top(
+            first_cell_height,
             self.thermal_roughness_length,
-        ):
-            raise ValueError(
-                "matching height must exceed displacement plus both roughnesses"
-            )
-        return effective_height
+            self.displacement_height,
+        )
 
     def _bounded_zeta(self, zeta: Array) -> Array:
         return jnp.clip(
@@ -194,13 +302,52 @@ class MoninObukhovWallLaw:
         unstable = 2.0 * jnp.log(0.5 * (1.0 + x))
         return jnp.where(zeta >= 0.0, stable, unstable)
 
+    def _average_transfer_denominator(
+        self,
+        inverse_obukhov: Array,
+        first_cell_height: float,
+        roughness_length: float,
+        correction: Callable[[Array], Array],
+    ) -> Array:
+        """Return the finite-volume average of one integrated MOST profile."""
+        effective_top = _effective_cell_top(
+            first_cell_height,
+            roughness_length,
+            self.displacement_height,
+        )
+        neutral = _cell_average_log_denominator(
+            first_cell_height,
+            roughness_length,
+            self.displacement_height,
+        )
+        nodes = jnp.asarray(_GAUSS_LEGENDRE_NODES, dtype=inverse_obukhov.dtype)
+        weights = jnp.asarray(_GAUSS_LEGENDRE_WEIGHTS, dtype=inverse_obukhov.dtype)
+        half_span = 0.5 * (effective_top - roughness_length)
+        midpoint = 0.5 * (effective_top + roughness_length)
+        heights = midpoint + half_span * nodes
+        quadrature_shape = (heights.shape[0],) + (1,) * inverse_obukhov.ndim
+        heights = jnp.reshape(heights, quadrature_shape)
+        weights = jnp.reshape(weights, quadrature_shape)
+        reference = correction(roughness_length * inverse_obukhov)
+        correction_integral = half_span * jnp.sum(
+            weights
+            * (
+                -correction(heights * inverse_obukhov[None, ...])
+                + reference[None, ...]
+            ),
+            axis=0,
+        )
+        return neutral + correction_integral / first_cell_height
+
     def _stable_inverse_obukhov(
         self,
         speed: Array,
         temperature_difference: Array,
-        height: float,
-        neutral_momentum_log: float,
-        neutral_heat_log: float,
+        first_cell_height: float,
+        neutral_momentum_transfer: float,
+        neutral_heat_transfer: float,
+        momentum_slope: float,
+        heat_slope: float,
     ) -> tuple[Array, Array]:
         """Return the physical closed-form stable MOST root and its validity.
 
@@ -221,21 +368,15 @@ class MoninObukhovWallLaw:
                 * self.reference_potential_temperature
             )
         )
-        momentum_slope = self.stable_momentum_beta * (
-            height - self.momentum_roughness_length
-        )
-        heat_slope = self.stable_heat_beta * (
-            height - self.thermal_roughness_length
-        )
         quadratic = heat_slope - bulk_coefficient * momentum_slope**2
         linear = (
-            neutral_heat_log
+            neutral_heat_transfer
             - 2.0
             * bulk_coefficient
-            * neutral_momentum_log
+            * neutral_momentum_transfer
             * momentum_slope
         )
-        constant = -bulk_coefficient * neutral_momentum_log**2
+        constant = -bulk_coefficient * neutral_momentum_transfer**2
         discriminant = linear * linear - 4.0 * quadratic * constant
         square_root = jnp.sqrt(jnp.maximum(discriminant, 0.0))
         inverse_obukhov = -2.0 * constant / jnp.maximum(
@@ -250,7 +391,11 @@ class MoninObukhovWallLaw:
             & (discriminant >= 0.0)
             & jnp.isfinite(inverse_obukhov)
             & (inverse_obukhov >= 0.0)
-            & (height * inverse_obukhov <= self.maximum_abs_zeta)
+            & (
+                (first_cell_height - self.displacement_height)
+                * inverse_obukhov
+                <= self.maximum_abs_zeta
+            )
         )
         return inverse_obukhov, valid
 
@@ -258,26 +403,22 @@ class MoninObukhovWallLaw:
         self,
         speed: Array,
         temperature_difference: Array,
-        height: float,
-        neutral_momentum_log: float,
-        neutral_heat_log: float,
+        first_cell_height: float,
     ) -> Array:
         """Solve the general stable/unstable MOST relation by relaxation."""
         inverse_obukhov = jnp.zeros_like(speed)
         for _ in range(self.iterations):
-            momentum_denominator = (
-                neutral_momentum_log
-                - self.momentum_stability_correction(height * inverse_obukhov)
-                + self.momentum_stability_correction(
-                    self.momentum_roughness_length * inverse_obukhov
-                )
+            momentum_denominator = self._average_transfer_denominator(
+                inverse_obukhov,
+                first_cell_height,
+                self.momentum_roughness_length,
+                self.momentum_stability_correction,
             )
-            heat_denominator = (
-                neutral_heat_log
-                - self.heat_stability_correction(height * inverse_obukhov)
-                + self.heat_stability_correction(
-                    self.thermal_roughness_length * inverse_obukhov
-                )
+            heat_denominator = self._average_transfer_denominator(
+                inverse_obukhov,
+                first_cell_height,
+                self.thermal_roughness_length,
+                self.heat_stability_correction,
             )
             momentum_denominator = jnp.maximum(momentum_denominator, 1.0e-6)
             heat_denominator = jnp.maximum(heat_denominator, 1.0e-6)
@@ -305,10 +446,10 @@ class MoninObukhovWallLaw:
         horizontal_velocity: Array,
         potential_temperature: Array,
         surface_potential_temperature: Array | float,
-        matching_height: float,
+        first_cell_height: float,
     ) -> SurfaceLayerFluxes:
         """Return local stress and kinematic heat flux at the lower boundary."""
-        height = self._validate_height(matching_height)
+        self._validate_height(first_cell_height)
         speed = jnp.linalg.norm(horizontal_velocity, axis=-1)
         temperature = jnp.asarray(
             potential_temperature,
@@ -319,30 +460,45 @@ class MoninObukhovWallLaw:
             dtype=horizontal_velocity.dtype,
         )
         temperature_difference = temperature - surface_temperature
-        neutral_momentum_log = math.log(
-            height / self.momentum_roughness_length
+        neutral_momentum_transfer = _cell_average_log_denominator(
+            first_cell_height,
+            self.momentum_roughness_length,
+            self.displacement_height,
         )
-        neutral_heat_log = math.log(height / self.thermal_roughness_length)
+        neutral_heat_transfer = _cell_average_log_denominator(
+            first_cell_height,
+            self.thermal_roughness_length,
+            self.displacement_height,
+        )
+        momentum_slope = _cell_average_stable_slope(
+            first_cell_height,
+            self.momentum_roughness_length,
+            self.displacement_height,
+            self.stable_momentum_beta,
+        )
+        heat_slope = _cell_average_stable_slope(
+            first_cell_height,
+            self.thermal_roughness_length,
+            self.displacement_height,
+            self.stable_heat_beta,
+        )
         stable_inverse_obukhov, stable_valid = self._stable_inverse_obukhov(
             speed,
             temperature_difference,
-            height,
-            neutral_momentum_log,
-            neutral_heat_log,
+            first_cell_height,
+            neutral_momentum_transfer,
+            neutral_heat_transfer,
+            momentum_slope,
+            heat_slope,
         )
 
         def closed_form(_: None) -> tuple[Array, Array, Array]:
             momentum_denominator = (
-                neutral_momentum_log
-                + self.stable_momentum_beta
-                * (height - self.momentum_roughness_length)
-                * stable_inverse_obukhov
+                neutral_momentum_transfer
+                + momentum_slope * stable_inverse_obukhov
             )
             heat_denominator = (
-                neutral_heat_log
-                + self.stable_heat_beta
-                * (height - self.thermal_roughness_length)
-                * stable_inverse_obukhov
+                neutral_heat_transfer + heat_slope * stable_inverse_obukhov
             )
             return (
                 stable_inverse_obukhov,
@@ -354,23 +510,19 @@ class MoninObukhovWallLaw:
             inverse_obukhov = self._iterative_inverse_obukhov(
                 speed,
                 temperature_difference,
-                height,
-                neutral_momentum_log,
-                neutral_heat_log,
+                first_cell_height,
             )
-            momentum_denominator = (
-                neutral_momentum_log
-                - self.momentum_stability_correction(height * inverse_obukhov)
-                + self.momentum_stability_correction(
-                    self.momentum_roughness_length * inverse_obukhov
-                )
+            momentum_denominator = self._average_transfer_denominator(
+                inverse_obukhov,
+                first_cell_height,
+                self.momentum_roughness_length,
+                self.momentum_stability_correction,
             )
-            heat_denominator = (
-                neutral_heat_log
-                - self.heat_stability_correction(height * inverse_obukhov)
-                + self.heat_stability_correction(
-                    self.thermal_roughness_length * inverse_obukhov
-                )
+            heat_denominator = self._average_transfer_denominator(
+                inverse_obukhov,
+                first_cell_height,
+                self.thermal_roughness_length,
+                self.heat_stability_correction,
             )
             return inverse_obukhov, momentum_denominator, heat_denominator
 

@@ -332,7 +332,6 @@ def build_simulation(config: CaseConfig) -> Simulation:
             ),
             coriolis_vertical=float(momentum_spec.get("coriolis_vertical", 0.0)),
             coriolis_horizontal=float(momentum_spec.get("coriolis_horizontal", 0.0)),
-            wall_matching_height=momentum_spec.get("wall_matching_height"),
             mp5_dissipation_strength=float(numerics.get("mp5_strength", 1.0)),
             amd=AMDModel(coefficient=float(sgs["coefficient"])),
             lasd=lasd,
@@ -399,6 +398,9 @@ def _physics_fingerprint(config: CaseConfig) -> str:
             "initial",
         )
         if key in config.data
+    }
+    sections["_solver_physics"] = {
+        "wall_closure": "finite_volume_filtered_most_v1"
     }
     encoded = json.dumps(sections, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()
@@ -604,6 +606,8 @@ def _write_outputs(
         "friction_velocity_m_s": simulation.config.section("momentum")[
             "friction_velocity"
         ],
+        "wall_closure": "finite_volume_filtered_most_v1",
+        "wall_first_cell_height_m": simulation.momentum.wall_cell_height,
         "geostrophic_wind_m_s": simulation.config.section("momentum").get(
             "geostrophic_wind"
         ),

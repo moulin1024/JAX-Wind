@@ -24,12 +24,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--ustar", type=float, default=0.1)
     parser.add_argument("--z0", type=float, default=1.0e-3)
     parser.add_argument(
-        "--wall-matching-level",
-        type=int,
-        default=0,
-        help="zero-based vertical cell level supplied to the wall model",
-    )
-    parser.add_argument(
         "--wall-filter-width",
         type=float,
         help="periodic physical top-hat width in horizontal grid cells",
@@ -39,7 +33,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=float,
         help=(
             "enable first-order wall-input filtering with "
-            "Tf=hwm/(gamma*kappa*ustar); literature baseline gamma=1"
+            "Tf=dz1/(gamma*kappa*ustar); literature baseline gamma=1"
         ),
     )
     parser.add_argument("--sgs", choices=("amd", "lasd"), default="amd")
@@ -128,10 +122,8 @@ def _validate(args: argparse.Namespace) -> int:
         raise SystemExit("grid dimensions and steps must be positive")
     if min(args.lx, args.ly, args.height, args.ustar, args.z0) <= 0.0:
         raise SystemExit("domain and wall scales must be positive")
-    if args.z0 >= 0.5 * args.height / args.nz:
-        raise SystemExit("z0 must lie below the first cell centre")
-    if not 0 <= args.wall_matching_level < args.nz:
-        raise SystemExit("wall-matching-level must lie in [0, nz)")
+    if args.z0 >= args.height / args.nz:
+        raise SystemExit("z0 must lie below the top of the first control volume")
     if min(args.sample_every, args.log_every, args.checkpoint_every) <= 0:
         raise SystemExit("sampling and checkpoint intervals must be positive")
     if args.wall_filter_width is not None and (
@@ -262,18 +254,17 @@ def main() -> None:
         krylov=krylov,
     )
     von_karman = 0.4
-    wall_matching_height = (args.wall_matching_level + 0.5) * args.height / args.nz
+    wall_cell_height = args.height / args.nz
     wall_temporal_filter_timescale = (
         None
         if args.wall_temporal_filter_gamma is None
-        else wall_matching_height
+        else wall_cell_height
         / (args.wall_temporal_filter_gamma * von_karman * args.ustar)
     )
     config = MomentumConfig(
         friction_velocity=args.ustar,
         roughness_length=args.z0,
         von_karman=von_karman,
-        wall_matching_level=args.wall_matching_level,
         wall_filter_width=args.wall_filter_width,
         wall_temporal_filter_timescale=wall_temporal_filter_timescale,
         mp5_dissipation_strength=args.mp5_strength,
@@ -405,13 +396,13 @@ def main() -> None:
         )
         if checkpoint_sgs != args.sgs:
             raise SystemExit("restart SGS model does not match this run")
-        checkpoint_matching_level = int(
-            checkpoint["wall_matching_level"]
-            if "wall_matching_level" in checkpoint
-            else 0
+        checkpoint_wall_closure = (
+            str(checkpoint["wall_closure"])
+            if "wall_closure" in checkpoint
+            else "point_sampled"
         )
-        if checkpoint_matching_level != args.wall_matching_level:
-            raise SystemExit("restart wall matching level does not match")
+        if checkpoint_wall_closure != "finite_volume_filtered_most_v1":
+            raise SystemExit("restart wall closure does not match this run")
         checkpoint_filter_width = (
             float(checkpoint["wall_filter_width"])
             if "wall_filter_width" in checkpoint
@@ -588,13 +579,13 @@ def main() -> None:
             "sample_start_step": sample_start_step,
             "sample_count": sample_count,
             "sgs_model": args.sgs,
+            "wall_closure": "finite_volume_filtered_most_v1",
             "elapsed_seconds": (elapsed_before_run + time.perf_counter() - started),
             "compilation_seconds": (
                 compilation_elapsed
                 if original_compilation_seconds is None
                 else original_compilation_seconds
             ),
-            "wall_matching_level": args.wall_matching_level,
             "wall_filter_width": (
                 np.nan if args.wall_filter_width is None else args.wall_filter_width
             ),
@@ -842,9 +833,8 @@ def main() -> None:
             else original_compilation_seconds
         ),
         "target_ustar": args.ustar,
-        "wall_matching_level": args.wall_matching_level,
-        "wall_matching_height": wall_matching_height,
-        "wall_matching_height_over_z0": wall_matching_height / args.z0,
+        "wall_cell_height": wall_cell_height,
+        "wall_cell_height_over_z0": wall_cell_height / args.z0,
         "wall_filter_width_grid_cells": args.wall_filter_width,
         "wall_temporal_filter_gamma": args.wall_temporal_filter_gamma,
         "wall_temporal_filter_timescale": wall_temporal_filter_timescale,

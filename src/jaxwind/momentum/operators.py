@@ -92,8 +92,6 @@ class MomentumConfig:
     friction_velocity: float = 0.1
     roughness_length: float = 1.0e-3
     von_karman: float = 0.4
-    wall_matching_level: int = 0
-    wall_matching_height: float | None = None
     wall_filter_width: float | None = None
     wall_temporal_filter_timescale: float | None = None
     mp5_dissipation_strength: float = 1.0
@@ -112,21 +110,6 @@ class MomentumConfig:
             raise ValueError("roughness length must be positive")
         if self.von_karman <= 0.0:
             raise ValueError("von Karman constant must be positive")
-        if (
-            isinstance(self.wall_matching_level, bool)
-            or not isinstance(self.wall_matching_level, int)
-            or self.wall_matching_level < 0
-        ):
-            raise ValueError("wall matching level must be a nonnegative integer")
-        if self.wall_matching_height is not None and (
-            not math.isfinite(self.wall_matching_height)
-            or self.wall_matching_height <= 0.0
-        ):
-            raise ValueError("wall matching height must be positive and finite")
-        if self.wall_matching_height is not None and self.wall_matching_level != 0:
-            raise ValueError(
-                "set either wall matching height or a nonzero matching level"
-            )
         if self.wall_filter_width is not None and (
             not math.isfinite(self.wall_filter_width) or self.wall_filter_width <= 0.0
         ):
@@ -338,6 +321,50 @@ def _interpolate_to_vertical_faces(
     return lower_weight * values[:-1] + upper_weight * values[1:]
 
 
+def _interpolate_to_periodic_faces(
+    values: Array,
+    centers: Array,
+    faces: Array,
+    *,
+    axis: int,
+) -> Array:
+    """Linearly interpolate periodic cell values to physical faces.
+
+    Unlike an arithmetic mean, the weights account for the two adjacent cell
+    widths.  The duplicated first/last MAC face receives the same interpolation
+    across the unwrapped periodic seam.
+    """
+
+    axis %= values.ndim
+    moved = jnp.moveaxis(values, axis, -1)
+    center_distance = centers[1:] - centers[:-1]
+    lower_weight = (centers[1:] - faces[1:-1]) / center_distance
+    upper_weight = (faces[1:-1] - centers[:-1]) / center_distance
+    weight_shape = (1,) * (moved.ndim - 1) + (center_distance.shape[0],)
+    interior = (
+        jnp.reshape(lower_weight, weight_shape).astype(values.dtype)
+        * moved[..., :-1]
+        + jnp.reshape(upper_weight, weight_shape).astype(values.dtype)
+        * moved[..., 1:]
+    )
+
+    length = faces[-1] - faces[0]
+    left_center = centers[-1] - length
+    right_center = centers[0]
+    seam_distance = right_center - left_center
+    seam = (
+        ((right_center - faces[0]) / seam_distance).astype(values.dtype)
+        * moved[..., -1]
+        + ((faces[0] - left_center) / seam_distance).astype(values.dtype)
+        * moved[..., 0]
+    )
+    result = jnp.concatenate(
+        (seam[..., None], interior, seam[..., None]),
+        axis=-1,
+    )
+    return jnp.moveaxis(result, -1, axis)
+
+
 def _cell_velocity(velocity: MACVelocity) -> Array:
     return jnp.stack(
         (
@@ -433,27 +460,13 @@ class MomentumOperators:
                 " on constant spacing"
             )
 
-        relative_centers = tuple(center - grid.z_faces[0] for center in grid.z_centers)
-        if config.wall_matching_height is None:
-            matching_level = config.wall_matching_level
-        else:
-            matching_level = min(
-                range(grid.shape[0]),
-                key=lambda level: abs(
-                    relative_centers[level] - config.wall_matching_height
-                ),
-            )
-        if matching_level >= grid.shape[0]:
-            raise ValueError("wall matching level must lie inside the grid")
-        self.wall_matching_level = matching_level
-        self._wall_matching_height = relative_centers[matching_level]
-        if config.roughness_length >= self._wall_matching_height:
-            raise ValueError("roughness must lie below the wall matching height")
+        self._wall_cell_height = float(grid.z_faces[1] - grid.z_faces[0])
         self.height = grid.z_faces[-1] - grid.z_faces[0]
         self.wall_law = NeutralLogWallLaw(
             config.roughness_length,
             config.von_karman,
         )
+        self.wall_law.cell_average_log_denominator(self._wall_cell_height)
         self.pressure_acceleration = (
             config.pressure_acceleration
             if config.pressure_acceleration is not None
@@ -485,12 +498,29 @@ class MomentumOperators:
             lasd_coefficient: Array,
             wall_velocity: Array,
         ) -> MACVelocity:
-            return _cells_to_faces(
-                self.cell_tendency(
-                    velocity,
-                    lasd_coefficient,
-                    wall_velocity=wall_velocity,
+            if self.x_metric.uniform and self.y_metric.uniform:
+                return _cells_to_faces(
+                    self.cell_tendency(
+                        velocity,
+                        lasd_coefficient,
+                        wall_velocity=wall_velocity,
+                    )
                 )
+            cells = _cell_velocity(velocity)
+            wall_stress = self.wall_stress(
+                cells,
+                wall_velocity=wall_velocity,
+            )
+            return self._add_wall_stress_face_tendency(
+                _cells_to_faces(
+                    self.cell_tendency(
+                        velocity,
+                        lasd_coefficient,
+                        cell_velocity=cells,
+                        wall_stress=jnp.zeros_like(wall_stress),
+                    )
+                ),
+                wall_stress,
             )
 
         self._compiled_tendency = jax.jit(compiled_tendency)
@@ -500,12 +530,25 @@ class MomentumOperators:
             lasd_coefficient: Array,
             wall_stress: Array,
         ) -> MACVelocity:
-            return _cells_to_faces(
-                self.cell_tendency(
-                    velocity,
-                    lasd_coefficient,
-                    wall_stress=wall_stress,
+            if self.x_metric.uniform and self.y_metric.uniform:
+                return _cells_to_faces(
+                    self.cell_tendency(
+                        velocity,
+                        lasd_coefficient,
+                        wall_stress=wall_stress,
+                    )
                 )
+            cells = _cell_velocity(velocity)
+            return self._add_wall_stress_face_tendency(
+                _cells_to_faces(
+                    self.cell_tendency(
+                        velocity,
+                        lasd_coefficient,
+                        cell_velocity=cells,
+                        wall_stress=jnp.zeros_like(wall_stress),
+                    )
+                ),
+                wall_stress,
             )
 
         self._compiled_tendency_with_wall_stress = jax.jit(
@@ -522,13 +565,35 @@ class MomentumOperators:
             wall_velocity: Array | None = None,
             wall_stress: Array | None = None,
         ) -> tuple[MACVelocity, MACVelocity]:
+            if self.x_metric.uniform and self.y_metric.uniform:
+                principal, cross = self.sgs_split_tendency(
+                    cells,
+                    frozen_viscosity,
+                    lasd_coefficient,
+                    gradient=gradient,
+                    wall_velocity=wall_velocity,
+                    wall_stress=wall_stress,
+                )
+                explicit = (
+                    self.conservative_advection(velocity, cells)
+                    + cross
+                    + self.forcing_tendency(cells)
+                )
+                if self.config.mp5_dissipation_strength > 0.0:
+                    explicit += self.advection_dissipation(velocity, cells)
+                return _cells_to_faces(explicit), _cells_to_faces(principal)
+
+            active_wall_stress = (
+                self.wall_stress(cells, wall_velocity=wall_velocity)
+                if wall_stress is None
+                else wall_stress
+            )
             principal, cross = self.sgs_split_tendency(
                 cells,
                 frozen_viscosity,
                 lasd_coefficient,
                 gradient=gradient,
-                wall_velocity=wall_velocity,
-                wall_stress=wall_stress,
+                wall_stress=jnp.zeros_like(active_wall_stress),
             )
             explicit = (
                 self.conservative_advection(velocity, cells)
@@ -537,7 +602,13 @@ class MomentumOperators:
             )
             if self.config.mp5_dissipation_strength > 0.0:
                 explicit += self.advection_dissipation(velocity, cells)
-            return _cells_to_faces(explicit), _cells_to_faces(principal)
+            return (
+                self._add_wall_stress_face_tendency(
+                    _cells_to_faces(explicit),
+                    active_wall_stress,
+                ),
+                _cells_to_faces(principal),
+            )
 
         def compiled_imex_initial_tendencies(
             velocity: MACVelocity,
@@ -1385,16 +1456,13 @@ class MomentumOperators:
         return flux.at[1:].set(upper_flux)
 
     @property
-    def wall_matching_height(self) -> float:
-        return self._wall_matching_height
+    def wall_cell_height(self) -> float:
+        """Physical height of the finite volume filtered by the wall law."""
+        return self._wall_cell_height
 
     def instantaneous_wall_velocity(self, cell_velocity: Array) -> Array:
-        """Sample and spatially filter the wall-model matching velocity."""
-        horizontal = cell_velocity[
-            self.wall_matching_level,
-            ...,
-            :2,
-        ]
+        """Return the spatially filtered first-cell mean wall-model velocity."""
+        horizontal = cell_velocity[0, ..., :2]
         width = self.config.wall_filter_width
         if width is None:
             return horizontal
@@ -1433,7 +1501,7 @@ class MomentumOperators:
         )
         return self.wall_law.friction_velocity(
             horizontal,
-            self.wall_matching_height,
+            self.wall_cell_height,
         )
 
     def wall_fluxes(
@@ -1449,7 +1517,7 @@ class MomentumOperators:
         )
         return self.wall_law.surface_fluxes(
             horizontal,
-            self.wall_matching_height,
+            self.wall_cell_height,
         )
 
     def surface_momentum_stability_rate(
@@ -1481,7 +1549,7 @@ class MomentumOperators:
         )
         fluxes = self.wall_law.surface_fluxes(
             horizontal,
-            self.wall_matching_height,
+            self.wall_cell_height,
         )
         return self.surface_momentum_stability_rate(
             horizontal,
@@ -1503,6 +1571,57 @@ class MomentumOperators:
         return jnp.concatenate(
             (tangential, jnp.zeros_like(tangential[..., :1])),
             axis=-1,
+        )
+
+    def _wall_stress_tangential_faces(
+        self,
+        wall_stress: Array,
+    ) -> tuple[Array, Array]:
+        expected = (*self.grid.shape[1:], 3)
+        if tuple(wall_stress.shape) != expected:
+            raise ValueError(
+                f"expected wall stress shape {expected}, got {tuple(wall_stress.shape)}"
+            )
+        stress_x = _interpolate_to_periodic_faces(
+            wall_stress[..., 0],
+            self.x_metric.centers,
+            self.x_metric.faces,
+            axis=1,
+        )
+        stress_y = _interpolate_to_periodic_faces(
+            wall_stress[..., 1],
+            self.y_metric.centers,
+            self.y_metric.faces,
+            axis=0,
+        )
+        return stress_x, stress_y
+
+    def _add_wall_stress_face_tendency(
+        self,
+        tendency: MACVelocity,
+        wall_stress: Array,
+    ) -> MACVelocity:
+        stress_x, stress_y = self._wall_stress_tangential_faces(wall_stress)
+        inverse_first_width = jnp.asarray(
+            -1.0,
+            dtype=wall_stress.dtype,
+        ) / self.dz_cell[0].astype(wall_stress.dtype)
+        return MACVelocity(
+            tendency.x.at[0].add(inverse_first_width * stress_x),
+            tendency.y.at[0].add(inverse_first_width * stress_y),
+            tendency.z,
+        )
+
+    def wall_stress_face_tendency(self, wall_stress: Array) -> MACVelocity:
+        """Map cell-centred wall traction to its physical MAC u/v faces."""
+        nz, ny, nx = self.grid.shape
+        return self._add_wall_stress_face_tendency(
+            MACVelocity(
+                jnp.zeros((nz, ny, nx + 1), dtype=wall_stress.dtype),
+                jnp.zeros((nz, ny + 1, nx), dtype=wall_stress.dtype),
+                jnp.zeros((nz + 1, ny, nx), dtype=wall_stress.dtype),
+            ),
+            wall_stress,
         )
 
     def forcing_tendency(self, cell_velocity: Array) -> Array:
@@ -1968,10 +2087,12 @@ class MomentumOperators:
     ) -> MACVelocity:
         nz, ny, nx = self.grid.shape
         z = self.z_centers - self.z_faces[0]
+        lower = self.z_faces[:-1] - self.z_faces[0]
+        upper = self.z_faces[1:] - self.z_faces[0]
         mean_u = (
             self.config.friction_velocity
             / self.config.von_karman
-            * jnp.log(z / self.config.roughness_length)
+            * self.wall_law.cell_average_log_denominators(lower, upper)
         )
         # Phases follow the physical centres so a stretched horizontal axis
         # still receives a smooth periodic perturbation.
@@ -2081,7 +2202,7 @@ class MomentumOperators:
         direction = horizontal / jnp.maximum(speed[..., None], epsilon)
         wall_shear = self.wall_law.friction_velocity(
             horizontal,
-            self.wall_matching_height,
+            self.wall_cell_height,
         ) / (self.config.von_karman * height)
         gradient = gradient.at[0, ..., 0, 2].set(wall_shear * direction[..., 0])
         return gradient.at[0, ..., 1, 2].set(wall_shear * direction[..., 1])

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 import matplotlib
@@ -24,7 +25,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--reference-dir",
         type=Path,
-        default=HERE / "reference" / "official_12p5m",
     )
     parser.add_argument("--output", type=Path)
     return parser.parse_args()
@@ -34,17 +34,42 @@ def _ensemble(reference_dir: Path, set_name: str, z: np.ndarray) -> dict:
     return ensemble_on_grid(load_period_sets(reference_dir, set_name, period=9), "z", z)
 
 
+def _resolution_tag(value: float) -> str:
+    return f"{value:g}".replace(".", "p")
+
+
+def _case_geometry(result_dir: Path) -> tuple[dict, float, bool]:
+    path = result_dir / "resolved_config.json"
+    config = json.loads(path.read_text(encoding="utf-8"))
+    grid = config["grid"]
+    nominal_resolution = float(grid["extent"][2]) / int(grid["shape"][2])
+    return grid, nominal_resolution, bool(grid.get("mapping"))
+
+
 def main() -> None:
     args = parse_args()
     profile_path = args.result_dir / "profiles.csv"
     profile = np.genfromtxt(profile_path, delimiter=",", names=True)
     z = np.asarray(profile["z_m"])
+    grid, nominal_resolution, stretched = _case_geometry(args.result_dir)
+    reference_dir = args.reference_dir or (
+        HERE
+        / "reference"
+        / f"official_{_resolution_tag(nominal_resolution)}m"
+    )
+    if not reference_dir.is_dir():
+        raise FileNotFoundError(f"official reference directory not found: {reference_dir}")
     reference = {
-        set_name: _ensemble(args.reference_dir, set_name, z)
+        set_name: _ensemble(reference_dir, set_name, z)
         for set_name in "ABC"
     }
 
-    output = args.output or args.result_dir / "GABLS1_AMD_12p5m_reference_overlay.png"
+    mesh_label = "stretched" if stretched else "uniform"
+    resolution_tag = _resolution_tag(nominal_resolution)
+    output = args.output or args.result_dir / (
+        f"GABLS1_AMD_{grid['shape'][0]}_{mesh_label}_"
+        f"vs_official_{resolution_tag}m.png"
+    )
     output.parent.mkdir(parents=True, exist_ok=True)
     figure, axes = plt.subplots(3, 4, figsize=(15, 11), constrained_layout=True)
 
@@ -71,27 +96,47 @@ def main() -> None:
                 ensemble["minimum"],
                 ensemble["maximum"],
                 color="0.84",
-                label="official 12.5 m range",
+                label=f"official {nominal_resolution:g} m range",
             )
             axis.plot(ensemble["mean"], z, "k--", lw=1.4, label="official mean")
-        axis.plot(profile[model_name], z, color="crimson", lw=2, label="JAX-Wind AMD")
-        axis.set(xlabel=xlabel, ylabel="z (m)", ylim=(0.0, 400.0))
+        axis.plot(
+            profile[model_name],
+            z,
+            color="crimson",
+            lw=2,
+            label=f"JAX-Wind AMD {mesh_label}",
+        )
+        axis.set(
+            xlabel=xlabel,
+            ylabel="z (m)",
+            ylim=(0.0, float(grid["extent"][2])),
+        )
         axis.grid(alpha=0.25)
 
     extra = axes.flat[10]
     extra.plot(profile["mean_w_m_s"], z, color="crimson", lw=2)
     extra.axvline(0.0, color="k", ls="--", lw=1)
-    extra.set(xlabel=r"$\langle w\rangle$ (m s$^{-1}$)", ylabel="z (m)", ylim=(0.0, 400.0))
+    extra.set(
+        xlabel=r"$\langle w\rangle$ (m s$^{-1}$)",
+        ylabel="z (m)",
+        ylim=(0.0, float(grid["extent"][2])),
+    )
     extra.grid(alpha=0.25)
 
     extra = axes.flat[11]
     extra.plot(profile["sgs_viscosity_m2_s"], z, color="crimson", lw=2)
-    extra.set(xlabel=r"$\langle\nu_{sgs}\rangle$ (m$^2$ s$^{-1}$)", ylabel="z (m)", ylim=(0.0, 400.0))
+    extra.set(
+        xlabel=r"$\langle\nu_{sgs}\rangle$ (m$^2$ s$^{-1}$)",
+        ylabel="z (m)",
+        ylim=(0.0, float(grid["extent"][2])),
+    )
     extra.grid(alpha=0.25)
 
     axes.flat[0].legend(fontsize=8, loc="best")
     figure.suptitle(
-        "GABLS1, 8–9 h mean: JAX-Wind MP5 + AMD, 12.5 m vs official 12.5 m LES"
+        "GABLS1, 8–9 h mean: JAX-Wind MP5 + AMD "
+        f"{mesh_label} {grid['shape'][0]}³ vs official "
+        f"{nominal_resolution:g} m LES"
     )
     figure.savefig(output, dpi=180)
     plt.close(figure)

@@ -24,19 +24,19 @@ STRETCHED_GABLS1 = ROOT / "benchmark" / "GABLS1" / "case_64_stretched.toml"
 
 
 def _quick(path: Path):
-    return load_case(path).with_overrides(
-        [
-            "grid.shape=[8, 8, 8]",
-            'numerics.dtype="float32"',
-            "time.sample_start=0.0",
-            'time.sample_basis="step"',
-            "time.sample_interval=1",
-            "time.history_interval=1",
-            "time.log_interval=1",
-            "time.checkpoint_interval=2",
-            "time.maximum_step=0.25",
-        ]
-    )
+    config = load_case(path)
+    overrides = [
+        "grid.shape=[8, 8, 8]",
+        'numerics.dtype="float32"',
+        "time.sample_start=0.0",
+        'time.sample_basis="step"',
+        "time.sample_interval=1",
+        "time.history_interval=1",
+        "time.log_interval=1",
+        "time.checkpoint_interval=2",
+        "time.maximum_step=0.25",
+    ]
+    return config.with_overrides(overrides)
 
 
 def test_benchmarks_are_declarative_configs_without_runners() -> None:
@@ -79,12 +79,14 @@ def test_gabls1_64_case_uses_independent_analytic_stretching() -> None:
     }
     assert mapping["y"] == mapping["x"]
     assert mapping["z"]["focus"] == 0.0
+    assert "wall_matching_height" not in config.section("momentum")
 
     simulation = build_simulation(_quick(STRETCHED_GABLS1))
     assert simulation.grid.uniform_axes == (False, False, False)
     assert simulation.grid.x_faces[4] == 200.0
     assert simulation.grid.y_faces[4] == 200.0
     assert simulation.grid.z_widths[0] < simulation.grid.z_widths[-1]
+    assert simulation.momentum.wall_cell_height == simulation.grid.z_widths[0]
     state = simulation.initial_state()
     advanced = simulation.step(state, min(simulation.timestep(state), 0.25))
     assert advanced.step == 1

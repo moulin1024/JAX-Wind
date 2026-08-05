@@ -188,6 +188,14 @@ def validate_case(data: dict[str, Any]) -> None:
 
     momentum = _require_table(data, "momentum")
     _positive(momentum, "friction_velocity", "roughness_length")
+    obsolete_wall_matching = {
+        key for key in ("wall_matching_height", "wall_matching_level") if key in momentum
+    }
+    if obsolete_wall_matching:
+        raise ValueError(
+            "point wall matching is unsupported; the wall law filters the actual "
+            f"first control volume: {sorted(obsolete_wall_matching)}"
+        )
     geostrophic = momentum.get("geostrophic_wind")
     if geostrophic is not None and not (
         isinstance(geostrophic, list)
