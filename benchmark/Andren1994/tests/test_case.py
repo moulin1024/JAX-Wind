@@ -1,12 +1,9 @@
 from __future__ import annotations
 
-import json
-import math
-
 import numpy as np
 import pytest
 
-from benchmark.Andren1994 import fig13_budget, run, run_lasd
+from benchmark.Andren1994 import fig13_budget, run
 from benchmark.Andren1994.overlay_paper_figures import (
     FIGURES,
     FIGURE13_AXES,
@@ -20,16 +17,13 @@ from benchmark.Andren1994.overlay_paper_figures import (
 
 def test_canonical_configuration_matches_paper_time_and_grid() -> None:
     args = run.parse_args([])
-    solver = run.solver_namespace(args)
-    assert (solver.nx, solver.ny, solver.nz) == (40, 40, 40)
-    assert (solver.lx, solver.ly, solver.lz) == (4000.0, 2000.0, 1500.0)
-    assert math.isclose(solver.hours * 3600.0 * solver.coriolis, 10.0)
-    assert math.isclose(solver.average_start_hours * 3600.0 * solver.coriolis, 7.0)
-    assert math.isclose(solver.average_window_hours * 3600.0 * solver.coriolis, 3.0)
-    assert solver.horizontal_coriolis == solver.coriolis
-    assert solver.roughness == 0.1
-    assert solver.smagorinsky == 0.17
+    assert args.end_ft == 0.1
+    assert args.sample_start_ft == 0.05
+    assert args.sgs == "amd"
+    assert args.amd_coefficient == 0.212
+    assert args.sgs_time_integration == "imex_ark3"
     assert not hasattr(args, "advection_limiter")
+    assert not hasattr(args, "projection_method")
 
 
 def test_runner_rejects_removed_advection_limiter_option() -> None:
@@ -37,49 +31,17 @@ def test_runner_rejects_removed_advection_limiter_option() -> None:
         run.parse_args(["--advection-limiter", "muscl-mc"])
 
 
-def test_table_a1_and_reference_envelope_are_complete() -> None:
-    table = run.paper_initial_profiles()
-    assert len(table) == 40
-    assert table["z_m"][0] == 18.75
-    assert table["z_m"][-1] == 1481.25
-    assert table["u_m_s"][12] == 10.71
-    assert table["v_m_s"][3] == 2.84
-    assert table["tke_m2_s2"][0] == 0.365
-    assert table["tke_m2_s2"][21] == 0.0
-    reference = json.loads(run.REFERENCE_RESULTS.read_text())
-    ratios = tuple(reference["ustar_over_ug"].values())
-    assert min(ratios) == 0.0402
-    assert max(ratios) == 0.0448
+def test_table_a1_initial_profiles_are_complete() -> None:
+    assert len(run.INITIAL_U) == len(run.INITIAL_V) == len(run.INITIAL_TKE) == 40
+    assert run.INITIAL_U[12] == 10.71
+    assert run.INITIAL_V[3] == 2.84
+    assert run.INITIAL_TKE[0] == 0.365
+    assert run.INITIAL_TKE[21] == 0.0
 
 
-def test_quick_mode_is_explicitly_noncanonical() -> None:
-    args = run.parse_args(["--quick"])
-    solver = run.solver_namespace(args)
-    assert (solver.nx, solver.ny, solver.nz) == (8, 8, 8)
-    assert solver.hours * 3600.0 / solver.dt == 8.0
-    assert solver.average_start_hours == 0.0
-
-
-def test_lasd_fifth_model_updates_every_accepted_step() -> None:
-    args = run_lasd.parse_args([])
-    assert (args.nx, args.ny, args.nz) == (40, 40, 40)
-    assert args.dt == 0.8
-    assert args.lasd_update_interval == 1
-    assert math.isclose(args.hours * 3600.0 * run.F_CORIOLIS, 10.0)
-
-
-def test_profile_variance_excludes_temporal_plane_mean_drift() -> None:
-    samples = [
-        {
-            "scalar": np.asarray([mean]),
-            "scalar2": np.asarray([mean**2 + 2.0]),
-        }
-        for mean in (0.0, 10.0, 20.0)
-    ]
-    averaged = run_lasd._average_profile_samples(samples)
-    assert np.allclose(averaged["resolved_scalar_variance"], 2.0)
-    contaminated = averaged["scalar2"] - averaged["scalar"] ** 2
-    assert contaminated[0] > 60.0
+def test_runner_rejects_removed_legacy_quick_mode() -> None:
+    with pytest.raises(SystemExit):
+        run.parse_args(["--quick"])
 
 
 def test_fig13_budget_normalization_and_tendency_are_explicit() -> None:

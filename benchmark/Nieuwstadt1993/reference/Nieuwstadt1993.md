@@ -56,7 +56,7 @@ published values.
 
 ## Mapping to the current JAX benchmark
 
-`run.py` selects `run_amd.py` by default.  This path keeps the paper's physical
+`run.py` selects the non-spectral `run_amd.py` implementation. This path keeps the paper's physical
 domain, grid, forcing, initial condition, and averaging interval while testing
 the new non-spectral JAX-Wind implementation:
 
@@ -72,9 +72,8 @@ the new non-spectral JAX-Wind implementation:
 - an adaptive explicit step capped at `dt = 1.25 s`;
 - a full pressure solve after every SSPRK3 momentum stage.
 
-The former semantic LASD comparison remains available through
-`run.py --solver lasd-semantic`.  Both paths write the complete diagnostic
-record: scalar and momentum profiles, time histories, conditional averages,
+The runner writes the complete diagnostic record: scalar and momentum
+profiles, time histories, conditional averages,
 kinetic-energy budget terms, spectra, summary statistics, and standalone
 plots. `overlay_figures.py` maps those diagnostics onto paper Figs. 1--17. The
 official scan is registered by `extract_paper_figures.py` after PDF pages

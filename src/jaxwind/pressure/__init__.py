@@ -30,7 +30,7 @@ from .matrix_free_gmg import (
     pcg,
 )
 from .mac_projection import (
-    _velocity_sum,
+    _velocity_sum as _velocity_sum,
     VelocityPressureProjection,
     MACProjectionResult,
     MACStageProjector,
@@ -42,7 +42,6 @@ from .mac_projection import (
     projected_ssprk3_velocity_pressure_step,
     projected_ssprk3_velocity_step,
 )
-from .spectral_fd import SpectralFDPressureAdapter, build_spectral_fd_pressure_adapter
 
 __all__ = [
     "BoundaryCondition",
@@ -61,14 +60,12 @@ __all__ = [
     "RectilinearGrid",
     "SSPRK3ProjectionResult",
     "VelocityPressureProjection",
-    "SpectralFDPressureAdapter",
     "YSlabConfig",
     "YSlabMACProjectionResult",
     "YSlabMACProjector",
     "YSlabMACVelocity",
     "YSlabMatrixFreePoissonSolver",
     "YSlabVelocityPressureProjection",
-    "build_spectral_fd_pressure_adapter",
     "fgmres",
     "pcg",
     "gather_y_field",

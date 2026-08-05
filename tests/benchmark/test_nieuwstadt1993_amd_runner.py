@@ -8,12 +8,17 @@ from benchmark.Nieuwstadt1993 import run, run_amd
 def test_nieuwstadt_orchestrator_defaults_to_nonspectral_amd() -> None:
     args = run.parse_args([])
 
-    assert args.solver == "amd-nonspectral"
+    assert not hasattr(args, "solver")
     assert args.amd_coefficient == 0.212
     assert args.dt == 1.25
     assert args.nx == 40
     assert args.ny == 40
     assert args.nz == 48
+
+
+def test_nieuwstadt_rejects_removed_solver_selection() -> None:
+    with pytest.raises(SystemExit):
+        run.parse_args(["--solver", "lasd-semantic"])
 
 
 def test_nonspectral_amd_runner_uses_canonical_case_and_averaging_window() -> None:

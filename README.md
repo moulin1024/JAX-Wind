@@ -21,12 +21,9 @@ implementations directly testable.
 
 - incompressible flow on uniform three-dimensional grids;
 - standalone analytic rectilinear meshing with independent x/y/z clustering;
-- cell-centered horizontal velocity and face-centered vertical velocity;
-- compatible gradient, divergence, and pressure-projection operators;
-- independent JAX reference, local, and equal-z-slab interpretations;
-- JAX-native packed halo exchange for distributed z slabs;
-- transpose, exact SPIKE, and adaptive SPIKE pressure solves through
-  [`spectral-fd`](external/bw1000_benchmark/README.md);
+- staggered-MAC velocity and compatible gradient, divergence, and projection;
+- matrix-free GMG-preconditioned PCG/FGMRES pressure solves;
+- single-device and distributed non-spectral y-slab ABL execution;
 - fixed-step AB2 integration with explicit startup, accepted-time diagnostics,
   and restart-complete tendency history;
 - conservative dry-flow and scalar transport with horizontal two-thirds
@@ -35,36 +32,28 @@ implementations directly testable.
   Smagorinsky, and Lagrangian scale-dependent dynamic (LASD) closures;
 - Boussinesq buoyancy, prescribed scalar fluxes, and optional upper-level
   Rayleigh damping;
-- actuator-disk and rigid blade-element actuator-line forcing, including an
-  OpenFAST input-deck adapter, plus concurrent-precursor fringe coupling; and
+- actuator-disk and blade-element actuator-line physics, including an OpenFAST
+  input-deck adapter; and
 - reference and per-rank checkpoints for dry and velocity-scalar states.
 
-The first production decomposition is an equal z slab. General meshes, uneven
-slabs, and a stable high-level simulation API are not currently provided.
+The production ABL path uses the non-spectral staggered-MAC solver. A stable
+high-level simulation API is not currently provided.
 
 ## Installation
 
-JAX-Wind requires Python 3.11 or newer. Clone the pressure-solver submodule with
-the repository:
+JAX-Wind requires Python 3.11 or newer:
 
 ```bash
-git clone --recurse-submodules https://github.com/moulin1024/JAX-Wind.git
+git clone https://github.com/moulin1024/JAX-Wind.git
 cd JAX-Wind
 ```
 
-For an existing clone, initialize the submodule with:
-
-```bash
-git submodule update --init --recursive
-```
-
-Create an isolated environment and install both projects in editable mode:
+Create an isolated environment and install the project in editable mode:
 
 ```bash
 python3.11 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install -e external/bw1000_benchmark
 python -m pip install -e .
 python -m pip install pytest
 ```
@@ -97,83 +86,6 @@ Each axis independently selects uniform, single-boundary, or double-sided
 interior-point clustering. See [`meshing/README.md`](meshing/README.md) for the
 configuration semantics and portable artifact format.
 
-## Runner workflows
-
-Case-oriented application shells live under [`runners`](runners/README.md).
-The first workflow is a configurable [pressure-driven neutral
-warmup](runners/pressure_driven_warmup/README.md) with LASD, AB2, checkpointed
-restart, and restart-continuous profile statistics.
-
-Validate its supplied `2048 × 1024 × 1024 m`, `128 × 64 × 256`, 10-hour case
-without allocating a JAX state:
-
-```bash
-jaxwind runners/pressure_driven_warmup --dry-run
-```
-
-### OpenFAST rigid actuator line
-
-The concurrent turbine runner can build a fixed-operating-point actuator line
-directly from an ordinary OpenFAST primary input deck. The adapter follows its
-ElastoDyn, AeroDyn, blade, and airfoil references, so those files remain the
-source of truth:
-
-```toml
-[turbine]
-model = "openfast_rigid_actuator_line"
-location_m = [512.0, 512.0] # rotor-apex x and y in the LES domain
-openfast_input_file = "OpenFAST/5MW_Land_DLL_WTurb.fst"
-smoothing_width_m = 6.0
-
-# Optional fixed operating-point overrides:
-# rotor_speed_rpm = 9.0
-# pitch_degrees = 0.0
-# yaw_degrees = 0.0
-# hub_height_m = 90.0
-# initial_azimuth_degrees = 0.0
-```
-
-The first compatibility surface uses one identical rigid blade definition for
-all blades, `AFTabMod = 1`, and linear airfoil interpolation. It imports the
-OpenFAST initial rotor speed, pitch, yaw, shaft tilt, precone, azimuth, radii,
-chord, twist, airfoil assignment, and first Cl/Cd table. ElastoDyn flexibility,
-ServoDyn control, AeroDyn induction/dynamic wake, unsteady aerodynamics, and
-curved/swept blade geometry are not advanced. These omissions are written into
-the resolved case configuration rather than applied silently.
-
-### JAX-native modal aeroelastic actuator line
-
-The direct actuator-line runner supports JAX-native, two-way,
-small-deflection blade coupling using ordinary ElastoDyn `BldFile` inputs as
-data. OpenFAST is not linked or executed. Set the aeroelastic runner and enable
-the structural block:
-
-```toml
-[case]
-runner = "direct_aeroelastic_alm"
-
-[aeroelastic]
-enabled = true
-air_density_kg_m3 = 1.225
-gravity_m_s2 = 9.80665
-maximum_tip_deflection_m = 20.0
-```
-
-`FlapDOF1`, `FlapDOF2`, and `EdgeDOF` select the active per-blade modes. The
-adapter reads `NBlInpSt`, distributed `BMassDen`, `FlpStff`, `EdgStff`,
-structural twist, modal damping, adjustment factors, and the `BldFl1Sh`,
-`BldFl2Sh`, and `BldEdgSh` polynomial coefficients. Modal mass, elastic
-stiffness, prescribed-speed centrifugal stiffening, and damping matrices are
-assembled from those data.
-
-At every accepted CFD step, deformed positions, slopes, and structural
-velocities enter actuator-line sampling and force projection. Equal and
-opposite aerodynamic loads plus gravity are projected back to the structural
-modes and advanced with average-acceleration Newmark. The current coupling is
-explicit and partitioned. It does not yet reproduce OpenFAST tight-coupling
-iterations, tower/platform/drivetrain/generator/pitch/yaw motion, ServoDyn, or
-BeamDyn.
-
 ## Verify the installation
 
 Run the core test suite:
@@ -182,38 +94,8 @@ Run the core test suite:
 python -m pytest -q
 ```
 
-The default suite covers semantic ownership, reference and z-slab operators,
-projection, dry and Boussinesq physics, LASD, checkpoints, and integrators.
-Tests that open local coordinator sockets are opt-in.
-
-To exercise a true two-process CPU projection:
-
-```bash
-export JAXWIND_SPECTRAL_FD_SOURCE="$PWD/external/bw1000_benchmark"
-python tools/run_distributed_projection_cpu.py \
-  --processes 2 --dtype float32 --methods transpose,spike,spike-adaptive
-```
-
-To advance the real dry-flow vector field through AB2 and verify per-rank
-checkpoint continuation:
-
-```bash
-python tools/run_distributed_ab2_cpu.py \
-  --processes 2 --dtype float32 --method spike --steps 4 \
-  --vector-field dry
-```
-
-Run the complete one-, two-, and four-process CPU gates with:
-
-```bash
-JAXWIND_RUN_MULTIPROCESS_CPU_TESTS=1 \
-  python -m pytest -q \
-  tests/interpreters/test_projection_multiprocess_cpu.py \
-  tests/integrators/test_ab2_multiprocess_cpu.py
-```
-
-These commands bind loopback coordinator sockets and require the local
-environment to permit subprocess networking.
+The default suite covers semantic ownership, non-spectral projection, dry and
+Boussinesq physics, LASD, checkpoints, and integrators.
 
 ## Architecture
 
@@ -229,16 +111,15 @@ semantic core:
 | [`src/jaxwind/interpreters`](src/jaxwind/interpreters) | Unified JAX z-slab interpretation; one shard is the local case |
 | [`src/jaxwind/openfast`](src/jaxwind/openfast) | OpenFAST-compatible input parsing and turbine model adapters |
 | [`src/jaxwind/meshing`](src/jaxwind/meshing) | Analytic physical mesh generation and versioned artifact I/O |
-| [`src/jaxwind/pressure`](src/jaxwind/pressure) | Semantic adapter around the external pressure solver |
+| [`src/jaxwind/pressure`](src/jaxwind/pressure) | Matrix-free GMG-preconditioned PCG/FGMRES and local/distributed MAC projection |
 | [`src/jaxwind/effects`](src/jaxwind/effects) | Checkpoint and execution-side adapters |
-| [`src/jaxwind/runners`](src/jaxwind/runners) | Configuration, initialization, diagnostics, and application orchestration |
 | [`tests`](tests) | Algebraic, physical, interpretation, restart, and distribution tests |
 | [`benchmark`](benchmark) | Reproducible physical cases and comparison tooling |
 
 The governing dependency direction is:
 
 ```text
-benchmarks, runners, and effects
+benchmarks and effects
         ↓
 JAX interpreters
         ↓
@@ -266,10 +147,7 @@ The repository includes research workflows for:
 - the [Andrén et al. (1994) neutral Ekman
   intercomparison](benchmark/Andren1994/README.md);
 - the [Nieuwstadt et al. (1993) dry convective boundary-layer
-  comparison](benchmark/Nieuwstadt1993/reference/Nieuwstadt1993.md); and
-- the [Lin & Porté-Agel (2019) wind-turbine wake
-  case](benchmark/LinPorteAgel2019/README.md), including precursor,
-  actuator-disk, and fringe-coupling studies.
+  comparison](benchmark/Nieuwstadt1993/reference/Nieuwstadt1993.md).
 
 Benchmark scripts are case-specific research workflows rather than a stable
 command-line interface. Read the corresponding case documentation before

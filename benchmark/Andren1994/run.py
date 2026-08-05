@@ -21,6 +21,8 @@ for source in (ROOT, SOURCE):
         sys.path.insert(0, str(source))
 
 
+F_CORIOLIS = 1.0e-4
+
 INITIAL_U = (
     4.44, 5.92, 6.91, 7.73, 8.43, 9.02, 9.52, 9.93, 10.25, 10.47,
     10.62, 10.70, 10.71, 10.67, 10.59, 10.48, 10.36, 10.24, 10.13, 10.04,
@@ -262,7 +264,7 @@ def main() -> None:
     lx, ly, height = 4000.0, 2000.0, 1500.0
     roughness = 0.1
     geostrophic = (10.0, 0.0)
-    coriolis = 1.0e-4
+    coriolis = F_CORIOLIS
     expected_ustar = 0.425
     dtype = jnp.float32 if args.single else jnp.float64
 

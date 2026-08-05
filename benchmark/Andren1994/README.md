@@ -48,9 +48,6 @@ Momentum uses full pressure projection at every SSPRK3 or ARK3 stage. The
 accepted pressure field is checkpointed and reused as the initial guess for
 the next pressure solve.
 
-`run_lasd.py` is retained as the legacy coupled momentum/scalar z-slab
-implementation for reference. New AMD benchmark work should use `run.py`.
-
 The AMD runner observes the complete resolved momentum- and scalar-flux
 budgets online over the configured averaging window and writes
 `fig12_budget_profiles.csv` and `fig13_budget_profiles.csv`. It forms

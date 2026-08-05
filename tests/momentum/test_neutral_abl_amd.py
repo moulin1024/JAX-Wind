@@ -6,6 +6,7 @@ import jax.numpy as jnp
 import pytest
 
 import jaxwind.momentum.neutral_abl as neutral_abl
+from jaxwind.momentum.metrics import minmod, wall_normal_derivative
 from jaxwind.momentum import (
     AMDModel,
     AMDPassiveScalar,
@@ -121,14 +122,6 @@ def _stretched_solver(
     )
 
 
-def test_uniform_spacing_accepts_float32_inexact_domain_ratio() -> None:
-    faces = tuple(2.0 * math.pi * index / 64 for index in range(65))
-
-    spacing = neutral_abl._uniform_spacing(faces, "x spacing")
-
-    assert spacing == (2.0 * math.pi) / 64
-
-
 def test_stretched_grid_resolves_matching_height_to_physical_cell_center() -> None:
     solver = _stretched_solver(wall_matching_height=0.11)
 
@@ -140,7 +133,7 @@ def test_stretched_wall_normal_derivative_and_adjoint_use_volume_metric() -> Non
     solver = _stretched_solver()
     z = solver.z_centers[:, None, None]
     quadratic = z**2 + 0.3 * z + 1.0
-    derivative = neutral_abl._wall_normal_derivative(
+    derivative = wall_normal_derivative(
         quadratic,
         solver.z_centers,
     )
@@ -150,7 +143,7 @@ def test_stretched_wall_normal_derivative_and_adjoint_use_volume_metric() -> Non
     first = jnp.sin(3.1 * z) + 0.2 * z
     second = jnp.cos(2.3 * z) - 0.1 * z
     operator_first = solver._negative_derivative_transpose(first, 2)
-    derivative_second = neutral_abl._wall_normal_derivative(
+    derivative_second = wall_normal_derivative(
         second,
         solver.z_centers,
     )
@@ -669,7 +662,7 @@ def test_pairwise_minmod_matches_stacked_reduction() -> None:
         jnp.where(jnp.all(stacked < 0.0, axis=0), -magnitude, 0.0),
     )
 
-    assert jnp.array_equal(neutral_abl._minmod(*values), expected)
+    assert jnp.array_equal(minmod(*values), expected)
 
 
 def test_local_mp5_dissipation_preserves_constant_momentum() -> None:

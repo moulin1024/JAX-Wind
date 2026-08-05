@@ -15,18 +15,19 @@ not authorize a complete LES solver or a generic distributed framework.
   `G_z`/`D_z` interpretation commutes with an independent test oracle for one,
   two, and four host CPU devices in float32/float64 tests.
 - The compatible three-dimensional projection is implemented as one
-  higher-order program over oracle and production algebras. Its horizontal
-  spectral symbols, vertical face operators, physical normal-boundary
-  reconstruction, pressure gauge, and correction path are tested together.
-- The Milestone D owned-cell adapter is implemented against `spectral-fd>=0.2.0`.
-  Transpose, exact SPIKE, and adaptive SPIKE commute with the independent
-  oracle on forced one/two/four-device CPU meshes.
+  higher-order program over oracle and production algebras. Its face
+  operators, physical normal-boundary reconstruction, pressure gauge, and
+  correction path are tested together.
+- The former Milestone D external spectral/finite-difference adapter has been
+  retired. Active pressure projection uses the in-tree matrix-free MAC
+  operator with GMG-preconditioned PCG or FGMRES, including the distributed
+  y-slab implementation.
 - True JAX multi-process CPU execution is implemented and validated for one,
   two, and four processes. Every process constructs only its owned z slab;
   global divergence, idempotence, pressure gauge, dtype preservation, and
   transpose/SPIKE agreement use distributed collectives.
-- GPU validation is deliberately deferred. The public-release license decision
-  for `spectral-fd` also remains incomplete.
+- GPU validation of the retained matrix-free path is performed by the physical
+  benchmark runners; the package has no optional external pressure backend.
 - Milestone E is implemented for the first deterministic method: fixed-step
   AB2 with explicit Euler startup, one vector-field evaluation at `t_n`, one
   terminal compatible projection, accepted diagnostics/boundaries at
@@ -64,9 +65,9 @@ construction errors. H, I, and J do not alter the ownership/operator laws and
 remain open. No dynamic status, differentiability promise, physical milestone,
 or benchmark migration is introduced implicitly.
 
-The external pressure extra is constrained to `spectral-fd>=0.2.0`; its license
-decision remains required before a public release. Development may use an
-editable path only in the effect shell; semantic modules cannot import it.
+Pressure projection is an in-tree implementation. Semantic modules do not
+select a Krylov method, preconditioner, device topology, or distributed
+runtime; those choices remain in the interpreter or benchmark effect shell.
 
 ## 3. Package and dependency skeleton
 
@@ -164,39 +165,31 @@ Acceptance tests:
 Exit criterion: all laws hold for one through four slabs and both float32 and
 float64 tolerances.
 
-## 7. Milestone D: pressure facade adapter
+## 7. Milestone D: matrix-free pressure projection
 
-Add an interpreter-only adapter around `spectral-fd`:
+The active pressure path is the in-tree face-staggered MAC projection:
 
 - the application initializes JAX and passes its runtime context;
-- input and output are owned z-slab `Cell` fields;
-- configuration is `cell-centered-compatible`;
-- exact transpose is the correctness oracle;
-- exact SPIKE with selected-row interface is the first communication-reduced
-  production candidate;
-- adaptive SPIKE is enabled only after exact SPIKE passes the same laws;
-- all `nz` cells participate, the RHS constant mode is projected out, and the
-  returned pressure has zero volume-weighted mean;
-- internal y pencils, FFT arrays, factors, and endpoint systems remain
-  transient backend workspaces.
+- the discrete pressure operator is formed matrix-free from compatible
+  divergence and gradient operators;
+- PCG is used for the symmetric positive-definite case and FGMRES is available
+  when the preconditioner requires a flexible Krylov method;
+- geometric multigrid is a preconditioner, not a second pressure
+  discretization;
+- local and distributed y-slab projectors share the same boundary and pressure
+  gauge conventions;
+- the RHS constant mode is projected out and the returned pressure has zero
+  volume-weighted mean.
 
-The adapter MUST NOT gather, create a host global field, initialize a second
-distributed runtime, or expose pressure-solver layout as semantic ownership.
+The implementation MUST NOT gather a distributed production field merely to
+solve pressure or initialize a second distributed runtime.
 
-Acceptance tests:
+Acceptance tests cover manufactured solutions, pressure-gauge invariance,
+projection idempotence and divergence elimination, stretched grids, local and
+distributed agreement, and one/two/four-device ownership laws.
 
-- manufactured horizontal and vertical modes;
-- first-cell-only and last-cell-only compatible RHS;
-- pressure-gauge invariance;
-- projection idempotence and divergence elimination;
-- transpose versus exact SPIKE pointwise comparison;
-- exact versus adaptive SPIKE comparison;
-- one/two/four-device single- and multi-shard commuting tests;
-- a process-local allocation audit showing no global physical payload.
-
-Exit criterion: the same projection program passes the independent oracle and
-the unified z-slab transpose, exact SPIKE, and adaptive SPIKE paths within
-declared tolerances.
+Exit criterion: the retained local and distributed matrix-free projectors pass
+the declared algebraic and manufactured-solution tolerances.
 
 ## 8. Milestone E: complete deterministic step gate
 

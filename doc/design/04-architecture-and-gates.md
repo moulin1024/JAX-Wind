@@ -40,7 +40,6 @@ SHOULD separate these responsibilities:
 - `interpreters`: the unified JAX z-slab lowering and its private kernels;
 - `openfast`: format parsing and conversion into JAX-Wind turbine models;
 - `effects`: config, launch, checkpoint, logging, and postprocessing adapters;
-- `runners`: thin application shells around validated configuration and effects;
 - `meshing`: standalone physical-coordinate generation and versioned mesh I/O;
 - `benchmarks`: semantic cases and comparison criteria, not solver internals.
 
@@ -76,9 +75,6 @@ without exposing backend details through the public API:
   and backend mapping;
 - OpenFAST model modules own compatibility policy and turbine construction;
   the shared parser owns tokenization and typed field extraction;
-- runner model modules own immutable validated configuration, loader modules
-  own file parsing, diagnostic modules own initialization and output
-  conversion, and runner modules own execution order;
 - private implementation modules are not compatibility surfaces. Cross-package
   users import from the package facade or documented public module.
 

@@ -10,13 +10,6 @@ from jaxwind.openfast import (
     OpenFASTInputError,
     load_openfast_rigid_turbine,
 )
-from jaxwind.runners.concurrent_precursor_adm import (
-    RigidActuatorLineTurbineConfig,
-    load_case,
-)
-
-ROOT = Path(__file__).resolve().parents[2]
-
 def _write_openfast_deck(
     root: Path,
     *,
@@ -196,59 +189,3 @@ def test_rejects_multiple_aerodyn_polar_tables(tmp_path: Path) -> None:
 
     with pytest.raises(OpenFASTInputError, match="AFTabMod=2"):
         load_openfast_rigid_turbine(source)
-
-
-def test_concurrent_runner_config_accepts_openfast_turbine(
-    tmp_path: Path,
-) -> None:
-    source = _write_openfast_deck(tmp_path)
-    config = tmp_path / "config.toml"
-    config.write_text(
-        f"""
-[case]
-runner = "concurrent_precursor_adm"
-name = "openfast_rigid_smoke"
-
-[warmup]
-case_config = "{ROOT / "runners" / "pressure_driven_warmup"}"
-checkpoint = "{tmp_path / "warmup.npz"}"
-
-[concurrent]
-steps = 2
-launch = "serial"
-
-[fringe]
-start_x_m = 1536.0
-relaxation_time_seconds = 4.0
-rise_width_m = 128.0
-fall_width_m = 128.0
-maximum_residual_fraction = 0.01
-
-[turbine]
-model = "openfast_rigid_actuator_line"
-location_m = [512.0, 512.0]
-openfast_input_file = "{source}"
-smoothing_width_m = 6.0
-rotor_speed_rpm = 9.0
-
-[output]
-directory = "outputs/openfast_rigid_smoke"
-log_every_steps = 1
-checkpoint_every_steps = 2
-""".strip()
-        + "\n"
-    )
-
-    case = load_case(config)
-
-    assert isinstance(case.turbine, RigidActuatorLineTurbineConfig)
-    assert case.turbine.openfast.source == source
-    assert case.turbine.rotor_speed_rpm == 9.0
-    assert case.turbine.hub_height_m == pytest.approx(
-        88.0 + 4.0 * math.sin(math.radians(5.0))
-    )
-    resolved = case.resolved()["turbine"]
-    assert resolved["model"] == "openfast_rigid_actuator_line"
-    assert resolved["blade_count"] == 3
-    assert resolved["blade_element_count"] == 3
-    assert resolved["openfast_input_file"] == str(source)

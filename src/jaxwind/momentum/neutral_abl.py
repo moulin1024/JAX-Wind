@@ -26,18 +26,14 @@ from jaxwind.pressure import (
     RectilinearGrid,
     VelocityPressureProjection,
     mac_divergence,
-    mac_pressure_gradient,
     projected_ssprk3_velocity_pressure_step,
 )
 
 from .lasd import LASDModel, LASDState, PhysicalSpaceLASD
 from .metrics import (
     AxisMetric,
-    minmod as _minmod,
     reconstruction_dissipation,
     reconstruction_flux,
-    wall_normal_derivative as _wall_normal_derivative,
-    wall_normal_derivative_transpose as _wall_normal_derivative_transpose,
 )
 from .physical_filter import physical_top_hat_filter
 from .surface_layer import NeutralLogWallLaw, SurfaceLayerFluxes
@@ -193,24 +189,6 @@ class NeutralABLDiagnostic:
     def maximum_amd_viscosity(self) -> float:
         """Backward-compatible name for AMD-specific callers."""
         return self.maximum_sgs_viscosity
-
-
-def _uniform_spacing(faces: tuple[float, ...], name: str) -> float:
-    """Return the exact spacing of an axis, rejecting a non-uniform one."""
-
-    reference = (faces[-1] - faces[0]) / (len(faces) - 1)
-    tolerance = 1.0e-12 * max(1.0, abs(reference))
-    if not all(
-        math.isclose(
-            right - left,
-            reference,
-            rel_tol=1.0e-12,
-            abs_tol=tolerance,
-        )
-        for left, right in zip(faces[:-1], faces[1:], strict=True)
-    ):
-        raise ValueError(f"a constant {name} was required but the axis is stretched")
-    return reference
 
 
 def _build_axis_metrics(

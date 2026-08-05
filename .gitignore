@@ -103,12 +103,8 @@ tmp
 /benchmark/GABLS1/**/__pycache__/
 /benchmark/GABLS1/**/*.pyc
 
-# Versioned Lin & Porte-Agel yawed-wake benchmark specification.
-!/benchmark/LinPorteAgel2019/
-!/benchmark/LinPorteAgel2019/**
-/benchmark/LinPorteAgel2019/**/__pycache__/
-
 # Versioned Yang et al. wind-tunnel benchmark specification.
 !/benchmark/yang2024/
 !/benchmark/yang2024/**
 /benchmark/yang2024/**/__pycache__/
+JAX-Wind-rerun.tar.gz

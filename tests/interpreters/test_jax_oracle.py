@@ -129,9 +129,9 @@ class JaxOracleLawTests(unittest.TestCase):
             elif isinstance(node, ast.ImportFrom) and node.module:
                 imports.append(node.module)
 
-        prohibited = ("jax_zslab", "spectral_fd")
+        prohibited = ("jax_zslab",)
         self.assertFalse(
-            any(name.endswith(prohibited) or name.startswith("spectral_fd") for name in imports)
+            any(name.endswith(prohibited) for name in imports)
         )
 
 

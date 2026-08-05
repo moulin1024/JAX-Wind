@@ -33,7 +33,7 @@ The tiny-grid reference interpreter uses direct, readable JAX operations on a
 bounded global test array. It is independent of the production interpretation:
 
 - it MUST NOT import production operator kernels, halo implementations,
-  pressure adapters, `spectral-fd`, or production factor builders;
+  pressure implementations, or production factor builders;
 - it constructs boundary values, difference matrices, and compatible
   projection operations directly from the accepted semantic definitions;
 - dense assembly and `jax.numpy.linalg.solve` are permitted on bounded grids;
