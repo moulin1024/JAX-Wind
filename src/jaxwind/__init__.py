@@ -1,47 +1,6 @@
-"""JAX-Wind semantic core and JAX interpretations."""
+"""Minimal non-spectral ABL solver used by the validation benchmarks."""
 
-from .domain import (
-    CELL,
-    ZFACE,
-    AddressableField,
-    Cell,
-    DistributionSpec,
-    DomainAxis,
-    EqualZSlab,
-    Field,
-    GlobalTestRegion,
-    MeshAxis,
-    MeshCoordinate,
-    MeshTopology,
-    OwnedInterval,
-    OwnedRegion,
-    Partitioned,
-    RectilinearGrid,
-    Replicated,
-    UniformGrid,
-    VerticalBoundary,
-    ZFace,
-)
+from .domain import RectilinearGrid
+from .pressure import MACVelocity
 
-__all__ = [
-    "CELL",
-    "ZFACE",
-    "AddressableField",
-    "Cell",
-    "DistributionSpec",
-    "DomainAxis",
-    "EqualZSlab",
-    "Field",
-    "GlobalTestRegion",
-    "MeshAxis",
-    "MeshCoordinate",
-    "MeshTopology",
-    "OwnedInterval",
-    "OwnedRegion",
-    "Partitioned",
-    "RectilinearGrid",
-    "Replicated",
-    "UniformGrid",
-    "VerticalBoundary",
-    "ZFace",
-]
+__all__ = ["MACVelocity", "RectilinearGrid"]

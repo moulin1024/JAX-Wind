@@ -16,32 +16,26 @@ symmetric-GMG/PCG pressure solver, and filter-free AMD by default. The AMD run
 also advances the paper's passive scalar with a conservative AMD flux and a
 prescribed lower surface flux of `1e-3`; use `--no-passive-scalar` only for a
 momentum-only diagnostic run. `--scalar-amd-coefficient` defaults to the
-momentum `--amd-coefficient`. Use `--sgs lasd` for the physical-space LASD
-momentum closure (the scalar is then off by default). The restriction is the volume-weighted
-adjoint of prolongation. Use `--linear-solver gmres` for the restarted GMRES
-reference path. The nonlinear correction is MP5; set its strength with
-`--advection-dissipation-strength`. `--mp5-strength` remains a
+momentum `--amd-coefficient`. The nonlinear correction is MP5; set its strength
+with `--advection-dissipation-strength`. `--mp5-strength` remains a
 backward-compatible alias.
 The stiff vertical part of the SGS principal diffusion defaults to the
 third-order ARS(2,3,3) IMEX path and is solved directly along each vertical
 column. `CFLnu` therefore diagnoses the complete SGS operator; timestep
 selection retains only the explicit horizontal diffusion limit. Use
 `--sgs-time-integration explicit` for the fully explicit projected SSPRK3 path.
-LASD's two Germano test filters are three-dimensional compact physical-space
-top-hat convolutions; they do not call FFTs. Horizontal filter boundaries are
-explicit (`periodic` for this Andrén case and `reflect` for a nonperiodic
-homogeneous-Neumann boundary). The rigid lower/upper boundaries use even
-reflection for tangential velocity and odd reflection for wall-normal
-velocity. LASD memory is updated after every accepted flow step so that its
-trajectory CFL follows the enlarged momentum timestep. The width-two and
-width-four overlap filters use exact compact `reduce_window` forms rather than
-materializing every shifted field. Their first separable pass shares one
-radius-two padding and one three-point box sum. Accepted-step LASD work is
-split into two JIT executables: local gradient/Germano statistics and
-Lagrangian history/coefficient finalization. This prevents the filter graph
-from being fused into the complete momentum/projection timestep and avoids a
-field-sized 21-component intermediate between executables. The default
-advances to `ft=0.1`; use
+Use `--sgs lasd` for the multilevel LASD momentum closure; the passive scalar
+is then off by default. LASD consumes the exact first two grids of the pressure
+GMG hierarchy. Its packed velocity, product, strain, and model tensors are
+conservatively restricted to those grids. Germano contractions and Lagrangian
+memory live on level one, level-two contractions are interpolated to level one,
+and only the resulting coefficient is interpolated to the LES grid. This
+reduces the closure's storage and bandwidth while keeping pressure and LASD
+coarsening decisions identical. The grid-filter ratio is consequently fixed at
+one; `--lasd-sgs-delta-scale` is available only for an explicit model-length
+calibration. LASD memory is updated after every accepted flow step. Accepted-
+step LASD work remains split into statistics and history/finalization JIT
+executables. The default advances to `ft=0.1`; use
 `--end-ft 10 --sample-start-ft 7` for the canonical final averaging window.
 
 Momentum uses full pressure projection at every SSPRK3 or ARK3 stage. The
@@ -67,6 +61,14 @@ python benchmark/Andren1994/run.py \
   --output-dir benchmark_results/andren1994_amd_smoke
 ```
 
+Run the corresponding multilevel-LASD smoke case:
+
+```bash
+python benchmark/Andren1994/run.py \
+  --sgs lasd --end-ft 0.001 --sample-start-ft 0 \
+  --output-dir benchmark_results/andren1994_multilevel_lasd_smoke
+```
+
 Continue a canonical checkpoint to the paper's final time:
 
 ```bash
@@ -88,7 +90,7 @@ Outputs are written below `--output-dir`:
   RHS terms, tendency, and a reported closure residual;
 - `andren1994_profiles.png` is a compact run diagnostic.
 
-The AMD checkpoint contains velocity, passive scalar, FPJ-2 pressure history,
+The AMD checkpoint contains velocity, passive scalar, full-projection pressure,
 profile/budget samples, and TKE/non-stationarity history. A checkpoint made by
 the earlier resolved-only runner is intentionally rejected for a complete
 comparison: the missing scalar history cannot be reconstructed after the fact.

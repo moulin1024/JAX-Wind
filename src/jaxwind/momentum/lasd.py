@@ -1,4 +1,4 @@
-"""Physical-space Lagrangian scale-dependent dynamic SGS closure."""
+"""Multilevel Lagrangian scale-dependent dynamic SGS closure."""
 
 from __future__ import annotations
 
@@ -9,22 +9,19 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 
-from .physical_filter import (
-    FilterBoundary,
-    physical_top_hat_filter,
-    physical_top_hat_filter_pair,
-)
+from jaxwind.pressure.matrix_free_gmg import MatrixFreeGMG
 
 
 Array = jax.Array
+FilterBoundary = str
 
 
 @dataclass(frozen=True, slots=True)
 class LASDModel:
     """Momentum LASD controls for the MAC finite-volume solver.
 
-    The stored coefficient is :math:`C_s^2`; both Germano test filters are
-    compact physical-space top-hats.
+    The stored coefficient is :math:`C_s^2`.  The two Germano test scales are
+    the first two grids of the pressure multigrid hierarchy.
     """
 
     filter_grid_ratio: float = 1.0
@@ -45,6 +42,8 @@ class LASDModel:
     def __post_init__(self) -> None:
         if self.filter_grid_ratio <= 0.0 or self.test_filter_ratio <= 1.0:
             raise ValueError("LASD filter ratios are invalid")
+        if not math.isclose(self.test_filter_ratio, 2.0):
+            raise ValueError("multilevel LASD requires factor-two test levels")
         if self.update_interval <= 0:
             raise ValueError("LASD update interval must be positive")
         if self.timescale_coefficient <= 0.0:
@@ -133,59 +132,64 @@ def _safe_divide(numerator: Array, denominator: Array) -> Array:
     )
 
 
-class PhysicalSpaceLASD:
-    """Array implementation of momentum LASD with no FFT dependency."""
+class MultilevelLASD:
+    """LASD evaluated on the pressure multigrid hierarchy.
+
+    Germano statistics and Lagrangian memory live on level one.  Level-two
+    statistics are interpolated to level one for the scale-dependent solve,
+    and only the resulting coefficient is interpolated back to the LES grid.
+    """
 
     def __init__(
         self,
         *,
-        dx: float,
-        dy: float,
-        dz: float,
+        multigrid: MatrixFreeGMG,
         model: LASDModel,
     ) -> None:
-        self.dx = dx
-        self.dy = dy
-        self.dz = dz
+        if len(multigrid.hierarchy.grids) < 3:
+            raise ValueError("multilevel LASD requires two multigrid transfers")
+        if not math.isclose(model.filter_grid_ratio, 1.0):
+            raise ValueError(
+                "multilevel LASD fixes the grid-filter ratio at one; "
+                "use sgs_delta_scale only for an explicit model calibration"
+            )
+        first_factors = multigrid.hierarchy.coarsening_factors[0]
+        second_factors = multigrid.hierarchy.coarsening_factors[1]
+        if first_factors != second_factors:
+            raise ValueError(
+                "the first two LASD multigrid levels must use equal coarsening"
+            )
+        fine_grid = multigrid.hierarchy.grids[0]
+        test_grid = multigrid.hierarchy.grids[1]
+        fine_widths = tuple(
+            faces[1] - faces[0]
+            for faces in (fine_grid.x_faces, fine_grid.y_faces, fine_grid.z_faces)
+        )
+        self.multigrid = multigrid
+        self.hierarchy = multigrid.hierarchy
+        self.dx = test_grid.x_faces[1] - test_grid.x_faces[0]
+        self.dy = test_grid.y_faces[1] - test_grid.y_faces[0]
+        self.dz = test_grid.z_faces[1] - test_grid.z_faces[0]
         self.delta = (
             model.effective_delta_scale
-            * (dx * dy * dz) ** (1.0 / 3.0)
+            * math.prod(fine_widths) ** (1.0 / 3.0)
         )
+        self.test_ratio = math.prod(first_factors) ** (1.0 / 3.0)
+        self.second_test_ratio = self.test_ratio**2
         self.model = model
 
     def initialize(self, cell_velocity: Array) -> LASDState:
-        shape = cell_velocity.shape[:-1]
+        fine_shape = cell_velocity.shape[:-1]
+        if fine_shape != self.hierarchy.grids[0].shape:
+            raise ValueError("LASD velocity shape does not match the hierarchy")
+        shape = self.hierarchy.grids[1].shape
         coefficient = jnp.full(
-            shape,
+            fine_shape,
             self.model.initial_coefficient,
             dtype=cell_velocity.dtype,
         )
         zero = jnp.zeros(shape, dtype=cell_velocity.dtype)
         return LASDState(coefficient, zero, zero, zero, zero, zero, zero, zero)
-
-    def _filter(
-        self,
-        values: Array,
-        width: float,
-        *,
-        odd_z_components: tuple[int, ...] = (),
-    ) -> Array:
-        component_axis = values.ndim == 4
-        z_axis = -4 if component_axis else -3
-        filtered = physical_top_hat_filter(
-            values,
-            width,
-            axes=(z_axis,),
-            boundaries=(self.model.z_boundary,),
-            odd_reflect_components=odd_z_components,
-        )
-        axes = (-3, -2) if component_axis else (-2, -1)
-        return physical_top_hat_filter(
-            filtered,
-            width,
-            axes=axes,
-            boundaries=(self.model.y_boundary, self.model.x_boundary),
-        )
 
     def contraction_inputs(
         self,
@@ -214,39 +218,6 @@ class PhysicalSpaceLASD:
                 magnitude[..., None] * tensor,
             ),
             axis=-1,
-        )
-
-    def _filter_pair(self, values: Array) -> tuple[Array, Array]:
-        ratio = self.model.test_filter_ratio
-        width_two = self.model.filter_grid_ratio * ratio
-        width_four = self.model.filter_grid_ratio * ratio**2
-        odd_components = (2, 5, 7, 11, 13, 17, 19)
-        if math.isclose(width_two, 2.0) and math.isclose(width_four, 4.0):
-            component_axis = values.ndim == 4
-            axes = (
-                (-4, -3, -2) if component_axis else (-3, -2, -1)
-            )
-            return physical_top_hat_filter_pair(
-                values,
-                axes=axes,
-                boundaries=(
-                    self.model.z_boundary,
-                    self.model.y_boundary,
-                    self.model.x_boundary,
-                ),
-                odd_reflect_components=odd_components,
-            )
-        return (
-            self._filter(
-                values,
-                width_two,
-                odd_z_components=odd_components,
-            ),
-            self._filter(
-                values,
-                width_four,
-                odd_z_components=odd_components,
-            ),
         )
 
     def _contractions_from_filtered(
@@ -283,11 +254,22 @@ class PhysicalSpaceLASD:
         fields: Array,
     ) -> tuple[Array, Array, Array, Array]:
         """Return both Germano contraction pairs from shared filter inputs."""
-        ratio = self.model.test_filter_ratio
-        filtered_two, filtered_four = self._filter_pair(fields)
-        lm, mm = self._contractions_from_filtered(filtered_two, ratio)
-        qn, nn = self._contractions_from_filtered(filtered_four, ratio**2)
-        return lm, mm, qn, nn
+        filtered_one = self.hierarchy.restrict(fields, fine_level=0)
+        filtered_two = self.hierarchy.restrict(filtered_one, fine_level=1)
+        lm, mm = self._contractions_from_filtered(
+            filtered_one,
+            self.test_ratio,
+        )
+        qn, nn = self._contractions_from_filtered(
+            filtered_two,
+            self.second_test_ratio,
+        )
+        return (
+            lm,
+            mm,
+            self.multigrid.prolong(qn, fine_level=1),
+            self.multigrid.prolong(nn, fine_level=1),
+        )
 
     def contractions(
         self,
@@ -297,21 +279,6 @@ class PhysicalSpaceLASD:
         return self.contractions_from_inputs(
             self.contraction_inputs(cell_velocity, gradient)
         )
-
-    def _contractions(
-        self,
-        cell_velocity: Array,
-        gradient: Array,
-        ratio: float,
-    ) -> tuple[Array, Array]:
-        """Compatibility path for one independently filtered test scale."""
-        fields = self.contraction_inputs(cell_velocity, gradient)
-        filtered = self._filter(
-            fields,
-            self.model.filter_grid_ratio * ratio,
-            odd_z_components=(2, 5, 7, 11, 13, 17, 19),
-        )
-        return self._contractions_from_filtered(filtered, ratio)
 
     @staticmethod
     def _fold_indices(
@@ -420,13 +387,14 @@ class PhysicalSpaceLASD:
         cell_velocity: Array,
     ) -> LASDState:
         interval = self.model.update_interval
+        coarse_velocity = self.hierarchy.restrict(cell_velocity, fine_level=0)
         return state._replace(
             trajectory_x=state.trajectory_x
-            + cell_velocity[..., 0] / interval,
+            + coarse_velocity[..., 0] / interval,
             trajectory_y=state.trajectory_y
-            + cell_velocity[..., 1] / interval,
+            + coarse_velocity[..., 1] / interval,
             trajectory_z=state.trajectory_z
-            + cell_velocity[..., 2] / interval,
+            + coarse_velocity[..., 2] / interval,
         )
 
     def update(
@@ -457,7 +425,7 @@ class PhysicalSpaceLASD:
         first_update: bool,
     ) -> LASDState:
         """Advance Lagrangian memory from precomputed dual-scale statistics."""
-        ratio = self.model.test_filter_ratio
+        ratio = self.test_ratio
         histories = (
             jnp.where(first_update, self.model.initial_coefficient * mm, state.lm),
             jnp.where(first_update, mm, state.mm),
@@ -509,8 +477,13 @@ class PhysicalSpaceLASD:
             beta = jnp.where(raw_beta > beta_floor, beta, 1.0)
         if not self.model.scale_dependent:
             beta = jnp.ones_like(beta)
-        coefficient = jnp.clip(
+        coarse_coefficient = jnp.clip(
             _safe_divide(coefficient_2d, beta),
+            self.model.minimum_coefficient,
+            self.model.maximum_coefficient,
+        )
+        coefficient = jnp.clip(
+            self.multigrid.prolong(coarse_coefficient, fine_level=0),
             self.model.minimum_coefficient,
             self.model.maximum_coefficient,
         )
@@ -544,5 +517,5 @@ class PhysicalSpaceLASD:
 __all__ = [
     "LASDModel",
     "LASDState",
-    "PhysicalSpaceLASD",
+    "MultilevelLASD",
 ]

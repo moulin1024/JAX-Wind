@@ -141,7 +141,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--diagnostic-scalar-cc", type=float, default=2.02)
     parser.add_argument("--history-every", type=int, default=20)
     parser.add_argument("--lasd-update-interval", type=int, default=1)
-    parser.add_argument("--lasd-filter-grid-ratio", type=float, default=1.0)
+    parser.add_argument("--lasd-sgs-delta-scale", type=float)
     parser.add_argument("--lasd-maximum-coefficient", type=float, default=0.81)
     parser.add_argument(
         "--advection-dissipation-strength",
@@ -157,17 +157,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--pressure-rtol", type=float, default=1.0e-4)
     parser.add_argument("--pressure-max-iterations", type=int, default=20)
-    parser.add_argument("--pressure-restart", type=int, default=10)
-    parser.add_argument(
-        "--linear-solver",
-        choices=("pcg", "gmres"),
-        default="pcg",
-    )
-    parser.add_argument(
-        "--krylov-execution",
-        choices=("jax", "python"),
-        default="jax",
-    )
     parser.add_argument("--seed", type=int, default=1994)
     parser.add_argument("--single", action="store_true")
     parser.add_argument("--restart", type=Path)
@@ -176,14 +165,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--max-run-seconds",
         type=float,
         help="pause cleanly at a checkpoint after this much stepping wall time",
-    )
-    parser.add_argument(
-        "--mesh",
-        type=Path,
-        help=(
-            "versioned mesh artifact from jaxwind-mesh; its extent must match "
-            "the 4000 x 2000 x 1500 m Andren domain"
-        ),
     )
     parser.add_argument(
         "--output-dir",
@@ -225,6 +206,11 @@ def main() -> None:
         )
     if args.lasd_update_interval <= 0:
         raise SystemExit("LASD update interval must be positive")
+    if args.lasd_sgs_delta_scale is not None and (
+        not math.isfinite(args.lasd_sgs_delta_scale)
+        or args.lasd_sgs_delta_scale <= 0.0
+    ):
+        raise SystemExit("LASD SGS delta scale must be positive and finite")
     if args.checkpoint_every <= 0:
         raise SystemExit("checkpoint interval must be positive")
     if args.max_run_seconds is not None and args.max_run_seconds <= 0.0:
@@ -250,7 +236,6 @@ def main() -> None:
     )
     from jaxwind.pressure import (
         BoundaryCondition,
-        FGMRESConfig,
         GMGConfig,
         MACVelocity,
         MatrixFreePoissonSolver,
@@ -268,42 +253,20 @@ def main() -> None:
     expected_ustar = 0.425
     dtype = jnp.float32 if args.single else jnp.float64
 
-    if args.mesh is None:
-        grid = RectilinearGrid.uniform(
-            nx,
-            ny,
-            nz,
-            lx=lx,
-            ly=ly,
-            lz=height,
-        )
-    else:
-        from jaxwind.meshing import load_mesh
-
-        grid = load_mesh(args.mesh).grid
-        for name, extent in (("x", lx), ("y", ly), ("z", height)):
-            faces = np.asarray(getattr(grid, f"{name}_faces"))
-            if not np.isclose(faces[0], 0.0) or not np.isclose(faces[-1], extent):
-                raise SystemExit(
-                    f"Andren mesh {name} extent must be [0, {extent:g}] m"
-                )
-        nz, ny, nx = grid.shape
+    grid = RectilinearGrid.uniform(
+        nx,
+        ny,
+        nz,
+        lx=lx,
+        ly=ly,
+        lz=height,
+    )
     periodic = BoundaryCondition("periodic")
     neumann = BoundaryCondition("neumann")
-    krylov = (
-        PCGConfig(
-            max_iterations=args.pressure_max_iterations,
-            relative_tolerance=args.pressure_rtol,
-            execution=args.krylov_execution,
-        )
-        if args.linear_solver == "pcg"
-        else FGMRESConfig(
-            restart=args.pressure_restart,
-            max_iterations=args.pressure_max_iterations,
-            relative_tolerance=args.pressure_rtol,
-            reorthogonalize=False,
-            execution=args.krylov_execution,
-        )
+    krylov = PCGConfig(
+        max_iterations=args.pressure_max_iterations,
+        relative_tolerance=args.pressure_rtol,
+        execution="jax",
     )
     pressure = MatrixFreePoissonSolver(
         grid,
@@ -337,11 +300,11 @@ def main() -> None:
             sgs_time_integration=args.sgs_time_integration,
             lasd=(
                 LASDModel(
-                    filter_grid_ratio=args.lasd_filter_grid_ratio,
                     update_interval=args.lasd_update_interval,
                     maximum_coefficient=args.lasd_maximum_coefficient,
                     x_boundary="periodic",
                     y_boundary="periodic",
+                    sgs_delta_scale=args.lasd_sgs_delta_scale,
                 )
                 if args.sgs == "lasd"
                 else None
@@ -1241,10 +1204,16 @@ def main() -> None:
         "lasd": (
             {
                 "update_interval": args.lasd_update_interval,
-                "filter_grid_ratio": args.lasd_filter_grid_ratio,
-                "sgs_delta_scale": args.lasd_filter_grid_ratio,
+                "filter_grid_ratio": 1.0,
+                "sgs_delta_scale": (
+                    1.0
+                    if args.lasd_sgs_delta_scale is None
+                    else args.lasd_sgs_delta_scale
+                ),
                 "maximum_coefficient": args.lasd_maximum_coefficient,
-                "filter": "three-dimensional compact top-hat convolution",
+                "filter": "shared pressure-GMG levels with conservative restriction",
+                "state_level": 1,
+                "second_test_level": 2,
                 "clipped_beta_fallback": True,
             }
             if args.sgs == "lasd"
@@ -1260,11 +1229,10 @@ def main() -> None:
         "horizontal_sgs_diffusion_is_explicit": True,
         "target_advective_cfl": args.target_cfl,
         "target_diffusive_cfl": args.target_diffusive_cfl,
-        "linear_solver": args.linear_solver,
+        "linear_solver": "pcg",
         "pressure_relative_tolerance": args.pressure_rtol,
         "pressure_max_iterations": args.pressure_max_iterations,
-        "pressure_restart": args.pressure_restart,
-        "krylov_execution": args.krylov_execution,
+        "krylov_execution": "jax",
         "projection_method": "full",
         "elapsed_seconds_scope": (
             "fresh canonical invocation"
@@ -1330,7 +1298,7 @@ def main() -> None:
         panel.set_ylabel("z f / u*")
         panel.grid(True, alpha=0.25)
         panel.set_ylim(0.0, 0.36)
-    sgs_label = "AMD" if args.sgs == "amd" else "physical-space LASD"
+    sgs_label = "AMD" if args.sgs == "amd" else "multilevel LASD"
     figure.suptitle(
         f"Andren 1994 with {sgs_label}: "
         f"ft={coriolis * simulation_time:.3f}, "

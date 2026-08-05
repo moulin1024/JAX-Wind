@@ -1,4 +1,4 @@
-"""Face-staggered momentum solvers."""
+"""AMD/MP5 neutral and Boussinesq ABL solvers."""
 
 from .convective_abl import (
     AMDBoussinesq,
@@ -6,6 +6,7 @@ from .convective_abl import (
     AMDBoussinesqDiagnosticFields,
     AMDBoussinesqState,
 )
+from .lasd import LASDModel, LASDState, MultilevelLASD
 from .neutral_abl import (
     AMDModel,
     AMDPassiveScalar,
@@ -14,12 +15,6 @@ from .neutral_abl import (
     NeutralABLDiagnostic,
     NeutralABLMomentum,
     WallModelState,
-)
-from .lasd import LASDModel, LASDState, PhysicalSpaceLASD
-from .physical_filter import (
-    physical_top_hat_filter,
-    physical_top_hat_filter_pair,
-    top_hat_stencil,
 )
 from .surface_layer import (
     MoninObukhovWallLaw,
@@ -37,15 +32,12 @@ __all__ = [
     "AMDPassiveScalarModel",
     "LASDModel",
     "LASDState",
+    "MultilevelLASD",
     "MoninObukhovWallLaw",
     "NeutralABLConfig",
     "NeutralABLDiagnostic",
     "NeutralABLMomentum",
     "NeutralLogWallLaw",
-    "PhysicalSpaceLASD",
-    "WallModelState",
     "SurfaceLayerFluxes",
-    "physical_top_hat_filter",
-    "physical_top_hat_filter_pair",
-    "top_hat_stencil",
+    "WallModelState",
 ]

@@ -29,7 +29,7 @@ from jaxwind.pressure import (
     projected_ssprk3_velocity_pressure_step,
 )
 
-from .lasd import LASDModel, LASDState, PhysicalSpaceLASD
+from .lasd import LASDModel, LASDState, MultilevelLASD
 from .metrics import (
     AxisMetric,
     reconstruction_dissipation,
@@ -405,10 +405,8 @@ class NeutralABLMomentum:
         self.lasd_closure = (
             None
             if config.lasd is None
-            else PhysicalSpaceLASD(
-                dx=self.dx,
-                dy=self.dy,
-                dz=self.dz,
+            else MultilevelLASD(
+                multigrid=pressure_solver.preconditioner,
                 model=config.lasd,
             )
         )
@@ -1617,9 +1615,13 @@ class NeutralABLMomentum:
             raise RuntimeError("cannot restore LASD on an AMD solver")
         if accepted_step < 0 or interval_time < 0.0:
             raise ValueError("LASD checkpoint progress must be nonnegative")
-        expected = self.grid.shape
-        if any(field.shape != expected for field in state):
-            raise ValueError("LASD checkpoint field shape does not match the grid")
+        fine_shape = self.grid.shape
+        coarse_shape = self.lasd_closure.hierarchy.grids[1].shape
+        expected_shapes = (fine_shape,) + (coarse_shape,) * 7
+        if tuple(field.shape for field in state) != expected_shapes:
+            raise ValueError(
+                "LASD checkpoint fields do not match the fine/coarse hierarchy"
+            )
         self._lasd_state = state
         self._lasd_step = accepted_step
         self._lasd_interval_time = interval_time

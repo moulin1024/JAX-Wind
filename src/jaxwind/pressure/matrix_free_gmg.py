@@ -21,10 +21,9 @@ import jax.numpy as jnp
 import numpy as np
 
 from jaxwind.domain.grid import RectilinearGrid
+from jaxwind.domain.multilevel import MultigridHierarchy, z_anisotropy_ratio
 
-from .device_gmres import build_device_gmres_solver
 from .device_pcg import build_device_pcg_solver
-from .fgmres import FGMRESConfig, FGMRESResult, fgmres
 from .pcg import PCGConfig, PCGResult, pcg
 
 
@@ -406,18 +405,6 @@ class _Transfer:
     z: _Interpolation
 
 
-def _coarsen_faces(faces: tuple[float, ...], factor: int) -> tuple[float, ...]:
-    if factor == 1:
-        return faces
-    if factor != 2 or (len(faces) - 1) % 2:
-        raise ValueError("GMG currently supports factor-two cell aggregation")
-    return faces[::2]
-
-
-def _coarsening_factor(cell_count: int, minimum: int) -> int:
-    return 2 if cell_count > minimum and cell_count % 2 == 0 else 1
-
-
 def _build_interpolation(
     fine_faces: tuple[float, ...],
     coarse_faces: tuple[float, ...],
@@ -617,14 +604,6 @@ def _prolong(field: Array, transfer: _Transfer) -> Array:
     return _interpolate_axis(result, transfer.z, -3)
 
 
-def _z_anisotropy_ratio(grid: RectilinearGrid) -> float:
-    dx = np.diff(np.asarray(grid.x_faces))
-    dy = np.diff(np.asarray(grid.y_faces))
-    dz = np.diff(np.asarray(grid.z_faces))
-    horizontal = min(float(np.median(dx)), float(np.median(dy)))
-    return horizontal / float(np.min(dz))
-
-
 def _solve_z_lines(
     operator: MatrixFreePoissonOperator,
     rhs: Array,
@@ -730,7 +709,13 @@ class MatrixFreeGMG:
         operators = [operator]
         transfers: list[_Transfer] = []
         level_smoothers: list[str] = []
-        coarsening_factors: list[tuple[int, int, int]] = []
+        hierarchy = MultigridHierarchy.build(
+            operator.grid,
+            max_levels=config.max_levels,
+            min_coarse_cells=config.min_coarse_cells,
+            coarsening=config.coarsening,
+            anisotropy_threshold=config.anisotropy_threshold,
+        )
 
         if (
             config.smoother == "z_line"
@@ -738,10 +723,10 @@ class MatrixFreeGMG:
         ):
             raise ValueError("z-line smoothing does not support periodic z")
 
-        for _ in range(config.max_levels - 1):
+        for coarse_grid in hierarchy.grids[1:]:
             fine = operators[-1]
             anisotropic = (
-                _z_anisotropy_ratio(fine.grid)
+                z_anisotropy_ratio(fine.grid)
                 >= config.anisotropy_threshold
             )
             use_z_line = config.smoother == "z_line" or (
@@ -749,26 +734,7 @@ class MatrixFreeGMG:
                 and anisotropic
                 and fine.boundaries.z_lower.kind != "periodic"
             )
-            nz, ny, nx = fine.shape
-            fx = _coarsening_factor(nx, config.min_coarse_cells)
-            fy = _coarsening_factor(ny, config.min_coarse_cells)
-            hold_z = config.coarsening == "z_semi" or (
-                config.coarsening == "auto" and anisotropic
-            )
-            fz = (
-                1
-                if hold_z
-                else _coarsening_factor(nz, config.min_coarse_cells)
-            )
-            if (fz, fy, fx) == (1, 1, 1):
-                break
             level_smoothers.append("z_line" if use_z_line else "jacobi")
-            coarsening_factors.append((fz, fy, fx))
-            coarse_grid = RectilinearGrid(
-                _coarsen_faces(fine.grid.x_faces, fx),
-                _coarsen_faces(fine.grid.y_faces, fy),
-                _coarsen_faces(fine.grid.z_faces, fz),
-            )
             coarse = MatrixFreePoissonOperator(
                 coarse_grid,
                 self.boundaries,
@@ -786,7 +752,7 @@ class MatrixFreeGMG:
 
         coarse = operators[-1]
         coarse_anisotropic = (
-            _z_anisotropy_ratio(coarse.grid)
+            z_anisotropy_ratio(coarse.grid)
             >= config.anisotropy_threshold
         )
         coarse_z_line = config.smoother == "z_line" or (
@@ -798,11 +764,23 @@ class MatrixFreeGMG:
         self.operators = tuple(operators)
         self.transfers = tuple(transfers)
         self.level_smoothers = tuple(level_smoothers)
-        self.coarsening_factors = tuple(coarsening_factors)
+        self.hierarchy = hierarchy
+        self.coarsening_factors = hierarchy.coarsening_factors
 
     @property
     def level_shapes(self) -> tuple[tuple[int, int, int], ...]:
-        return tuple(operator.shape for operator in self.operators)
+        return self.hierarchy.level_shapes
+
+    def prolong(self, field: Array, *, fine_level: int = 0) -> Array:
+        """Interpolate a coarse cell-centred scalar to its parent grid."""
+        if not 0 <= fine_level < len(self.transfers):
+            raise ValueError("prolongation level is outside the hierarchy")
+        expected = self.operators[fine_level + 1].shape
+        if tuple(field.shape) != expected:
+            raise ValueError(
+                f"expected coarse field shape {expected}, got {field.shape}"
+            )
+        return _prolong(field, self.transfers[fine_level])
 
     def _smooth(self, level: int, solution: Array, rhs: Array, count: int) -> Array:
         operator = self.operators[level]
@@ -871,7 +849,7 @@ class MatrixFreePoissonSolver:
         *,
         dtype: jnp.dtype = jnp.float64,
         gmg: GMGConfig = GMGConfig(),
-        krylov: FGMRESConfig | PCGConfig = FGMRESConfig(),
+        krylov: PCGConfig = PCGConfig(),
     ) -> None:
         self.operator = MatrixFreePoissonOperator(
             grid,
@@ -909,20 +887,14 @@ class MatrixFreePoissonSolver:
             relative_tolerance=self.krylov.relative_tolerance,
             absolute_tolerance=self.krylov.absolute_tolerance,
         )
-        if isinstance(self.krylov, PCGConfig):
-            return build_device_pcg_solver(**common)
-        return build_device_gmres_solver(
-            **common,
-            restart=self.krylov.restart,
-            solve_method=self.krylov.jax_solve_method,
-        )
+        return build_device_pcg_solver(**common)
 
     def solve(
         self,
         physical_rhs: Array,
         *,
         initial: Array | None = None,
-    ) -> FGMRESResult | PCGResult:
+    ) -> PCGResult:
         effective_rhs, compatibility_shift = self.operator.prepare_rhs(
             physical_rhs
         )
@@ -940,12 +912,7 @@ class MatrixFreePoissonSolver:
                 self.krylov.absolute_tolerance,
                 self.krylov.relative_tolerance * rhs_norm,
             )
-            result_type = (
-                PCGResult
-                if isinstance(self.krylov, PCGConfig)
-                else FGMRESResult
-            )
-            return result_type(
+            return PCGResult(
                 solution,
                 residual_norm <= target,
                 self.krylov.max_iterations,
@@ -954,12 +921,7 @@ class MatrixFreePoissonSolver:
                 (residual_norm,),
                 float(compatibility_shift),
             )
-        solve = (
-            pcg
-            if isinstance(self._python_krylov_config, PCGConfig)
-            else fgmres
-        )
-        result = solve(
+        result = pcg(
             self._apply_kernel,
             effective_rhs,
             preconditioner=self._preconditioner_kernel,
@@ -974,7 +936,7 @@ class MatrixFreePoissonSolver:
         self, effective_rhs: Array, initial: Array | None
     ) -> Array:
         if self._device_solve_kernel is None:
-            raise RuntimeError("device GMRES kernel was not initialized")
+            raise RuntimeError("device PCG kernel was not initialized")
         starting_value = (
             jnp.zeros_like(effective_rhs)
             if initial is None
@@ -985,7 +947,7 @@ class MatrixFreePoissonSolver:
     def solve_array(
         self, physical_rhs: Array, *, initial: Array | None = None
     ) -> Array:
-        """Return only the solution, keeping device GMRES free of host syncs."""
+        """Return only the solution, keeping device PCG free of host syncs."""
         if self.krylov.execution != "jax":
             return self.solve(physical_rhs, initial=initial).solution
         effective_rhs, _ = self.operator.prepare_rhs(physical_rhs)
@@ -993,8 +955,6 @@ class MatrixFreePoissonSolver:
 
 __all__ = [
     "BoundaryCondition",
-    "FGMRESConfig",
-    "FGMRESResult",
     "GMGConfig",
     "MatrixFreeGMG",
     "MatrixFreePoissonOperator",
@@ -1003,6 +963,5 @@ __all__ = [
     "PCGResult",
     "PoissonBoundaryConditions",
     "RectilinearGrid",
-    "fgmres",
     "pcg",
 ]

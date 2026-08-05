@@ -9,7 +9,6 @@ from typing import Callable, NamedTuple
 import jax
 import jax.numpy as jnp
 
-from .fgmres import FGMRESResult
 from .matrix_free_gmg import (
     MatrixFreePoissonSolver,
     PoissonBoundaryConditions,
@@ -36,7 +35,7 @@ class MACProjectionResult:
     divergence_before: Array
     divergence_after: Array
     target_divergence: Array
-    linear_result: FGMRESResult | PCGResult
+    linear_result: PCGResult
 
 
 @dataclass(frozen=True, slots=True)

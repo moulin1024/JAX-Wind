@@ -75,11 +75,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--ny", type=int, default=32)
     parser.add_argument("--nz", type=int, default=32)
     parser.add_argument(
-        "--mesh",
-        type=Path,
-        help="versioned JSON mesh artifact produced by jaxwind-mesh",
-    )
-    parser.add_argument(
         "--wall-matching-height",
         type=float,
         help="target physical height; the nearest cell center is used",
@@ -306,8 +301,6 @@ def _restore_checkpoint(args, coupled, dtype):
             expected = np.asarray(getattr(coupled.grid, key))
             if not np.array_equal(np.asarray(checkpoint[key]), expected):
                 raise SystemExit(f"restart {key} do not match the active mesh")
-    elif args.mesh is not None:
-        raise SystemExit("legacy checkpoints cannot be restarted on a custom mesh")
     for key in ("amd_coefficient", "scalar_amd_coefficient", "mp5_strength"):
         if not np.isclose(float(checkpoint[key]), getattr(args, key)):
             raise SystemExit(f"restart {key} does not match")
@@ -400,26 +393,14 @@ def _build_coupled(args: argparse.Namespace):
 
     case = diagnostics.GABLS1Case()
     dtype = jnp.float32 if args.dtype == "float32" else jnp.float64
-    if args.mesh is None:
-        grid = RectilinearGrid.uniform(
-            args.nx,
-            args.ny,
-            args.nz,
-            lx=case.domain,
-            ly=case.domain,
-            lz=case.domain,
-        )
-    else:
-        from jaxwind.meshing import load_mesh
-
-        grid = load_mesh(args.mesh).grid
-        for name in ("x", "y", "z"):
-            faces = np.asarray(getattr(grid, f"{name}_faces"))
-            if not np.isclose(faces[0], 0.0) or not np.isclose(faces[-1], case.domain):
-                raise SystemExit(
-                    f"GABLS1 mesh {name} extent must be [0, {case.domain:g}] m"
-                )
-        args.nz, args.ny, args.nx = grid.shape
+    grid = RectilinearGrid.uniform(
+        args.nx,
+        args.ny,
+        args.nz,
+        lx=case.domain,
+        ly=case.domain,
+        lz=case.domain,
+    )
     periodic = BoundaryCondition("periodic")
     neumann = BoundaryCondition("neumann")
     pressure_solver = MatrixFreePoissonSolver(
@@ -763,7 +744,7 @@ def run(args: argparse.Namespace) -> dict[str, float | int | str]:
             "maximum_dy_m": float(np.max(grid.y_widths)),
             "minimum_dz_m": float(np.min(grid.z_widths)),
             "maximum_dz_m": float(np.max(grid.z_widths)),
-            "mesh": "uniform" if args.mesh is None else str(args.mesh),
+            "mesh": "uniform",
             "wall_matching_level": momentum.wall_matching_level,
             "wall_matching_height_m": momentum.wall_matching_height,
             "end_time_hours": state.time / 3600.0,

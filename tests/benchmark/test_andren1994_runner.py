@@ -43,6 +43,14 @@ def test_andren_runner_accepts_lasd_and_canonical_amd_controls() -> None:
     assert amd.sample_start_ft == 7.0
 
 
+def test_andren_runner_exposes_multilevel_lasd_controls_only() -> None:
+    args = run.parse_args(["--sgs", "lasd", "--lasd-sgs-delta-scale", "1.2"])
+
+    assert args.lasd_sgs_delta_scale == 1.2
+    with pytest.raises(SystemExit):
+        run.parse_args(["--lasd-filter-grid-ratio", "2"])
+
+
 def test_andren_runner_exposes_only_mp5_advection() -> None:
     assert not hasattr(run.parse_args([]), "advection_limiter")
     with pytest.raises(SystemExit):
@@ -161,6 +169,6 @@ def test_initial_tables_follow_a_wall_refined_mesh_in_height() -> None:
     assert initial_u.max() <= max(run.INITIAL_U) + 1.0e-12
 
 
-def test_andren_runner_accepts_a_mesh_artifact() -> None:
-    assert run.parse_args([]).mesh is None
-    assert run.parse_args(["--mesh", "m.json"]).mesh.name == "m.json"
+def test_andren_runner_rejects_removed_mesh_option() -> None:
+    with pytest.raises(SystemExit):
+        run.parse_args(["--mesh", "m.json"])
