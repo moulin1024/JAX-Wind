@@ -1,0 +1,77 @@
+schema = "jaxwind.case.v2"
+name = "GABLS1-AMD"
+
+[grid]
+shape = [32, 32, 32]
+extent = [400.0, 400.0, 400.0]
+
+[numerics]
+dtype = "float32"
+target_cfl = 0.9
+target_diffusive_cfl = 0.5
+mp5_strength = 1.0
+sgs_time_integration = "explicit"
+pressure_relative_tolerance = 1.0e-5
+pressure_max_iterations = 40
+pressure_smooth = 1
+pressure_coarse_smooth = 20
+pressure_coarsening = "auto"
+
+[time]
+end = 32400.0
+sample_start = 28800.0
+maximum_step = 1.0
+sample_basis = "time"
+sample_interval = 60.0
+log_interval = 300
+checkpoint_interval = 1000
+
+[momentum]
+friction_velocity = 0.3
+roughness_length = 0.1
+pressure_acceleration = 0.0
+geostrophic_wind = [8.0, 0.0]
+coriolis_vertical = 1.39e-4
+coriolis_horizontal = 0.0
+
+[sgs]
+model = "amd"
+coefficient = 0.212
+
+[thermodynamics]
+enabled = true
+sgs_coefficient = 0.212
+gravity = 9.81
+reference_potential_temperature = 263.5
+
+[surface]
+thermal_boundary = "temperature"
+potential_temperature = 265.0
+temperature_tendency = -6.944444444444444e-5
+thermal_roughness_length = 0.1
+momentum_stability = "most"
+
+[initial]
+seed = 0
+
+[initial.velocity]
+kind = "constant"
+value = [8.0, 0.0, 0.0]
+
+[initial.potential_temperature]
+kind = "inversion"
+base = 265.0
+inversion_height = 100.0
+gradient_above = 0.01
+noise_amplitude = 1.0
+noise_minimum = -0.1
+noise_maximum = 0.1
+noise_below = 50.0
+plane_mean_zero = true
+
+[display]
+time_scale = 3600.0
+time_label = "hours"
+
+[output]
+directory = "benchmark_results/gabls1_amd_32cubed"

@@ -1,12 +1,11 @@
-"""Pressure-driven ABL momentum on uniform or stretched rectilinear MAC grids.
+"""Reusable momentum and scalar operators on rectilinear MAC grids.
 
 Every axis carries its own :class:`~jaxwind.momentum.metrics.AxisMetric`, so
 clustering is independent per direction and an axis that is uniform keeps the
 constant-spacing kernels unchanged.  Spacing enters through three places only:
 gradients use :meth:`AxisMetric.derivative`, divergences of a modeled flux use
 :meth:`AxisMetric.negative_derivative_transpose` so the SGS operator stays
-dissipative and the advection split energy neutral, and face reconstructions use
-:meth:`AxisMetric.interface_states`.
+dissipative, and face reconstructions use :meth:`AxisMetric.interface_states`.
 """
 
 from __future__ import annotations
@@ -60,8 +59,8 @@ class AMDModel:
 
 
 @dataclass(frozen=True, slots=True)
-class AMDPassiveScalarModel:
-    """Conservative passive-scalar AMD controls for a neutral ABL."""
+class ScalarConfig:
+    """Conservative scalar AMD controls."""
 
     coefficient: float = 0.212
     molecular_diffusivity: float = 0.0
@@ -87,8 +86,8 @@ class AMDPassiveScalarModel:
 
 
 @dataclass(frozen=True, slots=True)
-class NeutralABLConfig:
-    """Physical and temporal controls for the minimal neutral ABL."""
+class MomentumConfig:
+    """Physical and temporal controls for ABL momentum."""
 
     friction_velocity: float = 0.1
     roughness_length: float = 1.0e-3
@@ -167,7 +166,7 @@ class WallModelState(NamedTuple):
 
 
 @dataclass(frozen=True, slots=True)
-class NeutralABLDiagnostic:
+class MomentumDiagnostic:
     time: float
     kinetic_energy: float
     maximum_cfl: float
@@ -205,7 +204,9 @@ def _build_axis_metrics(
     return (
         AxisMetric(grid.x_faces, axis=2, periodic=True, dtype=dtype),
         AxisMetric(grid.y_faces, axis=1, periodic=True, dtype=dtype),
-        AxisMetric(grid.z_faces, axis=0, periodic=False, dtype=dtype, derivative_width=3),
+        AxisMetric(
+            grid.z_faces, axis=0, periodic=False, dtype=dtype, derivative_width=3
+        ),
     )
 
 
@@ -305,9 +306,6 @@ def _cells_to_faces(tendency: Array) -> MACVelocity:
     return MACVelocity(x, y, z)
 
 
-
-
-
 # Ascher-Ruuth-Spiteri ARS(2,3,3).  This third-order pair needs the same
 # three explicit tendency evaluations as SSPRK3 and two vertical line solves.
 _ARK3_GAMMA = (3.0 + math.sqrt(3.0)) / 6.0
@@ -334,19 +332,19 @@ _ARK3_EXPLICIT_B = (0.0, 0.5, 0.5)
 _ARK3_IMPLICIT_B = (0.0, 0.5, 0.5)
 
 
-class NeutralABLMomentum:
-    """Neutral ABL momentum with projected explicit and IMEX time steps."""
+class MomentumOperators:
+    """ABL momentum operators with projected explicit and IMEX time steps."""
 
     def __init__(
         self,
         grid: RectilinearGrid,
         pressure_solver: MatrixFreePoissonSolver,
-        config: NeutralABLConfig = NeutralABLConfig(),
+        config: MomentumConfig = MomentumConfig(),
     ) -> None:
         if pressure_solver.operator.grid != grid:
             raise ValueError("pressure and momentum grids must match")
         if grid.shape[0] < 2 or min(grid.shape[1:]) < 4:
-            raise ValueError("KEP4 requires nz>=2 and nx,ny>=4")
+            raise ValueError("momentum operators require nz>=2 and nx,ny>=4")
         self.grid = grid
         self.pressure_solver = pressure_solver
         self.projector = MACStageProjector(pressure_solver)
@@ -748,8 +746,7 @@ class NeutralABLMomentum:
         """Return minus the volume-weighted adjoint of the axis derivative.
 
         Applied to a modeled flux this is its energy-consistent divergence, so
-        the SGS operator stays dissipative and the skew-symmetric advection
-        split stays energy neutral however the axis is stretched.
+        the SGS operator stays dissipative however the axis is stretched.
         """
 
         return self.metrics[direction].negative_derivative_transpose(field)
@@ -774,12 +771,8 @@ class NeutralABLMomentum:
         )
         result = jnp.zeros_like(cell_velocity)
         rank, dtype = cell_velocity.ndim, cell_velocity.dtype
-        result = result.at[:-1].add(
-            flux / _z_vector(self.dz_cell[:-1], rank, dtype)
-        )
-        result = result.at[1:].add(
-            -flux / _z_vector(self.dz_cell[1:], rank, dtype)
-        )
+        result = result.at[:-1].add(flux / _z_vector(self.dz_cell[:-1], rank, dtype))
+        result = result.at[1:].add(-flux / _z_vector(self.dz_cell[1:], rank, dtype))
         return result
 
     def _vertical_stress_faces_from_cell_stress(
@@ -997,33 +990,6 @@ class NeutralABLMomentum:
     def amd_viscosity(self, cell_velocity: Array) -> Array:
         return self._amd_viscosity_from_gradient(self.velocity_gradient(cell_velocity))
 
-    def skew_advection(
-        self,
-        cell_velocity: Array,
-        *,
-        gradient: Array | None = None,
-    ) -> Array:
-        if gradient is None:
-            gradient = self.velocity_gradient(cell_velocity)
-        tendency = []
-        # The divergence half uses the volume-weighted adjoint, which is what
-        # makes the split skew symmetric, and therefore energy neutral, on a
-        # stretched axis as well as a uniform one.
-        for component in range(3):
-            transported = cell_velocity[..., component]
-            total = jnp.zeros_like(transported)
-            for direction in range(3):
-                advector = cell_velocity[..., direction]
-                total += 0.5 * (
-                    advector * gradient[..., component, direction]
-                    + self._negative_derivative_transpose(
-                        advector * transported,
-                        direction,
-                    )
-                )
-            tendency.append(-total)
-        return jnp.stack(tendency, axis=-1)
-
     def conservative_advection(
         self,
         velocity: MACVelocity,
@@ -1148,12 +1114,10 @@ class NeutralABLMomentum:
         )
         vertical = jnp.zeros_like(viscosity)
         vertical = vertical.at[:-1].add(
-            face_viscosity
-            / _z_vector(self.dz_cell[:-1] * self.dz_center, rank, dtype)
+            face_viscosity / _z_vector(self.dz_cell[:-1] * self.dz_center, rank, dtype)
         )
         vertical = vertical.at[1:].add(
-            face_viscosity
-            / _z_vector(self.dz_cell[1:] * self.dz_center, rank, dtype)
+            face_viscosity / _z_vector(self.dz_cell[1:] * self.dz_center, rank, dtype)
         )
         return jnp.max(rate + vertical)
 
@@ -2124,7 +2088,7 @@ class NeutralABLMomentum:
         timestep: float,
         time: float,
         lasd_coefficient: Array | None = None,
-    ) -> NeutralABLDiagnostic:
+    ) -> MomentumDiagnostic:
         """Diagnose a state, optionally using the coefficient from its last step."""
         coefficient = (
             self._active_lasd_coefficient(velocity)
@@ -2137,7 +2101,7 @@ class NeutralABLMomentum:
             coefficient,
             self.active_wall_velocity(velocity),
         )
-        return NeutralABLDiagnostic(
+        return MomentumDiagnostic(
             time,
             *(float(value) for value in values),
         )
@@ -2228,7 +2192,7 @@ class NeutralABLMomentum:
         return mean, resolved_tke, minus_uw
 
 
-class AMDPassiveScalar:
+class ScalarOperators:
     """Cell-centred passive scalar transported by a projected MAC velocity.
 
     Advection is conservative and uses the same centered flux plus configured
@@ -2241,7 +2205,7 @@ class AMDPassiveScalar:
     def __init__(
         self,
         grid: RectilinearGrid,
-        model: AMDPassiveScalarModel = AMDPassiveScalarModel(),
+        model: ScalarConfig = ScalarConfig(),
     ) -> None:
         if grid.shape[0] < 2 or min(grid.shape[1:]) < 4:
             raise ValueError("scalar AMD requires nz>=2 and nx,ny>=4")
@@ -2576,8 +2540,7 @@ class AMDPassiveScalar:
             / _z_vector(self.dz_cell[:-1] * self.dz_center, rank, dtype)
         )
         vertical = vertical.at[1:].add(
-            face_diffusivity
-            / _z_vector(self.dz_cell[1:] * self.dz_center, rank, dtype)
+            face_diffusivity / _z_vector(self.dz_cell[1:] * self.dz_center, rank, dtype)
         )
         return jnp.max(rate + vertical)
 
@@ -2608,10 +2571,10 @@ class AMDPassiveScalar:
 
 __all__ = [
     "AMDModel",
-    "AMDPassiveScalar",
-    "AMDPassiveScalarModel",
-    "NeutralABLConfig",
-    "NeutralABLDiagnostic",
-    "NeutralABLMomentum",
+    "MomentumConfig",
+    "MomentumDiagnostic",
+    "MomentumOperators",
+    "ScalarConfig",
+    "ScalarOperators",
     "WallModelState",
 ]

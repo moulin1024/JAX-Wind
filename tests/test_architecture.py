@@ -31,3 +31,11 @@ def test_active_solver_does_not_import_the_archive() -> None:
             if module and module.startswith("jaxwind_archiv"):
                 violations.append(str(path.relative_to(SOURCE_ROOT)))
     assert not violations
+
+
+def test_active_solver_has_no_flow_regime_specializations() -> None:
+    assert not (SOURCE_ROOT / "momentum" / "neutral_abl.py").exists()
+    assert not (SOURCE_ROOT / "momentum" / "convective_abl.py").exists()
+    public_api = (SOURCE_ROOT / "momentum" / "__init__.py").read_text()
+    assert "NeutralABL" not in public_api
+    assert "AMDBoussinesq" not in public_api

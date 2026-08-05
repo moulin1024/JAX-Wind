@@ -1,0 +1,75 @@
+schema = "jaxwind.case.v2"
+name = "Nieuwstadt1993-AMD"
+
+[grid]
+shape = [40, 40, 48]
+extent = [6400.0, 6400.0, 2400.0]
+
+[numerics]
+dtype = "float32"
+target_cfl = 0.8
+target_diffusive_cfl = 0.5
+mp5_strength = 1.0
+sgs_time_integration = "explicit"
+pressure_relative_tolerance = 1.0e-5
+pressure_max_iterations = 40
+pressure_smooth = 2
+pressure_coarse_smooth = 20
+pressure_coarsening = "auto"
+
+[time]
+end = 12020.051799990006
+sample_start = 10927.319818172731
+maximum_step = 1.25
+sample_basis = "step"
+sample_interval = 20
+log_interval = 96
+checkpoint_interval = 500
+
+[momentum]
+friction_velocity = 1.4642199794858317
+roughness_length = 0.16
+pressure_acceleration = 0.0
+coriolis_vertical = 0.0
+coriolis_horizontal = 0.0
+
+[sgs]
+model = "amd"
+coefficient = 0.212
+
+[thermodynamics]
+enabled = true
+sgs_coefficient = 0.212
+gravity = 9.81
+reference_potential_temperature = 300.0
+
+[surface]
+thermal_boundary = "flux"
+heat_flux = 0.06
+momentum_stability = "neutral"
+
+[initial]
+seed = 0
+
+[initial.velocity]
+kind = "constant"
+value = [0.0, 0.0, 0.0]
+
+[initial.potential_temperature]
+kind = "convective"
+base = 0.0
+inversion_height = 1350.4
+gradient_above = 0.003
+noise_amplitude = 0.004097744931814774
+noise_minimum = -0.5
+noise_maximum = 0.5
+taper = true
+vertical_velocity_noise = 0.14642199794858318
+
+[display]
+time_scale = 1092.7319818172732
+time_label = "t/tstar"
+scalar_offset = 300.0
+
+[output]
+directory = "benchmark_results/nieuwstadt1993_amd"

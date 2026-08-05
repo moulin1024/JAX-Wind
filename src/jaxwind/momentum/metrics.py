@@ -17,7 +17,7 @@ adjoint ``-W^-1 D^T W``.  On a uniform periodic axis the fourth-order difference
 is antisymmetric and this collapses to ``D``, which is what the uniform kernels
 use.  A stretched axis loses that antisymmetry, so the adjoint is assembled
 explicitly; otherwise the variational SGS operator stops being energy
-dissipative and the skew-symmetric advection split stops being energy neutral.
+dissipative.
 
 :meth:`AxisMetric.interface_states` reconstructs face values from cell averages
 through the primitive function, so the fifth-order MP5 stencil keeps its formal
@@ -429,8 +429,9 @@ class AxisMetric:
         self._derivative_stencil: tuple[Array, Array] | None = None
         self._reconstruction: dict[str, tuple[Array, Array]] = {}
 
-        needs_derivative_stencil = self.derivative_width == _FOURTH_ORDER_WIDTH and not (
-            self.uniform and self.periodic
+        needs_derivative_stencil = (
+            self.derivative_width == _FOURTH_ORDER_WIDTH
+            and not (self.uniform and self.periodic)
         )
         if needs_derivative_stencil:
             self._derivative_stencil = self._build_derivative_stencil()
@@ -555,9 +556,7 @@ class AxisMetric:
             # A constant field must be reconstructed exactly.
             row /= row.sum()
             weights[cell] = row
-            indices[cell] = [
-                self._sample_index(first + step) for step in range(width)
-            ]
+            indices[cell] = [self._sample_index(first + step) for step in range(width)]
         return (
             jnp.asarray(indices, dtype=jnp.int32),
             jnp.asarray(weights, dtype=self.dtype),
@@ -614,9 +613,7 @@ class AxisMetric:
             infinite = np.array([np.inf])
             lower = np.concatenate((infinite, self._host_center_gaps))
             upper = np.concatenate((self._host_center_gaps, infinite))
-        diagonal = 1.0 / (self._host_widths * lower) + 1.0 / (
-            self._host_widths * upper
-        )
+        diagonal = 1.0 / (self._host_widths * lower) + 1.0 / (self._host_widths * upper)
         return jnp.asarray(diagonal, dtype=self.dtype)
 
     # --------------------------------------------------------------- operators
@@ -704,8 +701,8 @@ class AxisMetric:
         This is minus the adjoint of :meth:`derivative` in the cell-volume
         inner product.  The widths of the other two axes are constant along
         this one and cancel, so a separable volume needs only this axis.  Used
-        as a divergence it keeps the variational SGS operator dissipative and
-        the skew-symmetric advection split energy neutral on any spacing.
+        as a divergence it keeps the variational SGS operator dissipative on
+        any spacing.
         """
 
         if (
@@ -813,6 +810,7 @@ class AxisMetric:
             dtype=np.float64,
         )
         return jnp.asarray((face - home) / (upper - home), dtype=self.dtype)
+
 
 def reconstruction_flux(
     field: Array,

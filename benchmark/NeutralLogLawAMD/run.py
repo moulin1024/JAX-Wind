@@ -106,8 +106,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--initial-velocity",
         type=Path,
         help=(
-            "load velocity from a checkpoint and reset time, statistics, "
-            "and SGS memory"
+            "load velocity from a checkpoint and reset time, statistics, and SGS memory"
         ),
     )
     parser.add_argument(
@@ -136,17 +135,14 @@ def _validate(args: argparse.Namespace) -> int:
     if min(args.sample_every, args.log_every, args.checkpoint_every) <= 0:
         raise SystemExit("sampling and checkpoint intervals must be positive")
     if args.wall_filter_width is not None and (
-        not math.isfinite(args.wall_filter_width)
-        or args.wall_filter_width <= 0.0
+        not math.isfinite(args.wall_filter_width) or args.wall_filter_width <= 0.0
     ):
         raise SystemExit("wall filter width must be positive and finite")
     if args.wall_temporal_filter_gamma is not None and (
         not math.isfinite(args.wall_temporal_filter_gamma)
         or args.wall_temporal_filter_gamma <= 0.0
     ):
-        raise SystemExit(
-            "wall temporal filter gamma must be positive and finite"
-        )
+        raise SystemExit("wall temporal filter gamma must be positive and finite")
     if args.flow_frame_count < 0:
         raise SystemExit("flow frame count must be nonnegative")
     if args.flow_frame_count > 0:
@@ -185,9 +181,7 @@ def _validate(args: argparse.Namespace) -> int:
     if args.max_run_seconds is not None and args.max_run_seconds <= 0.0:
         raise SystemExit("max-run-seconds must be positive")
     sample_start = (
-        args.steps // 2
-        if args.sample_start_step is None
-        else args.sample_start_step
+        args.steps // 2 if args.sample_start_step is None else args.sample_start_step
     )
     if not 0 <= sample_start < args.steps:
         raise SystemExit("sample-start-step must lie in [0, steps)")
@@ -211,8 +205,8 @@ def main() -> None:
         AMDModel,
         LASDModel,
         LASDState,
-        NeutralABLConfig,
-        NeutralABLMomentum,
+        MomentumConfig,
+        MomentumOperators,
         WallModelState,
     )
     from jaxwind.pressure import (
@@ -268,20 +262,14 @@ def main() -> None:
         krylov=krylov,
     )
     von_karman = 0.4
-    wall_matching_height = (
-        args.wall_matching_level + 0.5
-    ) * args.height / args.nz
+    wall_matching_height = (args.wall_matching_level + 0.5) * args.height / args.nz
     wall_temporal_filter_timescale = (
         None
         if args.wall_temporal_filter_gamma is None
         else wall_matching_height
-        / (
-            args.wall_temporal_filter_gamma
-            * von_karman
-            * args.ustar
-        )
+        / (args.wall_temporal_filter_gamma * von_karman * args.ustar)
     )
-    config = NeutralABLConfig(
+    config = MomentumConfig(
         friction_velocity=args.ustar,
         roughness_length=args.z0,
         von_karman=von_karman,
@@ -299,7 +287,7 @@ def main() -> None:
             else None
         ),
     )
-    solver = NeutralABLMomentum(grid, pressure, config)
+    solver = MomentumOperators(grid, pressure, config)
 
     def sample_kernel(
         sample_velocity: MACVelocity,
@@ -327,9 +315,7 @@ def main() -> None:
             variances,
             resolved_minus_uw,
             sgs_xz,
-            jnp.mean(
-                solver.wall_ustar(cells, wall_velocity=wall_velocity)
-            ),
+            jnp.mean(solver.wall_ustar(cells, wall_velocity=wall_velocity)),
         )
 
     compiled_sample = jax.jit(sample_kernel)
@@ -342,8 +328,7 @@ def main() -> None:
         cells = solver.cell_centered_velocity(frame_velocity)
         streamwise = cells[..., 0]
         fluctuation = (
-            streamwise
-            - jnp.mean(streamwise, axis=(1, 2), keepdims=True)
+            streamwise - jnp.mean(streamwise, axis=(1, 2), keepdims=True)
         ) / args.ustar
         return (
             fluctuation[flow_level],
@@ -416,9 +401,7 @@ def main() -> None:
         if not np.array_equal(checkpoint["shape_zyx"], expected_shape):
             raise SystemExit("restart grid shape does not match this run")
         checkpoint_sgs = (
-            str(checkpoint["sgs_model"])
-            if "sgs_model" in checkpoint
-            else "amd"
+            str(checkpoint["sgs_model"]) if "sgs_model" in checkpoint else "amd"
         )
         if checkpoint_sgs != args.sgs:
             raise SystemExit("restart SGS model does not match this run")
@@ -435,14 +418,15 @@ def main() -> None:
             else math.nan
         )
         requested_filter_width = (
-            math.nan
-            if args.wall_filter_width is None
-            else args.wall_filter_width
+            math.nan if args.wall_filter_width is None else args.wall_filter_width
         )
-        if not (
-            math.isnan(checkpoint_filter_width)
-            and math.isnan(requested_filter_width)
-        ) and checkpoint_filter_width != requested_filter_width:
+        if (
+            not (
+                math.isnan(checkpoint_filter_width)
+                and math.isnan(requested_filter_width)
+            )
+            and checkpoint_filter_width != requested_filter_width
+        ):
             raise SystemExit("restart wall spatial filter does not match")
         checkpoint_timescale = (
             float(checkpoint["wall_temporal_filter_timescale"])
@@ -455,8 +439,7 @@ def main() -> None:
             else wall_temporal_filter_timescale
         )
         if not (
-            math.isnan(checkpoint_timescale)
-            and math.isnan(requested_timescale)
+            math.isnan(checkpoint_timescale) and math.isnan(requested_timescale)
         ) and not math.isclose(
             checkpoint_timescale,
             requested_timescale,
@@ -515,10 +498,7 @@ def main() -> None:
                 raise SystemExit("LASD restart is missing closure memory")
             solver.restore_lasd(
                 LASDState(
-                    *(
-                        jnp.asarray(checkpoint[name], dtype=dtype)
-                        for name in required
-                    )
+                    *(jnp.asarray(checkpoint[name], dtype=dtype) for name in required)
                 ),
                 accepted_step=int(checkpoint["lasd_accepted_step"]),
                 interval_time=float(checkpoint["lasd_interval_time"]),
@@ -608,9 +588,7 @@ def main() -> None:
             "sample_start_step": sample_start_step,
             "sample_count": sample_count,
             "sgs_model": args.sgs,
-            "elapsed_seconds": (
-                elapsed_before_run + time.perf_counter() - started
-            ),
+            "elapsed_seconds": (elapsed_before_run + time.perf_counter() - started),
             "compilation_seconds": (
                 compilation_elapsed
                 if original_compilation_seconds is None
@@ -618,9 +596,7 @@ def main() -> None:
             ),
             "wall_matching_level": args.wall_matching_level,
             "wall_filter_width": (
-                np.nan
-                if args.wall_filter_width is None
-                else args.wall_filter_width
+                np.nan if args.wall_filter_width is None else args.wall_filter_width
             ),
             "wall_temporal_filter_timescale": (
                 np.nan
@@ -654,9 +630,7 @@ def main() -> None:
             )
         wall_model = solver.wall_model_state
         if wall_model is not None:
-            payload["wall_filtered_velocity"] = np.asarray(
-                wall_model.filtered_velocity
-            )
+            payload["wall_filtered_velocity"] = np.asarray(wall_model.filtered_velocity)
         destination = args.output_dir / "checkpoint.npz"
         temporary = destination.with_name(f".{destination.name}.tmp-{os.getpid()}")
         with temporary.open("wb") as stream:
@@ -676,8 +650,7 @@ def main() -> None:
         timesteps.append(timestep)
         step += 1
         if step >= sample_start_step and (
-            (step - sample_start_step) % args.sample_every == 0
-            or step == args.steps
+            (step - sample_start_step) % args.sample_every == 0 or step == args.steps
         ):
             values = tuple(
                 np.asarray(value)
@@ -767,9 +740,7 @@ def main() -> None:
     z_faces = np.arange(args.nz + 1) * args.height / args.nz
     target_velocity = args.ustar / config.von_karman * np.log(z / args.z0)
     target_stress = args.ustar**2 * (1.0 - z_faces / args.height)
-    resolved_minus_uw_cells = 0.5 * (
-        resolved_minus_uw[:-1] + resolved_minus_uw[1:]
-    )
+    resolved_minus_uw_cells = 0.5 * (resolved_minus_uw[:-1] + resolved_minus_uw[1:])
     sgs_xz_cells = 0.5 * (sgs_xz[:-1] + sgs_xz[1:])
     total_stress_cells = resolved_minus_uw_cells + sgs_xz_cells
     target_stress_cells = args.ustar**2 * (1.0 - z / args.height)
@@ -780,16 +751,11 @@ def main() -> None:
     fitted_z0 = float(np.exp(-intercept / slope)) if slope > 0.0 else float("nan")
     fixed_z0_log = np.log(z[fit_mask] / args.z0)
     fixed_z0_slope = float(
-        np.dot(fixed_z0_log, mean[fit_mask, 0])
-        / np.dot(fixed_z0_log, fixed_z0_log)
+        np.dot(fixed_z0_log, mean[fit_mask, 0]) / np.dot(fixed_z0_log, fixed_z0_log)
     )
     fixed_z0_fitted_ustar = config.von_karman * fixed_z0_slope
-    loglaw_error_plus = (
-        mean[fit_mask, 0] - target_velocity[fit_mask]
-    ) / args.ustar
-    loglaw_rmse_plus = float(
-        np.sqrt(np.mean(loglaw_error_plus**2))
-    )
+    loglaw_error_plus = (mean[fit_mask, 0] - target_velocity[fit_mask]) / args.ustar
+    loglaw_rmse_plus = float(np.sqrt(np.mean(loglaw_error_plus**2)))
     loglaw_bias_plus = float(np.mean(loglaw_error_plus))
     stress_rmse = float(
         np.sqrt(np.mean(((total_stress - target_stress) / args.ustar**2) ** 2))
@@ -894,9 +860,7 @@ def main() -> None:
         "loglaw_rmse_wall_units": loglaw_rmse_plus,
         "loglaw_bias_wall_units": loglaw_bias_plus,
         "first_cell_mean_u_over_ustar": float(mean[0, 0] / args.ustar),
-        "first_cell_jump_u_over_ustar": float(
-            (mean[1, 0] - mean[0, 0]) / args.ustar
-        ),
+        "first_cell_jump_u_over_ustar": float((mean[1, 0] - mean[0, 0]) / args.ustar),
         "total_stress_rmse_ustar2": stress_rmse,
         "sgs_model": args.sgs,
         "amd_coefficient": args.amd_coefficient if args.sgs == "amd" else None,

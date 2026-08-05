@@ -1,234 +1,26 @@
 # GABLS1 stable-boundary-layer benchmark
 
-This case exercises the non-spectral staggered-MAC solver with the filter-free
-AMD momentum and potential-temperature closures. It follows the first GABLS
-LES intercomparison: a `400 m × 400 m × 400 m` periodic domain, geostrophic
-wind `(8, 0) m/s`, Coriolis parameter `1.39e-4 s^-1`, `265 K` mixed layer to
-`100 m`, an overlying `0.01 K/m` inversion, and a prescribed surface cooling
-rate of `0.25 K/h`. Momentum and heat use the coupled stable Monin--Obukhov
-wall law with `z0 = z0h = 0.1 m`.
+The complete active case is [case.toml](case.toml). It is data consumed by the
+same `jaxwind-run` application as the other validation cases; there is no
+GABLS-specific runner, distributed adapter, or profiling workflow.
 
-The canonical public low-resolution comparison is `32³` (`12.5 m`) for nine
-hours, with statistics accumulated over hours 8--9:
+Canonical CUDA run:
 
 ```bash
-python benchmark/GABLS1/run.py \
-  --output-dir benchmark_results/gabls1_amd_32cubed
+CUDA_VISIBLE_DEVICES=0 JAX_PLATFORMS=cuda \
+python -m jaxwind benchmark/GABLS1/case.toml
 ```
 
-The default advective CFL target is `0.9`; the diffusive target remains `0.5`.
-Use `--target-cfl 0.7` when reproducing an older, more conservative run.
-
-For a true four-process horizontal decomposition, use the MPI y-slab runner:
+Short end-to-end run:
 
 ```bash
-PATH=/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/opt/homebrew/sbin \
-mpiexec -n 4 env \
-  PYTHONPATH="$PWD:$PWD/src" \
-  OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 \
-  XLA_FLAGS=--xla_cpu_multi_thread_eigen=false \
-  python benchmark/GABLS1/run_mpi.py \
-  --output-dir benchmark_results/gabls1_amd_32cubed
+python -m jaxwind benchmark/GABLS1/case.toml --quick
 ```
 
-The layout is `1 × 4` in `y`: every rank owns `32 × 8 × 32` cells and keeps
-complete ground-to-top vertical columns. AMD and the nonlinear advection
-correction exchange periodic halo rows with multi-host `ppermute`; MP5 uses
-three rows. Stable MOST and vertical SGS fluxes stay local. The matrix-free
-GMG/PCG pressure solve uses the same y slabs on fine
-levels and globally replicates only its coarse level. Rank 0 reconstructs the
-ordinary full-domain checkpoint and diagnostics, so serial and MPI runs can
-restart each other's checkpoints.
+The configuration declares the `32³`, 400 m domain; geostrophic wind;
+Coriolis force; Monin–Obukhov surface coupling and cooling; inversion profile;
+AMD momentum/scalar closures; MP5 stabilization; full projection; and the
+8–9 hour averaging window.
 
-Before committing a long run, exercise both short paths:
-
-```bash
-python benchmark/GABLS1/run.py --quick \
-  --output-dir benchmark_results/gabls1_amd_quick
-
-python benchmark/GABLS1/run.py --smoke \
-  --output-dir benchmark_results/gabls1_amd_smoke
-```
-
-`--quick` advances four steps on `8³`. `--smoke` advances `16³` for 72 s.
-Both retain the same active scalar, MOST wall coupling, AMD closures,
-projection, diagnostics, and output path as the canonical case.
-
-The default `strang` coupling advances two scalar SSPRK3 half-steps. The
-alternative coupled integrator advances momentum and temperature on the same
-three SSPRK3 stages, reducing scalar RHS evaluations from six to three:
-
-```bash
-python benchmark/GABLS1/run.py \
-  --coupling-integrator coupled-ssprk3 \
-  --output-dir benchmark_results/gabls1_amd_coupled_ssprk3
-```
-
-Each coupled stage shares the MOST flux, cell-centred velocity, and velocity
-gradient between the momentum and scalar closures. Every momentum stage is
-fully pressure projected before its velocity is used by the next stage.
-
-For the GPU MP5 + sign-projection setup with vertically implicit momentum SGS,
-run:
-
-```bash
-env CUDA_VISIBLE_DEVICES=0 JAX_PLATFORMS=cuda JAX_ENABLE_X64=0 \
-  XLA_PYTHON_CLIENT_PREALLOCATE=false PYTHONUNBUFFERED=1 \
-python benchmark/GABLS1/run.py \
-  --nx 32 --ny 32 --nz 32 --dtype float32 \
-  --end-hours 9 --sample-start-hours 8 --dt-max 1 \
-  --target-cfl 0.8 --target-diffusive-cfl 0.5 \
-  --amd-coefficient .212 --scalar-amd-coefficient .212 \
-  --mp5-strength 1 \
-  --sgs-time-integration imex_ark3 \
-  --coupling-integrator strang \
-  --pressure-rtol 1e-4 --pressure-max-iterations 20 \
-  --pressure-smooth 1 --pressure-coarse-smooth 20 \
-  --output-dir benchmark_results/gabls1_mp5_signprojection_gpu
-```
-
-The IMEX path freezes AMD viscosity for one ARK3 step and solves its vertical
-principal diffusion by independent column solves. Horizontal and cross SGS
-terms, buoyancy, and stable-MOST wall stress remain explicit; the wall stress
-is recomputed from each ARK stage velocity, midpoint temperature, and physical
-stage time. Temperature retains the two explicit SSPRK3 half-steps, so this
-mode requires `--coupling-integrator strang`.
-
-The runner can optionally apply a quadratic Rayleigh sponge between a selected
-height and the 400 m lid. Momentum relaxes toward the geostrophic wind and
-potential temperature toward the initial free-atmosphere profile. Both sources
-are reevaluated from every explicit or IMEX stage state. For the 6.25 m
-comparison, enable the 300--400 m layer with:
-
-```bash
---rayleigh-sponge-start-height 300 \
---rayleigh-sponge-maximum-rate 0.2
-```
-
-The sponge is disabled unless `--rayleigh-sponge-start-height` is supplied.
-Flux outputs report resolved, SGS, and limiter-induced numerical vertical
-fluxes separately; `uw_total`, `vw_total`, and `wtheta_total` are their effective
-three-part sums and the diagnosed boundary-layer height uses that effective
-momentum flux.
-
-The corresponding four-rank quick run uses `16³` so each MP5 slab owns at
-least three y cells:
-
-```bash
-mpiexec -n 4 python benchmark/GABLS1/run_mpi.py --quick \
-  --output-dir benchmark_results/gabls1_amd_mpi_quick
-```
-
-MP5 provides the conservative nonlinear correction to the
-kinetic-energy-neutral centred momentum flux. Set its strength with
-`--advection-dissipation-strength`; `--mp5-strength` remains a
-backward-compatible alias. Existing checkpoints without an
-`advection_limiter` field are interpreted as MP5 checkpoints; checkpoints
-recorded with another limiter are rejected.
-
-## Static stretched mesh
-
-The serial AMD runner accepts a versioned artifact from the independent
-meshing application. All three axes may be clustered independently: each
-carries its own metric, and an axis that is uniform keeps the constant-spacing
-kernels so uniform runs are unaffected. The horizontal axes stay periodic, so
-horizontal clustering must return to its starting spacing across the period if
-the fourth-order derivative is to keep its accuracy there.
-
-```bash
-jaxwind-mesh generate benchmark/GABLS1/stretched_mesh.toml \
-  --output benchmark_results/gabls1_stretched_mesh.json
-
-python benchmark/GABLS1/run.py \
-  --mesh benchmark_results/gabls1_stretched_mesh.json \
-  --wall-matching-height 6.25 \
-  --output-dir benchmark_results/gabls1_amd_stretched
-```
-
-Stretching selects the AMD closure. LASD is rejected on a stretched grid
-because both its top-hat test filter and its Lagrangian trajectory advection
-are defined on constant spacing.
-
-`--wall-matching-height` is a physical distance from the lower wall. The
-runner selects the nearest cell center and records both the selected level and
-its actual height. Stable MOST uses that actual height; lower momentum and heat
-fluxes are divided by the local first-cell thickness. AMD filter widths,
-vertical diffusion, CFL limits, initial profiles, diagnostic interpolation,
-and volume means use the same physical face coordinates. Checkpoints store all
-three face arrays and reject a restart on a different mesh. The y-slab MPI
-runner deliberately rejects `--mesh` until its distributed operators are
-metric-aware.
-
-## Performance profiling
-
-Use `64³` when comparing algorithms; `32³` is too small for meaningful CPU
-strong-scaling measurements. The stage profiler accepts either a checkpoint
-or a freshly initialized grid:
-
-```bash
-python benchmark/GABLS1/profile_serial.py \
-  --nx 64 --ny 64 --nz 64 \
-  --pressure-smooth 2 \
-  --profile-repeats 5
-```
-
-The solver performs a pressure Poisson solve after every SSPRK3 or ARK3
-momentum stage. Choose `strang` for the original two scalar half-steps or
-`coupled-ssprk3` for three shared momentum-temperature stages. The one-smooth
-configuration retains the same PCG tolerance; zero smooths were tested and
-rejected because the weaker preconditioner made the complete solve slower.
-
-Resume a saved `64³` run with:
-
-```bash
-python benchmark/GABLS1/run.py \
-  --nx 64 --ny 64 --nz 64 \
-  --restart benchmark_results/gabls1_amd_64cubed/checkpoint.npz \
-  --output-dir benchmark_results/gabls1_amd_64cubed
-```
-
-`coupled-ssprk3` remains opt-in rather than the benchmark default.
-
-Continue an interrupted run without losing accumulated samples:
-
-```bash
-python benchmark/GABLS1/run.py \
-  --restart benchmark_results/gabls1_amd_32cubed/checkpoint.npz \
-  --output-dir benchmark_results/gabls1_amd_32cubed
-```
-
-Replace `run.py` by `run_mpi.py` and add `mpiexec -n 4` to continue the same
-checkpoint on four y-slab ranks.
-
-The runner writes `checkpoint.npz`, cell-centred `profiles.csv`, face-centred
-`flux_profiles.csv`, `time_series.csv`, `benchmark_stats.npz`,
-`summary.{csv,json}`, `resolved_config.json`, and a resolution-labelled
-comparison PNG (`GABLS1_AMD_12p5m_comparison.png` for a matched `32³`
-comparison, or `GABLS1_AMD_6p25m_comparison.png` for matched `64³`). Flux profiles
-contain separate resolved, SGS, and total contributions on their native
-vertical-face coordinates; the comparison plot uses the total momentum and
-heat flux, rather than comparing the resolved part alone with the official LES
-totals. The official total envelope is formed participant by participant
-before taking its range. The plot overlays our 8--9 h mean on the range and
-mean of the official submissions at the selected reference resolution.
-
-The archived official text files live under `reference/official_12p5m` with a
-pinned SHA-256 and citation in `SOURCE.json`. To reproduce that extraction:
-
-```bash
-python benchmark/GABLS1/fetch_reference.py
-
-python benchmark/GABLS1/fetch_reference.py --resolution 6.25m
-```
-
-The legacy Met Office host currently presents a mismatched TLS certificate;
-the fetcher therefore permits that transport only while enforcing the pinned
-archive digest before extracting a restricted set of `.dat` members.
-
-Primary references:
-
-- Beare et al. (2006), *An Intercomparison of Large-Eddy Simulations of the
-  Stable Boundary Layer*, Boundary-Layer Meteorology 118, 247--272,
-  doi:10.1007/s10546-004-2820-6.
-- The original GABLS1 case description and formatted-data specification are
-  mirrored by the official archive recorded in `reference/official_12p5m`.
+Official 12.5 m and 6.25 m ensemble archives and plotting scripts remain
+reference/postprocessing assets. They are not imported by the solver.

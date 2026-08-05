@@ -2,8 +2,8 @@
 
 JAX-Wind is a benchmark-focused JAX large-eddy simulation solver for
 atmospheric boundary layers. The active `jaxwind` package is intentionally
-small: it contains the non-spectral MAC, AMD, MP5, surface-layer, and
-Boussinesq implementation needed by three validation cases.
+small: it contains one non-spectral ABL solver composed from MAC, AMD, MP5,
+surface-layer, and optional Boussinesq thermodynamics.
 
 The previous document-first semantic architecture is preserved as the
 `jaxwind_archiv` Python package. It remains available for reference and
@@ -21,7 +21,12 @@ The active numerical path provides:
 - AMD momentum/scalar closures and pressure-hierarchy multilevel LASD;
 - explicit SSPRK3 and IMEX-ARK3 vertical SGS integration;
 - neutral-log and Monin-Obukhov surface fluxes; and
-- Strang-coupled Boussinesq buoyancy.
+- one `ABLSolver`/`ABLState` path for neutral and thermally stratified flows.
+
+Neutral, convective, and stable are not solver classes. The same solver is
+configured with an optional potential-temperature field, buoyancy constants,
+and an adiabatic, prescribed-flux, or prescribed-temperature surface. The
+initial stratification and surface heat transfer determine the flow regime.
 
 Only the canonical uniform-grid, single-process solver belongs to the active
 minimum. Distributed solvers, semantic interpreters, AB2, OpenFAST, meshing,
@@ -33,27 +38,25 @@ Lagrangian memory off the LES grid.
 
 ## Validation benchmarks
 
-The active solver is exercised by:
+The active solver is exercised by three declarative TOML cases:
 
 - [Andrén et al. (1994)](benchmark/Andren1994/README.md), neutral Ekman ABL;
 - [Nieuwstadt et al. (1993)](benchmark/Nieuwstadt1993/README.md), convective
   boundary layer; and
 - [GABLS1](benchmark/GABLS1/README.md), stable boundary layer.
 
-Short end-to-end checks:
+There are no benchmark-specific runners. All cases use the same CLI, solver
+factory, time loop, checkpoint schema, and output schema:
 
 ```bash
-python benchmark/Nieuwstadt1993/run_amd.py --quick
-python benchmark/GABLS1/run.py --quick
-python benchmark/Andren1994/run.py \
-  --end-ft 0.0001 --sample-start-ft 0 \
-  --sample-every 1 --history-every 1 --single
-
-# Multilevel LASD on the same pressure-GMG hierarchy
-python benchmark/Andren1994/run.py --sgs lasd \
-  --end-ft 0.0001 --sample-start-ft 0 \
-  --sample-every 1 --history-every 1 --single
+python -m jaxwind benchmark/Nieuwstadt1993/case.toml --quick
+python -m jaxwind benchmark/GABLS1/case.toml --quick
+python -m jaxwind benchmark/Andren1994/case.toml --quick
 ```
+
+Any configured value can be changed without adding a runner, using a typed TOML
+override such as `--set 'numerics.dtype="float64"'`. The resolved configuration
+is stored with every result.
 
 The canonical Andrén statistics window is `7 <= ft <= 10`; its short default
 is intended for development. Nieuwstadt uses `10 <= t/t* <= 11`, and GABLS1
@@ -75,7 +78,8 @@ the available GPU automatically.
 
 ```text
 benchmark case
-    -> jaxwind.momentum
+    -> jaxwind.momentum.ABLSolver
+        -> MomentumOperators + optional ScalarOperators
         -> shared MultigridHierarchy <- jaxwind.pressure
             -> jaxwind.domain.RectilinearGrid
 

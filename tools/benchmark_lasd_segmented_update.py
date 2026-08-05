@@ -11,7 +11,7 @@ import time
 import jax
 import jax.numpy as jnp
 
-from jaxwind.momentum import LASDModel, NeutralABLConfig, NeutralABLMomentum
+from jaxwind.momentum import LASDModel, MomentumConfig, MomentumOperators
 from jaxwind.pressure import (
     BoundaryCondition,
     FGMRESConfig,
@@ -30,7 +30,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def build_solver(n: int) -> NeutralABLMomentum:
+def build_solver(n: int) -> MomentumOperators:
     grid = RectilinearGrid.uniform(
         n,
         n,
@@ -59,10 +59,10 @@ def build_solver(n: int) -> NeutralABLMomentum:
             execution="jax",
         ),
     )
-    return NeutralABLMomentum(
+    return MomentumOperators(
         grid,
         pressure,
-        NeutralABLConfig(
+        MomentumConfig(
             friction_velocity=0.4,
             roughness_length=0.1,
             geostrophic_wind=(10.0, 0.0),
@@ -136,8 +136,8 @@ def main() -> None:
     statistics_executable, statistics_compile = timed_compile(
         solver._compiled_lasd_statistics.lower(initial, cells)
     )
-    statistics_state, stat_lm, stat_mm, stat_qn, stat_nn = (
-        statistics_executable(initial, cells)
+    statistics_state, stat_lm, stat_mm, stat_qn, stat_nn = statistics_executable(
+        initial, cells
     )
     statistics_finalize, statistics_finalize_compile = timed_compile(
         solver._compiled_lasd_finalize.lower(
@@ -163,8 +163,8 @@ def main() -> None:
         )
 
     def run_segmented():
-        state, local_lm, local_mm, local_qn, local_nn = (
-            statistics_executable(initial, cells)
+        state, local_lm, local_mm, local_qn, local_nn = statistics_executable(
+            initial, cells
         )
         return statistics_finalize(
             state,

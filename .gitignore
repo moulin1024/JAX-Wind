@@ -93,7 +93,9 @@ tmp
 /benchmark/Andren1994/results/
 *.h5
 
-# Versioned Nieuwstadt benchmark comparison sheet (paper scan + diagnostics).
+# Versioned Nieuwstadt benchmark configuration, references, and postprocessing.
+!/benchmark/Nieuwstadt1993/README.md
+!/benchmark/Nieuwstadt1993/case.toml
 !/benchmark/Nieuwstadt1993/Nieuwstadt1993_LASD_complete_overlay.png
 !/benchmark/Nieuwstadt1993/reference/Nieuwstadt1993.md
 
