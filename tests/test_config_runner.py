@@ -102,28 +102,97 @@ def test_all_cases_use_the_same_solver_and_state_types() -> None:
     assert states[2].potential_temperature is not None
 
 
+def test_tabulated_initial_state_uses_one_projection() -> None:
+    simulation = build_simulation(_quick(CASES["andren"]))
+    projector = simulation.momentum.projector
+    calls = {"velocity": 0, "velocity_pressure": 0}
+    project_velocity = projector.project_velocity
+    project_velocity_and_pressure = projector.project_velocity_and_pressure
+
+    def counted_velocity(*args, **kwargs):
+        calls["velocity"] += 1
+        return project_velocity(*args, **kwargs)
+
+    def counted_velocity_pressure(*args, **kwargs):
+        calls["velocity_pressure"] += 1
+        return project_velocity_and_pressure(*args, **kwargs)
+
+    projector.project_velocity = counted_velocity
+    projector.project_velocity_and_pressure = counted_velocity_pressure
+    simulation.initial_state()
+
+    assert calls == {"velocity": 0, "velocity_pressure": 1}
+
+
 @pytest.mark.parametrize("case", CASES.values(), ids=CASES.keys())
 def test_runtime_observations_are_compact_device_arrays(case: Path) -> None:
     simulation = build_simulation(_quick(case))
     state = simulation.initial_state()
 
-    metrics = np.asarray(simulation.runtime_metrics(state))
+    prepared = simulation.prepare_step(state)
+    rates = np.asarray(prepared.rates)
+    diagnostics = np.asarray(simulation.diagnostic_metrics(state))
     profile = np.asarray(simulation.solver.profile(state))
 
-    assert metrics.shape == (7,)
-    assert np.all(np.isfinite(metrics[:6]))
+    assert rates.shape == (3,)
+    assert diagnostics.shape == (4,)
+    assert np.all(np.isfinite(rates))
+    assert np.all(np.isfinite(diagnostics[:3]))
     assert profile.shape == (simulation.grid.shape[0], len(PROFILE_COLUMNS))
     assert np.all(np.isfinite(profile[:, :7]))
     assert np.all(np.isfinite(profile[:, 9:11]))
     assert np.all(np.isfinite(profile[:, 12]))
     if state.potential_temperature is None:
-        assert metrics[2] == 0.0
-        assert np.isnan(metrics[6])
+        assert prepared.momentum is not None
+        assert rates[2] == 0.0
+        assert np.isnan(diagnostics[3])
         assert np.all(np.isnan(profile[:, 7:9]))
         assert np.all(np.isnan(profile[:, 11]))
     else:
-        assert np.isfinite(metrics[6])
+        assert prepared.momentum is None
+        assert np.isfinite(diagnostics[3])
         assert np.all(np.isfinite(profile[:, 7:]))
+
+
+def test_prepared_neutral_imex_step_is_bitwise_identical() -> None:
+    simulation = build_simulation(_quick(CASES["andren"]))
+    state = simulation.initial_state()
+    lasd = simulation.momentum.lasd_state
+    assert lasd is not None
+    lasd_step, interval_time = simulation.momentum.lasd_progress
+    prepared = simulation.prepare_step(state)
+    np.testing.assert_array_equal(
+        np.asarray(prepared.rates),
+        np.asarray(simulation.runtime_rates(state)),
+    )
+    timestep = simulation.timestep_from_metrics(np.asarray(prepared.rates))
+    prepared_result = simulation.step(state, timestep, prepared)
+    prepared_lasd = simulation.momentum.lasd_state
+    assert prepared_lasd is not None
+
+    simulation.momentum.restore_pressure(state.pressure)
+    simulation.momentum.restore_lasd(
+        lasd,
+        accepted_step=lasd_step,
+        interval_time=interval_time,
+    )
+    direct_result = simulation.step(state, timestep)
+    direct_lasd = simulation.momentum.lasd_state
+    assert direct_lasd is not None
+
+    for prepared_value, direct_value in zip(
+        prepared_result.velocity,
+        direct_result.velocity,
+        strict=True,
+    ):
+        np.testing.assert_array_equal(prepared_value, direct_value)
+    np.testing.assert_array_equal(prepared_result.pressure, direct_result.pressure)
+    for prepared_value, direct_value in zip(
+        prepared_lasd,
+        direct_lasd,
+        strict=True,
+    ):
+        np.testing.assert_array_equal(prepared_value, direct_value)
 
 
 def test_generic_runner_writes_and_restores_one_checkpoint(tmp_path: Path) -> None:

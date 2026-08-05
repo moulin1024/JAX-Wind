@@ -17,6 +17,7 @@ from jaxwind.pressure import (
 
 from .operators import (
     MomentumOperators,
+    PreparedIMEXStep,
     ScalarOperators,
     _cell_length_scales,
     _cell_velocity,
@@ -113,6 +114,13 @@ class ABLState(NamedTuple):
     step: int
 
 
+class PreparedABLStep(NamedTuple):
+    """Device work prepared for one accepted ABL state."""
+
+    rates: Array
+    momentum: PreparedIMEXStep | None
+
+
 class ABLDiagnosticFields(NamedTuple):
     """Local closure and numerical-dissipation observations."""
 
@@ -173,9 +181,14 @@ class ABLSolver:
         self._rayleigh_temperature_target: Array | None = None
         if config is None:
             self.surface_law = None
-            self._compiled_runtime_metrics = jax.jit(
-                self._neutral_runtime_metrics
+            self._compiled_runtime_rates = jax.jit(self._neutral_runtime_rates)
+            self._compiled_diagnostic_metrics = jax.jit(
+                self._neutral_diagnostic_metrics
             )
+            if momentum.config.sgs_time_integration == "imex_ark3":
+                self._compiled_neutral_imex_prepare = jax.jit(
+                    self._neutral_imex_prepare
+                )
             self._compiled_profile = jax.jit(self._neutral_profile)
             return
         self.surface_law = (
@@ -229,7 +242,10 @@ class ABLSolver:
             self._rayleigh_momentum_tendency
         )
         self._compiled_stability_rates = jax.jit(self._stability_rates)
-        self._compiled_runtime_metrics = jax.jit(self._thermal_runtime_metrics)
+        self._compiled_runtime_rates = jax.jit(self._thermal_runtime_rates)
+        self._compiled_diagnostic_metrics = jax.jit(
+            self._thermal_diagnostic_metrics
+        )
         self._compiled_profile = jax.jit(self._thermal_profile)
 
     def surface_potential_temperature(self, time: Array | float) -> Array:
@@ -499,6 +515,7 @@ class ABLSolver:
         state: ABLState,
         *,
         timestep: float,
+        prepared: PreparedABLStep | None = None,
     ) -> ABLState:
         """Advance one accepted neutral or thermally coupled ABL step."""
         if not math.isfinite(timestep) or timestep <= 0.0:
@@ -508,6 +525,7 @@ class ABLSolver:
                 state.velocity,
                 timestep=timestep,
                 time=state.time,
+                prepared=None if prepared is None else prepared.momentum,
             )
             return ABLState(
                 velocity,
@@ -616,14 +634,8 @@ class ABLSolver:
             raise ValueError("target CFL must be positive and finite")
         if not math.isfinite(target_diffusive_cfl) or target_diffusive_cfl <= 0.0:
             raise ValueError("target diffusive CFL must be positive and finite")
-        if state.potential_temperature is None:
-            return self.momentum.timestep_for_cfl(
-                state.velocity,
-                target_cfl,
-                target_diffusive_cfl,
-            )
         advective, momentum_diffusive, scalar_diffusive = (
-            float(value) for value in self.stability_rates(state)
+            float(value) for value in jax.device_get(self.runtime_rates(state))
         )
         if advective <= 0.0:
             raise ValueError("cannot choose a CFL step for zero velocity")
@@ -718,26 +730,10 @@ class ABLSolver:
         state: ABLState,
     ) -> tuple[Array, Array, Array]:
         """Return shared-gradient advective and AMD stability rates."""
-        if state.potential_temperature is None:
-            cells = self.momentum.cell_centered_velocity(state.velocity)
-            viscosity = self.momentum.sgs_viscosity(cells)
-            return (
-                self.momentum.cfl_rate(state.velocity),
-                self.momentum.explicit_sgs_diffusion_rate(
-                    viscosity,
-                    include_vertical=(
-                        self.momentum.config.sgs_time_integration != "imex_ark3"
-                    ),
-                ),
-                jnp.asarray(0.0, dtype=state.velocity.x.dtype),
-            )
-        return self._compiled_stability_rates(
-            state.velocity,
-            state.potential_temperature,
-            jnp.asarray(state.time, dtype=state.potential_temperature.dtype),
-        )
+        rates = self.runtime_rates(state)
+        return rates[0], rates[1], rates[2]
 
-    def _neutral_runtime_metrics(
+    def _neutral_runtime_rates(
         self,
         velocity: MACVelocity,
         lasd_coefficient: Array,
@@ -749,9 +745,8 @@ class ABLSolver:
             lasd_coefficient,
             gradient=gradient,
         )
-        transport_rate = self.momentum.cfl_rate(velocity)
         advective_rate = jnp.maximum(
-            transport_rate,
+            self.momentum.cfl_rate(velocity),
             self.momentum.wall_stability_rate(cells),
         )
         momentum_diffusive_rate = self.momentum.explicit_sgs_diffusion_rate(
@@ -760,41 +755,71 @@ class ABLSolver:
                 self.momentum.config.sgs_time_integration != "imex_ark3"
             ),
         )
-        divergence = mac_divergence(velocity, self.grid)
         return jnp.stack(
             (
                 advective_rate,
                 momentum_diffusive_rate,
                 jnp.asarray(0.0, dtype=cells.dtype),
-                transport_rate,
+            )
+        )
+
+    def _neutral_imex_prepare(
+        self,
+        velocity: MACVelocity,
+        lasd_coefficient: Array,
+        wall_velocity: Array,
+    ) -> tuple[MACVelocity, MACVelocity, Array, Array]:
+        initial_explicit, initial_implicit, frozen_viscosity, rates = (
+            self.momentum._compiled_imex_prepare(
+                velocity,
+                lasd_coefficient,
+                wall_velocity,
+            )
+        )
+        return (
+            initial_explicit,
+            initial_implicit,
+            frozen_viscosity,
+            jnp.concatenate(
+                (rates, jnp.zeros((1,), dtype=velocity.x.dtype)),
+            ),
+        )
+
+    def _thermal_runtime_rates(
+        self,
+        velocity: MACVelocity,
+        potential_temperature: Array,
+        time: Array,
+    ) -> Array:
+        return jnp.stack(
+            self._stability_rates(
+                velocity,
+                potential_temperature,
+                time,
+            )
+        )
+
+    def _neutral_diagnostic_metrics(self, velocity: MACVelocity) -> Array:
+        cells = _cell_velocity(velocity)
+        divergence = mac_divergence(velocity, self.grid)
+        return jnp.stack(
+            (
+                self.momentum.cfl_rate(velocity),
                 self.momentum.pressure_solver.operator.norm(divergence),
                 0.5 * jnp.mean(jnp.sum(cells * cells, axis=-1)),
                 jnp.asarray(jnp.nan, dtype=cells.dtype),
             )
         )
 
-    def _thermal_runtime_metrics(
+    def _thermal_diagnostic_metrics(
         self,
         velocity: MACVelocity,
         potential_temperature: Array,
-        time: Array,
     ) -> Array:
-        fluxes = self._surface_layer_fluxes(
-            velocity,
-            potential_temperature,
-            time,
-        )
-        rates = self._stability_rates_from_fluxes(
-            velocity,
-            potential_temperature,
-            time,
-            fluxes,
-        )
         cells = _cell_velocity(velocity)
         divergence = mac_divergence(velocity, self.grid)
         return jnp.stack(
             (
-                *rates,
                 self.momentum.cfl_rate(velocity),
                 self.momentum.pressure_solver.operator.norm(divergence),
                 0.5 * jnp.mean(jnp.sum(cells * cells, axis=-1)),
@@ -802,24 +827,58 @@ class ABLSolver:
             )
         )
 
-    def runtime_metrics(self, state: ABLState) -> Array:
-        """Return stability rates and accepted-state diagnostics as one vector.
-
-        The seven entries are the joint advective rate, momentum and scalar
-        diffusion rates, raw transport rate, divergence norm, kinetic energy,
-        and scalar mean.  Keeping this a single array gives callers one device
-        transfer and one synchronization point.
-        """
+    def runtime_rates(self, state: ABLState) -> Array:
+        """Return the three joint stability rates in one device vector."""
         if state.potential_temperature is None:
-            return self._compiled_runtime_metrics(
+            return self._compiled_runtime_rates(
                 state.velocity,
                 self.momentum._active_lasd_coefficient(state.velocity),
             )
-        return self._compiled_runtime_metrics(
+        return self._compiled_runtime_rates(
             state.velocity,
             state.potential_temperature,
             jnp.asarray(state.time, dtype=state.potential_temperature.dtype),
         )
+
+    def diagnostic_metrics(self, state: ABLState) -> Array:
+        """Return raw CFL, divergence, kinetic energy, and scalar mean."""
+        if state.potential_temperature is None:
+            return self._compiled_diagnostic_metrics(state.velocity)
+        return self._compiled_diagnostic_metrics(
+            state.velocity,
+            state.potential_temperature,
+        )
+
+    def prepare_step(self, state: ABLState) -> PreparedABLStep:
+        """Launch rates and reusable next-step work for an accepted state."""
+        if (
+            state.potential_temperature is None
+            and self.momentum.config.sgs_time_integration == "imex_ark3"
+        ):
+            coefficient = self.momentum._active_lasd_coefficient(state.velocity)
+            wall_velocity = self.momentum.active_wall_velocity(state.velocity)
+            initial_explicit, initial_implicit, frozen_viscosity, rates = (
+                self._compiled_neutral_imex_prepare(
+                    state.velocity,
+                    coefficient,
+                    wall_velocity,
+                )
+            )
+            return PreparedABLStep(
+                rates,
+                PreparedIMEXStep(
+                    initial_explicit,
+                    initial_implicit,
+                    frozen_viscosity,
+                    coefficient,
+                    wall_velocity,
+                ),
+            )
+        return PreparedABLStep(self.runtime_rates(state), None)
+
+    def runtime_metrics(self, state: ABLState) -> Array:
+        """Backward-compatible alias for the compact stability-rate vector."""
+        return self.runtime_rates(state)
 
     def _profile_statistics(
         self,
@@ -1108,5 +1167,6 @@ __all__ = [
     "ABLDiagnosticFields",
     "ABLSolver",
     "ABLState",
+    "PreparedABLStep",
     "ThermodynamicsConfig",
 ]

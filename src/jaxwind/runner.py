@@ -103,6 +103,7 @@ class Simulation:
                     None if tke is None else jnp.asarray(tke, dtype=self.dtype)
                 ),
                 seed=seed,
+                project=False,
             )
         else:
             value = velocity_spec.get("value", [0.0, 0.0, 0.0])
@@ -176,11 +177,21 @@ class Simulation:
         )
         return potential_temperature, random
 
-    def step(self, state: Any, timestep: float) -> Any:
-        return self.solver.step(state, timestep=timestep)
+    def step(self, state: Any, timestep: float, prepared: Any | None = None) -> Any:
+        return self.solver.step(
+            state,
+            timestep=timestep,
+            prepared=prepared,
+        )
 
-    def runtime_metrics(self, state: Any) -> Any:
-        return self.solver.runtime_metrics(state)
+    def prepare_step(self, state: Any) -> Any:
+        return self.solver.prepare_step(state)
+
+    def runtime_rates(self, state: Any) -> Any:
+        return self.solver.runtime_rates(state)
+
+    def diagnostic_metrics(self, state: Any) -> Any:
+        return self.solver.diagnostic_metrics(state)
 
     def timestep_from_metrics(self, metrics: np.ndarray) -> float:
         numerics = self.config.section("numerics")
@@ -201,7 +212,7 @@ class Simulation:
         return min(candidates)
 
     def timestep(self, state: Any) -> float:
-        return self.timestep_from_metrics(np.asarray(self.runtime_metrics(state)))
+        return self.timestep_from_metrics(np.asarray(self.runtime_rates(state)))
 
 
 def build_simulation(config: CaseConfig) -> Simulation:
@@ -380,19 +391,20 @@ def _diagnostic_row_from_metrics(
     config: CaseConfig,
     state: Any,
     timestep: float,
-    metrics: np.ndarray,
+    rates: np.ndarray,
+    diagnostics: np.ndarray,
 ) -> tuple[float, ...]:
-    scalar_mean = float(metrics[6])
+    scalar_mean = float(diagnostics[3])
     if not math.isnan(scalar_mean):
         scalar_mean += float(config.data.get("display", {}).get("scalar_offset", 0.0))
     return (
         float(state.step),
         float(state.time),
         timestep,
-        timestep * float(metrics[3]),
-        timestep * max(float(metrics[1]), float(metrics[2])),
-        float(metrics[4]),
-        float(metrics[5]),
+        timestep * float(diagnostics[0]),
+        timestep * max(float(rates[1]), float(rates[2])),
+        float(diagnostics[1]),
+        float(diagnostics[2]),
         scalar_mean,
     )
 
@@ -578,6 +590,8 @@ def run_case(
 ) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
     simulation = build_simulation(config)
+    import jax
+
     if restart is None:
         state = simulation.initial_state()
         samples: list[np.ndarray] = []
@@ -614,15 +628,16 @@ def run_case(
     stopped_early = False
     steps_this_run = 0
     last_timestep: float | None = None
-    pending_metrics = simulation.runtime_metrics(state)
-    ready_metrics: np.ndarray | None = None
+    pending_step = simulation.prepare_step(state)
+    ready_rates: np.ndarray | None = None
 
     while state.time < end_time:
-        if ready_metrics is None:
-            metrics = np.asarray(pending_metrics)
+        prepared_step = pending_step
+        if ready_rates is None:
+            rates = np.asarray(prepared_step.rates)
         else:
-            metrics = ready_metrics
-            ready_metrics = None
+            rates = ready_rates
+            ready_rates = None
         if (
             steps_this_run > 0
             and max_run_seconds is not None
@@ -631,24 +646,26 @@ def run_case(
             stopped_early = True
             if not history or int(history[-1][0]) != state.step:
                 assert last_timestep is not None
+                diagnostics = np.asarray(simulation.diagnostic_metrics(state))
                 history.append(
                     _diagnostic_row_from_metrics(
                         config,
                         state,
                         last_timestep,
-                        metrics,
+                        rates,
+                        diagnostics,
                     )
                 )
             break
 
         timestep = min(
-            simulation.timestep_from_metrics(metrics),
+            simulation.timestep_from_metrics(rates),
             end_time - state.time,
         )
-        state = simulation.step(state, timestep)
+        state = simulation.step(state, timestep, prepared_step)
         steps_this_run += 1
         last_timestep = timestep
-        pending_metrics = simulation.runtime_metrics(state)
+        pending_step = simulation.prepare_step(state)
 
         sample_due = state.time + 1.0e-12 >= sample_start and (
             state.step % int(sample_interval) == 0
@@ -661,12 +678,17 @@ def run_case(
         log_due = state.step % log_interval == 0 or final
         row: tuple[float, ...] | None = None
         if history_due or log_due or final or step_limit:
-            ready_metrics = np.asarray(pending_metrics)
+            device_rates, device_diagnostics = jax.device_get(
+                (pending_step.rates, simulation.diagnostic_metrics(state))
+            )
+            ready_rates = np.asarray(device_rates)
+            diagnostics = np.asarray(device_diagnostics)
             row = _diagnostic_row_from_metrics(
                 config,
                 state,
                 timestep,
-                ready_metrics,
+                ready_rates,
+                diagnostics,
             )
             if (history_due or final or step_limit) and (
                 not history or int(history[-1][0]) != state.step

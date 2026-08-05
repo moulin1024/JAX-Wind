@@ -165,6 +165,16 @@ class WallModelState(NamedTuple):
     filtered_velocity: Array
 
 
+class PreparedIMEXStep(NamedTuple):
+    """Reusable work prepared from one accepted neutral IMEX state."""
+
+    initial_explicit: MACVelocity
+    initial_implicit: MACVelocity
+    frozen_viscosity: Array
+    lasd_coefficient: Array
+    wall_velocity: Array
+
+
 @dataclass(frozen=True, slots=True)
 class MomentumDiagnostic:
     time: float
@@ -500,6 +510,35 @@ class MomentumOperators:
         self._compiled_imex_initial_tendencies = jax.jit(
             compiled_imex_initial_tendencies
         )
+
+        def compiled_imex_prepare(
+            velocity: MACVelocity,
+            lasd_coefficient: Array,
+            wall_velocity: Array,
+        ) -> tuple[MACVelocity, MACVelocity, Array, Array]:
+            initial_explicit, initial_implicit, frozen_viscosity = (
+                compiled_imex_initial_tendencies(
+                    velocity,
+                    lasd_coefficient,
+                    wall_velocity,
+                )
+            )
+            cells = _cell_velocity(velocity)
+            rates = jnp.stack(
+                (
+                    jnp.maximum(
+                        self.cfl_rate(velocity),
+                        self.wall_stability_rate(cells),
+                    ),
+                    self.explicit_sgs_diffusion_rate(
+                        frozen_viscosity,
+                        include_vertical=False,
+                    ),
+                )
+            )
+            return initial_explicit, initial_implicit, frozen_viscosity, rates
+
+        self._compiled_imex_prepare = jax.jit(compiled_imex_prepare)
 
         def compiled_imex_tendencies(
             velocity: MACVelocity,
@@ -1621,6 +1660,38 @@ class MomentumOperators:
             jnp.asarray(implicit_timestep, dtype=velocity.x.dtype),
         )
 
+    def prepare_imex_step(
+        self,
+        velocity: MACVelocity,
+    ) -> tuple[PreparedIMEXStep, Array]:
+        """Prepare initial IMEX tendencies and the two stability rates.
+
+        The accepted LASD and wall-model states are explicit inputs so the
+        compiled kernel can be launched immediately after an accepted step and
+        safely consumed on the following iteration.
+        """
+        if self.config.sgs_time_integration != "imex_ark3":
+            raise RuntimeError("IMEX preparation requires imex_ark3 integration")
+        coefficient = self._active_lasd_coefficient(velocity)
+        wall_velocity = self.active_wall_velocity(velocity)
+        initial_explicit, initial_implicit, frozen_viscosity, rates = (
+            self._compiled_imex_prepare(
+                velocity,
+                coefficient,
+                wall_velocity,
+            )
+        )
+        return (
+            PreparedIMEXStep(
+                initial_explicit,
+                initial_implicit,
+                frozen_viscosity,
+                coefficient,
+                wall_velocity,
+            ),
+            rates,
+        )
+
     def _imex_ark3_step(
         self,
         velocity: MACVelocity,
@@ -1634,6 +1705,7 @@ class MomentumOperators:
         explicit_forcing_provider: Callable[[MACVelocity, float], MACVelocity]
         | None = None,
         wall_stress_provider: Callable[[MACVelocity, float], Array] | None = None,
+        prepared: PreparedIMEXStep | None = None,
     ) -> VelocityPressureProjection:
         """Advance ARS(2,3,3) with frozen vertical SGS diffusion implicit.
 
@@ -1643,7 +1715,13 @@ class MomentumOperators:
         ``wall_stress_provider`` is evaluated with each ARK stage velocity and
         physical stage time, keeping nonlinear surface-layer coupling explicit.
         """
-        if wall_stress_provider is None:
+        if prepared is not None:
+            if wall_stress_provider is not None:
+                raise ValueError("prepared IMEX work cannot supply prescribed stress")
+            initial_explicit = prepared.initial_explicit
+            initial_implicit = prepared.initial_implicit
+            frozen_viscosity = prepared.frozen_viscosity
+        elif wall_stress_provider is None:
             initial_explicit, initial_implicit, frozen_viscosity = (
                 self._compiled_imex_initial_tendencies(
                     velocity,
@@ -1879,8 +1957,9 @@ class MomentumOperators:
         *,
         perturbation_tke: Array | None = None,
         seed: int = 0,
+        project: bool = True,
     ) -> MACVelocity:
-        """Build and project a horizontally homogeneous tabulated profile."""
+        """Build a horizontally homogeneous tabulated velocity profile."""
         nz, ny, nx = self.grid.shape
         dtype = self.pressure_solver.operator.dtype
         mean_u = jnp.asarray(mean_u, dtype=dtype)
@@ -1914,6 +1993,8 @@ class MomentumOperators:
             random *= scale[:, None, None, None]
             cells += random
         velocity = self.enforce_boundaries(_cells_to_faces(cells))
+        if not project:
+            return velocity
         if self.pressure_solver.krylov.execution == "jax":
             return self.projector.project_velocity(velocity, timestep=1.0)
         return self.projector.project(velocity, timestep=1.0).velocity
@@ -2030,7 +2111,10 @@ class MomentumOperators:
         *,
         timestep: float,
         time: float,
+        prepared: PreparedIMEXStep | None = None,
     ) -> MACVelocity:
+        if prepared is not None and self.config.sgs_time_integration != "imex_ark3":
+            raise ValueError("prepared work can only be used by IMEX integration")
         if self.lasd_closure is not None and self._lasd_state is None:
             self.reset_lasd(velocity)
         if (
@@ -2038,8 +2122,16 @@ class MomentumOperators:
             and self._wall_model_state is None
         ):
             self.reset_wall_model(velocity)
-        coefficient = self._active_lasd_coefficient(velocity)
-        wall_velocity = self.active_wall_velocity(velocity)
+        coefficient = (
+            self._active_lasd_coefficient(velocity)
+            if prepared is None
+            else prepared.lasd_coefficient
+        )
+        wall_velocity = (
+            self.active_wall_velocity(velocity)
+            if prepared is None
+            else prepared.wall_velocity
+        )
 
         if self.config.sgs_time_integration == "imex_ark3":
             projected = self._imex_ark3_step(
@@ -2049,6 +2141,7 @@ class MomentumOperators:
                 lasd_coefficient=coefficient,
                 wall_velocity=wall_velocity,
                 initial_pressure=self._pressure,
+                prepared=prepared,
             )
             advanced = self.enforce_boundaries(projected.velocity)
             self._pressure = projected.pressure
@@ -2574,6 +2667,7 @@ __all__ = [
     "MomentumConfig",
     "MomentumDiagnostic",
     "MomentumOperators",
+    "PreparedIMEXStep",
     "ScalarConfig",
     "ScalarOperators",
     "WallModelState",
