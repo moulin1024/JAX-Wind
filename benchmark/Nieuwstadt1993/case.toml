@@ -23,6 +23,7 @@ sample_start = 10927.319818172731
 maximum_step = 1.25
 sample_basis = "step"
 sample_interval = 20
+history_interval = 96
 log_interval = 96
 checkpoint_interval = 500
 

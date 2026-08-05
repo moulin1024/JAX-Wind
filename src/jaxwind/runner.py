@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import csv
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 import hashlib
 import json
 import math
@@ -178,16 +179,29 @@ class Simulation:
     def step(self, state: Any, timestep: float) -> Any:
         return self.solver.step(state, timestep=timestep)
 
-    def timestep(self, state: Any) -> float:
+    def runtime_metrics(self, state: Any) -> Any:
+        return self.solver.runtime_metrics(state)
+
+    def timestep_from_metrics(self, metrics: np.ndarray) -> float:
         numerics = self.config.section("numerics")
         target_cfl = float(numerics["target_cfl"])
         target_diffusive = float(numerics["target_diffusive_cfl"])
-        value = self.solver.timestep_for_cfl(
-            state,
-            target_cfl,
-            target_diffusive,
+        advective, momentum_diffusive, scalar_diffusive = (
+            float(value) for value in metrics[:3]
         )
-        return min(value, float(self.config.section("time")["maximum_step"]))
+        if not math.isfinite(advective) or advective <= 0.0:
+            raise ValueError("cannot choose a CFL step for zero or invalid velocity")
+        candidates = [target_cfl / advective]
+        for rate in (momentum_diffusive, scalar_diffusive):
+            if not math.isfinite(rate) or rate < 0.0:
+                raise ValueError("diffusive stability rates must be finite and nonnegative")
+            if rate > 0.0:
+                candidates.append(target_diffusive / rate)
+        candidates.append(float(self.config.section("time")["maximum_step"]))
+        return min(candidates)
+
+    def timestep(self, state: Any) -> float:
+        return self.timestep_from_metrics(np.asarray(self.runtime_metrics(state)))
 
 
 def build_simulation(config: CaseConfig) -> Simulation:
@@ -353,84 +367,61 @@ def _physics_fingerprint(config: CaseConfig) -> str:
 
 
 def _snapshot(simulation: Simulation, state: Any) -> np.ndarray:
-    cells = np.asarray(simulation.momentum.cell_centered_velocity(state.velocity))
-    mean = cells.mean(axis=(1, 2))
-    fluctuation = cells - mean[:, None, None, :]
-    variance = np.mean(fluctuation * fluctuation, axis=(1, 2))
-    scalar = state.potential_temperature
-    if scalar is None:
-        scalar_mean = np.full(simulation.grid.shape[0], np.nan)
-        scalar_variance = np.full_like(scalar_mean, np.nan)
-        wscalar = np.full_like(scalar_mean, np.nan)
-    else:
-        scalar_array = np.asarray(scalar) + float(
+    profile = np.asarray(simulation.solver.profile(state))
+    if state.potential_temperature is not None:
+        profile = profile.copy()
+        profile[:, 7] += float(
             simulation.config.data.get("display", {}).get("scalar_offset", 0.0)
         )
-        scalar_mean = scalar_array.mean(axis=(1, 2))
-        scalar_fluctuation = scalar_array - scalar_mean[:, None, None]
-        scalar_variance = np.mean(scalar_fluctuation**2, axis=(1, 2))
-        wscalar = np.mean(fluctuation[..., 2] * scalar_fluctuation, axis=(1, 2))
-    viscosity = np.asarray(simulation.momentum.sgs_viscosity(cells)).mean(axis=(1, 2))
-    return np.column_stack(
-        (
-            np.asarray(simulation.grid.z_centers),
-            mean,
-            variance,
-            scalar_mean,
-            scalar_variance,
-            np.mean(fluctuation[..., 0] * fluctuation[..., 2], axis=(1, 2)),
-            np.mean(fluctuation[..., 1] * fluctuation[..., 2], axis=(1, 2)),
-            wscalar,
-            viscosity,
-        )
-    )
+    return profile
 
 
-def _diagnostic_row(
-    simulation: Simulation,
+def _diagnostic_row_from_metrics(
+    config: CaseConfig,
     state: Any,
     timestep: float,
+    metrics: np.ndarray,
 ) -> tuple[float, ...]:
-    import jax.numpy as jnp
-    from jaxwind.pressure import mac_divergence
-
-    cells = simulation.momentum.cell_centered_velocity(state.velocity)
-    advective_rate = float(simulation.momentum.cfl_rate(state.velocity))
-    viscosity = simulation.momentum.sgs_viscosity(cells)
-    momentum_rate = float(
-        simulation.momentum.explicit_sgs_diffusion_rate(
-            viscosity,
-            include_vertical=(
-                simulation.momentum.config.sgs_time_integration == "explicit"
-            ),
-        )
-    )
-    scalar_rate = 0.0
-    scalar = state.potential_temperature
-    if scalar is not None:
-        scalar_rate = float(simulation.scalar.diffusive_rate(scalar, state.velocity))
-    divergence = float(
-        simulation.pressure.operator.norm(
-            mac_divergence(state.velocity, simulation.grid)
-        )
-    )
-    kinetic = float(0.5 * jnp.mean(jnp.sum(cells * cells, axis=-1)))
-    scalar_mean = (
-        math.nan
-        if scalar is None
-        else float(jnp.mean(scalar))
-        + float(simulation.config.data.get("display", {}).get("scalar_offset", 0.0))
-    )
+    scalar_mean = float(metrics[6])
+    if not math.isnan(scalar_mean):
+        scalar_mean += float(config.data.get("display", {}).get("scalar_offset", 0.0))
     return (
         float(state.step),
         float(state.time),
         timestep,
-        timestep * advective_rate,
-        timestep * max(momentum_rate, scalar_rate),
-        divergence,
-        kinetic,
+        timestep * float(metrics[3]),
+        timestep * max(float(metrics[1]), float(metrics[2])),
+        float(metrics[4]),
+        float(metrics[5]),
         scalar_mean,
     )
+
+
+def _estimated_completion(
+    *,
+    elapsed: float,
+    simulated: float,
+    remaining: float,
+) -> str:
+    if remaining <= 0.0:
+        return "ETA=done"
+    if elapsed <= 0.0 or simulated <= 0.0:
+        return "ETA=unknown"
+    remaining_seconds = elapsed * remaining / simulated
+    completion = datetime.now().astimezone() + timedelta(seconds=remaining_seconds)
+    total_seconds = max(0, int(round(remaining_seconds)))
+    days, remainder = divmod(total_seconds, 24 * 3600)
+    hours, remainder = divmod(remainder, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if days:
+        duration = f"{days}d{hours:02d}h{minutes:02d}m"
+    elif hours:
+        duration = f"{hours}h{minutes:02d}m{seconds:02d}s"
+    elif minutes:
+        duration = f"{minutes}m{seconds:02d}s"
+    else:
+        duration = f"{seconds}s"
+    return f"ETA={completion:%Y-%m-%d %H:%M:%S %Z} remaining={duration}"
 
 
 def _atomic_checkpoint(
@@ -614,35 +605,93 @@ def run_case(
             )
     else:
         next_sample_time = math.inf
+    history_interval = int(time_spec["history_interval"])
     log_interval = int(time_spec["log_interval"])
     checkpoint_interval = int(time_spec["checkpoint_interval"])
     checkpoint = output_dir / "checkpoint.npz"
     start = time.perf_counter()
+    run_start_time = state.time
     stopped_early = False
+    steps_this_run = 0
+    last_timestep: float | None = None
+    pending_metrics = simulation.runtime_metrics(state)
+    ready_metrics: np.ndarray | None = None
 
     while state.time < end_time:
-        timestep = min(simulation.timestep(state), end_time - state.time)
+        if ready_metrics is None:
+            metrics = np.asarray(pending_metrics)
+        else:
+            metrics = ready_metrics
+            ready_metrics = None
+        if (
+            steps_this_run > 0
+            and max_run_seconds is not None
+            and time.perf_counter() - start >= max_run_seconds
+        ):
+            stopped_early = True
+            if not history or int(history[-1][0]) != state.step:
+                assert last_timestep is not None
+                history.append(
+                    _diagnostic_row_from_metrics(
+                        config,
+                        state,
+                        last_timestep,
+                        metrics,
+                    )
+                )
+            break
+
+        timestep = min(
+            simulation.timestep_from_metrics(metrics),
+            end_time - state.time,
+        )
         state = simulation.step(state, timestep)
-        row = _diagnostic_row(simulation, state, timestep)
-        history.append(row)
+        steps_this_run += 1
+        last_timestep = timestep
+        pending_metrics = simulation.runtime_metrics(state)
+
         sample_due = state.time + 1.0e-12 >= sample_start and (
             state.step % int(sample_interval) == 0
             if sample_basis == "step"
             else state.time + 1.0e-12 >= next_sample_time
         )
         final = state.time >= end_time
+        step_limit = max_steps is not None and state.step >= max_steps
+        history_due = state.step % history_interval == 0
+        log_due = state.step % log_interval == 0 or final
+        row: tuple[float, ...] | None = None
+        if history_due or log_due or final or step_limit:
+            ready_metrics = np.asarray(pending_metrics)
+            row = _diagnostic_row_from_metrics(
+                config,
+                state,
+                timestep,
+                ready_metrics,
+            )
+            if (history_due or final or step_limit) and (
+                not history or int(history[-1][0]) != state.step
+            ):
+                history.append(row)
+
         if sample_due or final:
             samples.append(_snapshot(simulation, state))
             sample_times.append(state.time)
             while next_sample_time <= state.time + 1.0e-12:
                 next_sample_time += sample_interval
-        if state.step % log_interval == 0 or final:
+        if log_due:
+            if row is None:
+                raise RuntimeError("log metrics were not materialized")
             scale = float(config.data.get("display", {}).get("time_scale", 1.0))
             label = str(config.data.get("display", {}).get("time_label", "t"))
+            completion = _estimated_completion(
+                elapsed=time.perf_counter() - start,
+                simulated=state.time - run_start_time,
+                remaining=end_time - state.time,
+            )
             print(
                 f"step={state.step} {label}={state.time / scale:.5g}/"
                 f"{end_time / scale:.5g} CFL={row[3]:.4f} "
-                f"CFLnu={row[4]:.4f} divL2={row[5]:.3e}",
+                f"CFLnu={row[4]:.4f} divL2={row[5]:.3e} {completion}",
                 flush=True,
             )
         if state.step % checkpoint_interval == 0 or final:
@@ -654,14 +703,8 @@ def run_case(
                 sample_times,
                 history,
             )
-        if max_steps is not None and state.step >= max_steps:
+        if step_limit:
             stopped_early = state.time < end_time
-            break
-        if (
-            max_run_seconds is not None
-            and time.perf_counter() - start >= max_run_seconds
-        ):
-            stopped_early = True
             break
 
     if not samples:
@@ -717,6 +760,7 @@ def main(argv: list[str] | None = None) -> int:
                 "time.sample_start=0.0",
                 'time.sample_basis="step"',
                 "time.sample_interval=1",
+                "time.history_interval=1",
                 "time.log_interval=1",
                 "time.checkpoint_interval=2",
                 "time.maximum_step=0.25",

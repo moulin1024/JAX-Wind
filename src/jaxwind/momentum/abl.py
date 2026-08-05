@@ -173,6 +173,10 @@ class ABLSolver:
         self._rayleigh_temperature_target: Array | None = None
         if config is None:
             self.surface_law = None
+            self._compiled_runtime_metrics = jax.jit(
+                self._neutral_runtime_metrics
+            )
+            self._compiled_profile = jax.jit(self._neutral_profile)
             return
         self.surface_law = (
             None
@@ -225,54 +229,8 @@ class ABLSolver:
             self._rayleigh_momentum_tendency
         )
         self._compiled_stability_rates = jax.jit(self._stability_rates)
-
-        def pre_step_metrics(
-            velocity: MACVelocity,
-            potential_temperature: Array,
-            time: Array,
-        ) -> tuple[Array, Array, Array, Array, Array]:
-            fluxes = self._surface_layer_fluxes(
-                velocity,
-                potential_temperature,
-                time,
-            )
-            advective, momentum_diffusive, scalar_diffusive = (
-                self._stability_rates_from_fluxes(
-                    velocity,
-                    potential_temperature,
-                    time,
-                    fluxes,
-                )
-            )
-            return (
-                advective,
-                momentum_diffusive,
-                scalar_diffusive,
-                self.scalar.volume_mean(potential_temperature)
-                - self.config.reference_potential_temperature,
-                jnp.mean(fluxes.heat_flux),
-            )
-
-        def accepted_state_metrics(
-            velocity: MACVelocity,
-            potential_temperature: Array,
-            time: Array,
-        ) -> tuple[Array, Array, Array]:
-            fluxes = self._surface_layer_fluxes(
-                velocity,
-                potential_temperature,
-                time,
-            )
-            divergence = mac_divergence(velocity, self.grid)
-            return (
-                self.scalar.volume_mean(potential_temperature)
-                - self.config.reference_potential_temperature,
-                jnp.mean(fluxes.heat_flux),
-                self.momentum.pressure_solver.operator.norm(divergence),
-            )
-
-        self._compiled_pre_step_metrics = jax.jit(pre_step_metrics)
-        self._compiled_accepted_state_metrics = jax.jit(accepted_state_metrics)
+        self._compiled_runtime_metrics = jax.jit(self._thermal_runtime_metrics)
+        self._compiled_profile = jax.jit(self._thermal_profile)
 
     def surface_potential_temperature(self, time: Array | float) -> Array:
         """Return the linearly evolving prescribed surface temperature."""
@@ -779,39 +737,166 @@ class ABLSolver:
             jnp.asarray(state.time, dtype=state.potential_temperature.dtype),
         )
 
-    def pre_step_metrics(
+    def _neutral_runtime_metrics(
         self,
-        state: ABLState,
-    ) -> tuple[Array, Array, Array, Array, Array]:
-        """Return rates, scalar mean, and heat flux in one device launch."""
+        velocity: MACVelocity,
+        lasd_coefficient: Array,
+    ) -> Array:
+        cells = _cell_velocity(velocity)
+        gradient = self.momentum.velocity_gradient(cells)
+        viscosity = self.momentum.sgs_viscosity(
+            cells,
+            lasd_coefficient,
+            gradient=gradient,
+        )
+        transport_rate = self.momentum.cfl_rate(velocity)
+        advective_rate = jnp.maximum(
+            transport_rate,
+            self.momentum.wall_stability_rate(cells),
+        )
+        momentum_diffusive_rate = self.momentum.explicit_sgs_diffusion_rate(
+            viscosity,
+            include_vertical=(
+                self.momentum.config.sgs_time_integration != "imex_ark3"
+            ),
+        )
+        divergence = mac_divergence(velocity, self.grid)
+        return jnp.stack(
+            (
+                advective_rate,
+                momentum_diffusive_rate,
+                jnp.asarray(0.0, dtype=cells.dtype),
+                transport_rate,
+                self.momentum.pressure_solver.operator.norm(divergence),
+                0.5 * jnp.mean(jnp.sum(cells * cells, axis=-1)),
+                jnp.asarray(jnp.nan, dtype=cells.dtype),
+            )
+        )
+
+    def _thermal_runtime_metrics(
+        self,
+        velocity: MACVelocity,
+        potential_temperature: Array,
+        time: Array,
+    ) -> Array:
+        fluxes = self._surface_layer_fluxes(
+            velocity,
+            potential_temperature,
+            time,
+        )
+        rates = self._stability_rates_from_fluxes(
+            velocity,
+            potential_temperature,
+            time,
+            fluxes,
+        )
+        cells = _cell_velocity(velocity)
+        divergence = mac_divergence(velocity, self.grid)
+        return jnp.stack(
+            (
+                *rates,
+                self.momentum.cfl_rate(velocity),
+                self.momentum.pressure_solver.operator.norm(divergence),
+                0.5 * jnp.mean(jnp.sum(cells * cells, axis=-1)),
+                jnp.mean(potential_temperature),
+            )
+        )
+
+    def runtime_metrics(self, state: ABLState) -> Array:
+        """Return stability rates and accepted-state diagnostics as one vector.
+
+        The seven entries are the joint advective rate, momentum and scalar
+        diffusion rates, raw transport rate, divergence norm, kinetic energy,
+        and scalar mean.  Keeping this a single array gives callers one device
+        transfer and one synchronization point.
+        """
         if state.potential_temperature is None:
-            rates = self.stability_rates(state)
-            dtype = state.velocity.x.dtype
-            return (*rates, jnp.asarray(jnp.nan, dtype), jnp.asarray(0.0, dtype))
-        return self._compiled_pre_step_metrics(
+            return self._compiled_runtime_metrics(
+                state.velocity,
+                self.momentum._active_lasd_coefficient(state.velocity),
+            )
+        return self._compiled_runtime_metrics(
             state.velocity,
             state.potential_temperature,
             jnp.asarray(state.time, dtype=state.potential_temperature.dtype),
         )
 
-    def accepted_state_metrics(
+    def _profile_statistics(
         self,
-        state: ABLState,
-    ) -> tuple[Array, Array, Array]:
-        """Return scalar mean, heat flux, and divergence after a step."""
-        if state.potential_temperature is None:
-            divergence = mac_divergence(state.velocity, self.grid)
-            dtype = state.velocity.x.dtype
-            return (
-                jnp.asarray(jnp.nan, dtype),
-                jnp.asarray(0.0, dtype),
-                self.momentum.pressure_solver.operator.norm(divergence),
+        cells: Array,
+        viscosity: Array,
+        scalar: Array | None,
+    ) -> Array:
+        mean = jnp.mean(cells, axis=(1, 2))
+        fluctuation = cells - mean[:, None, None, :]
+        variance = jnp.mean(fluctuation * fluctuation, axis=(1, 2))
+        if scalar is None:
+            scalar_mean = jnp.full(mean.shape[0], jnp.nan, dtype=cells.dtype)
+            scalar_variance = jnp.full_like(scalar_mean, jnp.nan)
+            resolved_wscalar = jnp.full_like(scalar_mean, jnp.nan)
+        else:
+            scalar_mean = jnp.mean(scalar, axis=(1, 2))
+            scalar_fluctuation = scalar - scalar_mean[:, None, None]
+            scalar_variance = jnp.mean(
+                scalar_fluctuation * scalar_fluctuation,
+                axis=(1, 2),
             )
-        return self._compiled_accepted_state_metrics(
-            state.velocity,
-            state.potential_temperature,
-            jnp.asarray(state.time, dtype=state.potential_temperature.dtype),
+            resolved_wscalar = jnp.mean(
+                fluctuation[..., 2] * scalar_fluctuation,
+                axis=(1, 2),
+            )
+        return jnp.column_stack(
+            (
+                jnp.asarray(self.grid.z_centers, dtype=cells.dtype),
+                mean,
+                variance,
+                scalar_mean,
+                scalar_variance,
+                jnp.mean(
+                    fluctuation[..., 0] * fluctuation[..., 2],
+                    axis=(1, 2),
+                ),
+                jnp.mean(
+                    fluctuation[..., 1] * fluctuation[..., 2],
+                    axis=(1, 2),
+                ),
+                resolved_wscalar,
+                jnp.mean(viscosity, axis=(1, 2)),
+            )
         )
+
+    def _neutral_profile(
+        self,
+        velocity: MACVelocity,
+        lasd_coefficient: Array,
+    ) -> Array:
+        cells = _cell_velocity(velocity)
+        gradient = self.momentum.velocity_gradient(cells)
+        viscosity = self.momentum.sgs_viscosity(
+            cells,
+            lasd_coefficient,
+            gradient=gradient,
+        )
+        return self._profile_statistics(cells, viscosity, None)
+
+    def _thermal_profile(
+        self,
+        velocity: MACVelocity,
+        potential_temperature: Array,
+    ) -> Array:
+        cells = _cell_velocity(velocity)
+        gradient = self.momentum.velocity_gradient(cells)
+        viscosity = self.momentum.sgs_viscosity(cells, gradient=gradient)
+        return self._profile_statistics(cells, viscosity, potential_temperature)
+
+    def profile(self, state: ABLState) -> Array:
+        """Return the compact horizontally reduced profile on the device."""
+        if state.potential_temperature is None:
+            return self._compiled_profile(
+                state.velocity,
+                self.momentum._active_lasd_coefficient(state.velocity),
+            )
+        return self._compiled_profile(state.velocity, state.potential_temperature)
 
     def diagnostic_fields(
         self,

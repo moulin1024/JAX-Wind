@@ -119,7 +119,12 @@ def validate_case(data: dict[str, Any]) -> None:
 
     time = _require_table(data, "time")
     _positive(time, "end", "maximum_step", "sample_interval")
-    _positive_integer(time, "log_interval", "checkpoint_interval")
+    _positive_integer(
+        time,
+        "history_interval",
+        "log_interval",
+        "checkpoint_interval",
+    )
     sample_start = time.get("sample_start")
     if (
         not isinstance(sample_start, (int, float))

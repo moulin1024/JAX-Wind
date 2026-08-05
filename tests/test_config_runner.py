@@ -6,7 +6,12 @@ import numpy as np
 import pytest
 
 from jaxwind.config import load_case
-from jaxwind.runner import build_simulation, run_case
+from jaxwind.runner import (
+    PROFILE_COLUMNS,
+    _estimated_completion,
+    build_simulation,
+    run_case,
+)
 
 
 ROOT = Path(__file__).parents[1]
@@ -25,6 +30,7 @@ def _quick(path: Path):
             "time.sample_start=0.0",
             'time.sample_basis="step"',
             "time.sample_interval=1",
+            "time.history_interval=1",
             "time.log_interval=1",
             "time.checkpoint_interval=2",
             "time.maximum_step=0.25",
@@ -96,6 +102,30 @@ def test_all_cases_use_the_same_solver_and_state_types() -> None:
     assert states[2].potential_temperature is not None
 
 
+@pytest.mark.parametrize("case", CASES.values(), ids=CASES.keys())
+def test_runtime_observations_are_compact_device_arrays(case: Path) -> None:
+    simulation = build_simulation(_quick(case))
+    state = simulation.initial_state()
+
+    metrics = np.asarray(simulation.runtime_metrics(state))
+    profile = np.asarray(simulation.solver.profile(state))
+
+    assert metrics.shape == (7,)
+    assert np.all(np.isfinite(metrics[:6]))
+    assert profile.shape == (simulation.grid.shape[0], len(PROFILE_COLUMNS))
+    assert np.all(np.isfinite(profile[:, :7]))
+    assert np.all(np.isfinite(profile[:, 9:11]))
+    assert np.all(np.isfinite(profile[:, 12]))
+    if state.potential_temperature is None:
+        assert metrics[2] == 0.0
+        assert np.isnan(metrics[6])
+        assert np.all(np.isnan(profile[:, 7:9]))
+        assert np.all(np.isnan(profile[:, 11]))
+    else:
+        assert np.isfinite(metrics[6])
+        assert np.all(np.isfinite(profile[:, 7:]))
+
+
 def test_generic_runner_writes_and_restores_one_checkpoint(tmp_path: Path) -> None:
     config = _quick(CASES["andren"])
     first = run_case(config, output_dir=tmp_path / "first", max_steps=1)
@@ -110,3 +140,27 @@ def test_generic_runner_writes_and_restores_one_checkpoint(tmp_path: Path) -> No
     assert resumed["final_step"] == 2
     assert (tmp_path / "resumed" / "profiles.csv").is_file()
     assert (tmp_path / "resumed" / "resolved_config.json").is_file()
+
+
+def test_history_interval_is_independent_of_steps_and_logging(tmp_path: Path) -> None:
+    config = _quick(CASES["andren"]).with_overrides(
+        ["time.history_interval=2", "time.log_interval=99"]
+    )
+    run_case(config, output_dir=tmp_path, max_steps=3)
+
+    history = np.loadtxt(tmp_path / "history.csv", delimiter=",", skiprows=1)
+    assert history[:, 0].tolist() == [2.0, 3.0]
+
+
+def test_estimated_completion_reports_clock_time_and_duration() -> None:
+    estimate = _estimated_completion(
+        elapsed=2.0,
+        simulated=1.0,
+        remaining=1800.5,
+    )
+
+    assert estimate.startswith("ETA=")
+    assert estimate.endswith("remaining=1h00m01s")
+    assert _estimated_completion(elapsed=1.0, simulated=1.0, remaining=0.0) == (
+        "ETA=done"
+    )
