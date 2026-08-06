@@ -1,0 +1,69 @@
+schema = "jaxwind.case.v2"
+name = "NeutralLogLawAMD-64-z-stretched"
+
+[grid]
+shape = [64, 64, 64]
+extent = [4000.0, 4000.0, 1000.0]
+
+# Ground-focused one-sided exponential mapping.  x and y remain uniform.
+[grid.mapping.z]
+function = "exponential"
+focus = 0.0
+strength = 2.0
+
+[numerics]
+dtype = "float32"
+target_cfl = 0.5
+target_diffusive_cfl = 0.5
+mp5_strength = 1.0
+sgs_time_integration = "explicit"
+pressure_relative_tolerance = 1.0e-6
+pressure_max_iterations = 20
+pressure_smooth = 2
+pressure_coarse_smooth = 20
+pressure_coarsening = "auto"
+
+[time]
+end = 25.0
+sample_start = 12.5
+maximum_step = 0.25
+sample_basis = "step"
+sample_interval = 10
+history_interval = 10
+log_interval = 10
+checkpoint_interval = 50
+
+[momentum]
+friction_velocity = 0.4
+roughness_length = 0.01
+pressure_acceleration = 0.00016
+coriolis_vertical = 0.0
+coriolis_horizontal = 0.0
+
+[sgs]
+model = "amd"
+coefficient = 0.212
+
+[thermodynamics]
+enabled = false
+
+[surface]
+thermal_boundary = "adiabatic"
+momentum_stability = "neutral"
+
+[initial]
+seed = 0
+
+[initial.velocity]
+kind = "log_law"
+perturbation_amplitude = 0.1
+
+[initial.potential_temperature]
+kind = "none"
+
+[display]
+time_scale = 2500.0
+time_label = "t*"
+
+[output]
+directory = "benchmark_results/neutral_loglaw_amd_64_z_stretched"

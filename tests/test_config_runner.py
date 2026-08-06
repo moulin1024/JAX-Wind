@@ -21,6 +21,9 @@ CASES = {
     "gabls1": ROOT / "benchmark" / "GABLS1" / "case.toml",
 }
 STRETCHED_GABLS1 = ROOT / "benchmark" / "GABLS1" / "case_64_stretched.toml"
+STRETCHED_LOG_LAW = (
+    ROOT / "benchmark" / "NeutralLogLawAMD" / "case_z_stretched.toml"
+)
 
 
 def _quick(path: Path):
@@ -92,6 +95,39 @@ def test_gabls1_64_case_uses_independent_analytic_stretching() -> None:
     assert advanced.step == 1
     assert np.all(np.isfinite(np.asarray(advanced.velocity.x)))
     assert np.all(np.isfinite(np.asarray(advanced.potential_temperature)))
+
+
+def test_pressure_driven_log_law_uses_ground_focused_z_mapping() -> None:
+    config = load_case(STRETCHED_LOG_LAW)
+    assert config.section("grid")["shape"] == [64, 64, 64]
+    assert config.section("grid")["extent"] == [4000.0, 4000.0, 1000.0]
+
+    simulation = build_simulation(_quick(STRETCHED_LOG_LAW))
+    momentum = simulation.config.section("momentum")
+    friction_velocity = float(momentum["friction_velocity"])
+    height = float(simulation.config.section("grid")["extent"][2])
+
+    assert simulation.grid.uniform_axes == (True, True, False)
+    assert simulation.grid.z_widths[0] < simulation.grid.z_widths[-1]
+    assert simulation.momentum.wall_cell_height == simulation.grid.z_widths[0]
+    assert simulation.momentum.pressure_acceleration == pytest.approx(
+        friction_velocity**2 / height
+    )
+
+    state = simulation.initial_state()
+    cells = np.asarray(simulation.momentum.cell_centered_velocity(state.velocity))
+    mean_u = np.mean(cells[..., 0], axis=(1, 2))
+    expected = np.asarray(
+        simulation.momentum.wall_law.cell_average_log_denominators(
+            np.asarray(simulation.grid.z_faces[:-1], dtype=np.float32),
+            np.asarray(simulation.grid.z_faces[1:], dtype=np.float32),
+        )
+    ) * (friction_velocity / 0.4)
+    np.testing.assert_allclose(mean_u, expected, rtol=2.0e-6, atol=2.0e-6)
+
+    advanced = simulation.step(state, min(simulation.timestep(state), 0.001))
+    assert advanced.step == 1
+    assert np.all(np.isfinite(np.asarray(advanced.velocity.x)))
 
 
 def test_config_overrides_are_typed_and_must_name_existing_keys() -> None:

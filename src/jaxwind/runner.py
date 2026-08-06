@@ -75,7 +75,14 @@ class Simulation:
         seed = int(initial.get("seed", 0))
         nz, ny, nx = self.grid.shape
 
-        if velocity_spec["kind"] == "table":
+        if velocity_spec["kind"] == "log_law":
+            velocity = self.momentum.initial_log_profile(
+                perturbation_amplitude=float(
+                    velocity_spec.get("perturbation_amplitude", 0.05)
+                ),
+                project=False,
+            )
+        elif velocity_spec["kind"] == "table":
             z = np.asarray(self.grid.z_centers, dtype=float)
             if "z" in velocity_spec:
                 source_z = np.asarray(velocity_spec["z"], dtype=float)

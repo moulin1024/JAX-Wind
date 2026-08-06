@@ -254,8 +254,22 @@ def validate_case(data: dict[str, Any]) -> None:
 
     initial = _require_table(data, "initial")
     velocity = _require_table(initial, "velocity")
-    if velocity.get("kind") not in {"constant", "table"}:
-        raise ValueError("initial.velocity.kind must be constant or table")
+    if velocity.get("kind") not in {"constant", "log_law", "table"}:
+        raise ValueError(
+            "initial.velocity.kind must be constant, log_law, or table"
+        )
+    if velocity.get("kind") == "log_law":
+        perturbation = velocity.get("perturbation_amplitude", 0.05)
+        if (
+            isinstance(perturbation, bool)
+            or not isinstance(perturbation, (int, float))
+            or not math.isfinite(perturbation)
+            or perturbation < 0.0
+        ):
+            raise ValueError(
+                "initial.velocity.perturbation_amplitude must be finite and "
+                "nonnegative"
+            )
     temperature_initial = _require_table(initial, "potential_temperature")
     if temperature_initial.get("kind") not in {
         "none",

@@ -1,0 +1,210 @@
+<div id="gabls1-grid-preview">
+  <div class="gabls1-grid-toolbar">
+    <label for="gabls1-grid-stride">Displayed grid lines</label>
+    <select id="gabls1-grid-stride" aria-label="Displayed grid-line density">
+      <option value="1">All faces</option>
+      <option value="2">Every 2nd face</option>
+      <option value="4" selected>Every 4th face</option>
+      <option value="8">Every 8th face</option>
+    </select>
+    <span id="gabls1-grid-status" aria-live="polite"></span>
+  </div>
+  <div
+    id="gabls1-grid-plot"
+    role="img"
+    aria-label="Interactive three-dimensional preview of the stretched GABLS1 grid"
+  ></div>
+</div>
+
+<style>
+  #gabls1-grid-preview {
+    width: 100%;
+    color: var(--foreground);
+  }
+
+  #gabls1-grid-preview .gabls1-grid-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 0.65rem;
+    flex-wrap: wrap;
+    padding: 0.25rem 0 0.6rem;
+  }
+
+  #gabls1-grid-preview label {
+    font-weight: 500;
+  }
+
+  #gabls1-grid-preview select {
+    color: var(--foreground);
+    background: var(--input);
+    border: 1px solid var(--border);
+    border-radius: 0.4rem;
+    padding: 0.35rem 0.55rem;
+  }
+
+  #gabls1-grid-preview #gabls1-grid-status {
+    color: var(--muted-foreground);
+  }
+
+  #gabls1-grid-preview #gabls1-grid-plot {
+    width: 100%;
+    height: clamp(420px, 68vw, 680px);
+  }
+</style>
+
+<script src="https://cdn.jsdelivr.net/npm/plotly.js-dist-min@2.35.2/plotly.min.js"></script>
+<script>
+  (() => {
+    const root = document.getElementById("gabls1-grid-preview");
+    const plot = document.getElementById("gabls1-grid-plot");
+    const strideControl = document.getElementById("gabls1-grid-stride");
+    const status = document.getElementById("gabls1-grid-status");
+    const cellCount = 64;
+    const length = 400;
+    const strength = 2;
+
+    function clusteredInterval(lower, upper, cells, toward) {
+      const denominator = Math.expm1(strength);
+      const faces = [];
+      for (let index = 0; index <= cells; index += 1) {
+        const coordinate = index / cells;
+        const mapped = toward === "lower"
+          ? Math.expm1(strength * coordinate) / denominator
+          : 1 - Math.expm1(strength * (1 - coordinate)) / denominator;
+        faces.push(lower + (upper - lower) * mapped);
+      }
+      faces[0] = lower;
+      faces[faces.length - 1] = upper;
+      return faces;
+    }
+
+    function focusedFaces(focus) {
+      if (focus === 0) {
+        return clusteredInterval(0, length, cellCount, "lower");
+      }
+      if (focus === 1) {
+        return clusteredInterval(0, length, cellCount, "upper");
+      }
+      const point = length * focus;
+      const leftCells = Math.round(cellCount * focus);
+      const left = clusteredInterval(0, point, leftCells, "upper");
+      const right = clusteredInterval(
+        point,
+        length,
+        cellCount - leftCells,
+        "lower"
+      );
+      return left.slice(0, -1).concat(right);
+    }
+
+    const xFaces = focusedFaces(0.5);
+    const yFaces = focusedFaces(0.5);
+    const zFaces = focusedFaces(0);
+
+    function selectedIndices(stride) {
+      const indices = [];
+      for (let index = 0; index <= cellCount; index += stride) {
+        indices.push(index);
+      }
+      if (indices[indices.length - 1] !== cellCount) {
+        indices.push(cellCount);
+      }
+      return indices;
+    }
+
+    function lineFamily(axis, indices, color) {
+      const x = [];
+      const y = [];
+      const z = [];
+      for (const first of indices) {
+        for (const second of indices) {
+          if (axis === "x") {
+            x.push(0, length, null);
+            y.push(yFaces[first], yFaces[first], null);
+            z.push(zFaces[second], zFaces[second], null);
+          } else if (axis === "y") {
+            x.push(xFaces[first], xFaces[first], null);
+            y.push(0, length, null);
+            z.push(zFaces[second], zFaces[second], null);
+          } else {
+            x.push(xFaces[first], xFaces[first], null);
+            y.push(yFaces[second], yFaces[second], null);
+            z.push(0, length, null);
+          }
+        }
+      }
+      return {
+        type: "scatter3d",
+        mode: "lines",
+        name: `${axis}-parallel lines`,
+        x,
+        y,
+        z,
+        hoverinfo: "skip",
+        line: { color, width: 1.35 },
+        opacity: 0.58
+      };
+    }
+
+    function cssColor(name, fallback) {
+      return getComputedStyle(root).getPropertyValue(name).trim() || fallback;
+    }
+
+    function render() {
+      const stride = Number(strideControl.value);
+      const indices = selectedIndices(stride);
+      const foreground = cssColor("--foreground", "currentColor");
+      const border = cssColor("--border", foreground);
+      const traces = [
+        lineFamily("x", indices, cssColor("--viz-series-1", foreground)),
+        lineFamily("y", indices, cssColor("--viz-series-2", foreground)),
+        lineFamily("z", indices, cssColor("--viz-series-3", foreground))
+      ];
+      const axis = (title) => ({
+        title,
+        range: [0, length],
+        tick0: 0,
+        dtick: 100,
+        showbackground: false,
+        showgrid: false,
+        zeroline: false,
+        color: foreground,
+        linecolor: border,
+        showline: true
+      });
+      const layout = {
+        autosize: true,
+        margin: { l: 0, r: 0, b: 0, t: 0 },
+        paper_bgcolor: "rgba(0,0,0,0)",
+        plot_bgcolor: "rgba(0,0,0,0)",
+        font: { color: foreground },
+        legend: {
+          orientation: "h",
+          x: 0.5,
+          xanchor: "center",
+          y: 1,
+          yanchor: "bottom"
+        },
+        scene: {
+          xaxis: axis("x (m)"),
+          yaxis: axis("y (m)"),
+          zaxis: axis("z (m)"),
+          aspectmode: "cube",
+          camera: { eye: { x: 1.55, y: 1.45, z: 1.2 } }
+        },
+        uirevision: "gabls1-stretched-grid"
+      };
+      Plotly.react(plot, traces, layout, {
+        responsive: true,
+        displaylogo: false,
+        scrollZoom: true
+      });
+      const lineCount = 3 * indices.length * indices.length;
+      status.textContent = `${cellCount}³ cells · ${lineCount.toLocaleString()} lines · `
+        + "Δx,y 2.019–14.014 m · Δz 1.987–14.233 m";
+    }
+
+    strideControl.addEventListener("change", render);
+    render();
+  })();
+</script>

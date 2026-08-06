@@ -2084,6 +2084,7 @@ class MomentumOperators:
         self,
         *,
         perturbation_amplitude: float = 0.05,
+        project: bool = True,
     ) -> MACVelocity:
         nz, ny, nx = self.grid.shape
         z = self.z_centers - self.z_faces[0]
@@ -2125,6 +2126,8 @@ class MomentumOperators:
             perturbation * jnp.cos(yy)[None, :, None] * jnp.sin(2.0 * xx)[None, None, :]
         )
         velocity = self.enforce_boundaries(_cells_to_faces(cells))
+        if not project:
+            return velocity
         if self.pressure_solver.krylov.execution == "jax":
             return self.projector.project_velocity(velocity, timestep=1.0)
         return self.projector.project(velocity, timestep=1.0).velocity
