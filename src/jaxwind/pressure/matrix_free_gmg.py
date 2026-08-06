@@ -20,6 +20,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from jaxwind._linalg import pcr_tridiagonal_solve
 from jaxwind.domain.grid import RectilinearGrid
 from jaxwind.domain.multilevel import MultigridHierarchy, z_anisotropy_ratio
 
@@ -644,8 +645,9 @@ def _solve_z_lines(
     upper = jnp.zeros_like(wz).at[:-1].set(
         -1.0 / (wz[:-1] * distance)
     )
-    # XLA lowers this batched primitive to cuSPARSE gtsv2 on CUDA.  Keep z as
-    # the system dimension and treat every horizontal column as one batch.
+    # Keep z as the system dimension and treat every horizontal column as one
+    # PCR batch.  The horizontal block diagonal makes each line system
+    # diagonally dominant, including on z-semi coarse levels.
     column_shape = diagonal.shape
     batched_lower = jnp.moveaxis(
         jnp.broadcast_to(lower[:, None, None], column_shape),
@@ -659,7 +661,7 @@ def _solve_z_lines(
         -1,
     )
     batched_rhs = jnp.moveaxis(rhs, 0, -1)[..., None]
-    solution = jax.lax.linalg.tridiagonal_solve(
+    solution = pcr_tridiagonal_solve(
         batched_lower,
         batched_diagonal,
         batched_upper,
@@ -757,15 +759,28 @@ class MatrixFreeGMG:
 
     def _smooth(self, level: int, solution: Array, rhs: Array, count: int) -> Array:
         operator = self.operators[level]
+        if self.level_smoothers[level] == "z_line":
+
+            def line_iteration(_: int, current: Array) -> Array:
+                residual = rhs - operator.apply(current)
+                correction = _solve_z_lines(operator, residual)
+                return current + self.config.line_omega * correction
+
+            # Keep one statically expanded PCR body per grid level rather than
+            # cloning it for every pre/post/coarse relaxation.  This loop is
+            # over smoother applications, not over the dependent z rows.
+            return jax.lax.fori_loop(
+                0,
+                count,
+                line_iteration,
+                solution,
+            )
+
         for _ in range(count):
             residual = rhs - operator.apply(solution)
-            if self.level_smoothers[level] == "z_line":
-                correction = _solve_z_lines(operator, residual)
-                solution = solution + self.config.line_omega * correction
-            else:
-                solution = solution + (
-                    self.config.jacobi_omega * residual / operator.diagonal
-                )
+            solution = solution + (
+                self.config.jacobi_omega * residual / operator.diagonal
+            )
             # A constant pressure offset is annihilated by the operator and
             # therefore cannot affect subsequent smoothing residuals.  Defer
             # gauge fixing until the V-cycle exits instead of reducing over

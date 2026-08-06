@@ -6,6 +6,7 @@ import jax
 import numpy as np
 import jax.numpy as jnp
 
+from jaxwind._linalg import pcr_tridiagonal_solve
 from jaxwind.momentum import (
     MomentumConfig,
     MomentumOperators,
@@ -14,7 +15,6 @@ from jaxwind.momentum import (
 from jaxwind.momentum.operators import (
     _cells_to_faces,
     _interpolate_to_vertical_faces,
-    _pcr_tridiagonal_solve,
 )
 from jaxwind.pressure import (
     GMGConfig,
@@ -242,7 +242,7 @@ def test_pcr_matches_reference_solve_for_non_power_of_two_systems() -> None:
         )
     )
 
-    pcr = _pcr_tridiagonal_solve(lower, diagonal, upper, rhs)
+    pcr = pcr_tridiagonal_solve(lower, diagonal, upper, rhs)
     reference = jax.lax.linalg.tridiagonal_solve(lower, diagonal, upper, rhs)
 
     assert jnp.allclose(pcr, reference, rtol=2.0e-5, atol=2.0e-5)
