@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 
+import jax
 import numpy as np
 import jax.numpy as jnp
 
@@ -13,6 +14,7 @@ from jaxwind.momentum import (
 from jaxwind.momentum.operators import (
     _cells_to_faces,
     _interpolate_to_vertical_faces,
+    _pcr_tridiagonal_solve,
 )
 from jaxwind.pressure import (
     GMGConfig,
@@ -169,7 +171,7 @@ def test_batched_imex_vertical_solve_satisfies_every_component_system() -> None:
     grid = RectilinearGrid(
         (0.0, 1.0, 2.0, 3.0, 4.0),
         (0.0, 1.0, 2.0, 3.0, 4.0),
-        (0.0, 0.1, 0.3, 0.7, 1.5, 3.0, 5.0, 8.0, 12.0),
+        (0.0, 0.1, 0.3, 0.7, 1.5, 3.0, 5.0, 8.0, 12.0, 18.0),
     )
     momentum = _momentum(grid)
     nz, ny, nx = grid.shape
@@ -221,3 +223,26 @@ def test_batched_imex_vertical_solve_satisfies_every_component_system() -> None:
     )
 
     assert jnp.allclose(reconstructed, rhs, rtol=2.0e-5, atol=2.0e-5)
+
+
+def test_pcr_matches_reference_solve_for_non_power_of_two_systems() -> None:
+    batch, size, components = 5, 9, 3
+    lower = jnp.zeros((batch, size), dtype=jnp.float32)
+    upper = jnp.zeros((batch, size), dtype=jnp.float32)
+    phase = jnp.arange(batch * size, dtype=jnp.float32).reshape(batch, size)
+    lower = lower.at[..., 1:].set(-0.1 - 0.01 * jnp.sin(phase[..., 1:]))
+    upper = upper.at[..., :-1].set(-0.08 - 0.01 * jnp.cos(phase[..., :-1]))
+    diagonal = 1.0 - lower - upper
+    rhs = jnp.sin(
+        0.13
+        * jnp.arange(batch * size * components, dtype=jnp.float32).reshape(
+            batch,
+            size,
+            components,
+        )
+    )
+
+    pcr = _pcr_tridiagonal_solve(lower, diagonal, upper, rhs)
+    reference = jax.lax.linalg.tridiagonal_solve(lower, diagonal, upper, rhs)
+
+    assert jnp.allclose(pcr, reference, rtol=2.0e-5, atol=2.0e-5)
