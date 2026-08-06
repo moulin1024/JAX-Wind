@@ -465,17 +465,7 @@ def _diagnostic_row_from_metrics(
     )
 
 
-def _estimated_completion(
-    *,
-    elapsed: float,
-    simulated: float,
-    remaining: float,
-) -> str:
-    if remaining <= 0.0:
-        return "ETA=done"
-    if elapsed <= 0.0 or simulated <= 0.0:
-        return "ETA=unknown"
-    remaining_seconds = elapsed * remaining / simulated
+def _format_estimated_completion(remaining_seconds: float) -> str:
     completion = datetime.now().astimezone() + timedelta(seconds=remaining_seconds)
     total_seconds = max(0, int(round(remaining_seconds)))
     days, remainder = divmod(total_seconds, 24 * 3600)
@@ -490,6 +480,59 @@ def _estimated_completion(
     else:
         duration = f"{seconds}s"
     return f"ETA={completion:%Y-%m-%d %H:%M:%S %Z} remaining={duration}"
+
+
+class _RollingCompletionEstimator:
+    """Estimate completion from recent, post-compilation synchronized progress."""
+
+    def __init__(self, window: int = 6) -> None:
+        if window < 2:
+            raise ValueError("ETA rolling window must contain at least two observations")
+        self._window = window
+        self._observations: list[tuple[float, int, float]] = []
+
+    def observe(self, *, wall_time: float, step: int, physical_time: float) -> None:
+        observation = (float(wall_time), int(step), float(physical_time))
+        if self._observations:
+            previous = self._observations[-1]
+            if observation[0] <= previous[0]:
+                raise ValueError("ETA observation wall time must increase")
+            if observation[1] <= previous[1]:
+                raise ValueError("ETA observation step must increase")
+            if observation[2] <= previous[2]:
+                raise ValueError("ETA observation physical time must increase")
+        self._observations.append(observation)
+        if len(self._observations) > self._window:
+            del self._observations[: -self._window]
+
+    def estimate(self, *, remaining: float) -> str:
+        if remaining <= 0.0:
+            return "ETA=done"
+        if len(self._observations) < 2:
+            return "ETA=warming-up"
+
+        first_wall, first_step, _ = self._observations[0]
+        last_wall, last_step, last_physical = self._observations[-1]
+        _, previous_step, previous_physical = self._observations[-2]
+        elapsed = last_wall - first_wall
+        completed_steps = last_step - first_step
+        recent_steps = last_step - previous_step
+        recent_physical_advance = last_physical - previous_physical
+        if (
+            elapsed <= 0.0
+            or completed_steps <= 0
+            or recent_steps <= 0
+            or recent_physical_advance <= 0.0
+        ):
+            return "ETA=unknown"
+
+        steps_per_second = completed_steps / elapsed
+        physical_time_per_step = recent_physical_advance / recent_steps
+        physical_time_per_second = steps_per_second * physical_time_per_step
+        remaining_seconds = remaining / physical_time_per_second
+        if not math.isfinite(remaining_seconds):
+            return "ETA=unknown"
+        return _format_estimated_completion(remaining_seconds)
 
 
 def _atomic_checkpoint(
@@ -723,7 +766,7 @@ def run_case(
     checkpoint_interval = int(time_spec["checkpoint_interval"])
     checkpoint = output_dir / "checkpoint.npz"
     start = time.perf_counter()
-    run_start_time = state.time
+    completion_estimator = _RollingCompletionEstimator()
     stopped_early = False
     steps_this_run = 0
     last_timestep: float | None = None
@@ -789,6 +832,11 @@ def run_case(
                 ready_rates,
                 diagnostics,
             )
+            completion_estimator.observe(
+                wall_time=time.perf_counter(),
+                step=state.step,
+                physical_time=state.time,
+            )
             if (history_due or final or step_limit) and (
                 not history or int(history[-1][0]) != state.step
             ):
@@ -804,11 +852,7 @@ def run_case(
                 raise RuntimeError("log metrics were not materialized")
             scale = float(config.data.get("display", {}).get("time_scale", 1.0))
             label = str(config.data.get("display", {}).get("time_label", "t"))
-            completion = _estimated_completion(
-                elapsed=time.perf_counter() - start,
-                simulated=state.time - run_start_time,
-                remaining=end_time - state.time,
-            )
+            completion = completion_estimator.estimate(remaining=end_time - state.time)
             print(
                 f"step={state.step} {label}={state.time / scale:.5g}/"
                 f"{end_time / scale:.5g} CFL={row[3]:.4f} "

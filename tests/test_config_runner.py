@@ -8,8 +8,8 @@ import pytest
 from jaxwind.config import load_case
 from jaxwind.runner import (
     PROFILE_COLUMNS,
+    _RollingCompletionEstimator,
     _restore,
-    _estimated_completion,
     build_simulation,
     run_case,
 )
@@ -332,15 +332,24 @@ def test_history_interval_is_independent_of_steps_and_logging(tmp_path: Path) ->
     assert history[:, 0].tolist() == [2.0, 3.0]
 
 
-def test_estimated_completion_reports_clock_time_and_duration() -> None:
-    estimate = _estimated_completion(
-        elapsed=2.0,
-        simulated=1.0,
-        remaining=1800.5,
-    )
+def test_completion_estimator_uses_post_compile_rolling_progress() -> None:
+    estimator = _RollingCompletionEstimator(window=3)
 
-    assert estimate.startswith("ETA=")
-    assert estimate.endswith("remaining=1h00m01s")
-    assert _estimated_completion(elapsed=1.0, simulated=1.0, remaining=0.0) == (
-        "ETA=done"
-    )
+    assert estimator.estimate(remaining=60.0) == "ETA=warming-up"
+
+    # The first synchronized observation follows compilation and only establishes
+    # the baseline.  Its preceding wall time can therefore never enter the ETA.
+    estimator.observe(wall_time=100.0, step=100, physical_time=10.0)
+    assert estimator.estimate(remaining=60.0) == "ETA=warming-up"
+
+    estimator.observe(wall_time=102.0, step=120, physical_time=12.0)
+    first_estimate = estimator.estimate(remaining=60.0)
+    assert first_estimate.startswith("ETA=")
+    assert first_estimate.endswith("remaining=1m00s")
+
+    estimator.observe(wall_time=106.0, step=140, physical_time=14.0)
+    estimator.observe(wall_time=108.0, step=160, physical_time=18.0)
+    recent_estimate = estimator.estimate(remaining=60.0)
+    assert recent_estimate.startswith("ETA=")
+    assert recent_estimate.endswith("remaining=45s")
+    assert estimator.estimate(remaining=0.0) == "ETA=done"
