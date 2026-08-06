@@ -1076,53 +1076,16 @@ class MomentumOperators:
         )
         diagonal = 1.0 - lower - upper
 
-        first_upper = upper[0] / diagonal[0]
-        first_rhs = rhs[0] / diagonal[0][..., None]
-
-        def forward(carry, values):
-            previous_upper, previous_rhs = carry
-            lower_value, diagonal_value, upper_value, rhs_value = values
-            denominator = diagonal_value - lower_value * previous_upper
-            reduced_upper = upper_value / denominator
-            reduced_rhs = (
-                rhs_value - lower_value[..., None] * previous_rhs
-            ) / denominator[..., None]
-            return (
-                (reduced_upper, reduced_rhs),
-                (reduced_upper, reduced_rhs),
-            )
-
-        _, (upper_tail, rhs_tail) = jax.lax.scan(
-            forward,
-            (first_upper, first_rhs),
-            (lower[1:], diagonal[1:], upper[1:], rhs[1:]),
+        # XLA lowers this batched primitive to cuSPARSE gtsv2 on CUDA.  Each
+        # horizontal column is one system and the three velocity components
+        # are solved together as multiple right-hand sides.
+        solution = jax.lax.linalg.tridiagonal_solve(
+            jnp.moveaxis(lower, 0, -1),
+            jnp.moveaxis(diagonal, 0, -1),
+            jnp.moveaxis(upper, 0, -1),
+            jnp.moveaxis(rhs, 0, -2),
         )
-        reduced_upper = jnp.concatenate(
-            (first_upper[None], upper_tail),
-            axis=0,
-        )
-        reduced_rhs = jnp.concatenate(
-            (first_rhs[None], rhs_tail),
-            axis=0,
-        )
-
-        def backward(next_value, values):
-            rhs_value, upper_value = values
-            value = rhs_value - upper_value[..., None] * next_value
-            return value, value
-
-        _, prefix_reverse = jax.lax.scan(
-            backward,
-            reduced_rhs[-1],
-            (
-                reduced_rhs[:-1][::-1],
-                reduced_upper[:-1][::-1],
-            ),
-        )
-        return jnp.concatenate(
-            (prefix_reverse[::-1], reduced_rhs[-1:]),
-            axis=0,
-        )
+        return jnp.moveaxis(solution, -2, 0)
 
     def _amd_viscosity_from_gradient(self, gradient: Array) -> Array:
         strain = 0.5 * (gradient + jnp.swapaxes(gradient, -1, -2))

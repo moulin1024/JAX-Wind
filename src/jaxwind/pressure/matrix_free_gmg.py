@@ -644,55 +644,28 @@ def _solve_z_lines(
     upper = jnp.zeros_like(wz).at[:-1].set(
         -1.0 / (wz[:-1] * distance)
     )
-    first_denominator = jnp.where(diagonal[0] != 0.0, diagonal[0], 1.0)
-    first_upper = upper[0] / first_denominator
-    first_rhs = rhs[0] / first_denominator
-
-    def forward(
-        carry: tuple[Array, Array],
-        values: tuple[Array, Array, Array, Array],
-    ) -> tuple[tuple[Array, Array], tuple[Array, Array]]:
-        previous_upper, previous_rhs = carry
-        lower_value, diagonal_value, upper_value, rhs_value = values
-        denominator = diagonal_value - lower_value * previous_upper
-        denominator = jnp.where(denominator != 0.0, denominator, 1.0)
-        reduced_upper = upper_value / denominator
-        reduced_rhs = (
-            rhs_value - lower_value * previous_rhs
-        ) / denominator
-        return (
-            (reduced_upper, reduced_rhs),
-            (reduced_upper, reduced_rhs),
-        )
-
-    _, (upper_tail, rhs_tail) = jax.lax.scan(
-        forward,
-        (first_upper, first_rhs),
-        (lower[1:], diagonal[1:], upper[1:], rhs[1:]),
+    # XLA lowers this batched primitive to cuSPARSE gtsv2 on CUDA.  Keep z as
+    # the system dimension and treat every horizontal column as one batch.
+    column_shape = diagonal.shape
+    batched_lower = jnp.moveaxis(
+        jnp.broadcast_to(lower[:, None, None], column_shape),
+        0,
+        -1,
     )
-    reduced_upper = jnp.concatenate(
-        (first_upper[None, ...], upper_tail),
-        axis=0,
+    batched_diagonal = jnp.moveaxis(diagonal, 0, -1)
+    batched_upper = jnp.moveaxis(
+        jnp.broadcast_to(upper[:, None, None], column_shape),
+        0,
+        -1,
     )
-    reduced_rhs = jnp.concatenate(
-        (first_rhs[None, ...], rhs_tail),
-        axis=0,
+    batched_rhs = jnp.moveaxis(rhs, 0, -1)[..., None]
+    solution = jax.lax.linalg.tridiagonal_solve(
+        batched_lower,
+        batched_diagonal,
+        batched_upper,
+        batched_rhs,
     )
-
-    def backward(next_value: Array, values: tuple[Array, Array]) -> tuple[Array, Array]:
-        rhs_value, upper_value = values
-        value = rhs_value - upper_value * next_value
-        return value, value
-
-    _, prefix_reverse = jax.lax.scan(
-        backward,
-        reduced_rhs[-1],
-        (reduced_rhs[:-1][::-1], reduced_upper[:-1][::-1]),
-    )
-    return jnp.concatenate(
-        (prefix_reverse[::-1], reduced_rhs[-1:]),
-        axis=0,
-    )
+    return jnp.moveaxis(solution[..., 0], -1, 0)
 
 
 class MatrixFreeGMG:

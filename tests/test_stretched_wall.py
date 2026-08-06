@@ -10,7 +10,10 @@ from jaxwind.momentum import (
     MomentumOperators,
     MoninObukhovWallLaw,
 )
-from jaxwind.momentum.operators import _cells_to_faces
+from jaxwind.momentum.operators import (
+    _cells_to_faces,
+    _interpolate_to_vertical_faces,
+)
 from jaxwind.pressure import (
     GMGConfig,
     MatrixFreePoissonSolver,
@@ -160,3 +163,61 @@ def test_uniform_wall_face_mapping_matches_original_arithmetic_path() -> None:
             np.asarray(original_component),
             np.asarray(metric_component),
         )
+
+
+def test_batched_imex_vertical_solve_satisfies_every_component_system() -> None:
+    grid = RectilinearGrid(
+        (0.0, 1.0, 2.0, 3.0, 4.0),
+        (0.0, 1.0, 2.0, 3.0, 4.0),
+        (0.0, 0.1, 0.3, 0.7, 1.5, 3.0, 5.0, 8.0, 12.0),
+    )
+    momentum = _momentum(grid)
+    nz, ny, nx = grid.shape
+    z, y, x = jnp.meshgrid(
+        jnp.arange(nz, dtype=jnp.float32),
+        jnp.arange(ny, dtype=jnp.float32),
+        jnp.arange(nx, dtype=jnp.float32),
+        indexing="ij",
+    )
+    frozen_viscosity = 0.03 + 0.002 * z + 0.001 * x + 0.0005 * y
+    rhs = jnp.stack(
+        (
+            jnp.sin(0.2 * x + 0.1 * z),
+            jnp.cos(0.3 * y - 0.2 * z),
+            0.1 * x - 0.2 * y + 0.3 * z,
+        ),
+        axis=-1,
+    )
+    timestep = jnp.asarray(0.4, dtype=jnp.float32)
+
+    solution = momentum.solve_vertical_sgs_diffusion(
+        rhs,
+        frozen_viscosity,
+        timestep,
+    )
+
+    face_viscosity = _interpolate_to_vertical_faces(
+        frozen_viscosity,
+        momentum.z_centers,
+        momentum.z_faces,
+    )
+    lower = jnp.zeros_like(frozen_viscosity).at[1:].set(
+        -timestep
+        * face_viscosity
+        / (momentum.dz_cell[1:] * momentum.dz_center)[:, None, None]
+    )
+    upper = jnp.zeros_like(frozen_viscosity).at[:-1].set(
+        -timestep
+        * face_viscosity
+        / (momentum.dz_cell[:-1] * momentum.dz_center)[:, None, None]
+    )
+    diagonal = 1.0 - lower - upper
+    reconstructed = diagonal[..., None] * solution
+    reconstructed = reconstructed.at[1:].add(
+        lower[1:, ..., None] * solution[:-1]
+    )
+    reconstructed = reconstructed.at[:-1].add(
+        upper[:-1, ..., None] * solution[1:]
+    )
+
+    assert jnp.allclose(reconstructed, rhs, rtol=2.0e-5, atol=2.0e-5)

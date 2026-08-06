@@ -11,6 +11,7 @@ from jaxwind.pressure import (
     PoissonBoundaryConditions,
     RectilinearGrid,
 )
+from jaxwind.pressure.matrix_free_gmg import _axis_diagonal, _solve_z_lines
 
 
 def _solver(grid: RectilinearGrid) -> MatrixFreePoissonSolver:
@@ -68,3 +69,52 @@ def test_full_mac_projection_eliminates_divergence() -> None:
 
     assert result.linear_result.converged
     assert float(solver.operator.norm(result.divergence_after)) < 8.0e-4
+
+
+def test_batched_z_line_solve_satisfies_every_column_system() -> None:
+    grid = RectilinearGrid(
+        (0.0, 1.0, 2.0, 3.0, 4.0),
+        (0.0, 1.0, 2.0, 3.0, 4.0),
+        (0.0, 0.1, 0.3, 0.7, 1.5, 3.0, 5.0, 8.0, 12.0),
+    )
+    operator = _solver(grid).operator
+    rhs = jnp.sin(
+        0.17 * jnp.arange(grid.cell_count, dtype=jnp.float32)
+    ).reshape(grid.shape)
+
+    solution = _solve_z_lines(operator, rhs)
+
+    wx, wy, wz = operator._level.widths
+    cx, cy, cz = operator._level.centers
+    diagonal = (
+        _axis_diagonal(
+            wz,
+            cz,
+            operator.boundaries.z_lower,
+            operator.boundaries.z_upper,
+        )[:, None, None]
+        + _axis_diagonal(
+            wy,
+            cy,
+            operator.boundaries.y_lower,
+            operator.boundaries.y_upper,
+        )[None, :, None]
+        + _axis_diagonal(
+            wx,
+            cx,
+            operator.boundaries.x_lower,
+            operator.boundaries.x_upper,
+        )[None, None, :]
+    )
+    distance = cz[1:] - cz[:-1]
+    lower = jnp.zeros_like(wz).at[1:].set(-1.0 / (wz[1:] * distance))
+    upper = jnp.zeros_like(wz).at[:-1].set(-1.0 / (wz[:-1] * distance))
+    reconstructed = diagonal * solution
+    reconstructed = reconstructed.at[1:].add(
+        lower[1:, None, None] * solution[:-1]
+    )
+    reconstructed = reconstructed.at[:-1].add(
+        upper[:-1, None, None] * solution[1:]
+    )
+
+    assert jnp.allclose(reconstructed, rhs, rtol=2.0e-5, atol=2.0e-5)
