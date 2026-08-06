@@ -142,6 +142,8 @@ class Simulation:
         self.momentum.restore_pressure(projected.pressure)
         if self.momentum.lasd_closure is not None:
             self.momentum.reset_lasd(velocity)
+        if self.momentum.config.wall_temporal_filter_timescale is not None:
+            self.momentum.reset_wall_model(velocity)
 
         return self.solver.initial_state(
             velocity,
@@ -311,6 +313,19 @@ def build_simulation(config: CaseConfig) -> Simulation:
     momentum_spec = config.section("momentum")
     sgs = config.section("sgs")
     geostrophic = momentum_spec.get("geostrophic_wind")
+    von_karman = float(momentum_spec.get("von_karman", 0.4))
+    wall_filter_width = momentum_spec.get("wall_filter_width")
+    wall_temporal_filter_gamma = momentum_spec.get("wall_temporal_filter_gamma")
+    wall_temporal_filter_timescale = (
+        None
+        if wall_temporal_filter_gamma is None
+        else float(grid.z_widths[0])
+        / (
+            float(wall_temporal_filter_gamma)
+            * von_karman
+            * float(momentum_spec["friction_velocity"])
+        )
+    )
     lasd = None
     if sgs["model"] == "multilevel_lasd":
         lasd = LASDModel(
@@ -327,6 +342,11 @@ def build_simulation(config: CaseConfig) -> Simulation:
         MomentumConfig(
             friction_velocity=float(momentum_spec["friction_velocity"]),
             roughness_length=float(momentum_spec["roughness_length"]),
+            von_karman=von_karman,
+            wall_filter_width=(
+                None if wall_filter_width is None else float(wall_filter_width)
+            ),
+            wall_temporal_filter_timescale=wall_temporal_filter_timescale,
             pressure_acceleration=(
                 None
                 if momentum_spec.get("pressure_acceleration") is None
@@ -503,6 +523,10 @@ def _atomic_checkpoint(
         step, interval_time = simulation.momentum.lasd_progress
         payload["lasd_step"] = step
         payload["lasd_interval_time"] = interval_time
+    if simulation.momentum.wall_model_state is not None:
+        payload["wall_filtered_velocity"] = np.asarray(
+            simulation.momentum.wall_model_state.filtered_velocity
+        )
     temporary = destination.with_name(f".{destination.name}.tmp-{os.getpid()}")
     with temporary.open("wb") as stream:
         np.savez_compressed(stream, **payload)
@@ -514,7 +538,7 @@ def _restore(
     simulation: Simulation,
 ) -> tuple[Any, list[np.ndarray], list[float], list[tuple[float, ...]]]:
     import jax.numpy as jnp
-    from jaxwind.momentum import LASDState
+    from jaxwind.momentum import LASDState, WallModelState
     from jaxwind.pressure import MACVelocity
 
     checkpoint = np.load(path, allow_pickle=False)
@@ -554,6 +578,17 @@ def _restore(
             accepted_step=int(checkpoint["lasd_step"]),
             interval_time=float(checkpoint["lasd_interval_time"]),
         )
+    if simulation.momentum.config.wall_temporal_filter_timescale is not None:
+        if "wall_filtered_velocity" not in checkpoint:
+            raise ValueError("temporal wall-model checkpoint is missing memory")
+        simulation.momentum.restore_wall_model(
+            WallModelState(
+                jnp.asarray(
+                    checkpoint["wall_filtered_velocity"],
+                    dtype=simulation.dtype,
+                )
+            )
+        )
     sample_array = np.asarray(checkpoint["samples"])
     samples = [sample_array[index] for index in range(sample_array.shape[0])]
     sample_times = list(np.asarray(checkpoint["sample_times"], dtype=float))
@@ -581,6 +616,13 @@ def _write_outputs(
     if not selected:
         selected = samples
     profile = np.mean(np.stack(selected), axis=0)
+    # Height is geometry, not a sampled statistic.  Repeatedly accumulating a
+    # float32 copy can move the nominal centres enough to fail strict grid
+    # consistency checks over a long averaging window.
+    profile[:, 0] = np.asarray(
+        simulation.grid.z_centers,
+        dtype=profile.dtype,
+    )
     with (output_dir / "profiles.csv").open("w", newline="") as stream:
         writer = csv.writer(stream)
         writer.writerow(PROFILE_COLUMNS)
@@ -615,6 +657,15 @@ def _write_outputs(
         ],
         "wall_closure": "finite_volume_filtered_most_v1",
         "wall_first_cell_height_m": simulation.momentum.wall_cell_height,
+        "wall_filter_width_grid_cells": (
+            simulation.momentum.config.wall_filter_width
+        ),
+        "wall_temporal_filter_gamma": simulation.config.section("momentum").get(
+            "wall_temporal_filter_gamma"
+        ),
+        "wall_temporal_filter_timescale_s": (
+            simulation.momentum.config.wall_temporal_filter_timescale
+        ),
         "geostrophic_wind_m_s": simulation.config.section("momentum").get(
             "geostrophic_wind"
         ),

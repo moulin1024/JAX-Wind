@@ -1,11 +1,10 @@
 schema = "jaxwind.case.v2"
-name = "NeutralLogLawAMD-64-z-stretched"
+name = "NeutralLogLawMultilevelLASD64ZStretchedGMGNativeT20"
 
 [grid]
 shape = [64, 64, 64]
 extent = [4000.0, 4000.0, 1000.0]
 
-# Ground-focused one-sided exponential mapping.  x and y remain uniform.
 [grid.mapping.z]
 function = "exponential"
 focus = 0.0
@@ -16,7 +15,7 @@ dtype = "float32"
 target_cfl = 0.5
 target_diffusive_cfl = 0.5
 mp5_strength = 1.0
-sgs_time_integration = "explicit"
+sgs_time_integration = "imex_ark3"
 pressure_relative_tolerance = 1.0e-6
 pressure_max_iterations = 20
 pressure_smooth = 2
@@ -24,20 +23,18 @@ pressure_coarse_smooth = 20
 pressure_coarsening = "auto"
 
 [time]
-end = 25.0
-sample_start = 12.5
-maximum_step = 0.25
+end = 50000.0
+sample_start = 40000.0
+maximum_step = 10.0
 sample_basis = "step"
-sample_interval = 10
-history_interval = 10
-log_interval = 10
-checkpoint_interval = 50
+sample_interval = 20
+history_interval = 100
+log_interval = 500
+checkpoint_interval = 500
 
 [momentum]
 friction_velocity = 0.4
 roughness_length = 0.01
-# Apply the wall law to a compact horizontal LES-scale velocity and filter its
-# high-frequency response over Tf=dz1/(gamma*kappa*ustar).
 wall_filter_width = 3.0
 wall_temporal_filter_gamma = 1.0
 pressure_acceleration = 0.00016
@@ -45,8 +42,12 @@ coriolis_vertical = 0.0
 coriolis_horizontal = 0.0
 
 [sgs]
-model = "amd"
+model = "multilevel_lasd"
 coefficient = 0.212
+delta_scale = 1.0
+initial_coefficient = 0.03
+maximum_coefficient = 0.81
+update_interval = 1
 
 [thermodynamics]
 enabled = false
@@ -60,7 +61,7 @@ seed = 0
 
 [initial.velocity]
 kind = "log_law"
-perturbation_amplitude = 0.1
+perturbation_amplitude = 1.0
 
 [initial.potential_temperature]
 kind = "none"
@@ -70,4 +71,4 @@ time_scale = 2500.0
 time_label = "t*"
 
 [output]
-directory = "benchmark_results/neutral_loglaw_amd_64_z_stretched"
+directory = "benchmark_results/neutral_loglaw_multilevel_lasd_64_z_stretched_gmg_native_t20_gpu"

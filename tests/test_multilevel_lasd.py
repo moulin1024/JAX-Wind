@@ -57,6 +57,8 @@ def test_lasd_uses_actual_z_semi_coarsening_scale_ratio() -> None:
 
     assert closure.hierarchy.coarsening_factors[:2] == ((1, 2, 2), (1, 2, 2))
     assert math.isclose(closure.test_ratio, 4.0 ** (1.0 / 3.0))
+    assert math.isclose(float(closure.beta_test_ratio), 4.0 ** (1.0 / 3.0))
+    assert math.isclose(float(closure.beta_second_ratio), 4.0 ** (2.0 / 3.0))
 
 
 def test_conservative_restriction_preserves_constants_and_integrals() -> None:
@@ -132,3 +134,84 @@ def test_multilevel_lasd_update_is_finite_bounded_and_coarse_state() -> None:
     )
     assert float(jnp.max(updated.coefficient)) <= closure.model.maximum_coefficient
     assert float(jnp.max(jnp.abs(updated.trajectory_x))) == 0.0
+
+
+def test_lasd_clips_beta_to_paper_floor_instead_of_falling_back_to_one() -> None:
+    grid = RectilinearGrid.uniform(8, 8, 8)
+    _, closure = _closure(grid)
+    velocity = jnp.zeros((*grid.shape, 3), dtype=jnp.float32)
+    state = closure.initialize(velocity)
+    shape = state.lm.shape
+    mm = jnp.ones(shape, dtype=jnp.float32)
+    nn = jnp.ones(shape, dtype=jnp.float32)
+    lm = jnp.full(shape, 0.04, dtype=jnp.float32)
+    qn = jnp.full(shape, 0.001, dtype=jnp.float32)
+    state = state._replace(lm=lm, mm=mm, qn=qn, nn=nn)
+
+    updated = closure.update_from_contractions(
+        state,
+        lm,
+        mm,
+        qn,
+        nn,
+        interval_dt=0.1,
+        first_update=False,
+    )
+
+    # raw beta=0.025 is clipped to 1/2^3, so Cs^2=0.04/(1/8)=0.32.
+    assert jnp.allclose(updated.coefficient, 0.32, rtol=2.0e-6)
+
+
+def test_stretched_z_lasd_uses_local_filter_width_and_finite_update() -> None:
+    z_faces = tuple((jnp.linspace(0.0, 1.0, 9) ** 1.7).tolist())
+    grid = RectilinearGrid(
+        tuple(jnp.linspace(0.0, 4.0, 9).tolist()),
+        tuple(jnp.linspace(0.0, 4.0, 9).tolist()),
+        z_faces,
+    )
+    _, closure = _closure(grid)
+    z, y, x = jnp.meshgrid(
+        jnp.asarray(grid.z_centers, dtype=jnp.float32),
+        jnp.asarray(grid.y_centers, dtype=jnp.float32),
+        jnp.asarray(grid.x_centers, dtype=jnp.float32),
+        indexing="ij",
+    )
+    velocity = jnp.stack(
+        (
+            1.0 + z + 0.1 * jnp.sin(x),
+            0.1 * jnp.cos(y),
+            0.05 * jnp.sin(z),
+        ),
+        axis=-1,
+    )
+    gradient = jnp.zeros((*grid.shape, 3, 3), dtype=jnp.float32)
+    gradient = gradient.at[..., 0, 2].set(1.0)
+    state = closure.accumulate(closure.initialize(velocity), velocity)
+    updated = closure.update(
+        state,
+        velocity,
+        gradient,
+        interval_dt=0.1,
+        first_update=True,
+    )
+    viscosity = closure.viscosity(updated.coefficient, gradient)
+
+    assert closure.metric_aware
+    assert closure.delta.shape == grid.shape
+    test_grid = closure.hierarchy.grids[1]
+    test_dx = jnp.diff(jnp.asarray(test_grid.x_faces))
+    test_dy = jnp.diff(jnp.asarray(test_grid.y_faces))
+    test_dz = jnp.diff(jnp.asarray(test_grid.z_faces))
+    expected_test_delta = (
+        test_dz[:, None, None]
+        * test_dy[None, :, None]
+        * test_dx[None, None, :]
+    ) ** (1.0 / 3.0)
+    assert jnp.allclose(closure.test_delta, expected_test_delta)
+    assert jnp.allclose(
+        closure.beta_test_ratio,
+        expected_test_delta / closure.memory_delta,
+    )
+    assert float(closure.delta[-1, 0, 0]) > float(closure.delta[0, 0, 0])
+    assert jnp.all(jnp.isfinite(updated.coefficient))
+    assert jnp.all(jnp.isfinite(viscosity))

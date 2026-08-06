@@ -453,11 +453,11 @@ class MomentumOperators:
         self.z_centers = self.z_metric.centers
         self.dz_cell = self.z_metric.widths
         self.dz_center = self.z_metric.center_gaps
-        if config.lasd is not None and not all(self.uniform_axes):
+        if config.lasd is not None and not all(self.uniform_axes[:2]):
             raise ValueError(
-                "stretched grids support the AMD closure, not LASD: the LASD test"
-                " filter and its Lagrangian trajectory advection are both defined"
-                " on constant spacing"
+                "LASD currently requires uniform x and y spacing; stretched z is"
+                " supported with finite-volume test filters and metric-aware"
+                " Lagrangian trajectory interpolation"
             )
 
         self._wall_cell_height = float(grid.z_faces[1] - grid.z_faces[0])

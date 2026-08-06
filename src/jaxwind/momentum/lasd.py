@@ -8,6 +8,7 @@ from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 
 from jaxwind.pressure.matrix_free_gmg import MatrixFreeGMG
 
@@ -25,14 +26,12 @@ class LASDModel:
     """
 
     filter_grid_ratio: float = 1.0
-    test_filter_ratio: float = 2.0
     update_interval: int = 1
     timescale_coefficient: float = 1.5
     initial_coefficient: float = 0.03
     minimum_coefficient: float = 1.0e-6
     maximum_coefficient: float = 0.81
     scale_dependent: bool = True
-    clipped_beta_fallback: bool = True
     x_boundary: FilterBoundary = "periodic"
     y_boundary: FilterBoundary = "periodic"
     z_boundary: FilterBoundary = "reflect"
@@ -40,10 +39,8 @@ class LASDModel:
     sgs_delta_scale: float | None = None
 
     def __post_init__(self) -> None:
-        if self.filter_grid_ratio <= 0.0 or self.test_filter_ratio <= 1.0:
-            raise ValueError("LASD filter ratios are invalid")
-        if not math.isclose(self.test_filter_ratio, 2.0):
-            raise ValueError("multilevel LASD requires factor-two test levels")
+        if self.filter_grid_ratio <= 0.0:
+            raise ValueError("LASD grid-filter ratio must be positive")
         if self.update_interval <= 0:
             raise ValueError("LASD update interval must be positive")
         if self.timescale_coefficient <= 0.0:
@@ -161,22 +158,74 @@ class MultilevelLASD:
             )
         fine_grid = multigrid.hierarchy.grids[0]
         test_grid = multigrid.hierarchy.grids[1]
-        fine_widths = tuple(
-            faces[1] - faces[0]
+        fine_axis_widths = tuple(
+            np.diff(np.asarray(faces, dtype=float))
             for faces in (fine_grid.x_faces, fine_grid.y_faces, fine_grid.z_faces)
+        )
+        self.metric_aware = not all(
+            np.allclose(widths, widths[0], rtol=1.0e-12, atol=1.0e-12)
+            for widths in fine_axis_widths
         )
         self.multigrid = multigrid
         self.hierarchy = multigrid.hierarchy
+        self.model = model
         self.dx = test_grid.x_faces[1] - test_grid.x_faces[0]
         self.dy = test_grid.y_faces[1] - test_grid.y_faces[0]
         self.dz = test_grid.z_faces[1] - test_grid.z_faces[0]
-        self.delta = (
-            model.effective_delta_scale
-            * math.prod(fine_widths) ** (1.0 / 3.0)
+        self.test_z_centers = jnp.asarray(
+            0.5
+            * (
+                np.asarray(test_grid.z_faces[1:], dtype=float)
+                + np.asarray(test_grid.z_faces[:-1], dtype=float)
+            )
         )
+        if self.metric_aware:
+            dx, dy, dz = (
+                jnp.asarray(widths) for widths in fine_axis_widths
+            )
+            self.delta = model.effective_delta_scale * (
+                dz[:, None, None] * dy[None, :, None] * dx[None, None, :]
+            ) ** (1.0 / 3.0)
+            self.memory_delta = self.hierarchy.restrict(self.delta, fine_level=0)
+            second_memory_delta = self.hierarchy.restrict(
+                self.memory_delta,
+                fine_level=1,
+            )
+            self.test_delta = self._grid_delta(test_grid)
+            self.second_test_delta = self._grid_delta(
+                multigrid.hierarchy.grids[2]
+            )
+            self.beta_test_ratio = self.test_delta / self.memory_delta
+            self.beta_second_ratio = self.multigrid.prolong(
+                self.second_test_delta / second_memory_delta,
+                fine_level=1,
+            )
+        else:
+            fine_widths = tuple(widths[0] for widths in fine_axis_widths)
+            self.delta = (
+                model.effective_delta_scale
+                * math.prod(fine_widths) ** (1.0 / 3.0)
+            )
+            self.memory_delta = self.delta
+            self.test_delta = None
+            self.second_test_delta = None
+            self.beta_test_ratio = math.prod(first_factors) ** (1.0 / 3.0)
+            self.beta_second_ratio = self.beta_test_ratio**2
+        # Restriction is the test filter, so its volume-equivalent width is
+        # determined by the actual GMG coarsening rather than by a separately
+        # imposed nominal filter ratio.  On metric-aware grids the beta solve
+        # above retains the corresponding local physical ratios.
         self.test_ratio = math.prod(first_factors) ** (1.0 / 3.0)
         self.second_test_ratio = self.test_ratio**2
-        self.model = model
+
+    def _grid_delta(self, grid: object) -> Array:
+        dx, dy, dz = (
+            jnp.diff(jnp.asarray(faces))
+            for faces in (grid.x_faces, grid.y_faces, grid.z_faces)
+        )
+        return self.model.effective_delta_scale * (
+            dz[:, None, None] * dy[None, :, None] * dx[None, None, :]
+        ) ** (1.0 / 3.0)
 
     def initialize(self, cell_velocity: Array) -> LASDState:
         fine_shape = cell_velocity.shape[:-1]
@@ -210,12 +259,15 @@ class MultilevelLASD:
             ),
             axis=-1,
         )
+        magnitude_tensor = magnitude[..., None] * tensor
+        if self.metric_aware:
+            magnitude_tensor = self.delta[..., None] ** 2 * magnitude_tensor
         return jnp.concatenate(
             (
                 cell_velocity,
                 products,
                 tensor,
-                magnitude[..., None] * tensor,
+                magnitude_tensor,
             ),
             axis=-1,
         )
@@ -224,6 +276,7 @@ class MultilevelLASD:
         self,
         filtered: Array,
         ratio: float,
+        test_delta: Array | None = None,
     ) -> tuple[Array, Array]:
         velocity_hat = filtered[..., :3]
         products_hat = filtered[..., 3:9]
@@ -243,10 +296,20 @@ class MultilevelLASD:
             ),
             axis=-1,
         )
-        model = 2.0 * self.delta**2 * (
-            magnitude_tensor_hat
-            - ratio**2 * _tensor_magnitude(tensor_hat)[..., None] * tensor_hat
-        )
+        if test_delta is None:
+            model = 2.0 * self.delta**2 * (
+                magnitude_tensor_hat
+                - ratio**2
+                * _tensor_magnitude(tensor_hat)[..., None]
+                * tensor_hat
+            )
+        else:
+            model = 2.0 * (
+                magnitude_tensor_hat
+                - test_delta[..., None] ** 2
+                * _tensor_magnitude(tensor_hat)[..., None]
+                * tensor_hat
+            )
         return _symmetric_dot(resolved, model), _symmetric_dot(model, model)
 
     def contractions_from_inputs(
@@ -259,10 +322,12 @@ class MultilevelLASD:
         lm, mm = self._contractions_from_filtered(
             filtered_one,
             self.test_ratio,
+            self.test_delta,
         )
         qn, nn = self._contractions_from_filtered(
             filtered_two,
             self.second_test_ratio,
+            self.second_test_delta,
         )
         return (
             lm,
@@ -304,22 +369,39 @@ class MultilevelLASD:
         z_index = jnp.arange(nz, dtype=values.dtype)[:, None, None]
         xi = x_index - state.trajectory_x * interval_dt / self.dx
         eta = y_index - state.trajectory_y * interval_dt / self.dy
-        zeta = jnp.clip(
-            z_index - state.trajectory_z * interval_dt / self.dz,
-            0.0,
-            float(nz - 1),
-        )
+        if self.metric_aware:
+            z_centers = self.test_z_centers.astype(values.dtype)
+            departure_z = jnp.clip(
+                z_centers[:, None, None] - state.trajectory_z * interval_dt,
+                z_centers[0],
+                z_centers[-1],
+            )
+            k1 = jnp.clip(
+                jnp.searchsorted(z_centers, departure_z, side="right"),
+                1,
+                nz - 1,
+            )
+            k0 = k1 - 1
+            lower_z = z_centers[k0]
+            upper_z = z_centers[k1]
+            fz = _safe_divide(departure_z - lower_z, upper_z - lower_z)
+        else:
+            zeta = jnp.clip(
+                z_index - state.trajectory_z * interval_dt / self.dz,
+                0.0,
+                float(nz - 1),
+            )
+            k0 = jnp.floor(zeta).astype(jnp.int32)
+            k1 = jnp.minimum(k0 + 1, nz - 1)
+            fz = zeta - jnp.floor(zeta)
         i0_raw = jnp.floor(xi).astype(jnp.int32)
         j0_raw = jnp.floor(eta).astype(jnp.int32)
-        k0 = jnp.floor(zeta).astype(jnp.int32)
         i0 = self._fold_indices(i0_raw, nx, self.model.x_boundary)
         i1 = self._fold_indices(i0_raw + 1, nx, self.model.x_boundary)
         j0 = self._fold_indices(j0_raw, ny, self.model.y_boundary)
         j1 = self._fold_indices(j0_raw + 1, ny, self.model.y_boundary)
-        k1 = jnp.minimum(k0 + 1, nz - 1)
         fx = xi - jnp.floor(xi)
         fy = eta - jnp.floor(eta)
-        fz = zeta - jnp.floor(zeta)
         if values.ndim == 4:
             fx = fx[..., None]
             fy = fy[..., None]
@@ -354,7 +436,7 @@ class MultilevelLASD:
         valid = (old_a > 0.0) & (old_b >= 0.0) & (product > 0.0)
         timescale = (
             self.model.timescale_coefficient
-            * self.delta
+            * self.memory_delta
             * jnp.where(valid, product ** (-0.125), 1.0)
         )
         weight = jnp.where(
@@ -425,7 +507,6 @@ class MultilevelLASD:
         first_update: bool,
     ) -> LASDState:
         """Advance Lagrangian memory from precomputed dual-scale statistics."""
-        ratio = self.test_ratio
         histories = (
             jnp.where(first_update, self.model.initial_coefficient * mm, state.lm),
             jnp.where(first_update, mm, state.mm),
@@ -464,17 +545,23 @@ class MultilevelLASD:
         )
         coefficient_2d = jnp.maximum(_safe_divide(lm_avg, mm_avg), 0.0)
         coefficient_4d = jnp.maximum(_safe_divide(qn_avg, nn_avg), 0.0)
-        exponent = jnp.log(ratio) / (
-            jnp.log(ratio**2) - jnp.log(ratio)
+        first_ratio = jnp.asarray(
+            self.beta_test_ratio,
+            dtype=coefficient_2d.dtype,
+        )
+        second_ratio = jnp.asarray(
+            self.beta_second_ratio,
+            dtype=coefficient_2d.dtype,
+        )
+        exponent = jnp.log(first_ratio) / (
+            jnp.log(second_ratio) - jnp.log(first_ratio)
         )
         raw_beta = jnp.maximum(
             _safe_divide(coefficient_4d, coefficient_2d),
             0.0,
         ) ** exponent
-        beta_floor = 1.0 / ratio**3
+        beta_floor = 1.0 / first_ratio**3
         beta = jnp.maximum(raw_beta, beta_floor)
-        if self.model.clipped_beta_fallback:
-            beta = jnp.where(raw_beta > beta_floor, beta, 1.0)
         if not self.model.scale_dependent:
             beta = jnp.ones_like(beta)
         coarse_coefficient = jnp.clip(

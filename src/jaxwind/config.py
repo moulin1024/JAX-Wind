@@ -39,6 +39,20 @@ def _positive_integer(table: dict[str, Any], *names: str) -> None:
             raise ValueError(f"{name} must be a positive integer")
 
 
+def _optional_positive(table: dict[str, Any], *names: str) -> None:
+    for name in names:
+        if name not in table:
+            continue
+        value = table[name]
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            or value <= 0
+        ):
+            raise ValueError(f"{name} must be positive and finite")
+
+
 def _validate_axis_mapping(name: str, table: Any) -> None:
     if not isinstance(table, dict):
         raise ValueError(f"grid.mapping.{name} must be a table")
@@ -188,6 +202,12 @@ def validate_case(data: dict[str, Any]) -> None:
 
     momentum = _require_table(data, "momentum")
     _positive(momentum, "friction_velocity", "roughness_length")
+    _optional_positive(
+        momentum,
+        "von_karman",
+        "wall_filter_width",
+        "wall_temporal_filter_gamma",
+    )
     obsolete_wall_matching = {
         key for key in ("wall_matching_height", "wall_matching_level") if key in momentum
     }
@@ -216,6 +236,10 @@ def validate_case(data: dict[str, Any]) -> None:
     if enabled:
         if sgs["model"] != "amd":
             raise ValueError("thermodynamic coupling currently requires AMD momentum")
+        if "wall_temporal_filter_gamma" in momentum:
+            raise ValueError(
+                "temporal wall filtering currently requires neutral momentum"
+            )
         _positive(
             thermodynamics,
             "gravity",

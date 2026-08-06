@@ -8,6 +8,7 @@ import pytest
 from jaxwind.config import load_case
 from jaxwind.runner import (
     PROFILE_COLUMNS,
+    _restore,
     _estimated_completion,
     build_simulation,
     run_case,
@@ -110,11 +111,23 @@ def test_pressure_driven_log_law_uses_ground_focused_z_mapping() -> None:
     assert simulation.grid.uniform_axes == (True, True, False)
     assert simulation.grid.z_widths[0] < simulation.grid.z_widths[-1]
     assert simulation.momentum.wall_cell_height == simulation.grid.z_widths[0]
+    assert simulation.momentum.config.wall_filter_width == 3.0
+    assert simulation.momentum.config.wall_temporal_filter_timescale == pytest.approx(
+        simulation.grid.z_widths[0] / (0.4 * friction_velocity)
+    )
     assert simulation.momentum.pressure_acceleration == pytest.approx(
         friction_velocity**2 / height
     )
 
     state = simulation.initial_state()
+    wall_model = simulation.momentum.wall_model_state
+    assert wall_model is not None
+    np.testing.assert_array_equal(
+        wall_model.filtered_velocity,
+        simulation.momentum.instantaneous_wall_velocity(
+            simulation.momentum.cell_centered_velocity(state.velocity)
+        ),
+    )
     cells = np.asarray(simulation.momentum.cell_centered_velocity(state.velocity))
     mean_u = np.mean(cells[..., 0], axis=(1, 2))
     expected = np.asarray(
@@ -139,6 +152,11 @@ def test_config_overrides_are_typed_and_must_name_existing_keys() -> None:
     assert config.section("sgs")["coefficient"] == 0.3
     with pytest.raises(ValueError, match="existing key"):
         config.with_overrides(['numerics.projection_method="fpj2"'])
+    log_law = load_case(STRETCHED_LOG_LAW)
+    with pytest.raises(ValueError, match="wall_filter_width"):
+        log_law.with_overrides(["momentum.wall_filter_width=0.0"])
+    with pytest.raises(ValueError, match="wall_temporal_filter_gamma"):
+        log_law.with_overrides(["momentum.wall_temporal_filter_gamma=0.0"])
 
 
 @pytest.mark.parametrize("case", CASES.values(), ids=CASES.keys())
@@ -273,6 +291,35 @@ def test_generic_runner_writes_and_restores_one_checkpoint(tmp_path: Path) -> No
     assert resumed["final_step"] == 2
     assert (tmp_path / "resumed" / "profiles.csv").is_file()
     assert (tmp_path / "resumed" / "resolved_config.json").is_file()
+
+
+def test_generic_runner_checkpoints_temporal_wall_model(tmp_path: Path) -> None:
+    config = _quick(STRETCHED_LOG_LAW)
+    run_case(config, output_dir=tmp_path / "first", max_steps=1)
+    checkpoint_path = tmp_path / "first" / "checkpoint.npz"
+    checkpoint = np.load(checkpoint_path)
+
+    assert "wall_filtered_velocity" in checkpoint
+    simulation = build_simulation(config)
+    _restore(checkpoint_path, simulation)
+    restored = simulation.momentum.wall_model_state
+
+    assert restored is not None
+    np.testing.assert_array_equal(
+        restored.filtered_velocity,
+        checkpoint["wall_filtered_velocity"],
+    )
+    profile = np.loadtxt(
+        tmp_path / "first" / "profiles.csv",
+        delimiter=",",
+        skiprows=1,
+    )
+    np.testing.assert_allclose(
+        profile[:, 0],
+        np.asarray(simulation.grid.z_centers),
+        rtol=0.0,
+        atol=5.0e-5,
+    )
 
 
 def test_history_interval_is_independent_of_steps_and_logging(tmp_path: Path) -> None:
