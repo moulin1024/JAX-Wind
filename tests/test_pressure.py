@@ -44,6 +44,65 @@ def test_matrix_free_gmg_pcg_recovers_a_discrete_solution() -> None:
     assert float(solver.operator.norm(error) / solver.operator.norm(exact)) < 2.0e-5
 
 
+def test_gmg_projects_only_at_v_cycle_boundary(monkeypatch) -> None:
+    solver = _solver(RectilinearGrid.uniform(8, 8, 8))
+    preconditioner = solver.preconditioner
+    calls = [0] * len(preconditioner.operators)
+
+    for index, operator in enumerate(preconditioner.operators):
+        original = operator.project_nullspace
+
+        def counted(field, *, _index=index, _original=original):
+            calls[_index] += 1
+            return _original(field)
+
+        monkeypatch.setattr(operator, "project_nullspace", counted)
+
+    rhs = jnp.sin(
+        0.11 * jnp.arange(solver.operator.grid.cell_count, dtype=jnp.float32)
+    ).reshape(solver.operator.shape)
+    result = preconditioner.apply(rhs)
+
+    assert calls == [2] + [0] * (len(calls) - 1)
+    assert abs(float(solver.operator.volume_mean(result))) < 2.0e-6
+
+
+def test_gmg_without_inner_projections_remains_symmetric() -> None:
+    solver = _solver(RectilinearGrid.uniform(8, 8, 8))
+    operator = solver.operator
+    count = operator.grid.cell_count
+    left = operator.project_nullspace(
+        jnp.sin(0.07 * jnp.arange(count, dtype=jnp.float32)).reshape(operator.shape)
+    )
+    right = operator.project_nullspace(
+        jnp.cos(0.13 * jnp.arange(count, dtype=jnp.float32)).reshape(operator.shape)
+    )
+
+    left_preconditioned = solver.preconditioner.apply(left)
+    right_preconditioned = solver.preconditioner.apply(right)
+    left_inner = operator.inner(left, right_preconditioned)
+    right_inner = operator.inner(left_preconditioned, right)
+
+    assert jnp.allclose(left_inner, right_inner, rtol=2.0e-5, atol=2.0e-5)
+
+
+def test_z_semi_gmg_pcg_converges_without_inner_projections() -> None:
+    grid = RectilinearGrid.uniform(8, 8, 8, lx=32.0, ly=32.0, lz=8.0)
+    solver = _solver(grid)
+    assert solver.preconditioner.coarsening_factors[0] == (1, 2, 2)
+    exact = jnp.sin(
+        0.09 * jnp.arange(grid.cell_count, dtype=jnp.float32)
+    ).reshape(grid.shape)
+    exact = solver.operator.project_nullspace(exact)
+
+    result = solver.solve(solver.operator.apply(exact))
+    error = solver.operator.project_nullspace(result.solution - exact)
+
+    assert result.converged
+    assert result.relative_residual < 2.0e-6
+    assert float(solver.operator.norm(error) / solver.operator.norm(exact)) < 3.0e-5
+
+
 def test_full_mac_projection_eliminates_divergence() -> None:
     grid = RectilinearGrid.uniform(8, 8, 8)
     solver = _solver(grid)

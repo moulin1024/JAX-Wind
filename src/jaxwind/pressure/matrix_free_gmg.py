@@ -774,7 +774,6 @@ class MatrixFreeGMG:
 
     def _cycle(self, level: int, solution: Array, rhs: Array) -> Array:
         operator = self.operators[level]
-        rhs = operator.project_nullspace(rhs)
         if level == len(self.operators) - 1:
             return self._smooth(
                 level,
@@ -789,7 +788,11 @@ class MatrixFreeGMG:
             rhs,
             self.config.pre_smooth,
         )
-        residual = operator.project_nullspace(rhs - operator.apply(solution))
+        # A finite-volume Poisson application has zero volume integral and the
+        # conservative restriction preserves that integral on every coarse
+        # level.  The compatible fine-grid RHS therefore keeps every recursive
+        # residual compatible without another global mean reduction.
+        residual = rhs - operator.apply(solution)
         coarse_rhs = _restrict(residual, self.transfers[level])
         coarse_error = jnp.zeros_like(coarse_rhs)
         coarse_error = self._cycle(level + 1, coarse_error, coarse_rhs)
@@ -808,7 +811,11 @@ class MatrixFreeGMG:
                 f"expected preconditioner RHS shape {self.operators[0].shape}, "
                 f"got {tuple(rhs.shape)}"
             )
-        result = self._cycle(0, jnp.zeros_like(rhs), rhs)
+        # Project exactly once at the V-cycle boundary.  Internal operator
+        # applications and conservative transfers preserve compatibility; a
+        # final projection fixes the arbitrary pressure gauge.
+        compatible_rhs = self.operators[0].project_nullspace(rhs)
+        result = self._cycle(0, jnp.zeros_like(rhs), compatible_rhs)
         return self.operators[0].project_nullspace(result)
 
 
