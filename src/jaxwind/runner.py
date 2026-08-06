@@ -429,6 +429,10 @@ def _physics_fingerprint(config: CaseConfig) -> str:
     sections["_solver_physics"] = {
         "wall_closure": "finite_volume_filtered_most_v1"
     }
+    if config.section("sgs")["model"] == "multilevel_lasd":
+        sections["_solver_physics"]["lasd_discretization"] = (
+            "nested_finite_volume_v1"
+        )
     encoded = json.dumps(sections, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()
 
@@ -683,6 +687,11 @@ def _write_outputs(
         "runtime_s": runtime,
         "stopped_early": stopped_early,
         "sgs_model": simulation.config.section("sgs")["model"],
+        "lasd_discretization": (
+            "nested_finite_volume_v1"
+            if simulation.config.section("sgs")["model"] == "multilevel_lasd"
+            else None
+        ),
         "shape_zyx": list(simulation.grid.shape),
         "domain_m": list(simulation.config.section("grid")["extent"]),
         "minimum_spacing_m": [

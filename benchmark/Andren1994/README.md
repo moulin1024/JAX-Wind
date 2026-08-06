@@ -6,7 +6,8 @@ the same schema used by Nieuwstadt and GABLS1.
 
 The configured `40 × 40 × 40` case uses full MAC projection,
 GMG-preconditioned PCG, MP5 stabilization, IMEX-ARK3, and multilevel LASD. Its
-two Germano scales share the first two pressure-GMG levels.
+two Germano scales share the first two pressure-GMG levels and recompute the
+finite-volume velocity gradient on each restricted grid.
 
 Canonical CUDA run:
 

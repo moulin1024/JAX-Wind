@@ -10,6 +10,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from jaxwind.momentum.metrics import AxisMetric
 from jaxwind.pressure.matrix_free_gmg import MatrixFreeGMG
 
 
@@ -217,6 +218,40 @@ class MultilevelLASD:
         # above retains the corresponding local physical ratios.
         self.test_ratio = math.prod(first_factors) ** (1.0 / 3.0)
         self.second_test_ratio = self.test_ratio**2
+        if self.metric_aware:
+            self.level_deltas = (
+                self.delta,
+                self.test_delta,
+                self.second_test_delta,
+            )
+        else:
+            self.level_deltas = (
+                self.delta,
+                self.delta * self.test_ratio,
+                self.delta * self.second_test_ratio,
+            )
+        self.level_metrics = tuple(
+            self._grid_metrics(grid, multigrid.dtype)
+            for grid in self.hierarchy.grids[:3]
+        )
+
+    @staticmethod
+    def _grid_metrics(
+        grid: object,
+        dtype: object,
+    ) -> tuple[AxisMetric, AxisMetric, AxisMetric]:
+        """Build the same finite-volume derivative metrics on one GMG grid."""
+        return (
+            AxisMetric(grid.x_faces, axis=2, periodic=True, dtype=dtype),
+            AxisMetric(grid.y_faces, axis=1, periodic=True, dtype=dtype),
+            AxisMetric(
+                grid.z_faces,
+                axis=0,
+                periodic=False,
+                dtype=dtype,
+                derivative_width=3,
+            ),
+        )
 
     def _grid_delta(self, grid: object) -> Array:
         dx, dy, dz = (
@@ -240,15 +275,10 @@ class MultilevelLASD:
         zero = jnp.zeros(shape, dtype=cell_velocity.dtype)
         return LASDState(coefficient, zero, zero, zero, zero, zero, zero, zero)
 
-    def contraction_inputs(
-        self,
-        cell_velocity: Array,
-        gradient: Array,
-    ) -> Array:
-        """Build filter inputs once for both LASD test scales."""
-        tensor = _strain_tensor(gradient)
-        magnitude = _tensor_magnitude(tensor)
-        products = jnp.stack(
+    @staticmethod
+    def _velocity_products(cell_velocity: Array) -> Array:
+        """Return the six independent components of ``u_i u_j``."""
+        return jnp.stack(
             (
                 cell_velocity[..., 0] ** 2,
                 cell_velocity[..., 0] * cell_velocity[..., 1],
@@ -259,29 +289,56 @@ class MultilevelLASD:
             ),
             axis=-1,
         )
-        magnitude_tensor = magnitude[..., None] * tensor
-        if self.metric_aware:
-            magnitude_tensor = self.delta[..., None] ** 2 * magnitude_tensor
+
+    def _velocity_gradient(self, cell_velocity: Array, *, level: int) -> Array:
+        """Differentiate a cell-average velocity on its own FV grid level."""
+        metrics = self.level_metrics[level]
+        derivatives = []
+        for component in range(3):
+            value = cell_velocity[..., component]
+            derivatives.append(
+                jnp.stack(
+                    tuple(metric.derivative(value) for metric in metrics),
+                    axis=-1,
+                )
+            )
+        return jnp.stack(derivatives, axis=-2)
+
+    def _model_tensor(self, cell_velocity: Array, *, level: int) -> Array:
+        """Return ``Delta^2 |S| S`` from the level-native FV gradient."""
+        tensor = _strain_tensor(
+            self._velocity_gradient(cell_velocity, level=level)
+        )
+        delta = jnp.asarray(self.level_deltas[level], dtype=cell_velocity.dtype)
+        return delta[..., None] ** 2 * _tensor_magnitude(tensor)[..., None] * tensor
+
+    def _fine_filter_inputs(self, cell_velocity: Array) -> Array:
+        """Pack conservative quantities filtered from the LES grid."""
         return jnp.concatenate(
             (
                 cell_velocity,
-                products,
-                tensor,
-                magnitude_tensor,
+                self._velocity_products(cell_velocity),
+                self._model_tensor(cell_velocity, level=0),
             ),
             axis=-1,
         )
 
-    def _contractions_from_filtered(
+    def _germano_tensors_from_filtered(
         self,
         filtered: Array,
-        ratio: float,
-        test_delta: Array | None = None,
+        *,
+        level: int,
     ) -> tuple[Array, Array]:
+        """Build one discrete FV Germano pair on a test grid.
+
+        Restriction supplies conservative test-filtered cell averages.  The
+        test-grid strain is deliberately recomputed as ``D_H(R u)``; filtering
+        the fine-grid strain as ``R(D_h u)`` is not a valid identity for the
+        finite-volume operators, especially on a stretched grid.
+        """
         velocity_hat = filtered[..., :3]
         products_hat = filtered[..., 3:9]
-        tensor_hat = filtered[..., 9:15]
-        magnitude_tensor_hat = filtered[..., 15:21]
+        model_tensor_hat = filtered[..., 9:15]
         resolved = jnp.stack(
             (
                 products_hat[..., 0] - velocity_hat[..., 0] ** 2,
@@ -296,53 +353,56 @@ class MultilevelLASD:
             ),
             axis=-1,
         )
-        if test_delta is None:
-            model = 2.0 * self.delta**2 * (
-                magnitude_tensor_hat
-                - ratio**2
-                * _tensor_magnitude(tensor_hat)[..., None]
-                * tensor_hat
-            )
-        else:
-            model = 2.0 * (
-                magnitude_tensor_hat
-                - test_delta[..., None] ** 2
-                * _tensor_magnitude(tensor_hat)[..., None]
-                * tensor_hat
-            )
+        model = 2.0 * (
+            model_tensor_hat
+            - self._model_tensor(velocity_hat, level=level)
+        )
+        return resolved, model
+
+    def germano_tensors(
+        self,
+        cell_velocity: Array,
+    ) -> tuple[Array, Array, Array, Array]:
+        """Return the two nested, level-native finite-volume Germano pairs."""
+        if cell_velocity.shape[:-1] != self.hierarchy.grids[0].shape:
+            raise ValueError("LASD velocity shape does not match the hierarchy")
+        filtered_one = self.hierarchy.restrict(
+            self._fine_filter_inputs(cell_velocity),
+            fine_level=0,
+        )
+        filtered_two = self.hierarchy.restrict(filtered_one, fine_level=1)
+        resolved_one, model_one = self._germano_tensors_from_filtered(
+            filtered_one,
+            level=1,
+        )
+        resolved_two, model_two = self._germano_tensors_from_filtered(
+            filtered_two,
+            level=2,
+        )
+        return resolved_one, model_one, resolved_two, model_two
+
+    @staticmethod
+    def _contractions_from_tensors(
+        resolved: Array,
+        model: Array,
+    ) -> tuple[Array, Array]:
         return _symmetric_dot(resolved, model), _symmetric_dot(model, model)
 
-    def contractions_from_inputs(
+    def contractions(
         self,
-        fields: Array,
+        cell_velocity: Array,
     ) -> tuple[Array, Array, Array, Array]:
-        """Return both Germano contraction pairs from shared filter inputs."""
-        filtered_one = self.hierarchy.restrict(fields, fine_level=0)
-        filtered_two = self.hierarchy.restrict(filtered_one, fine_level=1)
-        lm, mm = self._contractions_from_filtered(
-            filtered_one,
-            self.test_ratio,
-            self.test_delta,
+        """Return contractions from the nested FV Germano identities."""
+        resolved_one, model_one, resolved_two, model_two = self.germano_tensors(
+            cell_velocity
         )
-        qn, nn = self._contractions_from_filtered(
-            filtered_two,
-            self.second_test_ratio,
-            self.second_test_delta,
-        )
+        lm, mm = self._contractions_from_tensors(resolved_one, model_one)
+        qn, nn = self._contractions_from_tensors(resolved_two, model_two)
         return (
             lm,
             mm,
             self.multigrid.prolong(qn, fine_level=1),
             self.multigrid.prolong(nn, fine_level=1),
-        )
-
-    def contractions(
-        self,
-        cell_velocity: Array,
-        gradient: Array,
-    ) -> tuple[Array, Array, Array, Array]:
-        return self.contractions_from_inputs(
-            self.contraction_inputs(cell_velocity, gradient)
         )
 
     @staticmethod
@@ -483,14 +543,13 @@ class MultilevelLASD:
         self,
         state: LASDState,
         cell_velocity: Array,
-        gradient: Array,
         *,
         interval_dt: float,
         first_update: bool,
     ) -> LASDState:
         return self.update_from_contractions(
             state,
-            *self.contractions(cell_velocity, gradient),
+            *self.contractions(cell_velocity),
             interval_dt=interval_dt,
             first_update=first_update,
         )

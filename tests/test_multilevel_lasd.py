@@ -4,7 +4,12 @@ import math
 
 import jax.numpy as jnp
 
-from jaxwind.momentum import LASDModel, MultilevelLASD
+from jaxwind.momentum import (
+    LASDModel,
+    MomentumConfig,
+    MomentumOperators,
+    MultilevelLASD,
+)
 from jaxwind.pressure import (
     GMGConfig,
     MatrixFreePoissonSolver,
@@ -39,6 +44,91 @@ def test_lasd_shares_pressure_grid_hierarchy() -> None:
         (4, 4, 4),
         (2, 2, 2),
     )
+
+
+def test_lasd_fine_gradient_matches_momentum_fv_operator() -> None:
+    z_faces = tuple((jnp.linspace(0.0, 1.0, 9) ** 1.7).tolist())
+    grid = RectilinearGrid(
+        tuple(jnp.linspace(0.0, 4.0, 9).tolist()),
+        tuple(jnp.linspace(0.0, 4.0, 9).tolist()),
+        z_faces,
+    )
+    pressure, closure = _closure(grid)
+    momentum = MomentumOperators(
+        grid,
+        pressure,
+        MomentumConfig(lasd=LASDModel()),
+    )
+    z, y, x = jnp.meshgrid(
+        jnp.asarray(grid.z_centers, dtype=jnp.float32),
+        jnp.asarray(grid.y_centers, dtype=jnp.float32),
+        jnp.asarray(grid.x_centers, dtype=jnp.float32),
+        indexing="ij",
+    )
+    velocity = jnp.stack(
+        (
+            jnp.sin(2.0 * x) + z**2,
+            jnp.cos(1.5 * y) + x * z,
+            jnp.sin(x + y) * (1.0 + z),
+        ),
+        axis=-1,
+    )
+
+    assert jnp.allclose(
+        closure._velocity_gradient(velocity, level=0),
+        momentum.velocity_gradient(velocity),
+        rtol=2.0e-6,
+        atol=2.0e-6,
+    )
+
+
+def test_lasd_recomputes_test_strain_after_conservative_restriction() -> None:
+    z_faces = tuple((jnp.linspace(0.0, 1.0, 9) ** 1.8).tolist())
+    grid = RectilinearGrid(
+        tuple(jnp.linspace(0.0, 4.0, 9).tolist()),
+        tuple(jnp.linspace(0.0, 4.0, 9).tolist()),
+        z_faces,
+    )
+    _, closure = _closure(grid)
+    z, y, x = jnp.meshgrid(
+        jnp.asarray(grid.z_centers, dtype=jnp.float32),
+        jnp.asarray(grid.y_centers, dtype=jnp.float32),
+        jnp.asarray(grid.x_centers, dtype=jnp.float32),
+        indexing="ij",
+    )
+    velocity = jnp.stack(
+        (
+            jnp.sin(2.2 * x + 0.3 * y) + 2.0 * z**2,
+            jnp.cos(1.7 * y - 0.4 * x) * (1.0 + z),
+            jnp.sin(x + y) * (0.2 + z**2),
+        ),
+        axis=-1,
+    )
+    coarse_velocity = closure.hierarchy.restrict(velocity, fine_level=0)
+    filtered_fine_gradient = closure.hierarchy.restrict(
+        closure._velocity_gradient(velocity, level=0),
+        fine_level=0,
+    )
+    coarse_grid_gradient = closure._velocity_gradient(
+        coarse_velocity,
+        level=1,
+    )
+    _, model_one, _, _ = closure.germano_tensors(velocity)
+    filtered_inputs = closure.hierarchy.restrict(
+        closure._fine_filter_inputs(velocity),
+        fine_level=0,
+    )
+    expected_model = 2.0 * (
+        filtered_inputs[..., 9:15]
+        - closure._model_tensor(coarse_velocity, level=1)
+    )
+
+    # Restriction and the FV derivative do not commute.  This regression test
+    # ensures the Germano tensor follows D_H(Ru), not the former R(D_h u).
+    assert float(
+        jnp.max(jnp.abs(filtered_fine_gradient - coarse_grid_gradient))
+    ) > 1.0e-3
+    assert jnp.allclose(model_one, expected_model, rtol=3.0e-6, atol=3.0e-6)
 
 
 def test_lasd_uses_actual_z_semi_coarsening_scale_ratio() -> None:
@@ -102,25 +192,10 @@ def test_multilevel_lasd_update_is_finite_bounded_and_coarse_state() -> None:
         ),
         axis=-1,
     )
-    gradient = jnp.stack(
-        tuple(
-            jnp.stack(
-                (
-                    jnp.gradient(velocity[..., component], axis=2),
-                    jnp.gradient(velocity[..., component], axis=1),
-                    jnp.gradient(velocity[..., component], axis=0),
-                ),
-                axis=-1,
-            )
-            for component in range(3)
-        ),
-        axis=-2,
-    )
     state = closure.accumulate(closure.initialize(velocity), velocity)
     updated = closure.update(
         state,
         velocity,
-        gradient,
         interval_dt=0.1,
         first_update=True,
     )
@@ -190,7 +265,6 @@ def test_stretched_z_lasd_uses_local_filter_width_and_finite_update() -> None:
     updated = closure.update(
         state,
         velocity,
-        gradient,
         interval_dt=0.1,
         first_update=True,
     )

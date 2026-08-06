@@ -849,14 +849,9 @@ class MomentumOperators:
                 cells: Array,
             ) -> tuple[LASDState, Array, Array, Array, Array]:
                 accumulated = self.lasd_closure.accumulate(state, cells)
-                gradient = self.velocity_gradient(cells)
-                fields = self.lasd_closure.contraction_inputs(
-                    cells,
-                    gradient,
-                )
                 return (
                     accumulated,
-                    *self.lasd_closure.contractions_from_inputs(fields),
+                    *self.lasd_closure.contractions(cells),
                 )
 
             def compiled_lasd_finalize(
@@ -878,10 +873,9 @@ class MomentumOperators:
                     first_update=first_update,
                 )
 
-            # Keep a hard executable boundary between local Germano
-            # statistics and Lagrangian trajectory/history work.  This lets
-            # gradient construction feed the dual-scale filter without a
-            # field-sized spill, but does not build one giant timestep graph.
+            # Keep a hard executable boundary between nested FV Germano
+            # statistics and Lagrangian trajectory/history work.  Each GMG
+            # level recomputes its own gradient inside this kernel.
             self._compiled_lasd_statistics = jax.jit(
                 compiled_lasd_statistics,
                 inline=False,

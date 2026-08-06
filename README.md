@@ -34,7 +34,10 @@ actuator models, and experimental workflows live in `jaxwind_archiv`.
 Andrén can additionally run a multilevel LASD closure. Its two Germano test
 scales share the pressure solver's first two geometric-multigrid levels;
 conservative coarse-grid restriction keeps the bandwidth-heavy statistics and
-Lagrangian memory off the LES grid.
+Lagrangian memory off the LES grid.  The closure is finite-volume native:
+velocity is restricted first, then each GMG level recomputes its own metric-
+aware strain and model tensor, so the Germano identity uses `D_H(Ru)` rather
+than the non-commuting `R(D_hu)` approximation.
 
 ## Validation benchmarks
 

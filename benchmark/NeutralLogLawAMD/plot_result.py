@@ -223,20 +223,27 @@ def main() -> None:
         ls="--",
         lw=1,
     )
+    stability_maximum = max(
+        float(np.nanmax(history["advective_cfl"])),
+        float(np.nanmax(history["diffusive_cfl"])),
+        float(config["numerics"]["target_cfl"]),
+        float(config["numerics"]["target_diffusive_cfl"]),
+    )
     axis.set(
         xlabel=r"$t u_*/H$",
         ylabel="stability number",
         xlim=(0.0, float(config["time"]["end"]) / time_scale),
-        ylim=(0.0, 0.55),
+        ylim=(0.0, max(0.55, 1.08 * stability_maximum)),
     )
     axis.legend(fontsize=8)
 
     for axis in axes.flat:
         axis.grid(alpha=0.25)
     integration = config["numerics"]["sgs_time_integration"]
+    sgs_model = str(summary["sgs_model"]).replace("_", " ").upper()
     figure.suptitle(
         "Pressure-driven neutral log layer: "
-        f"{grid.shape[2]}³ z-stretched AMD {integration}, "
+        f"{grid.shape[2]}³ z-stretched {sgs_model} {integration}, "
         f"t*={float(summary['final_time_s']) * ustar / height:.2f}"
     )
     figure.savefig(output, dpi=180)
