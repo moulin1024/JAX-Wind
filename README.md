@@ -18,9 +18,11 @@ The active numerical path provides:
 - geometric-multigrid-preconditioned PCG;
 - full pressure projection after every momentum stage;
 - conservative momentum transport and MP5 dissipation;
-- AMD momentum/scalar closures and pressure-hierarchy multilevel LASD;
+- AMD closures, pressure-hierarchy FV-native momentum LASD, and an optional
+  FV-dynamic scalar Germano closure using the same hierarchy;
 - explicit SSPRK3 and IMEX-ARK3 vertical SGS integration;
-- neutral-log and Monin-Obukhov surface fluxes; and
+- finite-volume-filtered neutral-log and Monin-Obukhov surface fluxes with a
+  similarity-consistent first-internal-face reconstruction; and
 - one `ABLSolver`/`ABLState` path for neutral and thermally stratified flows.
 
 Neutral, convective, and stable are not solver classes. The same solver is
@@ -28,16 +30,52 @@ configured with an optional potential-temperature field, buoyancy constants,
 and an adiabatic, prescribed-flux, or prescribed-temperature surface. The
 initial stratification and surface heat transfer determine the flow regime.
 
-Only the canonical uniform-grid, single-process solver belongs to the active
-minimum. Distributed solvers, semantic interpreters, AB2, OpenFAST, meshing,
+Only the rectilinear single-process solver belongs to the active minimum;
+each axis may use an analytic stretching map. Distributed solvers, semantic
+interpreters, AB2, OpenFAST, meshing,
 actuator models, and experimental workflows live in `jaxwind_archiv`.
-Andrén can additionally run a multilevel LASD closure. Its two Germano test
+Any neutral or thermally coupled case can additionally run the multilevel LASD
+closure. Its two Germano test
 scales share the pressure solver's first two geometric-multigrid levels;
 conservative coarse-grid restriction keeps the bandwidth-heavy statistics and
 Lagrangian memory off the LES grid.  The closure is finite-volume native:
 velocity is restricted first, then each GMG level recomputes its own metric-
 aware strain and model tensor, so the Germano identity uses `D_H(Ru)` rather
 than the non-commuting `R(D_hu)` approximation.
+
+The surface closure is boundary-condition driven rather than flow-regime
+driven. Prescribed surface temperature and prescribed heat flux can both use
+coupled MOST; the neutral limit uses the same interface. Momentum and scalar
+values transported through the first internal face are reconstructed from the
+same point-to-cell-average similarity relation that diagnoses the wall flux,
+including stability functions and the true stretched-cell bounds.
+
+With multilevel LASD momentum, thermodynamic cases may select the FV-dynamic
+scalar model:
+
+```toml
+[sgs]
+model = "multilevel_lasd"
+
+[thermodynamics]
+enabled = true
+scalar_sgs_model = "fv_dynamic"
+```
+
+An optional slow horizontal-zero-mode constraint derives its target total
+stress from the filtered discrete mean acceleration, external pressure/
+Coriolis/sponge forcing, and the actual MOST traction. It does not prescribe a
+logarithmic profile or assume stationary/neutral flow:
+
+```toml
+[mean_momentum]
+enabled = true
+timescale = 600.0
+gain = 1.0
+```
+
+It is disabled when the table is absent, so benchmark validation does not gain
+an implicit mean-profile forcing.
 
 ## Validation benchmarks
 

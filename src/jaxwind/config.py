@@ -208,6 +208,26 @@ def validate_case(data: dict[str, Any]) -> None:
         "wall_filter_width",
         "wall_temporal_filter_gamma",
     )
+    face_reconstruction = momentum.get("most_consistent_face_reconstruction", True)
+    if not isinstance(face_reconstruction, bool):
+        raise ValueError("momentum.most_consistent_face_reconstruction must be boolean")
+    mean_momentum = data.get("mean_momentum")
+    if mean_momentum is not None:
+        if not isinstance(mean_momentum, dict):
+            raise ValueError("mean_momentum must be a table")
+        enabled_constraint = mean_momentum.get("enabled", False)
+        if not isinstance(enabled_constraint, bool):
+            raise ValueError("mean_momentum.enabled must be boolean")
+        if enabled_constraint:
+            _positive(mean_momentum, "timescale")
+            gain = mean_momentum.get("gain", 1.0)
+            if (
+                isinstance(gain, bool)
+                or not isinstance(gain, (int, float))
+                or not math.isfinite(gain)
+                or not 0.0 < gain <= 1.0
+            ):
+                raise ValueError("mean_momentum.gain must lie in (0, 1]")
     obsolete_wall_matching = {
         key for key in ("wall_matching_height", "wall_matching_level") if key in momentum
     }
@@ -234,18 +254,38 @@ def validate_case(data: dict[str, Any]) -> None:
     if not isinstance(enabled, bool):
         raise ValueError("thermodynamics.enabled must be boolean")
     if enabled:
-        if sgs["model"] != "amd":
-            raise ValueError("thermodynamic coupling currently requires AMD momentum")
-        if "wall_temporal_filter_gamma" in momentum:
-            raise ValueError(
-                "temporal wall filtering currently requires neutral momentum"
-            )
         _positive(
             thermodynamics,
             "gravity",
             "reference_potential_temperature",
             "sgs_coefficient",
         )
+        scalar_sgs_model = thermodynamics.get("scalar_sgs_model", "amd")
+        if scalar_sgs_model not in {"amd", "fv_dynamic"}:
+            raise ValueError(
+                "thermodynamics.scalar_sgs_model must be amd or fv_dynamic"
+            )
+        if scalar_sgs_model == "fv_dynamic" and sgs["model"] != "multilevel_lasd":
+            raise ValueError(
+                "FV-dynamic scalar SGS requires multilevel_lasd momentum"
+            )
+        for name in (
+            "minimum_dynamic_coefficient",
+            "maximum_dynamic_coefficient",
+        ):
+            if name in thermodynamics:
+                value = thermodynamics[name]
+                if (
+                    isinstance(value, bool)
+                    or not isinstance(value, (int, float))
+                    or not math.isfinite(value)
+                    or value < 0.0
+                ):
+                    raise ValueError(f"thermodynamics.{name} must be nonnegative")
+        if float(thermodynamics.get("minimum_dynamic_coefficient", 0.0)) > float(
+            thermodynamics.get("maximum_dynamic_coefficient", 1.0)
+        ):
+            raise ValueError("dynamic scalar coefficient bounds are invalid")
 
     surface = _require_table(data, "surface")
     thermal_boundary = surface.get("thermal_boundary")
@@ -258,8 +298,11 @@ def validate_case(data: dict[str, Any]) -> None:
     momentum_stability = surface.get("momentum_stability", "neutral")
     if momentum_stability not in {"neutral", "most"}:
         raise ValueError("surface.momentum_stability must be neutral or most")
-    if momentum_stability == "most" and thermal_boundary != "temperature":
-        raise ValueError("MOST momentum coupling requires a surface temperature")
+    if momentum_stability == "most" and thermal_boundary not in {
+        "temperature",
+        "flux",
+    }:
+        raise ValueError("MOST momentum coupling requires temperature or heat flux")
     if thermal_boundary == "temperature" and momentum_stability != "most":
         raise ValueError("surface-temperature coupling requires MOST momentum")
     if thermal_boundary == "flux":

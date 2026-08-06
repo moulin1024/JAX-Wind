@@ -176,6 +176,34 @@ class NeutralLogWallLaw:
         )
         return integral / widths
 
+    def point_log_denominator(self, height: float | Array) -> Array:
+        """Return the integrated neutral similarity function at ``height``."""
+        height = jnp.asarray(height)
+        effective = height - self.displacement_height
+        roughness = jnp.asarray(self.roughness_length, dtype=height.dtype)
+        return jnp.where(
+            effective > roughness,
+            jnp.log(effective / roughness),
+            0.0,
+        )
+
+    def first_internal_face_velocity(
+        self,
+        horizontal_cell_average: Array,
+        first_cell_height: float,
+    ) -> Array:
+        """Reconstruct tangential velocity on top of the first control volume.
+
+        The wall-model input is a finite-volume average.  Multiplying it by
+        the ratio of the point and cell-averaged log functions produces the
+        face value represented by the same neutral MOST profile.  This is a
+        reconstruction only; the wall stress continues to be set by
+        :meth:`surface_fluxes`.
+        """
+        average = self.cell_average_log_denominator(first_cell_height)
+        face = self.point_log_denominator(first_cell_height)
+        return horizontal_cell_average * (face / average)
+
     def friction_velocity(
         self,
         horizontal_velocity: Array,
@@ -338,6 +366,25 @@ class MoninObukhovWallLaw:
             axis=0,
         )
         return neutral + correction_integral / first_cell_height
+
+    def _point_transfer_denominator(
+        self,
+        inverse_obukhov: Array,
+        height: float,
+        roughness_length: float,
+        correction: Callable[[Array], Array],
+    ) -> Array:
+        """Return a pointwise integrated MOST transfer denominator."""
+        effective_height = height - self.displacement_height
+        if effective_height <= roughness_length:
+            raise ValueError("MOST reconstruction height must exceed roughness")
+        roughness = jnp.asarray(roughness_length, dtype=inverse_obukhov.dtype)
+        height_array = jnp.asarray(effective_height, dtype=inverse_obukhov.dtype)
+        return (
+            jnp.log(height_array / roughness)
+            - correction(height_array * inverse_obukhov)
+            + correction(roughness * inverse_obukhov)
+        )
 
     def _stable_inverse_obukhov(
         self,
@@ -553,6 +600,140 @@ class MoninObukhovWallLaw:
             ustar,
             temperature_scale,
             obukhov_length,
+        )
+
+    def surface_fluxes_from_heat_flux(
+        self,
+        horizontal_velocity: Array,
+        heat_flux: Array | float,
+        first_cell_height: float,
+    ) -> SurfaceLayerFluxes:
+        """Return MOST fluxes when kinematic heat flux is prescribed.
+
+        This closes unstable and stable prescribed-flux surfaces without a
+        benchmark-specific branch.  The implicit momentum relation is solved
+        for ``u_*`` while ``1/L = -kappa g q/(theta_ref u_*^3)`` supplies the
+        stability coupling.
+        """
+        self._validate_height(first_cell_height)
+        speed = jnp.linalg.norm(horizontal_velocity, axis=-1)
+        prescribed_flux = jnp.asarray(heat_flux, dtype=horizontal_velocity.dtype)
+        neutral = _cell_average_log_denominator(
+            first_cell_height,
+            self.momentum_roughness_length,
+            self.displacement_height,
+        )
+        ustar = self.von_karman * speed / neutral
+        for _ in range(self.iterations):
+            inverse_obukhov = -(
+                self.von_karman * self.gravity * prescribed_flux
+            ) / (
+                self.reference_potential_temperature
+                * jnp.maximum(ustar**3, 1.0e-12)
+            )
+            inverse_obukhov = jnp.clip(
+                inverse_obukhov,
+                -self.maximum_abs_zeta / first_cell_height,
+                self.maximum_abs_zeta / first_cell_height,
+            )
+            denominator = self._average_transfer_denominator(
+                inverse_obukhov,
+                first_cell_height,
+                self.momentum_roughness_length,
+                self.momentum_stability_correction,
+            )
+            candidate = self.von_karman * speed / jnp.maximum(denominator, 1.0e-6)
+            ustar = (1.0 - self.relaxation) * ustar + self.relaxation * candidate
+        inverse_obukhov = -(
+            self.von_karman * self.gravity * prescribed_flux
+        ) / (
+            self.reference_potential_temperature
+            * jnp.maximum(ustar**3, 1.0e-12)
+        )
+        inverse_obukhov = jnp.clip(
+            inverse_obukhov,
+            -self.maximum_abs_zeta / first_cell_height,
+            self.maximum_abs_zeta / first_cell_height,
+        )
+        temperature_scale = -prescribed_flux / jnp.maximum(ustar, 1.0e-12)
+        obukhov_length = jnp.where(
+            jnp.abs(inverse_obukhov) > 1.0e-12,
+            1.0 / inverse_obukhov,
+            jnp.inf,
+        )
+        return SurfaceLayerFluxes(
+            _stress_from_scale(horizontal_velocity, ustar),
+            jnp.broadcast_to(prescribed_flux, ustar.shape),
+            ustar,
+            temperature_scale,
+            obukhov_length,
+        )
+
+    @staticmethod
+    def _inverse_obukhov(fluxes: SurfaceLayerFluxes) -> Array:
+        return jnp.where(
+            jnp.isfinite(fluxes.obukhov_length),
+            1.0 / fluxes.obukhov_length,
+            0.0,
+        )
+
+    def first_internal_face_velocity(
+        self,
+        horizontal_cell_average: Array,
+        fluxes: SurfaceLayerFluxes,
+        first_cell_height: float,
+    ) -> Array:
+        """Return the MOST-consistent tangential velocity at the first face."""
+        inverse_obukhov = self._inverse_obukhov(fluxes)
+        average = self._average_transfer_denominator(
+            inverse_obukhov,
+            first_cell_height,
+            self.momentum_roughness_length,
+            self.momentum_stability_correction,
+        )
+        face = self._point_transfer_denominator(
+            inverse_obukhov,
+            first_cell_height,
+            self.momentum_roughness_length,
+            self.momentum_stability_correction,
+        )
+        return horizontal_cell_average * (face / jnp.maximum(average, 1.0e-6))[..., None]
+
+    def first_internal_face_temperature(
+        self,
+        cell_average_temperature: Array,
+        fluxes: SurfaceLayerFluxes,
+        first_cell_height: float,
+        *,
+        surface_temperature: Array | float | None,
+    ) -> Array:
+        """Return a MOST-consistent scalar value at the first internal face.
+
+        For a prescribed temperature, the face-to-cell ratio follows directly
+        from the integrated similarity profile.  For a prescribed flux, the
+        unknown surface intercept cancels and the reconstruction uses the
+        diagnosed temperature scale.
+        """
+        inverse_obukhov = self._inverse_obukhov(fluxes)
+        average = self._average_transfer_denominator(
+            inverse_obukhov,
+            first_cell_height,
+            self.thermal_roughness_length,
+            self.heat_stability_correction,
+        )
+        face = self._point_transfer_denominator(
+            inverse_obukhov,
+            first_cell_height,
+            self.thermal_roughness_length,
+            self.heat_stability_correction,
+        )
+        if surface_temperature is None:
+            return cell_average_temperature + (
+                fluxes.temperature_scale / self.von_karman
+            ) * (face - average)
+        surface = jnp.asarray(surface_temperature, dtype=cell_average_temperature.dtype)
+        return surface + (cell_average_temperature - surface) * (
+            face / jnp.maximum(average, 1.0e-6)
         )
 
 

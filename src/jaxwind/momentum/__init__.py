@@ -10,6 +10,8 @@ from .abl import (
 from .lasd import LASDModel, LASDState, MultilevelLASD
 from .operators import (
     AMDModel,
+    MeanMomentumConstraintConfig,
+    MeanMomentumState,
     MomentumConfig,
     MomentumDiagnostic,
     MomentumOperators,
@@ -31,6 +33,8 @@ __all__ = [
     "AMDModel",
     "LASDModel",
     "LASDState",
+    "MeanMomentumConstraintConfig",
+    "MeanMomentumState",
     "MomentumConfig",
     "MomentumDiagnostic",
     "MomentumOperators",

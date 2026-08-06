@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from pathlib import Path
 
 import numpy as np
 import pytest
 
-from jaxwind.config import load_case
+from jaxwind.config import CaseConfig, load_case, validate_case
 from jaxwind.runner import (
     PROFILE_COLUMNS,
     _RollingCompletionEstimator,
@@ -182,6 +183,43 @@ def test_all_cases_use_the_same_solver_and_state_types() -> None:
     assert states[0].potential_temperature is None
     assert states[1].potential_temperature is not None
     assert states[2].potential_temperature is not None
+
+
+def test_thermal_solver_accepts_multilevel_lasd_and_fv_dynamic_scalar() -> None:
+    source = load_case(CASES["gabls1"])
+    data = deepcopy(source.data)
+    data["grid"]["shape"] = [8, 8, 8]
+    data["sgs"].update(
+        {
+            "model": "multilevel_lasd",
+            "initial_coefficient": 0.03,
+            "maximum_coefficient": 0.81,
+            "update_interval": 1,
+        }
+    )
+    data["thermodynamics"]["scalar_sgs_model"] = "fv_dynamic"
+    data["time"].update(
+        {
+            "sample_start": 0.0,
+            "sample_basis": "step",
+            "sample_interval": 1,
+            "history_interval": 1,
+            "log_interval": 1,
+            "checkpoint_interval": 2,
+            "maximum_step": 0.05,
+        }
+    )
+    validate_case(data)
+    simulation = build_simulation(CaseConfig(source.source, data))
+    state = simulation.initial_state()
+    advanced = simulation.step(state, min(simulation.timestep(state), 0.05))
+
+    assert simulation.momentum.lasd_closure is not None
+    assert simulation.scalar.model.model == "fv_dynamic"
+    assert advanced.step == 1
+    assert simulation.momentum.lasd_progress[0] == 1
+    assert np.all(np.isfinite(np.asarray(advanced.velocity.x)))
+    assert np.all(np.isfinite(np.asarray(advanced.potential_temperature)))
 
 
 def test_tabulated_initial_state_uses_one_projection() -> None:

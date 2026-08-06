@@ -61,15 +61,20 @@ class AMDModel:
 
 @dataclass(frozen=True, slots=True)
 class ScalarConfig:
-    """Conservative scalar AMD controls."""
+    """Conservative scalar SGS controls."""
 
+    model: Literal["amd", "fv_dynamic"] = "amd"
     coefficient: float = 0.212
+    minimum_dynamic_coefficient: float = 0.0
+    maximum_dynamic_coefficient: float = 1.0
     molecular_diffusivity: float = 0.0
     lower_surface_flux: float = 1.0e-3
     upper_surface_flux: float = 0.0
     mp5_dissipation_strength: float = 1.0
 
     def __post_init__(self) -> None:
+        if self.model not in {"amd", "fv_dynamic"}:
+            raise ValueError("scalar SGS model must be 'amd' or 'fv_dynamic'")
         nonnegative = {
             "AMD scalar coefficient": self.coefficient,
             "molecular diffusivity": self.molecular_diffusivity,
@@ -84,6 +89,37 @@ class ScalarConfig:
         ):
             if not math.isfinite(value):
                 raise ValueError(f"{name} must be finite")
+        if not all(
+            math.isfinite(value)
+            for value in (
+                self.minimum_dynamic_coefficient,
+                self.maximum_dynamic_coefficient,
+            )
+        ) or not (
+            0.0
+            <= self.minimum_dynamic_coefficient
+            <= self.maximum_dynamic_coefficient
+        ):
+            raise ValueError("dynamic scalar coefficient bounds are invalid")
+
+
+@dataclass(frozen=True, slots=True)
+class MeanMomentumConstraintConfig:
+    """Slow horizontal-zero-mode total-stress constraint.
+
+    The target stress is derived from the discrete, filtered mean acceleration
+    and all configured external forcing.  It therefore makes no neutral,
+    stationary, or fixed stress-direction assumption.
+    """
+
+    timescale: float
+    gain: float = 1.0
+
+    def __post_init__(self) -> None:
+        if not math.isfinite(self.timescale) or self.timescale <= 0.0:
+            raise ValueError("mean-momentum timescale must be positive and finite")
+        if not math.isfinite(self.gain) or not 0.0 < self.gain <= 1.0:
+            raise ValueError("mean-momentum gain must lie in (0, 1]")
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,6 +131,8 @@ class MomentumConfig:
     von_karman: float = 0.4
     wall_filter_width: float | None = None
     wall_temporal_filter_timescale: float | None = None
+    most_consistent_face_reconstruction: bool = True
+    mean_momentum_constraint: MeanMomentumConstraintConfig | None = None
     mp5_dissipation_strength: float = 1.0
     pressure_acceleration: float | None = None
     geostrophic_wind: tuple[float, float] | None = None
@@ -122,6 +160,8 @@ class MomentumConfig:
             raise ValueError(
                 "wall temporal filter timescale must be positive and finite"
             )
+        if not isinstance(self.most_consistent_face_reconstruction, bool):
+            raise ValueError("MOST-consistent face reconstruction must be boolean")
         if (
             not math.isfinite(self.mp5_dissipation_strength)
             or self.mp5_dissipation_strength < 0.0
@@ -149,6 +189,13 @@ class WallModelState(NamedTuple):
     filtered_velocity: Array
 
 
+class MeanMomentumState(NamedTuple):
+    """Accepted-step memory for the slow plane-mean acceleration."""
+
+    previous_velocity_mean: Array
+    filtered_acceleration: Array
+
+
 class PreparedIMEXStep(NamedTuple):
     """Reusable work prepared from one accepted neutral IMEX state."""
 
@@ -157,6 +204,7 @@ class PreparedIMEXStep(NamedTuple):
     frozen_viscosity: Array
     lasd_coefficient: Array
     wall_velocity: Array
+    mean_stress_correction: Array
 
 
 @dataclass(frozen=True, slots=True)
@@ -493,11 +541,13 @@ class MomentumOperators:
             dtype=self.pressure_solver.operator.dtype,
         )
         self._wall_model_state: WallModelState | None = None
+        self._mean_momentum_state: MeanMomentumState | None = None
 
         def compiled_tendency(
             velocity: MACVelocity,
             lasd_coefficient: Array,
             wall_velocity: Array,
+            mean_stress_correction: Array,
         ) -> MACVelocity:
             if self.x_metric.uniform and self.y_metric.uniform:
                 return _cells_to_faces(
@@ -505,6 +555,7 @@ class MomentumOperators:
                         velocity,
                         lasd_coefficient,
                         wall_velocity=wall_velocity,
+                        mean_stress_correction=mean_stress_correction,
                     )
                 )
             cells = _cell_velocity(velocity)
@@ -519,6 +570,7 @@ class MomentumOperators:
                         lasd_coefficient,
                         cell_velocity=cells,
                         wall_stress=jnp.zeros_like(wall_stress),
+                        mean_stress_correction=mean_stress_correction,
                     )
                 ),
                 wall_stress,
@@ -530,6 +582,8 @@ class MomentumOperators:
             velocity: MACVelocity,
             lasd_coefficient: Array,
             wall_stress: Array,
+            first_internal_face_horizontal_velocity: Array,
+            mean_stress_correction: Array,
         ) -> MACVelocity:
             if self.x_metric.uniform and self.y_metric.uniform:
                 return _cells_to_faces(
@@ -537,6 +591,10 @@ class MomentumOperators:
                         velocity,
                         lasd_coefficient,
                         wall_stress=wall_stress,
+                        first_internal_face_horizontal_velocity=(
+                            first_internal_face_horizontal_velocity
+                        ),
+                        mean_stress_correction=mean_stress_correction,
                     )
                 )
             cells = _cell_velocity(velocity)
@@ -547,6 +605,10 @@ class MomentumOperators:
                         lasd_coefficient,
                         cell_velocity=cells,
                         wall_stress=jnp.zeros_like(wall_stress),
+                        first_internal_face_horizontal_velocity=(
+                            first_internal_face_horizontal_velocity
+                        ),
+                        mean_stress_correction=mean_stress_correction,
                     )
                 ),
                 wall_stress,
@@ -565,7 +627,23 @@ class MomentumOperators:
             *,
             wall_velocity: Array | None = None,
             wall_stress: Array | None = None,
+            first_internal_face_horizontal_velocity: Array | None = None,
+            mean_stress_correction: Array | None = None,
         ) -> tuple[MACVelocity, MACVelocity]:
+            if (
+                first_internal_face_horizontal_velocity is None
+                and self.config.most_consistent_face_reconstruction
+            ):
+                horizontal = self.wall_velocity(
+                    cells,
+                    filtered_velocity=wall_velocity,
+                )
+                first_internal_face_horizontal_velocity = (
+                    self.wall_law.first_internal_face_velocity(
+                        horizontal,
+                        self.wall_cell_height,
+                    )
+                )
             if self.x_metric.uniform and self.y_metric.uniform:
                 principal, cross = self.sgs_split_tendency(
                     cells,
@@ -576,12 +654,23 @@ class MomentumOperators:
                     wall_stress=wall_stress,
                 )
                 explicit = (
-                    self.conservative_advection(velocity, cells)
+                    self.conservative_advection(
+                        velocity,
+                        cells,
+                        first_internal_face_horizontal_velocity=(
+                            first_internal_face_horizontal_velocity
+                        ),
+                    )
                     + cross
                     + self.forcing_tendency(cells)
                 )
                 if self.config.mp5_dissipation_strength > 0.0:
                     explicit += self.advection_dissipation(velocity, cells)
+                if mean_stress_correction is not None:
+                    explicit += self.mean_stress_correction_tendency(
+                        mean_stress_correction,
+                        cells.dtype,
+                    )
                 return _cells_to_faces(explicit), _cells_to_faces(principal)
 
             active_wall_stress = (
@@ -597,12 +686,23 @@ class MomentumOperators:
                 wall_stress=jnp.zeros_like(active_wall_stress),
             )
             explicit = (
-                self.conservative_advection(velocity, cells)
+                self.conservative_advection(
+                    velocity,
+                    cells,
+                    first_internal_face_horizontal_velocity=(
+                        first_internal_face_horizontal_velocity
+                    ),
+                )
                 + cross
                 + self.forcing_tendency(cells)
             )
             if self.config.mp5_dissipation_strength > 0.0:
                 explicit += self.advection_dissipation(velocity, cells)
+            if mean_stress_correction is not None:
+                explicit += self.mean_stress_correction_tendency(
+                    mean_stress_correction,
+                    cells.dtype,
+                )
             return (
                 self._add_wall_stress_face_tendency(
                     _cells_to_faces(explicit),
@@ -615,6 +715,7 @@ class MomentumOperators:
             velocity: MACVelocity,
             lasd_coefficient: Array,
             wall_velocity: Array,
+            mean_stress_correction: Array,
         ) -> tuple[MACVelocity, MACVelocity, Array]:
             cells = _cell_velocity(velocity)
             gradient = self.velocity_gradient(cells)
@@ -629,6 +730,7 @@ class MomentumOperators:
                 frozen_viscosity,
                 lasd_coefficient,
                 wall_velocity=wall_velocity,
+                mean_stress_correction=mean_stress_correction,
             )
             return explicit, implicit, frozen_viscosity
 
@@ -640,12 +742,14 @@ class MomentumOperators:
             velocity: MACVelocity,
             lasd_coefficient: Array,
             wall_velocity: Array,
+            mean_stress_correction: Array,
         ) -> tuple[MACVelocity, MACVelocity, Array, Array]:
             initial_explicit, initial_implicit, frozen_viscosity = (
                 compiled_imex_initial_tendencies(
                     velocity,
                     lasd_coefficient,
                     wall_velocity,
+                    mean_stress_correction,
                 )
             )
             cells = _cell_velocity(velocity)
@@ -670,6 +774,7 @@ class MomentumOperators:
             frozen_viscosity: Array,
             lasd_coefficient: Array,
             wall_velocity: Array,
+            mean_stress_correction: Array,
         ) -> tuple[MACVelocity, MACVelocity]:
             cells = _cell_velocity(velocity)
             gradient = self.velocity_gradient(cells)
@@ -680,6 +785,7 @@ class MomentumOperators:
                 frozen_viscosity,
                 lasd_coefficient,
                 wall_velocity=wall_velocity,
+                mean_stress_correction=mean_stress_correction,
             )
 
         self._compiled_imex_tendencies = jax.jit(compiled_imex_tendencies)
@@ -688,6 +794,8 @@ class MomentumOperators:
             velocity: MACVelocity,
             lasd_coefficient: Array,
             wall_stress: Array,
+            first_internal_face_horizontal_velocity: Array,
+            mean_stress_correction: Array,
         ) -> tuple[MACVelocity, MACVelocity, Array]:
             cells = _cell_velocity(velocity)
             gradient = self.velocity_gradient(cells)
@@ -702,6 +810,10 @@ class MomentumOperators:
                 frozen_viscosity,
                 lasd_coefficient,
                 wall_stress=wall_stress,
+                first_internal_face_horizontal_velocity=(
+                    first_internal_face_horizontal_velocity
+                ),
+                mean_stress_correction=mean_stress_correction,
             )
             return explicit, implicit, frozen_viscosity
 
@@ -714,6 +826,8 @@ class MomentumOperators:
             frozen_viscosity: Array,
             lasd_coefficient: Array,
             wall_stress: Array,
+            first_internal_face_horizontal_velocity: Array,
+            mean_stress_correction: Array,
         ) -> tuple[MACVelocity, MACVelocity]:
             cells = _cell_velocity(velocity)
             gradient = self.velocity_gradient(cells)
@@ -724,6 +838,10 @@ class MomentumOperators:
                 frozen_viscosity,
                 lasd_coefficient,
                 wall_stress=wall_stress,
+                first_internal_face_horizontal_velocity=(
+                    first_internal_face_horizontal_velocity
+                ),
+                mean_stress_correction=mean_stress_correction,
             )
 
         self._compiled_imex_tendencies_with_wall_stress = jax.jit(
@@ -818,6 +936,9 @@ class MomentumOperators:
             )
 
         self._compiled_timestep_rates = jax.jit(compiled_timestep_rates)
+        self._compiled_mean_stress_correction = jax.jit(
+            self._mean_stress_correction_kernel
+        )
 
         def compiled_imex_timestep_rates(
             velocity: MACVelocity,
@@ -1119,6 +1240,8 @@ class MomentumOperators:
         self,
         velocity: MACVelocity,
         cell_velocity: Array | None = None,
+        *,
+        first_internal_face_horizontal_velocity: Array | None = None,
     ) -> Array:
         """Return compatible centered MAC momentum-flux divergence.
 
@@ -1156,7 +1279,13 @@ class MomentumOperators:
         )
         y_flux = velocity.y[..., None] * y_faces
 
-        z_flux = self.vertical_advective_flux(velocity, cells)
+        z_flux = self.vertical_advective_flux(
+            velocity,
+            cells,
+            first_internal_face_horizontal_velocity=(
+                first_internal_face_horizontal_velocity
+            ),
+        )
         rank, dtype = z_flux.ndim, z_flux.dtype
         return -(
             (x_flux[:, :, 1:, :] - x_flux[:, :, :-1, :])
@@ -1170,6 +1299,8 @@ class MomentumOperators:
         self,
         velocity: MACVelocity,
         cell_velocity: Array | None = None,
+        *,
+        first_internal_face_horizontal_velocity: Array | None = None,
     ) -> Array:
         """Return the conservative vertical flux of all momentum components."""
         cells = _cell_velocity(velocity) if cell_velocity is None else cell_velocity
@@ -1177,9 +1308,16 @@ class MomentumOperators:
             (cells.shape[0] + 1, *cells.shape[1:]),
             dtype=cells.dtype,
         )
-        return flux.at[1:-1].set(
+        flux = flux.at[1:-1].set(
             velocity.z[1:-1, ..., None] * 0.5 * (cells[:-1] + cells[1:])
         )
+        if first_internal_face_horizontal_velocity is not None:
+            reconstructed = flux[1].at[..., :2].set(
+                velocity.z[1, ..., None]
+                * first_internal_face_horizontal_velocity
+            )
+            flux = flux.at[1].set(reconstructed)
+        return flux
 
     def amd_tendency(self, cell_velocity: Array) -> Array:
         """Return the non-variational AMD stress divergence."""
@@ -1598,6 +1736,27 @@ class MomentumOperators:
             tendency = tendency.at[..., 2].add(horizontal * u)
         return tendency
 
+    def mean_stress_correction_tendency(
+        self,
+        face_correction: Array,
+        dtype,
+    ) -> Array:
+        """Map a plane-mean tangential stress correction to cell tendency."""
+        nz, ny, nx = self.grid.shape
+        if tuple(face_correction.shape) != (nz + 1, 2):
+            raise ValueError(
+                "mean stress correction must have shape "
+                f"{(nz + 1, 2)}, got {tuple(face_correction.shape)}"
+            )
+        correction = jnp.zeros((nz + 1, ny, nx, 3), dtype=dtype)
+        correction = correction.at[..., :2].set(
+            face_correction[:, None, None, :]
+        )
+        return (correction[1:] - correction[:-1]) / self.z_metric.cell_widths(
+            correction.ndim,
+            correction.dtype,
+        )
+
     def cell_tendency(
         self,
         velocity: MACVelocity,
@@ -1607,12 +1766,34 @@ class MomentumOperators:
         gradient: Array | None = None,
         wall_velocity: Array | None = None,
         wall_stress: Array | None = None,
+        first_internal_face_horizontal_velocity: Array | None = None,
+        mean_stress_correction: Array | None = None,
     ) -> Array:
         cells = _cell_velocity(velocity) if cell_velocity is None else cell_velocity
         if gradient is None:
             gradient = self.velocity_gradient(cells)
+        if (
+            first_internal_face_horizontal_velocity is None
+            and self.config.most_consistent_face_reconstruction
+        ):
+            horizontal = self.wall_velocity(
+                cells,
+                filtered_velocity=wall_velocity,
+            )
+            first_internal_face_horizontal_velocity = (
+                self.wall_law.first_internal_face_velocity(
+                    horizontal,
+                    self.wall_cell_height,
+                )
+            )
         tendency = (
-            self.conservative_advection(velocity, cells)
+            self.conservative_advection(
+                velocity,
+                cells,
+                first_internal_face_horizontal_velocity=(
+                    first_internal_face_horizontal_velocity
+                ),
+            )
             + self.sgs_tendency(
                 cells,
                 lasd_coefficient,
@@ -1624,19 +1805,35 @@ class MomentumOperators:
         )
         if self.config.mp5_dissipation_strength > 0.0:
             tendency += self.advection_dissipation(velocity, cells)
+        if mean_stress_correction is not None:
+            tendency += self.mean_stress_correction_tendency(
+                mean_stress_correction,
+                cells.dtype,
+            )
         return tendency
 
     def tendency(self, velocity: MACVelocity, _time: float) -> MACVelocity:
+        coefficient = self._active_lasd_coefficient(velocity)
+        wall_velocity = self.active_wall_velocity(velocity)
+        mean_correction = self.mean_stress_correction(
+            velocity,
+            coefficient,
+            wall_velocity=wall_velocity,
+        )
         return self._compiled_tendency(
             velocity,
-            self._active_lasd_coefficient(velocity),
-            self.active_wall_velocity(velocity),
+            coefficient,
+            wall_velocity,
+            mean_correction,
         )
 
     def tendency_with_wall_stress(
         self,
         velocity: MACVelocity,
         wall_stress: Array,
+        *,
+        first_internal_face_horizontal_velocity: Array | None = None,
+        mean_stress_correction: Array | None = None,
     ) -> MACVelocity:
         """Return the tendency with a prescribed lower-wall stress plane."""
         expected = (*self.grid.shape[1:], 3)
@@ -1644,10 +1841,21 @@ class MomentumOperators:
             raise ValueError(
                 f"expected wall stress shape {expected}, got {tuple(wall_stress.shape)}"
             )
+        cells = _cell_velocity(velocity)
+        if first_internal_face_horizontal_velocity is None:
+            first_internal_face_horizontal_velocity = 0.5 * (
+                cells[0, ..., :2] + cells[1, ..., :2]
+            )
+        if mean_stress_correction is None:
+            mean_stress_correction = self.zero_mean_stress_correction(
+                velocity.x.dtype
+            )
         return self._compiled_tendency_with_wall_stress(
             velocity,
             self._active_lasd_coefficient(velocity),
             wall_stress,
+            first_internal_face_horizontal_velocity,
+            mean_stress_correction,
         )
 
     def _active_lasd_coefficient(self, velocity: MACVelocity) -> Array:
@@ -1736,6 +1944,182 @@ class MomentumOperators:
         self._wall_model_state = WallModelState(filtered)
 
     @property
+    def mean_momentum_state(self) -> MeanMomentumState | None:
+        return self._mean_momentum_state
+
+    def reset_mean_momentum(
+        self,
+        velocity: MACVelocity,
+        *,
+        extra_external_tendency: Array | None = None,
+    ) -> MeanMomentumState | None:
+        """Initialize the slow mean-momentum memory from one accepted state."""
+        if self.config.mean_momentum_constraint is None:
+            self._mean_momentum_state = None
+            return None
+        cells = _cell_velocity(velocity)
+        external = self.forcing_tendency(cells)
+        if extra_external_tendency is not None:
+            external = external + extra_external_tendency
+        self._mean_momentum_state = MeanMomentumState(
+            self.horizontal_mean(cells[..., :2]),
+            self.horizontal_mean(external[..., :2]),
+        )
+        return self._mean_momentum_state
+
+    def restore_mean_momentum(self, state: MeanMomentumState) -> None:
+        expected = (self.grid.shape[0], 2)
+        if tuple(state.previous_velocity_mean.shape) != expected:
+            raise ValueError("mean-momentum velocity memory does not match grid")
+        if tuple(state.filtered_acceleration.shape) != expected:
+            raise ValueError("mean-momentum acceleration memory does not match grid")
+        dtype = self.pressure_solver.operator.dtype
+        self._mean_momentum_state = MeanMomentumState(
+            jnp.asarray(state.previous_velocity_mean, dtype=dtype),
+            jnp.asarray(state.filtered_acceleration, dtype=dtype),
+        )
+
+    def _advance_mean_momentum(
+        self,
+        velocity: MACVelocity,
+        timestep: float,
+    ) -> None:
+        config = self.config.mean_momentum_constraint
+        if config is None:
+            return
+        current = self.horizontal_mean(_cell_velocity(velocity)[..., :2])
+        if self._mean_momentum_state is None:
+            self._mean_momentum_state = MeanMomentumState(
+                current,
+                jnp.zeros_like(current),
+            )
+            return
+        raw_acceleration = (
+            current - self._mean_momentum_state.previous_velocity_mean
+        ) / timestep
+        weight = min(timestep / config.timescale, 1.0)
+        filtered = (
+            (1.0 - weight) * self._mean_momentum_state.filtered_acceleration
+            + weight * raw_acceleration
+        )
+        self._mean_momentum_state = MeanMomentumState(current, filtered)
+
+    def zero_mean_stress_correction(self, dtype) -> Array:
+        return jnp.zeros((self.grid.shape[0] + 1, 2), dtype=dtype)
+
+    def mean_stress_correction(
+        self,
+        velocity: MACVelocity,
+        lasd_coefficient: Array,
+        *,
+        wall_velocity: Array | None = None,
+        wall_stress: Array | None = None,
+        first_internal_face_horizontal_velocity: Array | None = None,
+        extra_external_tendency: Array | None = None,
+    ) -> Array:
+        """Return the lagged discrete plane-mean total-stress correction.
+
+        The balance is integrated from the actual surface traction using the
+        filtered accepted-step acceleration.  Resolved transport, numerical
+        reconstruction flux, and the active SGS stress are all subtracted, so
+        the correction is a Lagrange multiplier on only the horizontal zero
+        mode and never prescribes a velocity or temperature profile.
+        """
+        config = self.config.mean_momentum_constraint
+        if config is None:
+            return self.zero_mean_stress_correction(velocity.x.dtype)
+        cells = _cell_velocity(velocity)
+        active_wall_stress = (
+            self.wall_stress(cells, wall_velocity=wall_velocity)
+            if wall_stress is None
+            else wall_stress
+        )
+        if first_internal_face_horizontal_velocity is None:
+            horizontal = self.wall_velocity(
+                cells,
+                filtered_velocity=wall_velocity,
+            )
+            first_internal_face_horizontal_velocity = (
+                self.wall_law.first_internal_face_velocity(
+                    horizontal,
+                    self.wall_cell_height,
+                )
+                if self.config.most_consistent_face_reconstruction
+                else 0.5 * (cells[0, ..., :2] + cells[1, ..., :2])
+            )
+        extra_external = (
+            jnp.zeros_like(cells)
+            if extra_external_tendency is None
+            else extra_external_tendency
+        )
+        external_mean = self.horizontal_mean(
+            (self.forcing_tendency(cells) + extra_external)[..., :2]
+        )
+        acceleration = (
+            external_mean
+            if self._mean_momentum_state is None
+            else self._mean_momentum_state.filtered_acceleration
+        )
+        return self._compiled_mean_stress_correction(
+            velocity,
+            lasd_coefficient,
+            active_wall_stress,
+            first_internal_face_horizontal_velocity,
+            extra_external,
+            acceleration,
+        )
+
+    def _mean_stress_correction_kernel(
+        self,
+        velocity: MACVelocity,
+        lasd_coefficient: Array,
+        active_wall_stress: Array,
+        first_internal_face_horizontal_velocity: Array,
+        extra_external_tendency: Array,
+        acceleration: Array,
+    ) -> Array:
+        """Compiled discrete stress-budget kernel for the zero-mode closure."""
+        cells = _cell_velocity(velocity)
+        resolved_flux = self.vertical_advective_flux(
+            velocity,
+            cells,
+            first_internal_face_horizontal_velocity=(
+                first_internal_face_horizontal_velocity
+            ),
+        )[..., :2]
+        numerical_flux = self.vertical_advection_dissipation_flux(
+            velocity,
+            cells,
+        )[..., :2]
+        sgs_flux = self.vertical_sgs_stress_flux(
+            cells,
+            lasd_coefficient,
+            wall_stress=active_wall_stress,
+        )[..., :2]
+        current_stress = (
+            -self.horizontal_mean(resolved_flux)
+            - self.horizontal_mean(numerical_flux)
+            + self.horizontal_mean(sgs_flux)
+        )
+
+        external = self.forcing_tendency(cells) + extra_external_tendency
+        external_mean = self.horizontal_mean(external[..., :2])
+        source = acceleration - external_mean
+        wall_mean = self.surface_mean(active_wall_stress[..., :2])
+        target_stress = jnp.concatenate(
+            (
+                wall_mean[None, :],
+                wall_mean[None, :]
+                + jnp.cumsum(self.dz_cell[:, None] * source, axis=0),
+            ),
+            axis=0,
+        )
+        correction = self.config.mean_momentum_constraint.gain * (
+            target_stress - current_stress
+        )
+        return correction.at[0].set(0.0)
+
+    @property
     def lasd_progress(self) -> tuple[int, float]:
         """Return accepted steps and elapsed time in the current LASD interval."""
         return self._lasd_step, self._lasd_interval_time
@@ -1808,11 +2192,17 @@ class MomentumOperators:
             raise RuntimeError("IMEX preparation requires imex_ark3 integration")
         coefficient = self._active_lasd_coefficient(velocity)
         wall_velocity = self.active_wall_velocity(velocity)
+        mean_stress_correction = self.mean_stress_correction(
+            velocity,
+            coefficient,
+            wall_velocity=wall_velocity,
+        )
         initial_explicit, initial_implicit, frozen_viscosity, rates = (
             self._compiled_imex_prepare(
                 velocity,
                 coefficient,
                 wall_velocity,
+                mean_stress_correction,
             )
         )
         return (
@@ -1822,6 +2212,7 @@ class MomentumOperators:
                 frozen_viscosity,
                 coefficient,
                 wall_velocity,
+                mean_stress_correction,
             ),
             rates,
         )
@@ -1838,7 +2229,11 @@ class MomentumOperators:
         explicit_forcing: MACVelocity | None = None,
         explicit_forcing_provider: Callable[[MACVelocity, float], MACVelocity]
         | None = None,
-        wall_stress_provider: Callable[[MACVelocity, float], Array] | None = None,
+        surface_boundary_provider: Callable[
+            [MACVelocity, float], tuple[Array, Array]
+        ]
+        | None = None,
+        mean_stress_correction: Array | None = None,
         prepared: PreparedIMEXStep | None = None,
     ) -> VelocityPressureProjection:
         """Advance ARS(2,3,3) with frozen vertical SGS diffusion implicit.
@@ -1846,32 +2241,42 @@ class MomentumOperators:
         ``explicit_forcing`` is a stage-independent acceleration, such as
         buoyancy frozen at the midpoint of a Strang-coupled scalar step.  A
         state-dependent ``explicit_forcing_provider`` and the
-        ``wall_stress_provider`` is evaluated with each ARK stage velocity and
-        physical stage time, keeping nonlinear surface-layer coupling explicit.
+        ``surface_boundary_provider`` returns wall stress and the
+        MOST-consistent first-face velocity at every ARK stage, keeping the
+        nonlinear surface-layer coupling explicit.
         """
+        if mean_stress_correction is None:
+            mean_stress_correction = self.zero_mean_stress_correction(
+                velocity.x.dtype
+            )
         if prepared is not None:
-            if wall_stress_provider is not None:
+            if surface_boundary_provider is not None:
                 raise ValueError("prepared IMEX work cannot supply prescribed stress")
             initial_explicit = prepared.initial_explicit
             initial_implicit = prepared.initial_implicit
             frozen_viscosity = prepared.frozen_viscosity
-        elif wall_stress_provider is None:
+            mean_stress_correction = prepared.mean_stress_correction
+        elif surface_boundary_provider is None:
             initial_explicit, initial_implicit, frozen_viscosity = (
                 self._compiled_imex_initial_tendencies(
                     velocity,
                     lasd_coefficient,
                     wall_velocity,
+                    mean_stress_correction,
                 )
             )
         else:
+            initial_wall_stress, initial_face_velocity = surface_boundary_provider(
+                velocity,
+                time + _ARK3_C[0] * timestep,
+            )
             initial_explicit, initial_implicit, frozen_viscosity = (
                 self._compiled_imex_initial_tendencies_with_wall_stress(
                     velocity,
                     lasd_coefficient,
-                    wall_stress_provider(
-                        velocity,
-                        time + _ARK3_C[0] * timestep,
-                    ),
+                    initial_wall_stress,
+                    initial_face_velocity,
+                    mean_stress_correction,
                 )
             )
         if explicit_forcing is not None:
@@ -1894,22 +2299,26 @@ class MomentumOperators:
         implicit_tendencies: list[MACVelocity] = [initial_implicit]
 
         def evaluate(stage_velocity: MACVelocity, stage_index: int) -> None:
-            if wall_stress_provider is None:
+            if surface_boundary_provider is None:
                 explicit, implicit = self._compiled_imex_tendencies(
                     stage_velocity,
                     frozen_viscosity,
                     lasd_coefficient,
                     wall_velocity,
+                    mean_stress_correction,
                 )
             else:
+                wall_stress, face_velocity = surface_boundary_provider(
+                    stage_velocity,
+                    time + _ARK3_C[stage_index] * timestep,
+                )
                 explicit, implicit = self._compiled_imex_tendencies_with_wall_stress(
                     stage_velocity,
                     frozen_viscosity,
                     lasd_coefficient,
-                    wall_stress_provider(
-                        stage_velocity,
-                        time + _ARK3_C[stage_index] * timestep,
-                    ),
+                    wall_stress,
+                    face_velocity,
+                    mean_stress_correction,
                 )
             if explicit_forcing is not None:
                 explicit = _velocity_sum(
@@ -2260,6 +2669,11 @@ class MomentumOperators:
             and self._wall_model_state is None
         ):
             self.reset_wall_model(velocity)
+        if (
+            self.config.mean_momentum_constraint is not None
+            and self._mean_momentum_state is None
+        ):
+            self.reset_mean_momentum(velocity)
         coefficient = (
             self._active_lasd_coefficient(velocity)
             if prepared is None
@@ -2270,6 +2684,15 @@ class MomentumOperators:
             if prepared is None
             else prepared.wall_velocity
         )
+        mean_stress_correction = (
+            self.mean_stress_correction(
+                velocity,
+                coefficient,
+                wall_velocity=wall_velocity,
+            )
+            if prepared is None
+            else prepared.mean_stress_correction
+        )
 
         if self.config.sgs_time_integration == "imex_ark3":
             projected = self._imex_ark3_step(
@@ -2279,12 +2702,14 @@ class MomentumOperators:
                 lasd_coefficient=coefficient,
                 wall_velocity=wall_velocity,
                 initial_pressure=self._pressure,
+                mean_stress_correction=mean_stress_correction,
                 prepared=prepared,
             )
             advanced = self.enforce_boundaries(projected.velocity)
             self._pressure = projected.pressure
             self._advance_lasd(advanced, timestep)
             self._advance_wall_model(advanced, timestep)
+            self._advance_mean_momentum(advanced, timestep)
             return advanced
 
         def stage_tendency(
@@ -2295,6 +2720,7 @@ class MomentumOperators:
                 stage_velocity,
                 coefficient,
                 wall_velocity,
+                mean_stress_correction,
             )
 
         projected = projected_ssprk3_velocity_pressure_step(
@@ -2310,6 +2736,7 @@ class MomentumOperators:
         advanced = self.enforce_boundaries(advanced)
         self._advance_lasd(advanced, timestep)
         self._advance_wall_model(advanced, timestep)
+        self._advance_mean_momentum(advanced, timestep)
         return advanced
 
     def diagnostic(
@@ -2454,11 +2881,18 @@ class ScalarOperators:
         self,
         grid: RectilinearGrid,
         model: ScalarConfig = ScalarConfig(),
+        *,
+        multilevel_filter: MultilevelLASD | None = None,
     ) -> None:
         if grid.shape[0] < 2 or min(grid.shape[1:]) < 4:
             raise ValueError("scalar AMD requires nz>=2 and nx,ny>=4")
         self.grid = grid
         self.model = model
+        self.multilevel_filter = multilevel_filter
+        if model.model == "fv_dynamic" and multilevel_filter is None:
+            raise ValueError(
+                "FV-dynamic scalar SGS requires the momentum multilevel hierarchy"
+            )
         dtype = jnp.asarray(grid.z_faces).dtype
         self.x_metric, self.y_metric, self.z_metric = _build_axis_metrics(grid, dtype)
         self.metrics = (self.x_metric, self.y_metric, self.z_metric)
@@ -2516,21 +2950,144 @@ class ScalarOperators:
             + self.model.molecular_diffusivity
         )
 
+    @staticmethod
+    def _strain_magnitude(velocity_gradient: Array) -> Array:
+        strain = 0.5 * (
+            velocity_gradient + jnp.swapaxes(velocity_gradient, -1, -2)
+        )
+        return jnp.sqrt(
+            jnp.maximum(2.0 * jnp.einsum("...ij,...ij->...", strain, strain), 0.0)
+        )
+
+    @staticmethod
+    def _gradient_on_metrics(
+        field: Array,
+        metrics: tuple[AxisMetric, AxisMetric, AxisMetric],
+    ) -> Array:
+        return jnp.stack(tuple(metric.derivative(field) for metric in metrics), axis=-1)
+
+    def _fv_dynamic_diffusivity(
+        self,
+        scalar: Array,
+        cell_velocity: Array,
+        velocity_gradient: Array,
+        scalar_gradient: Array,
+    ) -> Array:
+        """Return a conservative FV Germano scalar diffusivity.
+
+        The pressure hierarchy restriction is the test filter.  Velocity and
+        scalar gradients are recomputed on the coarse FV metric, exactly as in
+        FV-native momentum LASD, instead of assuming that filtering and
+        differentiation commute.
+        """
+        closure = self.multilevel_filter
+        if closure is None:
+            raise RuntimeError("FV-dynamic scalar filter is unavailable")
+        fine_delta = jnp.asarray(closure.level_deltas[0], dtype=scalar.dtype)
+        fine_model = (
+            fine_delta[..., None] ** 2
+            * self._strain_magnitude(velocity_gradient)[..., None]
+            * scalar_gradient
+        )
+        packed = jnp.concatenate(
+            (
+                cell_velocity,
+                scalar[..., None],
+                cell_velocity * scalar[..., None],
+                fine_model,
+            ),
+            axis=-1,
+        )
+        filtered = closure.hierarchy.restrict(packed, fine_level=0)
+        velocity_hat = filtered[..., :3]
+        scalar_hat = filtered[..., 3]
+        product_hat = filtered[..., 4:7]
+        fine_model_hat = filtered[..., 7:10]
+        coarse_metrics = closure.level_metrics[1]
+        scalar_gradient_hat = self._gradient_on_metrics(
+            scalar_hat,
+            coarse_metrics,
+        )
+        velocity_gradient_hat = jnp.stack(
+            tuple(
+                self._gradient_on_metrics(velocity_hat[..., component], coarse_metrics)
+                for component in range(3)
+            ),
+            axis=-2,
+        )
+        test_delta = jnp.asarray(closure.level_deltas[1], dtype=scalar.dtype)
+        test_model = (
+            test_delta[..., None] ** 2
+            * self._strain_magnitude(velocity_gradient_hat)[..., None]
+            * scalar_gradient_hat
+        )
+        resolved = product_hat - velocity_hat * scalar_hat[..., None]
+        model = fine_model_hat - test_model
+        numerator = jnp.einsum("...i,...i->...", resolved, model)
+        denominator = jnp.einsum("...i,...i->...", model, model)
+        epsilon = jnp.finfo(scalar.dtype).eps
+        coefficient = jnp.clip(
+            numerator / jnp.maximum(denominator, epsilon),
+            self.model.minimum_dynamic_coefficient,
+            self.model.maximum_dynamic_coefficient,
+        )
+        if coefficient.shape[0] > 1:
+            coefficient = coefficient.at[0].set(coefficient[1]).at[-1].set(
+                coefficient[-2]
+            )
+        fine_coefficient = closure.multigrid.prolong(coefficient, fine_level=0)
+        return (
+            fine_coefficient
+            * fine_delta**2
+            * self._strain_magnitude(velocity_gradient)
+            + self.model.molecular_diffusivity
+        )
+
+    def sgs_diffusivity(
+        self,
+        scalar: Array,
+        velocity_gradient: Array,
+        *,
+        cell_velocity: Array | None = None,
+        scalar_gradient: Array | None = None,
+    ) -> Array:
+        if scalar_gradient is None:
+            scalar_gradient = self.gradient(scalar)
+        if self.model.model == "amd":
+            return self.amd_diffusivity(
+                scalar,
+                velocity_gradient,
+                scalar_gradient=scalar_gradient,
+            )
+        if cell_velocity is None:
+            raise ValueError("FV-dynamic scalar SGS requires cell velocity")
+        return self._fv_dynamic_diffusivity(
+            scalar,
+            cell_velocity,
+            velocity_gradient,
+            scalar_gradient,
+        )
+
     def advective_tendency(
         self,
         scalar: Array,
         velocity: MACVelocity,
+        *,
+        first_internal_face_scalar: Array | None = None,
     ) -> Array:
         """Return centered advection plus the configured nonlinear correction."""
         return self.centered_advective_tendency(
             scalar,
             velocity,
+            first_internal_face_scalar=first_internal_face_scalar,
         ) + self.advection_dissipation(scalar, velocity)
 
     def centered_advective_tendency(
         self,
         scalar: Array,
         velocity: MACVelocity,
+        *,
+        first_internal_face_scalar: Array | None = None,
     ) -> Array:
         """Return the conservative centered scalar-flux divergence."""
         self._validate_scalar(scalar)
@@ -2557,6 +3114,8 @@ class ScalarOperators:
             dtype=scalar.dtype,
         )
         z_faces = z_faces.at[1:-1].set(0.5 * (scalar[:-1] + scalar[1:]))
+        if first_internal_face_scalar is not None:
+            z_faces = z_faces.at[1].set(first_internal_face_scalar)
         rank, dtype = scalar.ndim, scalar.dtype
         return -(
             (
@@ -2631,12 +3190,14 @@ class ScalarOperators:
         *,
         lower_surface_flux: Array | float | None = None,
         upper_surface_flux: Array | float | None = None,
+        cell_velocity: Array | None = None,
     ) -> tuple[Array, Array, Array, Array, Array]:
         """Return cell diffusivity, cell gradients, and three SGS fluxes."""
         gradient = self.gradient(scalar)
-        diffusivity = self.amd_diffusivity(
+        diffusivity = self.sgs_diffusivity(
             scalar,
             velocity_gradient,
+            cell_velocity=cell_velocity,
             scalar_gradient=gradient,
         )
         flux_x = -diffusivity * gradient[..., 0]
@@ -2681,12 +3242,14 @@ class ScalarOperators:
         *,
         lower_surface_flux: Array | float | None = None,
         upper_surface_flux: Array | float | None = None,
+        cell_velocity: Array | None = None,
     ) -> Array:
         _, _, flux_x, flux_y, flux_z = self.sgs_fluxes(
             scalar,
             velocity_gradient,
             lower_surface_flux=lower_surface_flux,
             upper_surface_flux=upper_surface_flux,
+            cell_velocity=cell_velocity,
         )
         # The horizontal flux lives at cell centres, so its divergence uses the
         # volume-weighted adjoint of the same gradient that produced it.  That
@@ -2721,17 +3284,20 @@ class ScalarOperators:
         *,
         lower_surface_flux: Array | float | None = None,
         upper_surface_flux: Array | float | None = None,
+        first_internal_face_scalar: Array | None = None,
     ) -> Array:
         cells = _cell_velocity(velocity)
         velocity_gradient = self._cell_velocity_gradient(cells)
         return self.advective_tendency(
             scalar,
             velocity,
+            first_internal_face_scalar=first_internal_face_scalar,
         ) + self.sgs_tendency(
             scalar,
             velocity_gradient,
             lower_surface_flux=lower_surface_flux,
             upper_surface_flux=upper_surface_flux,
+            cell_velocity=cells,
         )
 
     def _ssprk3_step(
@@ -2766,8 +3332,13 @@ class ScalarOperators:
         )
 
     def diffusive_rate(self, scalar: Array, velocity: MACVelocity) -> Array:
-        velocity_gradient = self._cell_velocity_gradient(_cell_velocity(velocity))
-        diffusivity = self.amd_diffusivity(scalar, velocity_gradient)
+        cells = _cell_velocity(velocity)
+        velocity_gradient = self._cell_velocity_gradient(cells)
+        diffusivity = self.sgs_diffusivity(
+            scalar,
+            velocity_gradient,
+            cell_velocity=cells,
+        )
         return self.explicit_diffusion_rate(diffusivity)
 
     def explicit_diffusion_rate(self, diffusivity: Array) -> Array:
@@ -2819,6 +3390,8 @@ class ScalarOperators:
 
 __all__ = [
     "AMDModel",
+    "MeanMomentumConstraintConfig",
+    "MeanMomentumState",
     "MomentumConfig",
     "MomentumDiagnostic",
     "MomentumOperators",

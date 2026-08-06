@@ -144,6 +144,16 @@ class Simulation:
             self.momentum.reset_lasd(velocity)
         if self.momentum.config.wall_temporal_filter_timescale is not None:
             self.momentum.reset_wall_model(velocity)
+        if self.momentum.config.mean_momentum_constraint is not None:
+            cells = self.momentum.cell_centered_velocity(velocity)
+            self.momentum.reset_mean_momentum(
+                velocity,
+                extra_external_tendency=(
+                    self.solver._rayleigh_momentum_cell_tendency(cells)
+                    if self.thermodynamics_enabled
+                    else None
+                ),
+            )
 
         return self.solver.initial_state(
             velocity,
@@ -237,6 +247,7 @@ def build_simulation(config: CaseConfig) -> Simulation:
         ABLSolver,
         AMDModel,
         LASDModel,
+        MeanMomentumConstraintConfig,
         MomentumConfig,
         MomentumOperators,
         ScalarConfig,
@@ -336,6 +347,15 @@ def build_simulation(config: CaseConfig) -> Simulation:
                 None if sgs.get("delta_scale") is None else float(sgs["delta_scale"])
             ),
         )
+    mean_spec = config.data.get("mean_momentum", {})
+    mean_constraint = (
+        MeanMomentumConstraintConfig(
+            timescale=float(mean_spec["timescale"]),
+            gain=float(mean_spec.get("gain", 1.0)),
+        )
+        if mean_spec.get("enabled", False)
+        else None
+    )
     momentum = MomentumOperators(
         grid,
         pressure,
@@ -347,6 +367,10 @@ def build_simulation(config: CaseConfig) -> Simulation:
                 None if wall_filter_width is None else float(wall_filter_width)
             ),
             wall_temporal_filter_timescale=wall_temporal_filter_timescale,
+            most_consistent_face_reconstruction=bool(
+                momentum_spec.get("most_consistent_face_reconstruction", True)
+            ),
+            mean_momentum_constraint=mean_constraint,
             pressure_acceleration=(
                 None
                 if momentum_spec.get("pressure_acceleration") is None
@@ -375,13 +399,21 @@ def build_simulation(config: CaseConfig) -> Simulation:
         scalar = ScalarOperators(
             grid,
             ScalarConfig(
+                model=str(thermodynamics.get("scalar_sgs_model", "amd")),
                 coefficient=float(thermodynamics["sgs_coefficient"]),
+                minimum_dynamic_coefficient=float(
+                    thermodynamics.get("minimum_dynamic_coefficient", 0.0)
+                ),
+                maximum_dynamic_coefficient=float(
+                    thermodynamics.get("maximum_dynamic_coefficient", 1.0)
+                ),
                 lower_surface_flux=(
                     float(surface["heat_flux"]) if thermal_boundary == "flux" else 0.0
                 ),
                 upper_surface_flux=0.0,
                 mp5_dissipation_strength=float(numerics.get("mp5_strength", 1.0)),
             ),
+            multilevel_filter=momentum.lasd_closure,
         )
         sponge = config.data.get("sponge", {})
         thermal_config = ThermodynamicsConfig(
@@ -398,6 +430,10 @@ def build_simulation(config: CaseConfig) -> Simulation:
                 surface.get("temperature_tendency", 0.0)
             ),
             thermal_roughness_length=surface.get("thermal_roughness_length"),
+            surface_thermal_boundary=thermal_boundary,
+            surface_momentum_stability=str(
+                surface.get("momentum_stability", "neutral")
+            ),
             rayleigh_sponge_start_height=sponge.get("start_height"),
             rayleigh_sponge_maximum_rate=float(sponge.get("maximum_rate", 0.0)),
             rayleigh_reference_temperature_at_zero=sponge.get(
@@ -418,6 +454,7 @@ def _physics_fingerprint(config: CaseConfig) -> str:
             "grid",
             "numerics",
             "momentum",
+            "mean_momentum",
             "sgs",
             "thermodynamics",
             "surface",
@@ -427,7 +464,13 @@ def _physics_fingerprint(config: CaseConfig) -> str:
         if key in config.data
     }
     sections["_solver_physics"] = {
-        "wall_closure": "finite_volume_filtered_most_v1"
+        "wall_closure": "finite_volume_filtered_most_face_v2",
+        "most_consistent_face_reconstruction": bool(
+            config.section("momentum").get(
+                "most_consistent_face_reconstruction",
+                True,
+            )
+        ),
     }
     if config.section("sgs")["model"] == "multilevel_lasd":
         sections["_solver_physics"]["lasd_discretization"] = (
@@ -574,6 +617,13 @@ def _atomic_checkpoint(
         payload["wall_filtered_velocity"] = np.asarray(
             simulation.momentum.wall_model_state.filtered_velocity
         )
+    if simulation.momentum.mean_momentum_state is not None:
+        payload["mean_momentum_previous_velocity"] = np.asarray(
+            simulation.momentum.mean_momentum_state.previous_velocity_mean
+        )
+        payload["mean_momentum_filtered_acceleration"] = np.asarray(
+            simulation.momentum.mean_momentum_state.filtered_acceleration
+        )
     temporary = destination.with_name(f".{destination.name}.tmp-{os.getpid()}")
     with temporary.open("wb") as stream:
         np.savez_compressed(stream, **payload)
@@ -585,7 +635,7 @@ def _restore(
     simulation: Simulation,
 ) -> tuple[Any, list[np.ndarray], list[float], list[tuple[float, ...]]]:
     import jax.numpy as jnp
-    from jaxwind.momentum import LASDState, WallModelState
+    from jaxwind.momentum import LASDState, MeanMomentumState, WallModelState
     from jaxwind.pressure import MACVelocity
 
     checkpoint = np.load(path, allow_pickle=False)
@@ -634,6 +684,25 @@ def _restore(
                     checkpoint["wall_filtered_velocity"],
                     dtype=simulation.dtype,
                 )
+            )
+        )
+    if simulation.momentum.config.mean_momentum_constraint is not None:
+        required = {
+            "mean_momentum_previous_velocity",
+            "mean_momentum_filtered_acceleration",
+        }
+        if not required.issubset(checkpoint.files):
+            raise ValueError("mean-momentum checkpoint is missing memory")
+        simulation.momentum.restore_mean_momentum(
+            MeanMomentumState(
+                jnp.asarray(
+                    checkpoint["mean_momentum_previous_velocity"],
+                    dtype=simulation.dtype,
+                ),
+                jnp.asarray(
+                    checkpoint["mean_momentum_filtered_acceleration"],
+                    dtype=simulation.dtype,
+                ),
             )
         )
     sample_array = np.asarray(checkpoint["samples"])
@@ -707,7 +776,18 @@ def _write_outputs(
         "friction_velocity_m_s": simulation.config.section("momentum")[
             "friction_velocity"
         ],
-        "wall_closure": "finite_volume_filtered_most_v1",
+        "wall_closure": "finite_volume_filtered_most_face_v2",
+        "most_consistent_face_reconstruction": (
+            simulation.momentum.config.most_consistent_face_reconstruction
+        ),
+        "scalar_sgs_model": (
+            None
+            if simulation.scalar is None
+            else simulation.scalar.model.model
+        ),
+        "mean_momentum_constraint": (
+            simulation.momentum.config.mean_momentum_constraint is not None
+        ),
         "wall_first_cell_height_m": simulation.momentum.wall_cell_height,
         "wall_filter_width_grid_cells": (
             simulation.momentum.config.wall_filter_width
