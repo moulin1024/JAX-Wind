@@ -34,6 +34,7 @@ from jaxwind.domain import (
 )
 from jaxwind.operators import VelocityVector
 from jaxwind.physics.dry_flow import (
+    AnisotropicMinimumDissipation,
     FilteredNeutralLogWall,
     NeutralLogWall,
     StaticSmagorinsky,
@@ -555,7 +556,11 @@ class OracleLasdMixin:
     def scalar_sgs_tendency(
         self,
         context: OracleBoussinesqContext,
-        momentum_config: StaticSmagorinsky | LagrangianScaleDependentDynamic,
+        momentum_config: (
+            StaticSmagorinsky
+            | AnisotropicMinimumDissipation
+            | LagrangianScaleDependentDynamic
+        ),
         config: StaticSmagorinskyScalarFlux | LagrangianScaleDependentScalarFlux,
         boundary: ScalarFluxBoundary = ScalarFluxBoundary(),
     ) -> Field:
@@ -563,11 +568,15 @@ class OracleLasdMixin:
             config,
             StaticSmagorinskyScalarFlux,
         )
+        amd = isinstance(
+            momentum_config,
+            AnisotropicMinimumDissipation,
+        ) and isinstance(config, StaticSmagorinskyScalarFlux)
         dynamic = isinstance(
             momentum_config,
             LagrangianScaleDependentDynamic,
         ) and isinstance(config, LagrangianScaleDependentScalarFlux)
-        if not (static or dynamic):
+        if not (static or amd or dynamic):
             raise TypeError("unsupported or inconsistent scalar SGS choice")
         momentum = context.momentum
         grid = context.potential_temperature.ownership.grid
@@ -599,29 +608,36 @@ class OracleLasdMixin:
                 cell_magnitude,
                 momentum_config.coefficient**2 / config.turbulent_prandtl,
             )
-        else:
+        elif dynamic:
             closure = momentum.closure
             if not isinstance(closure, LasdClosureMemory):
                 raise TypeError("scalar LASD requires initialized closure memory")
             scalar_coefficient = closure.scalar.coefficient.payload
-        stability = jnp.ones_like(cell_magnitude)
-        if dynamic and config.stability_buoyancy_coefficient > 0.0:
-            n2 = jnp.maximum(
-                config.stability_buoyancy_coefficient
-                * _scalar_cell_gradient(context)[..., 2],
-                0.0,
+        if amd:
+            viscosity = self._amd_eddy_viscosity(momentum)
+            cell_diffusivity = viscosity / config.turbulent_prandtl
+            face_diffusivity = (
+                _cell_to_full_faces(viscosity) / config.turbulent_prandtl
             )
-            richardson = n2 / jnp.maximum(cell_magnitude**2, 1.0e-24)
-            stability = (1.0 + config.stability_beta * richardson) ** (
-                -config.stability_power
+        else:
+            stability = jnp.ones_like(cell_magnitude)
+            if dynamic and config.stability_buoyancy_coefficient > 0.0:
+                n2 = jnp.maximum(
+                    config.stability_buoyancy_coefficient
+                    * _scalar_cell_gradient(context)[..., 2],
+                    0.0,
+                )
+                richardson = n2 / jnp.maximum(cell_magnitude**2, 1.0e-24)
+                stability = (1.0 + config.stability_beta * richardson) ** (
+                    -config.stability_power
+                )
+            effective_scalar_coefficient = scalar_coefficient * stability
+            cell_diffusivity = effective_scalar_coefficient * delta**2 * cell_magnitude
+            face_diffusivity = (
+                _cell_to_full_faces(effective_scalar_coefficient)
+                * delta**2
+                * face_magnitude
             )
-        effective_scalar_coefficient = scalar_coefficient * stability
-        cell_diffusivity = effective_scalar_coefficient * delta**2 * cell_magnitude
-        face_diffusivity = (
-            _cell_to_full_faces(effective_scalar_coefficient)
-            * delta**2
-            * face_magnitude
-        )
         qx = -cell_diffusivity * context.dtheta_dx
         qy = -cell_diffusivity * context.dtheta_dy
         qz = -face_diffusivity * context.dtheta_dz_on_faces

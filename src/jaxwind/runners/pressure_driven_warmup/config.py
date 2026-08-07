@@ -148,8 +148,8 @@ class SgsConfig:
     scalar_turbulent_prandtl: float
 
     def __post_init__(self) -> None:
-        if self.model not in ("lasd", "mgm"):
-            raise ConfigError("sgs.model must be 'lasd' or 'mgm'")
+        if self.model not in ("lasd", "mgm", "amd"):
+            raise ConfigError("sgs.model must be 'lasd', 'mgm', or 'amd'")
         if self.filter_grid_ratio <= 0.0:
             raise ConfigError("SGS filter-grid ratio must be positive")
         if self.scalar_turbulent_prandtl <= 0.0:
@@ -168,7 +168,7 @@ class SgsConfig:
                 <= self.maximum_coefficient
             ):
                 raise ConfigError("LASD coefficient bounds are inconsistent")
-        else:
+        elif self.model == "mgm":
             if self.dissipation_coefficient <= 0.0:
                 raise ConfigError("MGM dissipation coefficient must be positive")
             if self.fallback_coefficient < 0.0:
@@ -321,7 +321,7 @@ class CaseConfig:
         sgs = {"model": self.sgs.model}
         if self.sgs.model == "lasd":
             sgs["update_interval_steps"] = self.sgs.update_interval_steps
-        else:
+        elif self.sgs.model == "mgm":
             sgs.update(
                 {
                     "filter_grid_ratio": self.sgs.filter_grid_ratio,

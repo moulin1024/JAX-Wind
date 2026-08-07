@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import jax.numpy as jnp
 
@@ -19,6 +19,7 @@ from jaxwind.domain import (
 )
 from jaxwind.operators import VelocityVector
 from jaxwind.physics.dry_flow import (
+    AnisotropicMinimumDissipation,
     ConservativeAdvection,
     CoriolisGeostrophic,
     FilteredNeutralLogWall,
@@ -26,6 +27,7 @@ from jaxwind.physics.dry_flow import (
     ModulatedGradientModel,
     NeutralLogWall,
     NoRotation,
+    RotationalAdvection,
     StaticSmagorinsky,
 )
 from jaxwind.physics.lasd import (
@@ -43,6 +45,9 @@ from jaxwind.physics.wind_tunnel import (
     WindTunnelModel,
 )
 
+if TYPE_CHECKING:
+    from .jax_zslab import ZSlabDryFlowContext
+
 
 class ZSlabFlowMixin:
     """Distributed dry-flow and turbine-forcing interpretation."""
@@ -52,11 +57,18 @@ class ZSlabFlowMixin:
     def advection_tendency(
         self,
         context: ZSlabDryFlowContext,
-        config: ConservativeAdvection,
+        config: ConservativeAdvection | RotationalAdvection,
+        wall: NeutralLogWall | FilteredNeutralLogWall | None = None,
     ) -> VelocityVector:
-        if not isinstance(config, ConservativeAdvection):
+        if isinstance(config, ConservativeAdvection):
+            x, y, z = self._dry_advection(context.arrays)
+        elif isinstance(config, RotationalAdvection):
+            x, y, z = self._dry_rotational_advection(
+                context.arrays,
+                *self._wall_gradient_parameters(wall),
+            )
+        else:
             raise TypeError("unsupported z-slab advection choice")
-        x, y, z = self._dry_advection(context.arrays)
         return self._dry_tendency(x, y, z)
 
     def pressure_gradient_tendency(
@@ -90,9 +102,7 @@ class ZSlabFlowMixin:
         ) ** 2
         filtered = isinstance(config, FilteredNeutralLogWall)
         filter_width = (
-            config.filter_grid_ratio * config.test_filter_ratio
-            if filtered
-            else 1.0
+            config.filter_grid_ratio * config.test_filter_ratio if filtered else 1.0
         )
         x, y, z = self._dry_wall(
             context.arrays,
@@ -107,13 +117,21 @@ class ZSlabFlowMixin:
         context: ZSlabDryFlowContext,
         config: (
             StaticSmagorinsky
+            | AnisotropicMinimumDissipation
             | ModulatedGradientModel
             | LagrangianScaleDependentDynamic
         ),
+        wall: NeutralLogWall | FilteredNeutralLogWall | None = None,
     ) -> VelocityVector:
         if isinstance(config, ModulatedGradientModel):
-            x, y, z = self._dry_mgm(context.arrays, *self._mgm_parameters(config))
+            x, y, z = self._dry_mgm(
+                context.arrays,
+                *self._mgm_parameters(config),
+                *self._wall_gradient_parameters(wall),
+            )
             return self._dry_tendency(x, y, z)
+        if isinstance(config, AnisotropicMinimumDissipation):
+            return self._dry_tendency(*self._dry_amd(context.arrays))
         if not isinstance(
             config,
             (StaticSmagorinsky, LagrangianScaleDependentDynamic),
@@ -128,6 +146,7 @@ class ZSlabFlowMixin:
         context: ZSlabDryFlowContext,
         config: (
             StaticSmagorinsky
+            | AnisotropicMinimumDissipation
             | ModulatedGradientModel
             | LagrangianScaleDependentDynamic
         ),
@@ -138,6 +157,8 @@ class ZSlabFlowMixin:
                 context.arrays,
                 *self._mgm_parameters(config),
             )
+        if isinstance(config, AnisotropicMinimumDissipation):
+            return self._dry_amd_vertical_flux(context.arrays)
         if not isinstance(
             config,
             (StaticSmagorinsky, LagrangianScaleDependentDynamic),
@@ -169,6 +190,18 @@ class ZSlabFlowMixin:
             config.gradient_norm_epsilon,
             config.kinematic_viscosity,
         )
+
+    def _wall_gradient_parameters(
+        self,
+        wall: NeutralLogWall | FilteredNeutralLogWall | None,
+    ) -> tuple[bool, float, float, bool, float]:
+        if wall is None:
+            return False, 0.25 * self.decomposition.grid.dz, 0.4, False, 1.0
+        if not isinstance(wall, (NeutralLogWall, FilteredNeutralLogWall)):
+            raise TypeError("MGM wall-gradient choice is unsupported")
+        filtered = isinstance(wall, FilteredNeutralLogWall)
+        width = wall.filter_grid_ratio * wall.test_filter_ratio if filtered else 1.0
+        return True, wall.roughness_length, wall.von_karman, filtered, width
 
     def coriolis_geostrophic_tendency(
         self,
@@ -275,9 +308,7 @@ class ZSlabFlowMixin:
                 raise TypeError("precursor vertical target requires VerticalVelocity")
             if fringe.start_x >= self.decomposition.grid.lx:
                 raise ValueError("fringe start must lie before the periodic seam")
-            rise_width, fall_width = fringe.resolved_widths(
-                self.decomposition.grid.lx
-            )
+            rise_width, fall_width = fringe.resolved_widths(self.decomposition.grid.lx)
             fringe_parameters = (
                 True,
                 fringe.start_x,
@@ -381,16 +412,8 @@ class ZSlabFlowMixin:
             ):
                 raise TypeError("combined tendencies must preserve component dtypes")
         return self._dry_tendency(
-            self._combine_payloads(
-                tuple(term.x.payload for term in tendencies)
-            ),
-            self._combine_payloads(
-                tuple(term.y.payload for term in tendencies)
-            ),
-            self._combine_payloads(
-                tuple(term.z.owned.payload for term in tendencies)
-            ),
-            self._combine_payloads(
-                tuple(term.z.lower_boundary for term in tendencies)
-            ),
+            self._combine_payloads(tuple(term.x.payload for term in tendencies)),
+            self._combine_payloads(tuple(term.y.payload for term in tendencies)),
+            self._combine_payloads(tuple(term.z.owned.payload for term in tendencies)),
+            self._combine_payloads(tuple(term.z.lower_boundary for term in tendencies)),
         )

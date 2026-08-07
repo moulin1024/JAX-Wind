@@ -1,10 +1,12 @@
 # Pressure-driven MGM GPU benchmark
 
-This benchmark runs the canonical neutral atmospheric boundary layer with the
-modulated gradient model (MGM): a `2000 pi m x 2000 pi m x 1000 m` domain,
-`64 x 64 x 64` cells, a `0.1 s` time step, and 10 simulated hours. Statistics
-cover the final two hours. Its filtered neutral wall explicitly enables the
-Porté-Agel (2000) first-interior-face shear correction.
+This benchmark runs the configured neutral atmospheric boundary layer with the
+modulated gradient model (MGM). The main solver follows
+`neutral_abl_mgm_jax.py`: rotational convection, a sharp `fgr = 1.5` resolved
+filter, the Lu--Porté-Agel horizontal-plane dynamic MGM coefficient, filtered
+log-law wall gradients, and the Porté-Agel (2000) first-interior-face shear
+correction. Domain, timestep, duration, and sampling controls come from
+`runners/pressure_driven_warmup/config_mgm.toml`.
 
 From the repository root, run everything with one command on a GPU node:
 
@@ -33,6 +35,7 @@ Values edited directly in `config_mgm.toml` are also accepted.
 
 Use `--restart PATH` to select a different checkpoint or `--plot-only` to
 regenerate the figure without running JAX. To start an independent run, pass a
-new `--output` directory. `--allow-cpu --max-steps N` is available only for
-development smoke tests; the canonical default remains the complete GPU
-benchmark.
+new `--output` directory. Checkpoints carry the MGM physics fingerprint, so a
+checkpoint produced by the former fixed-coefficient implementation is rejected
+instead of silently mixing AB2 histories. `--allow-cpu --max-steps N` is
+available for development smoke tests.

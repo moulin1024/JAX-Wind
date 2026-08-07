@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 import math
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import jax.numpy as jnp
 
@@ -38,6 +38,7 @@ from jaxwind.domain import (
 )
 from jaxwind.operators import VelocityVector
 from jaxwind.physics.dry_flow import (
+    AnisotropicMinimumDissipation,
     FilteredNeutralLogWall,
     ModulatedGradientModel,
     NeutralLogWall,
@@ -64,6 +65,9 @@ from jaxwind.physics.lasd import (
     ScalarLasdMemory,
 )
 from jaxwind.physics.wind_tunnel import ConcurrentPrecursorFringe
+
+if TYPE_CHECKING:
+    from .jax_zslab import ZSlabBoussinesqContext, ZSlabDryFlowContext
 
 
 class ZSlabLasdMixin:
@@ -444,12 +448,17 @@ class ZSlabLasdMixin:
         context: ZSlabBoussinesqContext,
         momentum_config: (
             StaticSmagorinsky
+            | AnisotropicMinimumDissipation
             | ModulatedGradientModel
             | LagrangianScaleDependentDynamic
         ),
         config: StaticSmagorinskyScalarFlux | LagrangianScaleDependentScalarFlux,
         boundary: ScalarFluxBoundary = ScalarFluxBoundary(),
     ) -> AddressableField:
+        amd = isinstance(
+            momentum_config,
+            AnisotropicMinimumDissipation,
+        ) and isinstance(config, StaticSmagorinskyScalarFlux)
         static = isinstance(
             momentum_config,
             (StaticSmagorinsky, ModulatedGradientModel),
@@ -458,8 +467,19 @@ class ZSlabLasdMixin:
             momentum_config,
             LagrangianScaleDependentDynamic,
         ) and isinstance(config, LagrangianScaleDependentScalarFlux)
-        if not (static or dynamic):
+        if not (amd or static or dynamic):
             raise TypeError("unsupported or inconsistent scalar SGS choice")
+        if amd:
+            return self._scalar_tendency(
+                context,
+                self._scalar_amd(
+                    context.arrays,
+                    context.momentum.arrays,
+                    config.turbulent_prandtl,
+                    boundary.lower_flux,
+                    boundary.upper_flux,
+                ),
+            )
         if static:
             momentum_coefficient = (
                 momentum_config.coefficient

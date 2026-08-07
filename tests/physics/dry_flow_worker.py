@@ -32,12 +32,14 @@ from jaxwind.interpreters.jax_zslab import (  # noqa: E402
 )
 from jaxwind.operators import VelocityVector  # noqa: E402
 from jaxwind.physics import (  # noqa: E402
+    AnisotropicMinimumDissipation,
     ConservativeAdvection,
     CoriolisGeostrophic,
     FilteredNeutralLogWall,
     KinematicPressureGradient,
     ModulatedGradientModel,
     NeutralLogWall,
+    RotationalAdvection,
     StaticSmagorinsky,
 )
 
@@ -152,6 +154,12 @@ def main() -> int:
             ModulatedGradientModel(kinematic_viscosity=1.5e-5),
         ),
         (
+            "amd",
+            reference.sgs_tendency,
+            production.sgs_tendency,
+            AnisotropicMinimumDissipation(),
+        ),
+        (
             "coriolis_geostrophic",
             reference.coriolis_geostrophic_tendency,
             production.coriolis_geostrophic_tendency,
@@ -161,27 +169,17 @@ def main() -> int:
     errors = {}
     porte_agel_factor = 1.0 / math.log(3.0) - 1.0
     expected_dudz = uncorrected_context.arrays.dudz_upper[0, 0] + (
-        porte_agel_factor
-        * jnp.mean(uncorrected_context.arrays.dudz_upper[0, 0])
+        porte_agel_factor * jnp.mean(uncorrected_context.arrays.dudz_upper[0, 0])
     )
     expected_dvdz = uncorrected_context.arrays.dvdz_upper[0, 0] + (
-        porte_agel_factor
-        * jnp.mean(uncorrected_context.arrays.dvdz_upper[0, 0])
+        porte_agel_factor * jnp.mean(uncorrected_context.arrays.dvdz_upper[0, 0])
     )
     errors["porte_agel_switch"] = max(
         float(
-            jnp.max(
-                jnp.abs(
-                    production_context.arrays.dudz_upper[0, 0] - expected_dudz
-                )
-            )
+            jnp.max(jnp.abs(production_context.arrays.dudz_upper[0, 0] - expected_dudz))
         ),
         float(
-            jnp.max(
-                jnp.abs(
-                    production_context.arrays.dvdz_upper[0, 0] - expected_dvdz
-                )
-            )
+            jnp.max(jnp.abs(production_context.arrays.dvdz_upper[0, 0] - expected_dvdz))
         ),
     )
     errors["porte_agel_has_effect"] = bool(
@@ -193,6 +191,43 @@ def main() -> int:
         )
         > 0.0
     )
+    demo_wall = FilteredNeutralLogWall(0.01)
+    demo_mgm = ModulatedGradientModel(kinematic_viscosity=1.5e-5)
+    for name, expected, actual in (
+        (
+            "rotational_advection",
+            reference.advection_tendency(
+                reference_context,
+                RotationalAdvection(),
+                demo_wall,
+            ),
+            production.advection_tendency(
+                production_context,
+                RotationalAdvection(),
+                demo_wall,
+            ),
+        ),
+        (
+            "mgm_log_wall",
+            reference.sgs_tendency(reference_context, demo_mgm, demo_wall),
+            production.sgs_tendency(production_context, demo_mgm, demo_wall),
+        ),
+    ):
+        errors[name] = max(
+            float(
+                jnp.max(jnp.abs(actual.x.payload - expected.x.payload.reshape(shape)))
+            ),
+            float(
+                jnp.max(jnp.abs(actual.y.payload - expected.y.payload.reshape(shape)))
+            ),
+            float(
+                jnp.max(
+                    jnp.abs(
+                        actual.z.owned.payload - expected.z.payload[1:].reshape(shape)
+                    )
+                )
+            ),
+        )
     reference_terms = []
     production_terms = []
     for name, reference_term, production_term, config in term_cases:
@@ -238,6 +273,19 @@ def main() -> int:
         mgm_config,
     )
     errors["mgm_vertical_flux"] = max(
+        float(jnp.max(jnp.abs(actual_txz - expected_txz[1:].reshape(shape)))),
+        float(jnp.max(jnp.abs(actual_tyz - expected_tyz[1:].reshape(shape)))),
+    )
+    amd_config = AnisotropicMinimumDissipation()
+    expected_txz, expected_tyz = reference.sgs_vertical_flux(
+        reference_context,
+        amd_config,
+    )
+    actual_txz, actual_tyz = production.sgs_vertical_flux(
+        production_context,
+        amd_config,
+    )
+    errors["amd_vertical_flux"] = max(
         float(jnp.max(jnp.abs(actual_txz - expected_txz[1:].reshape(shape)))),
         float(jnp.max(jnp.abs(actual_tyz - expected_tyz[1:].reshape(shape)))),
     )

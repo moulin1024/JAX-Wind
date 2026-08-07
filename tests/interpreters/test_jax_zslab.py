@@ -21,8 +21,7 @@ class JaxZSlabCommutingTests(unittest.TestCase):
                 environment["JAX_ENABLE_X64"] = "1"
                 existing_flags = environment.get("XLA_FLAGS", "")
                 environment["XLA_FLAGS"] = (
-                    f"--xla_force_host_platform_device_count={devices} "
-                    f"{existing_flags}"
+                    f"--xla_force_host_platform_device_count={devices} {existing_flags}"
                 ).strip()
                 completed = subprocess.run(
                     [
@@ -55,8 +54,7 @@ class JaxZSlabCommutingTests(unittest.TestCase):
                 )
                 plane = 2 * 3 * 4
                 expected_communication = [
-                    plane
-                    * (int(shard > 0) + int(shard < devices - 1))
+                    plane * (int(shard > 0) + int(shard < devices - 1))
                     for shard in range(devices)
                 ]
                 self.assertEqual(
@@ -72,6 +70,7 @@ class JaxZSlabCommutingTests(unittest.TestCase):
                     [False] * (devices - 1) + [True],
                 )
                 self.assertTrue(result["extract_identity"])
+                self.assertLess(result["resolved_filter_error"], tolerance)
 
 
 if __name__ == "__main__":

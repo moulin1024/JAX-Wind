@@ -257,12 +257,14 @@ class BoussinesqReferenceTests(unittest.TestCase):
                 path,
                 advanced,
                 scale_fingerprint="test-scales-v1",
+                physics_fingerprint="test-physics-v1",
             )
             loaded = load_boussinesq_checkpoint(
                 path,
                 layout=ReferenceCheckpointLayout(self.grid, jnp.asarray),
                 config=config,
                 scale_fingerprint="test-scales-v1",
+                physics_fingerprint="test-physics-v1",
             )
             with self.assertRaisesRegex(ValueError, "scale fingerprint"):
                 load_boussinesq_checkpoint(
@@ -270,6 +272,13 @@ class BoussinesqReferenceTests(unittest.TestCase):
                     layout=ReferenceCheckpointLayout(self.grid, jnp.asarray),
                     config=config,
                     scale_fingerprint="different-scales",
+                )
+            with self.assertRaisesRegex(ValueError, "physics fingerprint"):
+                load_boussinesq_checkpoint(
+                    path,
+                    layout=ReferenceCheckpointLayout(self.grid, jnp.asarray),
+                    config=config,
+                    physics_fingerprint="different-physics",
                 )
         self.assertEqual(loaded.clock, advanced.clock)
         self.assertEqual(

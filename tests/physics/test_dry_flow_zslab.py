@@ -22,8 +22,7 @@ class DryFlowZSlabCommutingTests(unittest.TestCase):
                 environment["JAX_ENABLE_X64"] = "1"
                 existing_flags = environment.get("XLA_FLAGS", "")
                 environment["XLA_FLAGS"] = (
-                    f"--xla_force_host_platform_device_count={devices} "
-                    f"{existing_flags}"
+                    f"--xla_force_host_platform_device_count={devices} {existing_flags}"
                 ).strip()
                 completed = subprocess.run(
                     [
@@ -47,13 +46,17 @@ class DryFlowZSlabCommutingTests(unittest.TestCase):
                 for term in (
                     "porte_agel_switch",
                     "advection",
+                    "rotational_advection",
                     "pressure_gradient",
                     "wall",
                     "wall_filtered",
                     "sgs",
                     "sgs_vertical_flux",
                     "mgm",
+                    "mgm_log_wall",
                     "mgm_vertical_flux",
+                    "amd",
+                    "amd_vertical_flux",
                     "coriolis_geostrophic",
                     "combined",
                 ):

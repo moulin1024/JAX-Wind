@@ -378,6 +378,7 @@ def save_boussinesq_checkpoint(
     state: AB2BoussinesqState,
     *,
     scale_fingerprint: str | None = None,
+    physics_fingerprint: str | None = None,
 ) -> None:
     """Atomically save velocity, scalar, and both previous AB2 tendencies."""
     target = Path(path)
@@ -408,6 +409,10 @@ def save_boussinesq_checkpoint(
         if not scale_fingerprint:
             raise ValueError("scale fingerprint must be non-empty")
         metadata["scale_fingerprint"] = scale_fingerprint
+    if physics_fingerprint is not None:
+        if not physics_fingerprint:
+            raise ValueError("physics fingerprint must be non-empty")
+        metadata["physics_fingerprint"] = physics_fingerprint
     if representation == "owned-z-slab":
         metadata["addressable_shards"] = [
             region.coordinate.indices[0] for region in velocity.x.regions
@@ -559,6 +564,7 @@ def load_boussinesq_checkpoint(
     config: AB2Config,
     scale_fingerprint: str | None = None,
     closure_fingerprint: str | None = None,
+    physics_fingerprint: str | None = None,
 ) -> AB2BoussinesqState:
     with np.load(Path(path), allow_pickle=False) as archive:
         metadata = json.loads(str(archive["metadata"]))
@@ -569,6 +575,11 @@ def load_boussinesq_checkpoint(
             and metadata.get("scale_fingerprint") != scale_fingerprint
         ):
             raise ValueError("Boussinesq checkpoint scale fingerprint does not match")
+        if (
+            physics_fingerprint is not None
+            and metadata.get("physics_fingerprint") != physics_fingerprint
+        ):
+            raise ValueError("Boussinesq checkpoint physics fingerprint does not match")
         validation_metadata = dict(metadata)
         validation_metadata["schema"] = SCHEMA
         history_tag = _validate_metadata(validation_metadata, layout, config)

@@ -46,6 +46,7 @@ class BoussinesqZSlabCommutingTests(unittest.TestCase):
                 for term in (
                     "scalar_advection",
                     "scalar_sgs",
+                    "amd_scalar_sgs",
                     "buoyancy",
                     "rayleigh",
                     "combined_scalar",

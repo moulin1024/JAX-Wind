@@ -22,6 +22,7 @@ from jaxwind.domain import (  # noqa: E402
 from tests.support.jax_oracle import JaxOracleProjection  # noqa: E402
 from jaxwind.operators import VelocityVector  # noqa: E402
 from jaxwind.physics import (  # noqa: E402
+    AnisotropicMinimumDissipation,
     ConservativeAdvection,
     CoriolisGeostrophic,
     FilteredNeutralLogWall,
@@ -116,6 +117,11 @@ class DryFlowScalingNaturalityTests(unittest.TestCase):
                 reference.sgs_tendency,
                 StaticSmagorinsky(0.16),
                 StaticSmagorinsky(0.16),
+            ),
+            (
+                reference.sgs_tendency,
+                AnisotropicMinimumDissipation(),
+                AnisotropicMinimumDissipation(),
             ),
             (
                 reference.sgs_tendency,

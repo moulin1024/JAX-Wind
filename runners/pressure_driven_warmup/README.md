@@ -24,10 +24,14 @@ the only mean momentum sources and sinks.
 
 [`config_mgm.toml`](config_mgm.toml) selects the memoryless modulated gradient
 model (MGM) ported from `legacy/fortran_cuda/src/sgs_mgm.cuf` (`model = 4`).
-The port preserves the legacy anisotropic gradient tensor, clipped
-backscatter, aspect-ratio-corrected dissipation coefficient, molecular
-viscosity, and the `Cs = 0.1` Smagorinsky fallback used when `Gkk` is
-ill-conditioned. The MGM benchmark explicitly sets
+The port preserves the anisotropic gradient tensor, clipped backscatter,
+molecular viscosity, and the `Cs = 0.1` Smagorinsky fallback used when `Gkk`
+is ill-conditioned. Its dissipation coefficient is diagnosed independently on
+every horizontal plane from the Lu--Porté-Agel conditional/unconditional cubic
+transfer moments; `dissipation_coefficient = 1` is the neutral-ABL demo's
+unit multiplier. All SGS paths select rotational convection and apply the same
+sharp `filter_grid_ratio = 1.5` filter to accepted velocity states.
+The benchmark explicitly sets
 `wall.porte_agel_correction = true`, matching the legacy correction that adds
 `(1/log(3) - 1)` times the horizontal mean shear at the first interior face.
 The passive scalar uses a fixed turbulent Prandtl number and does not allocate
@@ -44,10 +48,10 @@ jaxwind runners/pressure_driven_warmup \
   --config runners/pressure_driven_warmup/config_mgm.toml
 ```
 
-The case advances 10 simulated hours with 0.1 s AB2 steps. Horizontal-plane
-statistics are sampled every 10 s during the final two hours. Restartable
-checkpoints are written hourly, and the completed run writes
-`checkpoint_final.npz` for downstream precursor cases.
+The canonical LASD `config.toml` case advances 10 simulated hours with 0.1 s
+AB2 steps. The MGM case takes its runtime and sampling controls independently
+from `config_mgm.toml`. Both write restartable checkpoints and produce
+`checkpoint_final.npz` after reaching their configured final time.
 
 For the complete MGM GPU run plus the neutral log-law velocity plot, use the
 one-command benchmark from the repository root:

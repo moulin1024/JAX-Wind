@@ -90,9 +90,12 @@ def main() -> int:
     )
     interpreter = build_zslab_interpreter(
         decomposition,
-        addressable_shards=(
-            None if args.devices == 1 else tuple(range(args.devices))
-        ),
+        addressable_shards=(None if args.devices == 1 else tuple(range(args.devices))),
+    )
+    aligned_interpreter = build_zslab_interpreter(
+        decomposition,
+        addressable_shards=(None if args.devices == 1 else tuple(range(args.devices))),
+        resolved_filter_grid_ratio=1.5,
     )
     distributed_gradient = interpreter.pressure_gradient_z(
         addressable_pressure,
@@ -181,6 +184,15 @@ def main() -> int:
             global_w[0],
         ),
     )
+    aligned_velocity = aligned_interpreter.enforce_normal_boundary(
+        distributed_velocity,
+        VerticalBoundary(dtype(0.0), dtype(0.0)),
+    )
+    expected_aligned_u = jnp.mean(
+        distributed_velocity.x.payload,
+        axis=(-2, -1),
+        keepdims=True,
+    )
     line = BladeElementActuatorLine(
         x=2.0,
         y=1.5,
@@ -265,9 +277,7 @@ def main() -> int:
             jnp.max(jnp.abs(distributed_laplacian.payload - expected_laplacian))
         ),
         "actuator_line_error": float(jnp.max(jnp.asarray(line_errors))),
-        "actuator_line_component_errors": [
-            float(value) for value in line_errors
-        ],
+        "actuator_line_component_errors": [float(value) for value in line_errors],
         "lower_halo_error": float(jnp.max(jnp.abs(halo.lower - expected_lower))),
         "upper_halo_error": float(jnp.max(jnp.abs(halo.upper - expected_upper))),
         "halo_shape_stable": (
@@ -283,15 +293,16 @@ def main() -> int:
             for shard in range(args.devices)
         ],
         "lower_flags": [
-            bool(value)
-            for value in jax.device_get(halo.lower_is_physical)
+            bool(value) for value in jax.device_get(halo.lower_is_physical)
         ],
         "upper_flags": [
-            bool(value)
-            for value in jax.device_get(halo.upper_is_physical)
+            bool(value) for value in jax.device_get(halo.upper_is_physical)
         ],
         "extract_identity": distributed_gradient.extract_owned()
         is distributed_gradient.owned,
+        "resolved_filter_error": float(
+            jnp.max(jnp.abs(aligned_velocity.x.payload - expected_aligned_u))
+        ),
     }
     print(json.dumps(result))
     return 0

@@ -58,10 +58,7 @@ def test_canonical_case_resolves_physical_and_numerical_choices() -> None:
     assert case.output.sample_every_steps == 100
     assert case.output.checkpoint_every_steps == 36_000
     assert case.estimated_startup_cfl < case.numerics.cfl_abort
-    assert (
-        case.estimated_lasd_trajectory_cfl
-        < case.numerics.lasd_trajectory_cfl_abort
-    )
+    assert case.estimated_lasd_trajectory_cfl < case.numerics.lasd_trajectory_cfl_abort
 
 
 def test_dry_run_prints_the_resolved_plan_without_loading_jax() -> None:
@@ -83,20 +80,18 @@ def test_dry_run_prints_the_resolved_plan_without_loading_jax() -> None:
     resolved = tomllib.loads(completed.stdout)
     assert resolved["runner"] == "pressure_driven_warmup"
     assert resolved["time"]["steps"] == 360_000
-    assert resolved["flow"]["pressure_acceleration_m_s2"] == pytest.approx(
-        1.6e-4
-    )
+    assert resolved["flow"]["pressure_acceleration_m_s2"] == pytest.approx(1.6e-4)
     assert "jax" not in completed.stderr.lower()
 
 
-def test_mgm_case_exposes_the_legacy_model_without_lasd_memory() -> None:
+def test_mgm_case_exposes_the_demo_aligned_model_without_lasd_memory() -> None:
     case = load_case(MGM_CONFIG)
     assert case.wall.porte_agel_correction
     assert case.sgs.model == "mgm"
     assert case.sgs.filter_grid_ratio == 1.5
-    assert case.sgs.dissipation_coefficient == 3.0
+    assert case.sgs.dissipation_coefficient == 1.0
     assert case.sgs.fallback_coefficient == 0.1
-    assert case.sgs.gradient_norm_epsilon_s2 == pytest.approx(1.0e-12)
+    assert case.sgs.gradient_norm_epsilon_s2 == pytest.approx(2.4674011002723396e-12)
     assert case.sgs.kinematic_viscosity_m2_s == pytest.approx(1.5e-5)
     assert case.estimated_lasd_trajectory_cfl == 0.0
     resolved = case.resolved()
@@ -156,10 +151,7 @@ def test_cli_runs_a_declarative_case_directory_without_run_py(
     )
 
     assert not (case_dir / "run.py").exists()
-    assert (
-        tomllib.loads(completed.stdout)["case"]
-        == "pressure_driven_warmup_64x64x64"
-    )
+    assert tomllib.loads(completed.stdout)["case"] == "pressure_driven_warmup_64x64x64"
 
 
 def test_config_rejects_a_lasd_trajectory_that_crosses_the_abort_limit(

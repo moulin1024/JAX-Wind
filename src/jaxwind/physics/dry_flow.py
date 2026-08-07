@@ -19,6 +19,11 @@ class ConservativeAdvection:
 
 
 @dataclass(frozen=True, slots=True)
+class RotationalAdvection:
+    """Rotational ``omega x u`` form used by the neutral-ABL MGM reference."""
+
+
+@dataclass(frozen=True, slots=True)
 class KinematicPressureGradient:
     """Constant pressure-gradient acceleration in canonical SI units."""
 
@@ -62,10 +67,7 @@ class FilteredNeutralLogWall:
     porte_agel_correction: bool = True
 
     def __post_init__(self) -> None:
-        if (
-            not math.isfinite(self.roughness_length)
-            or self.roughness_length <= 0.0
-        ):
+        if not math.isfinite(self.roughness_length) or self.roughness_length <= 0.0:
             raise ValueError("roughness length must be finite and positive")
         if not math.isfinite(self.von_karman) or self.von_karman <= 0.0:
             raise ValueError("von Karman constant must be finite and positive")
@@ -88,16 +90,32 @@ class StaticSmagorinsky:
 
 
 @dataclass(frozen=True, slots=True)
+class AnisotropicMinimumDissipation:
+    """Local staggered anisotropic minimum-dissipation momentum closure.
+
+    This is the neutral, unaveraged AMD formulation used by the legacy solver,
+    with pseudo-spectral horizontal and second-order vertical Poincare lengths.
+    """
+
+    @property
+    def fingerprint(self) -> str:
+        return "jaxwind.amd.momentum.v1"
+
+
+@dataclass(frozen=True, slots=True)
 class ModulatedGradientModel:
-    """Memoryless legacy MGM momentum closure.
+    """Memoryless Lu--Porte-Agel MGM momentum closure.
 
     The model uses horizontally enlarged filter widths, diagnoses SGS kinetic
     energy from the local gradient-tensor contraction, clips backscatter, and
-    falls back to a static Smagorinsky stress when the tensor norm is too small.
+    diagnoses its dissipation coefficient from conditional and unconditional
+    horizontal-plane transfer moments. ``dissipation_coefficient`` is an
+    optional multiplier on that diagnosed coefficient; one reproduces the
+    neutral-ABL demo. Degenerate tensor norms fall back to static Smagorinsky.
     """
 
     filter_grid_ratio: float = 1.5
-    dissipation_coefficient: float = 3.0
+    dissipation_coefficient: float = 1.0
     fallback_coefficient: float = 0.1
     gradient_norm_epsilon: float = 1.0e-6
     kinematic_viscosity: float = 0.0
@@ -109,17 +127,19 @@ class ModulatedGradientModel:
             self.gradient_norm_epsilon,
         )
         if not all(math.isfinite(value) and value > 0.0 for value in positive):
-            raise ValueError("MGM filter, dissipation, and norm scales must be positive")
+            raise ValueError(
+                "MGM filter, dissipation, and norm scales must be positive"
+            )
         nonnegative = (self.fallback_coefficient, self.kinematic_viscosity)
-        if not all(
-            math.isfinite(value) and value >= 0.0 for value in nonnegative
-        ):
-            raise ValueError("MGM fallback coefficient and viscosity must be nonnegative")
+        if not all(math.isfinite(value) and value >= 0.0 for value in nonnegative):
+            raise ValueError(
+                "MGM fallback coefficient and viscosity must be nonnegative"
+            )
 
     @property
     def fingerprint(self) -> str:
         return (
-            "jaxwind.mgm.momentum.v1"
+            "jaxwind.mgm.momentum.v2"
             f"|fgr={self.filter_grid_ratio.hex()}"
             f"|ce={self.dissipation_coefficient.hex()}"
             f"|fallback={self.fallback_coefficient.hex()}"
@@ -159,11 +179,12 @@ class CoriolisGeostrophic:
 class DryFlowModel:
     """Small product of independent choices required by the first model."""
 
-    advection: ConservativeAdvection
+    advection: ConservativeAdvection | RotationalAdvection
     pressure_gradient: KinematicPressureGradient
     wall: NeutralLogWall | FilteredNeutralLogWall
     sgs: (
         StaticSmagorinsky
+        | AnisotropicMinimumDissipation
         | ModulatedGradientModel
         | LagrangianScaleDependentDynamic
     )
@@ -171,7 +192,11 @@ class DryFlowModel:
 
     def __post_init__(self) -> None:
         expected = (
-            (self.advection, ConservativeAdvection, "advection"),
+            (
+                self.advection,
+                (ConservativeAdvection, RotationalAdvection),
+                "advection",
+            ),
             (self.pressure_gradient, KinematicPressureGradient, "pressure gradient"),
             (
                 self.wall,
@@ -182,6 +207,7 @@ class DryFlowModel:
                 self.sgs,
                 (
                     StaticSmagorinsky,
+                    AnisotropicMinimumDissipation,
                     ModulatedGradientModel,
                     LagrangianScaleDependentDynamic,
                 ),
@@ -238,13 +264,17 @@ class DryFlowVectorFieldResult:
 class DryFlowAlgebra(Protocol):
     def dry_flow_context(self, velocity: Any) -> Any: ...
 
-    def advection_tendency(self, context: Any, config: Any) -> Any: ...
+    def advection_tendency(
+        self, context: Any, config: Any, wall: Any | None = None
+    ) -> Any: ...
 
     def pressure_gradient_tendency(self, context: Any, config: Any) -> Any: ...
 
     def wall_stress_tendency(self, context: Any, config: Any) -> Any: ...
 
-    def sgs_tendency(self, context: Any, config: Any) -> Any: ...
+    def sgs_tendency(
+        self, context: Any, config: Any, wall: Any | None = None
+    ) -> Any: ...
 
     def coriolis_geostrophic_tendency(self, context: Any, config: Any) -> Any: ...
 
@@ -261,13 +291,21 @@ class DryFlowVectorField:
     def evaluate_contributions(self, evaluation: Any) -> DryFlowContributions:
         context = self.algebra.dry_flow_context(evaluation.velocity)
         return DryFlowContributions(
-            self.algebra.advection_tendency(context, self.model.advection),
+            self.algebra.advection_tendency(
+                context,
+                self.model.advection,
+                self.model.wall,
+            ),
             self.algebra.pressure_gradient_tendency(
                 context,
                 self.model.pressure_gradient,
             ),
             self.algebra.wall_stress_tendency(context, self.model.wall),
-            self.algebra.sgs_tendency(context, self.model.sgs),
+            self.algebra.sgs_tendency(
+                context,
+                self.model.sgs,
+                self.model.wall,
+            ),
             self.algebra.coriolis_geostrophic_tendency(
                 context,
                 self.model.rotation,

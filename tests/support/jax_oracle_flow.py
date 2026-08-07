@@ -33,6 +33,7 @@ from jaxwind.domain import (
 )
 from jaxwind.operators import VelocityVector
 from jaxwind.physics.dry_flow import (
+    AnisotropicMinimumDissipation,
     ConservativeAdvection,
     CoriolisGeostrophic,
     FilteredNeutralLogWall,
@@ -40,6 +41,7 @@ from jaxwind.physics.dry_flow import (
     ModulatedGradientModel,
     NeutralLogWall,
     NoRotation,
+    RotationalAdvection,
     StaticSmagorinsky,
 )
 from jaxwind.physics.lasd import (
@@ -80,8 +82,37 @@ class OracleFlowMixin:
     def advection_tendency(
         self,
         context: OracleDryFlowContext,
-        config: ConservativeAdvection,
+        config: ConservativeAdvection | RotationalAdvection,
+        wall: NeutralLogWall | FilteredNeutralLogWall | None = None,
     ) -> VelocityVector:
+        if isinstance(config, RotationalAdvection):
+            velocity = context.velocity
+            dudz = context.dudz_on_faces
+            dvdz = context.dvdz_on_faces
+            if wall is not None:
+                wall_gradient = self._wall_gradient(context, wall)
+                dudz = dudz.at[0].set(wall_gradient[0])
+                dvdz = dvdz.at[0].set(wall_gradient[1])
+            convection_x = context.velocity.y.payload * (context.dudy - context.dvdx)
+            convection_x += 0.5 * (
+                velocity.z.payload[1:] * (dudz[1:] - context.dwdx_on_faces[1:])
+                + velocity.z.payload[:-1] * (dudz[:-1] - context.dwdx_on_faces[:-1])
+            )
+            convection_y = context.velocity.x.payload * (context.dvdx - context.dudy)
+            convection_y += 0.5 * (
+                velocity.z.payload[1:] * (dvdz[1:] - context.dwdy_on_faces[1:])
+                + velocity.z.payload[:-1] * (dvdz[:-1] - context.dwdy_on_faces[:-1])
+            )
+            convection_z = context.u_on_faces * (
+                context.dwdx_on_faces - dudz
+            ) + context.v_on_faces * (context.dwdy_on_faces - dvdz)
+            convection_z = convection_z.at[0].set(0.0).at[-1].set(0.0)
+            return _oracle_tendency(
+                context,
+                -convection_x,
+                -convection_y,
+                -convection_z,
+            )
         if not isinstance(config, ConservativeAdvection):
             raise TypeError("unsupported reference advection choice")
         velocity = context.velocity
@@ -144,6 +175,40 @@ class OracleFlowMixin:
         z = jnp.zeros_like(velocity.z.payload)
         return _oracle_tendency(context, x, y, z)
 
+    @staticmethod
+    def _wall_gradient(
+        context: OracleDryFlowContext,
+        wall: NeutralLogWall | FilteredNeutralLogWall,
+    ):
+        velocity = context.velocity
+        grid = velocity.x.ownership.grid
+        wall_u = velocity.x.payload[0]
+        wall_v = velocity.y.payload[0]
+        if isinstance(wall, FilteredNeutralLogWall):
+            filtered = _wall_filter(
+                jnp.stack((wall_u, wall_v)),
+                grid=grid,
+                filter_width=wall.filter_grid_ratio * wall.test_filter_ratio,
+            )
+            wall_u, wall_v = filtered[0], filtered[1]
+        elif not isinstance(wall, NeutralLogWall):
+            raise TypeError("unsupported reference wall-gradient choice")
+        speed = jnp.hypot(wall_u, wall_v)
+        safe_speed = jnp.maximum(speed, jnp.finfo(speed.dtype).tiny)
+        friction_velocity = (
+            speed * wall.von_karman / math.log(0.5 * grid.dz / wall.roughness_length)
+        )
+        gradient = (
+            jnp.stack((wall_u, wall_v))
+            * friction_velocity
+            / (safe_speed * wall.von_karman * 0.5 * grid.dz)
+        )
+        return jnp.where(
+            (speed > jnp.finfo(speed.dtype).tiny)[None],
+            gradient,
+            0.0,
+        )
+
     def wall_stress_tendency(
         self,
         context: OracleDryFlowContext,
@@ -183,14 +248,17 @@ class OracleFlowMixin:
         context: OracleDryFlowContext,
         config: (
             StaticSmagorinsky
+            | AnisotropicMinimumDissipation
             | ModulatedGradientModel
             | LagrangianScaleDependentDynamic
         ),
+        wall: NeutralLogWall | FilteredNeutralLogWall | None = None,
     ) -> VelocityVector:
         if not isinstance(
             config,
             (
                 StaticSmagorinsky,
+                AnisotropicMinimumDissipation,
                 ModulatedGradientModel,
                 LagrangianScaleDependentDynamic,
             ),
@@ -199,19 +267,31 @@ class OracleFlowMixin:
         velocity = context.velocity
         grid = velocity.x.ownership.grid
         if isinstance(config, ModulatedGradientModel):
+            dudz_at_cells = context.dudz_at_cells
+            dvdz_at_cells = context.dvdz_at_cells
+            if wall is not None:
+                wall_gradient = self._wall_gradient(context, wall)
+                dudz_at_cells = dudz_at_cells.at[0].set(wall_gradient[0])
+                dvdz_at_cells = dvdz_at_cells.at[0].set(wall_gradient[1])
             txx, txy, _txz, tyy, _tyz, tzz = self._mgm_stress(
                 context.dudx,
                 context.dudy,
-                context.dudz_at_cells,
+                dudz_at_cells,
                 context.dvdx,
                 context.dvdy,
-                context.dvdz_at_cells,
+                dvdz_at_cells,
                 context.dwdx_at_cells,
                 context.dwdy_at_cells,
                 -(context.dudx + context.dvdy),
                 grid,
                 config,
             )
+        elif isinstance(config, AnisotropicMinimumDissipation):
+            eddy_viscosity = self._amd_eddy_viscosity(context)
+            txx = -2.0 * eddy_viscosity * context.dudx
+            txy = -eddy_viscosity * (context.dudy + context.dvdx)
+            tyy = -2.0 * eddy_viscosity * context.dvdy
+            tzz = -2.0 * eddy_viscosity * context.dwdz
         else:
             delta = (grid.dx * grid.dy * grid.dz) ** (1.0 / 3.0)
             magnitude = _strain_magnitude(
@@ -256,6 +336,7 @@ class OracleFlowMixin:
         context: OracleDryFlowContext,
         config: (
             StaticSmagorinsky
+            | AnisotropicMinimumDissipation
             | ModulatedGradientModel
             | LagrangianScaleDependentDynamic
         ),
@@ -265,6 +346,7 @@ class OracleFlowMixin:
             config,
             (
                 StaticSmagorinsky,
+                AnisotropicMinimumDissipation,
                 ModulatedGradientModel,
                 LagrangianScaleDependentDynamic,
             ),
@@ -286,6 +368,16 @@ class OracleFlowMixin:
                 config,
             )
             txz, tyz = stresses[2], stresses[4]
+        elif isinstance(config, AnisotropicMinimumDissipation):
+            viscosity_on_faces = _cell_to_full_faces(
+                self._amd_eddy_viscosity(context)
+            )
+            txz = -viscosity_on_faces * (
+                context.dudz_on_faces + context.dwdx_on_faces
+            )
+            tyz = -viscosity_on_faces * (
+                context.dvdz_on_faces + context.dwdy_on_faces
+            )
         else:
             delta = (grid.dx * grid.dy * grid.dz) ** (1.0 / 3.0)
             face_magnitude = _strain_magnitude(
@@ -303,17 +395,112 @@ class OracleFlowMixin:
             viscosity_on_faces = (
                 _cell_to_full_faces(coefficient) * delta**2 * face_magnitude
             )
-            txz = -viscosity_on_faces * (
-                context.dudz_on_faces + context.dwdx_on_faces
-            )
-            tyz = -viscosity_on_faces * (
-                context.dvdz_on_faces + context.dwdy_on_faces
-            )
+            txz = -viscosity_on_faces * (context.dudz_on_faces + context.dwdx_on_faces)
+            tyz = -viscosity_on_faces * (context.dvdz_on_faces + context.dwdy_on_faces)
         txz = txz.at[0].set(0.0).at[-1].set(0.0)
         tyz = tyz.at[0].set(0.0).at[-1].set(0.0)
         txz = _two_thirds_filter(txz, grid=grid)
         tyz = _two_thirds_filter(tyz, grid=grid)
         return txz, tyz
+
+    @staticmethod
+    def _amd_eddy_viscosity(context: OracleDryFlowContext):
+        """Independent full-domain transcription of legacy staggered AMD."""
+        grid = context.velocity.x.ownership.grid
+        lower_dudz, upper_dudz = (
+            context.dudz_on_faces[:-1],
+            context.dudz_on_faces[1:],
+        )
+        lower_dvdz, upper_dvdz = (
+            context.dvdz_on_faces[:-1],
+            context.dvdz_on_faces[1:],
+        )
+        lower_dwdx, upper_dwdx = (
+            context.dwdx_on_faces[:-1],
+            context.dwdx_on_faces[1:],
+        )
+        lower_dwdy, upper_dwdy = (
+            context.dwdy_on_faces[:-1],
+            context.dwdy_on_faces[1:],
+        )
+
+        def mean_product(lower_a, upper_a, lower_b, upper_b):
+            return 0.5 * (lower_a * lower_b + upper_a * upper_b)
+
+        s11 = context.dudx
+        s22 = context.dvdy
+        s33 = context.dwdz
+        s12 = 0.5 * (context.dudy + context.dvdx)
+        lower_s13 = 0.5 * (lower_dudz + lower_dwdx)
+        upper_s13 = 0.5 * (upper_dudz + upper_dwdx)
+        lower_s23 = 0.5 * (lower_dvdz + lower_dwdy)
+        upper_s23 = 0.5 * (upper_dvdz + upper_dwdy)
+
+        def horizontal(ud, vd, lower_wd, upper_wd):
+            w2 = mean_product(lower_wd, upper_wd, lower_wd, upper_wd)
+            w_s13 = mean_product(lower_wd, upper_wd, lower_s13, upper_s13)
+            w_s23 = mean_product(lower_wd, upper_wd, lower_s23, upper_s23)
+            return (
+                s11 * ud**2
+                + s22 * vd**2
+                + s33 * w2
+                + 2.0 * s12 * ud * vd
+                + 2.0 * ud * w_s13
+                + 2.0 * vd * w_s23
+            )
+
+        horizontal_x = horizontal(
+            context.dudx,
+            context.dvdx,
+            lower_dwdx,
+            upper_dwdx,
+        )
+        horizontal_y = horizontal(
+            context.dudy,
+            context.dvdy,
+            lower_dwdy,
+            upper_dwdy,
+        )
+        vertical = (
+            s11 * mean_product(lower_dudz, upper_dudz, lower_dudz, upper_dudz)
+            + s22 * mean_product(lower_dvdz, upper_dvdz, lower_dvdz, upper_dvdz)
+            + s33**3
+            + 2.0
+            * s12
+            * mean_product(lower_dudz, upper_dudz, lower_dvdz, upper_dvdz)
+            + 2.0
+            * s33
+            * mean_product(lower_dudz, upper_dudz, lower_s13, upper_s13)
+            + 2.0
+            * s33
+            * mean_product(lower_dvdz, upper_dvdz, lower_s23, upper_s23)
+        )
+        numerator = -(
+            (grid.dx**2 / 12.0) * horizontal_x
+            + (grid.dy**2 / 12.0) * horizontal_y
+            + (grid.dz**2 / 3.0) * vertical
+        )
+        denominator = (
+            context.dudx**2
+            + context.dvdx**2
+            + mean_product(lower_dwdx, upper_dwdx, lower_dwdx, upper_dwdx)
+            + context.dudy**2
+            + context.dvdy**2
+            + mean_product(lower_dwdy, upper_dwdy, lower_dwdy, upper_dwdy)
+            + mean_product(lower_dudz, upper_dudz, lower_dudz, upper_dudz)
+            + mean_product(lower_dvdz, upper_dvdz, lower_dvdz, upper_dvdz)
+            + context.dwdz**2
+        )
+        valid = (
+            (denominator > 0.0)
+            & jnp.isfinite(numerator)
+            & jnp.isfinite(denominator)
+        )
+        return jnp.where(
+            valid,
+            jnp.maximum(numerator, 0.0) / jnp.where(valid, denominator, 1.0),
+            0.0,
+        )
 
     @staticmethod
     def _mgm_stress(
@@ -344,21 +531,54 @@ class OracleFlowMixin:
         gkk = g11 + g22 + g33
         valid = gkk > config.gradient_norm_epsilon
         safe_gkk = jnp.where(valid, gkk, 1.0)
-        contraction = jnp.minimum(
+        raw_contraction = (
             g11 * s11
             + g22 * s22
             + g33 * s33
-            + 2.0 * (g12 * s12 + g13 * s13 + g23 * s23),
-            0.0,
+            + 2.0 * (g12 * s12 + g13 * s13 + g23 * s23)
         )
+        transfer = jnp.where(valid, -raw_contraction / safe_gkk, 0.0)
+        transfer_moment = transfer**3
+        forward = valid & (raw_contraction <= 0.0)
+        valid_count = jnp.sum(valid, axis=(-2, -1))
+        forward_count = jnp.sum(forward, axis=(-2, -1))
+        conditional_mean = jnp.sum(
+            jnp.where(forward, transfer_moment, 0.0), axis=(-2, -1)
+        ) / jnp.maximum(forward_count, 1)
+        unconditional_mean = jnp.sum(
+            jnp.where(valid, transfer_moment, 0.0), axis=(-2, -1)
+        ) / jnp.maximum(valid_count, 1)
+        absolute_mean = jnp.sum(
+            jnp.where(valid, jnp.abs(transfer_moment), 0.0), axis=(-2, -1)
+        ) / jnp.maximum(valid_count, 1)
+        denominator_floor = jnp.finfo(gkk.dtype).eps * jnp.maximum(
+            absolute_mean,
+            jnp.finfo(gkk.dtype).tiny,
+        )
+        coefficient_squared = conditional_mean / jnp.where(
+            unconditional_mean > 0.0,
+            unconditional_mean,
+            1.0,
+        )
+        usable = (
+            (valid_count > 0)
+            & (forward_count > 0)
+            & (unconditional_mean > denominator_floor)
+            & jnp.isfinite(coefficient_squared)
+            & (coefficient_squared > 0.0)
+        )
+        diagnosed_coefficient = jnp.sqrt(jnp.where(usable, coefficient_squared, 1.0))[
+            :, None, None
+        ]
+        contraction = jnp.minimum(raw_contraction, 0.0)
         delta = (
-            config.filter_grid_ratio * grid.dx
-            * config.filter_grid_ratio * grid.dy
+            config.filter_grid_ratio
+            * grid.dx
+            * config.filter_grid_ratio
+            * grid.dy
             * grid.dz
         ) ** (1.0 / 3.0)
-        ce = config.dissipation_coefficient * jnp.sqrt(
-            grid.dz / (grid.dx * config.filter_grid_ratio)
-        )
+        ce = config.dissipation_coefficient * diagnosed_coefficient
         ksgs = (2.0 * delta / ce) ** 2 * (contraction / safe_gkk) ** 2
         modulation = 2.0 * ksgs / safe_gkk
         magnitude = _strain_magnitude(
@@ -472,18 +692,12 @@ class OracleFlowMixin:
             normal_x = jnp.cos(yaw)
             normal_y = jnp.sin(yaw)
             normal_distance = (
-                dx[None, None, :] * normal_x
-                + dy[None, :, None] * normal_y
+                dx[None, None, :] * normal_x + dy[None, :, None] * normal_y
             )
-            in_plane = (
-                -dx[None, None, :] * normal_y
-                + dy[None, :, None] * normal_x
-            )
-            radius = jnp.sqrt(
-                in_plane**2 + (z[:, None, None] - disk.z) ** 2
-            )
+            in_plane = -dx[None, None, :] * normal_y + dy[None, :, None] * normal_x
+            radius = jnp.sqrt(in_plane**2 + (z[:, None, None] - disk.z) ** 2)
             streamwise = jnp.exp(
-                -(normal_distance / disk.normal_smoothing_width) ** 2
+                -((normal_distance / disk.normal_smoothing_width) ** 2)
             )
             radial = gaussian_convolved_annulus(
                 radius,
@@ -492,13 +706,15 @@ class OracleFlowMixin:
                 smoothing_width=disk.transverse_smoothing_width,
             )
             kernel = radial * streamwise
-            disk_area = 0.25 * jnp.pi * (
-                disk.diameter**2 - disk.hub_diameter**2
-            )
+            disk_area = 0.25 * jnp.pi * (disk.diameter**2 - disk.hub_diameter**2)
             kernel_integral = jnp.sum(kernel) * grid.dx * grid.dy * grid.dz
-            kernel = kernel * disk_area / jnp.maximum(
-                kernel_integral,
-                jnp.finfo(dtype).tiny,
+            kernel = (
+                kernel
+                * disk_area
+                / jnp.maximum(
+                    kernel_integral,
+                    jnp.finfo(dtype).tiny,
+                )
             )
             normal_velocity = (
                 velocity.x.payload * normal_x + velocity.y.payload * normal_y
@@ -556,20 +772,12 @@ class OracleFlowMixin:
                     tilt_degrees=line.tilt_degrees,
                     precone_degrees=line.precone_degrees,
                     initial_azimuth_degrees=line.initial_azimuth_degrees,
-                    flap_displacements=deformation(
-                        line.element_flap_displacements
-                    ),
-                    edge_displacements=deformation(
-                        line.element_edge_displacements
-                    ),
+                    flap_displacements=deformation(line.element_flap_displacements),
+                    edge_displacements=deformation(line.element_edge_displacements),
                     flap_slopes=deformation(line.element_flap_slopes),
                     edge_slopes=deformation(line.element_edge_slopes),
-                    flap_velocities=deformation(
-                        line.element_flap_velocities
-                    ),
-                    edge_velocities=deformation(
-                        line.element_edge_velocities
-                    ),
+                    flap_velocities=deformation(line.element_flap_velocities),
+                    edge_velocities=deformation(line.element_edge_velocities),
                     dtype=dtype,
                 )
             )
@@ -705,10 +913,7 @@ class OracleFlowMixin:
             target_y = _require_velocity_component(target.y, YVelocity)
             target_z = _require_tiny_global(target.z, ZFace)
             if not (
-                target_x.grid
-                == target_y.grid
-                == target_z.grid
-                == x_ownership.grid
+                target_x.grid == target_y.grid == target_z.grid == x_ownership.grid
             ):
                 raise ValueError("precursor target must share main-domain ownership")
             dtype = velocity.x.payload.dtype

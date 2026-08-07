@@ -195,13 +195,17 @@ class BoussinesqAlgebra(Protocol):
 
     def momentum_context(self, context: Any) -> Any: ...
 
-    def advection_tendency(self, context: Any, config: Any) -> Any: ...
+    def advection_tendency(
+        self, context: Any, config: Any, wall: Any | None = None
+    ) -> Any: ...
 
     def pressure_gradient_tendency(self, context: Any, config: Any) -> Any: ...
 
     def wall_stress_tendency(self, context: Any, config: Any) -> Any: ...
 
-    def sgs_tendency(self, context: Any, config: Any) -> Any: ...
+    def sgs_tendency(
+        self, context: Any, config: Any, wall: Any | None = None
+    ) -> Any: ...
 
     def coriolis_geostrophic_tendency(self, context: Any, config: Any) -> Any: ...
 
@@ -230,12 +234,20 @@ class BoussinesqVectorField:
         momentum = self.algebra.momentum_context(context)
         model = self.model
         return BoussinesqContributions(
-            self.algebra.advection_tendency(momentum, model.momentum.advection),
+            self.algebra.advection_tendency(
+                momentum,
+                model.momentum.advection,
+                model.momentum.wall,
+            ),
             self.algebra.pressure_gradient_tendency(
                 momentum, model.momentum.pressure_gradient
             ),
             self.algebra.wall_stress_tendency(momentum, model.momentum.wall),
-            self.algebra.sgs_tendency(momentum, model.momentum.sgs),
+            self.algebra.sgs_tendency(
+                momentum,
+                model.momentum.sgs,
+                model.momentum.wall,
+            ),
             self.algebra.coriolis_geostrophic_tendency(
                 momentum, model.momentum.rotation
             ),

@@ -63,9 +63,7 @@ class ProfileStatistics:
     def profiles(self) -> dict[str, np.ndarray]:
         if self.count == 0:
             raise RuntimeError("no profile samples have been collected")
-        means = {
-            name: value / self.count for name, value in self.sums.items()
-        }
+        means = {name: value / self.count for name, value in self.sums.items()}
         return {
             "mean_u": means["u"],
             "mean_v": means["v"],
@@ -100,11 +98,7 @@ def _correlated_noise(jax, jnp, key, case: CaseConfig):
     low_pass = jnp.exp(
         -0.5
         * length**2
-        * (
-            kz[:, None, None] ** 2
-            + ky[None, :, None] ** 2
-            + kx[None, None, :] ** 2
-        )
+        * (kz[:, None, None] ** 2 + ky[None, :, None] ** 2 + kx[None, None, :] ** 2)
     )
     filtered = jnp.fft.irfftn(
         spectrum * low_pass,
@@ -223,9 +217,7 @@ def _physical_velocity(state, case: CaseConfig, scales, jnp):
     velocity = state.fields.velocity
     u = scales.from_execution_velocity(velocity.x.payload).reshape(shape)
     v = scales.from_execution_velocity(velocity.y.payload).reshape(shape)
-    w_upper = scales.from_execution_velocity(
-        velocity.z.owned.payload
-    ).reshape(shape)
+    w_upper = scales.from_execution_velocity(velocity.z.owned.payload).reshape(shape)
     lower = jnp.concatenate((jnp.zeros_like(w_upper[:1]), w_upper[:-1]), axis=0)
     return u, v, 0.5 * (lower + w_upper), w_upper
 
@@ -251,11 +243,7 @@ def _diagnostics(state, divergence, case: CaseConfig, scales, jnp) -> dict[str, 
     u, v, _w, w_upper = _physical_velocity(state, case, scales, jnp)
     cfl_x = float(jnp.max(jnp.abs(u))) * case.time.dt_seconds / case.domain.dx_m
     cfl_y = float(jnp.max(jnp.abs(v))) * case.time.dt_seconds / case.domain.dy_m
-    cfl_z = (
-        float(jnp.max(jnp.abs(w_upper)))
-        * case.time.dt_seconds
-        / case.domain.dz_m
-    )
+    cfl_z = float(jnp.max(jnp.abs(w_upper))) * case.time.dt_seconds / case.domain.dz_m
     u0, v0 = _filtered_first_level(u[0], v[0], case, jnp)
     local_ustar = (
         case.flow.von_karman
@@ -354,9 +342,9 @@ def run_case(
     )
     from jaxwind.interpreters.jax_zslab import build_zslab_interpreter
     from jaxwind.physics import (
+        AnisotropicMinimumDissipation,
         BoussinesqModel,
         BoussinesqVectorField,
-        ConservativeAdvection,
         ConservativeScalarAdvection,
         DryFlowModel,
         FilteredNeutralLogWall,
@@ -369,6 +357,7 @@ def run_case(
         NoBuoyancy,
         NoRayleighDamping,
         NoRotation,
+        RotationalAdvection,
         ScalarFluxBoundary,
         StaticSmagorinskyScalarFlux,
     )
@@ -417,6 +406,7 @@ def run_case(
         decomposition,
         addressable_shards=addressable_shards,
         porte_agel_wall_correction=case.wall.porte_agel_correction,
+        resolved_filter_grid_ratio=case.sgs.filter_grid_ratio,
     )
     pressure_solver = build_spectral_fd_pressure_adapter(
         decomposition,
@@ -436,7 +426,7 @@ def run_case(
             maximum_coefficient=case.sgs.maximum_coefficient,
         )
         scalar_sgs = LagrangianScaleDependentScalarFlux()
-    else:
+    elif case.sgs.model == "mgm":
         momentum_sgs = ModulatedGradientModel(
             filter_grid_ratio=case.sgs.filter_grid_ratio,
             dissipation_coefficient=case.sgs.dissipation_coefficient,
@@ -451,13 +441,16 @@ def run_case(
         scalar_sgs = StaticSmagorinskyScalarFlux(
             turbulent_prandtl=case.sgs.scalar_turbulent_prandtl,
         )
+    else:
+        momentum_sgs = AnisotropicMinimumDissipation()
+        scalar_sgs = StaticSmagorinskyScalarFlux(
+            turbulent_prandtl=case.sgs.scalar_turbulent_prandtl,
+        )
     model = BoussinesqModel(
         DryFlowModel(
-            ConservativeAdvection(),
+            RotationalAdvection(),
             KinematicPressureGradient(
-                scales.to_execution_acceleration(
-                    case.flow.pressure_acceleration_m_s2
-                )
+                scales.to_execution_acceleration(case.flow.pressure_acceleration_m_s2)
             ),
             FilteredNeutralLogWall(
                 scales.to_execution_length(case.flow.roughness_length_m),
@@ -475,9 +468,12 @@ def run_case(
         NoRayleighDamping(),
         ScalarFluxBoundary(),
     )
-    integrator_config = AB2Config(
-        scales.to_execution_time(case.time.dt_seconds)
+    physics_fingerprint = (
+        momentum_sgs.fingerprint
+        + "|advection=rotational"
+        + f"|resolved-fgr={case.sgs.filter_grid_ratio.hex()}"
     )
+    integrator_config = AB2Config(scales.to_execution_time(case.time.dt_seconds))
     checkpoint_layout = ZSlabCheckpointLayout(
         decomposition,
         addressable_shards,
@@ -516,6 +512,7 @@ def run_case(
                 if case.sgs.model == "lasd"
                 else None
             ),
+            physics_fingerprint=physics_fingerprint,
         )
         statistics = (
             ProfileStatistics.load(statistics_path, case.domain.nz)
@@ -538,7 +535,10 @@ def run_case(
         if case.sgs.model == "lasd"
         else IdentityClosureEvent()
     )
-    boundary = lambda _clock, _environment: VerticalBoundary(0.0, 0.0)
+
+    def boundary(_clock, _environment):
+        return VerticalBoundary(0.0, 0.0)
+
     history_path = output_dir / "history.csv"
     history_exists = history_path.exists() and restart is not None
     history_stream = history_path.open("a" if history_exists else "w", newline="")
@@ -586,9 +586,7 @@ def run_case(
                 % case.output.sample_every_steps
                 == 0
             ):
-                u, v, w, _w_upper = _physical_velocity(
-                    state, case, scales, jnp
-                )
+                u, v, w, _w_upper = _physical_velocity(state, case, scales, jnp)
                 statistics.sample(
                     np.asarray(jax.device_get(u), dtype=np.float64),
                     np.asarray(jax.device_get(v), dtype=np.float64),
@@ -620,9 +618,7 @@ def run_case(
                     )
                 row = {
                     "step": accepted_step,
-                    "time_hours": (
-                        accepted_step * case.time.dt_seconds / 3600.0
-                    ),
+                    "time_hours": (accepted_step * case.time.dt_seconds / 3600.0),
                     **latest_diagnostic,
                     "elapsed_seconds": time.perf_counter() - started,
                 }
@@ -648,6 +644,7 @@ def run_case(
                     latest_checkpoint,
                     state,
                     scale_fingerprint=scales.fingerprint,
+                    physics_fingerprint=physics_fingerprint,
                 )
                 statistics.save(statistics_path)
     finally:
@@ -658,6 +655,7 @@ def run_case(
             latest_checkpoint,
             state,
             scale_fingerprint=scales.fingerprint,
+            physics_fingerprint=physics_fingerprint,
         )
         statistics.save(statistics_path)
     if statistics.count:
@@ -667,6 +665,7 @@ def run_case(
             output_dir / "checkpoint_final.npz",
             state,
             scale_fingerprint=scales.fingerprint,
+            physics_fingerprint=physics_fingerprint,
         )
 
     summary = {
@@ -678,9 +677,7 @@ def run_case(
             "initial_step": state.clock.step - steps_to_run,
             "steps_run": steps_to_run,
             "final_step": state.clock.step,
-            "final_time_hours": (
-                state.clock.step * case.time.dt_seconds / 3600.0
-            ),
+            "final_time_hours": (state.clock.step * case.time.dt_seconds / 3600.0),
             "profile_samples": statistics.count,
             "reached_configured_final_time": state.clock.step == case.time.steps,
             **latest_diagnostic,

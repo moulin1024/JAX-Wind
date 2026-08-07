@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 from contextlib import redirect_stderr, redirect_stdout
 import csv
+from dataclasses import replace
 import importlib.util
 import math
 import os
@@ -44,12 +45,18 @@ class _Tee:
         return self._terminal.isatty()
 
 
-def _arguments(argv: list[str] | None) -> argparse.Namespace:
+def _arguments(
+    argv: list[str] | None,
+    *,
+    program: str = "python -m benchmark.PressureDrivenMGM",
+    description: str | None = __doc__,
+    default_output: Path = DEFAULT_OUTPUT,
+) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        prog="python -m benchmark.PressureDrivenMGM",
-        description=__doc__,
+        prog=program,
+        description=description,
     )
-    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
+    parser.add_argument("--output", type=Path, default=default_output)
     parser.add_argument(
         "--dt",
         type=float,
@@ -73,12 +80,12 @@ def _arguments(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument(
         "--max-steps",
         type=int,
-        help="optional development cap; omitted by the canonical 360000-step run",
+        help="optional development cap; omit it to run the configured duration",
     )
     parser.add_argument(
         "--allow-cpu",
         action="store_true",
-        help="allow an explicit CPU smoke run; the canonical benchmark requires a GPU",
+        help="allow an explicit CPU run; the benchmark requires a GPU by default",
     )
     args = parser.parse_args(argv)
     if args.max_steps is not None and args.max_steps <= 0:
@@ -145,6 +152,8 @@ def write_log_law_svg(
     friction_velocity_m_s: float,
     roughness_length_m: float,
     von_karman: float,
+    model_label: str = "MGM",
+    statistics_label: str = "final 20%",
 ) -> None:
     """Write a dependency-free normalized velocity/log-law comparison."""
 
@@ -197,7 +206,7 @@ def write_log_law_svg(
         '<svg xmlns="http://www.w3.org/2000/svg" '
         f'viewBox="0 0 {width} {height}" role="img" '
         'aria-labelledby="title description">',
-        '<title id="title">Pressure-driven MGM neutral log-law profile</title>',
+        f'<title id="title">Pressure-driven {model_label} neutral log-law profile</title>',
         '<desc id="description">Horizontally and temporally averaged streamwise '
         'velocity compared with the theoretical neutral logarithmic law.</desc>',
         "<style>",
@@ -207,12 +216,12 @@ def write_log_law_svg(
         ".tick{font-size:13px;fill:#4b5563}",
         ".grid{stroke:#d1d5db;stroke-width:1}",
         ".frame{fill:#fff;stroke:#4b5563;stroke-width:1.2}",
-        ".mgm{fill:none;stroke:#1769aa;stroke-width:2.5}",
+        ".profile{fill:none;stroke:#1769aa;stroke-width:2.5}",
         ".log{fill:none;stroke:#d1495b;stroke-width:2.5;stroke-dasharray:9 6}",
         ".point{fill:#1769aa}",
         "</style>",
         f'<text class="title" x="{width / 2}" y="32" text-anchor="middle">'
-        "Pressure-driven neutral ABL: MGM</text>",
+        f"Pressure-driven neutral ABL: {model_label}</text>",
         f'<rect class="frame" x="{left}" y="{top}" width="{plot_width}" '
         f'height="{plot_height}"/>',
     ]
@@ -241,7 +250,7 @@ def write_log_law_svg(
     elements.extend(
         (
             f'<polyline class="log" points="{_polyline(reference_points)}"/>',
-            f'<polyline class="mgm" points="{_polyline(measured_points)}"/>',
+            f'<polyline class="profile" points="{_polyline(measured_points)}"/>',
         )
     )
     elements.extend(
@@ -254,9 +263,10 @@ def write_log_law_svg(
             'text-anchor="middle">U/u*</text>',
             f'<text class="axis" transform="translate(25 {top + plot_height / 2}) '
             'rotate(-90)" text-anchor="middle">z/z0 (log scale)</text>',
-            f'<line class="mgm" x1="{left + 25}" y1="{top + 24}" '
+            f'<line class="profile" x1="{left + 25}" y1="{top + 24}" '
             f'x2="{left + 70}" y2="{top + 24}"/>',
-            f'<text class="tick" x="{left + 80}" y="{top + 29}">MGM mean, final 2 h</text>',
+            f'<text class="tick" x="{left + 80}" y="{top + 29}">'
+            f"{model_label} mean, {statistics_label}</text>",
             f'<line class="log" x1="{left + 280}" y1="{top + 24}" '
             f'x2="{left + 325}" y2="{top + 24}"/>',
             f'<text class="tick" x="{left + 335}" y="{top + 29}">'
@@ -268,8 +278,32 @@ def write_log_law_svg(
     figure_path.write_text("\n".join(elements) + "\n")
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = _arguments(argv)
+def _select_sgs(case, sgs_model: str):
+    if sgs_model not in {"mgm", "lasd", "amd"}:
+        raise ValueError("sgs_model must be 'mgm', 'lasd', or 'amd'")
+    if case.sgs.model == sgs_model:
+        return case
+    return replace(
+        case,
+        name=case.name.replace(case.sgs.model, sgs_model),
+        sgs=replace(case.sgs, model=sgs_model),
+    )
+
+
+def run_benchmark(
+    argv: list[str] | None,
+    *,
+    sgs_model: str,
+    program: str,
+    description: str,
+    default_output: Path,
+) -> int:
+    args = _arguments(
+        argv,
+        program=program,
+        description=description,
+        default_output=default_output,
+    )
     from jaxwind.runners.pressure_driven_warmup import load_case, run_case
 
     case = load_case(
@@ -278,8 +312,7 @@ def main(argv: list[str] | None = None) -> int:
         duration_hours=args.hours,
         statistics_fraction=0.2,
     )
-    if case.sgs.model != "mgm":
-        raise RuntimeError("the pressure-driven MGM benchmark requires sgs.model=mgm")
+    case = _select_sgs(case, sgs_model)
     output = args.output.resolve()
     profile_path = output / "profiles.csv"
     figure_path = output / "loglaw_velocity_profile.svg"
@@ -315,16 +348,29 @@ def main(argv: list[str] | None = None) -> int:
             friction_velocity_m_s=case.flow.friction_velocity_m_s,
             roughness_length_m=case.flow.roughness_length_m,
             von_karman=case.flow.von_karman,
+            model_label=sgs_model.upper(),
+            statistics_label="final 20%",
         )
         print(f"Log-law profile: {figure_path}", flush=True)
     elif args.plot_only:
         raise FileNotFoundError(profile_path)
     else:
         print(
-            "No profile was written yet; it starts after 8 simulated hours.",
+            "No profile was written yet; it starts after "
+            f"{case.output.sample_start_hours:g} simulated hours.",
             flush=True,
         )
     return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    return run_benchmark(
+        argv,
+        sgs_model="mgm",
+        program="python -m benchmark.PressureDrivenMGM",
+        description=__doc__ or "Pressure-driven MGM benchmark",
+        default_output=DEFAULT_OUTPUT,
+    )
 
 
 if __name__ == "__main__":

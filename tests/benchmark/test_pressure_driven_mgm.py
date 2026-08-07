@@ -85,7 +85,7 @@ def test_log_law_plot_is_dependency_free_svg(tmp_path: Path) -> None:
     )
     text = figure.read_text()
     assert text.startswith('<svg xmlns="http://www.w3.org/2000/svg"')
-    assert "MGM mean, final 2 h" in text
+    assert "MGM mean, final 20%" in text
     assert "U+ = ln(z/z0)/kappa" in text
 
 

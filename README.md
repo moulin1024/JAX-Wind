@@ -246,8 +246,10 @@ the production-module size guard are described in
 
 The repository includes research workflows for:
 
-- the one-command [pressure-driven neutral MGM GPU benchmark](benchmark/PressureDrivenMGM/README.md),
-  including automatic restart and a log-law velocity-profile plot;
+- the one-command pressure-driven neutral
+  [MGM](benchmark/PressureDrivenMGM/README.md) and
+  [LASD](benchmark/PressureDrivenLASD/README.md) benchmarks, including automatic
+  restart and log-law velocity-profile plots;
 - the [Andrén et al. (1994) neutral Ekman
   intercomparison](benchmark/Andren1994/README.md);
 - the [Nieuwstadt et al. (1993) dry convective boundary-layer

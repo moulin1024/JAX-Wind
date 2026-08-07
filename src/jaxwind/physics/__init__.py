@@ -29,6 +29,7 @@ from .lasd import (
     ScalarLasdMemory,
 )
 from .dry_flow import (
+    AnisotropicMinimumDissipation,
     ConservativeAdvection,
     CoriolisGeostrophic,
     DryFlowContributions,
@@ -41,6 +42,7 @@ from .dry_flow import (
     ModulatedGradientModel,
     NeutralLogWall,
     NoRotation,
+    RotationalAdvection,
     StaticSmagorinsky,
 )
 from .wind_tunnel import (
@@ -61,6 +63,7 @@ from .wind_tunnel import (
 )
 
 __all__ = [
+    "AnisotropicMinimumDissipation",
     "BoussinesqContributions",
     "BoussinesqDiagnostic",
     "BoussinesqFields",
@@ -102,6 +105,7 @@ __all__ = [
     "NoFringe",
     "NoRotation",
     "RayleighGeostrophicDamping",
+    "RotationalAdvection",
     "PureThrustActuatorDisk",
     "ScalarFluxBoundary",
     "ScalarLasdMemory",

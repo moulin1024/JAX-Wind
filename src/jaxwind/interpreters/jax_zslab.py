@@ -161,9 +161,12 @@ class JaxZSlabInterpreter(ZSlabLasdMixin, ZSlabFlowMixin):
     _actuator_line: Callable
     _dry_flow_context: Callable
     _dry_advection: Callable
+    _dry_rotational_advection: Callable
     _dry_wall: Callable
     _dry_sgs: Callable
     _dry_sgs_vertical_flux: Callable
+    _dry_amd: Callable
+    _dry_amd_vertical_flux: Callable
     _dry_mgm: Callable
     _dry_mgm_vertical_flux: Callable
     _lasd_accumulate: Callable
@@ -173,6 +176,7 @@ class JaxZSlabInterpreter(ZSlabLasdMixin, ZSlabFlowMixin):
     _scalar_context: Callable
     _scalar_advection: Callable
     _scalar_sgs: Callable
+    _scalar_amd: Callable
     _buoyancy: Callable
     _rayleigh_damping: Callable
 
@@ -744,6 +748,7 @@ def build_zslab_interpreter(
     addressable_shards: tuple[int, ...] | None = None,
     axis_name: str = "jaxwind_z",
     porte_agel_wall_correction: bool = True,
+    resolved_filter_grid_ratio: float | None = None,
 ) -> JaxZSlabInterpreter:
     """Build the sole production interpreter.
 
@@ -761,4 +766,5 @@ def build_zslab_interpreter(
         addressable_shards=addressable_shards,
         axis_name=axis_name,
         porte_agel_wall_correction=porte_agel_wall_correction,
+        resolved_filter_grid_ratio=resolved_filter_grid_ratio,
     )
