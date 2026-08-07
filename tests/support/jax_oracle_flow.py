@@ -37,6 +37,7 @@ from jaxwind.physics.dry_flow import (
     CoriolisGeostrophic,
     FilteredNeutralLogWall,
     KinematicPressureGradient,
+    ModulatedGradientModel,
     NeutralLogWall,
     NoRotation,
     StaticSmagorinsky,
@@ -180,30 +181,56 @@ class OracleFlowMixin:
     def sgs_tendency(
         self,
         context: OracleDryFlowContext,
-        config: StaticSmagorinsky | LagrangianScaleDependentDynamic,
+        config: (
+            StaticSmagorinsky
+            | ModulatedGradientModel
+            | LagrangianScaleDependentDynamic
+        ),
     ) -> VelocityVector:
-        if not isinstance(config, (StaticSmagorinsky, LagrangianScaleDependentDynamic)):
+        if not isinstance(
+            config,
+            (
+                StaticSmagorinsky,
+                ModulatedGradientModel,
+                LagrangianScaleDependentDynamic,
+            ),
+        ):
             raise TypeError("unsupported SGS choice")
         velocity = context.velocity
         grid = velocity.x.ownership.grid
-        delta = (grid.dx * grid.dy * grid.dz) ** (1.0 / 3.0)
-        magnitude = _strain_magnitude(
-            context.dudx,
-            context.dudy,
-            context.dudz_at_cells,
-            context.dvdx,
-            context.dvdy,
-            context.dvdz_at_cells,
-            context.dwdx_at_cells,
-            context.dwdy_at_cells,
-            context.dwdz,
-        )
-        coefficient = self._momentum_sgs_coefficient(context, config)
-        eddy_viscosity = coefficient * delta**2 * magnitude
-        txx = -2.0 * eddy_viscosity * context.dudx
-        txy = -eddy_viscosity * (context.dudy + context.dvdx)
-        tyy = -2.0 * eddy_viscosity * context.dvdy
-        tzz = -2.0 * eddy_viscosity * context.dwdz
+        if isinstance(config, ModulatedGradientModel):
+            txx, txy, _txz, tyy, _tyz, tzz = self._mgm_stress(
+                context.dudx,
+                context.dudy,
+                context.dudz_at_cells,
+                context.dvdx,
+                context.dvdy,
+                context.dvdz_at_cells,
+                context.dwdx_at_cells,
+                context.dwdy_at_cells,
+                -(context.dudx + context.dvdy),
+                grid,
+                config,
+            )
+        else:
+            delta = (grid.dx * grid.dy * grid.dz) ** (1.0 / 3.0)
+            magnitude = _strain_magnitude(
+                context.dudx,
+                context.dudy,
+                context.dudz_at_cells,
+                context.dvdx,
+                context.dvdy,
+                context.dvdz_at_cells,
+                context.dwdx_at_cells,
+                context.dwdy_at_cells,
+                context.dwdz,
+            )
+            coefficient = self._momentum_sgs_coefficient(context, config)
+            eddy_viscosity = coefficient * delta**2 * magnitude
+            txx = -2.0 * eddy_viscosity * context.dudx
+            txy = -eddy_viscosity * (context.dudy + context.dvdx)
+            tyy = -2.0 * eddy_viscosity * context.dvdy
+            tzz = -2.0 * eddy_viscosity * context.dwdz
         txz, tyz = self.sgs_vertical_flux(context, config)
         tzz = _two_thirds_filter(tzz, grid=grid)
         x = -(
@@ -227,35 +254,141 @@ class OracleFlowMixin:
     def sgs_vertical_flux(
         self,
         context: OracleDryFlowContext,
-        config: StaticSmagorinsky | LagrangianScaleDependentDynamic,
+        config: (
+            StaticSmagorinsky
+            | ModulatedGradientModel
+            | LagrangianScaleDependentDynamic
+        ),
     ) -> tuple[Any, Any]:
         """Return filtered SGS xz and yz stresses on full vertical faces."""
-        if not isinstance(config, (StaticSmagorinsky, LagrangianScaleDependentDynamic)):
+        if not isinstance(
+            config,
+            (
+                StaticSmagorinsky,
+                ModulatedGradientModel,
+                LagrangianScaleDependentDynamic,
+            ),
+        ):
             raise TypeError("unsupported SGS choice")
         grid = context.velocity.x.ownership.grid
-        delta = (grid.dx * grid.dy * grid.dz) ** (1.0 / 3.0)
-        face_magnitude = _strain_magnitude(
-            _cell_to_full_faces(context.dudx),
-            _cell_to_full_faces(context.dudy),
-            context.dudz_on_faces,
-            _cell_to_full_faces(context.dvdx),
-            _cell_to_full_faces(context.dvdy),
-            context.dvdz_on_faces,
-            context.dwdx_on_faces,
-            context.dwdy_on_faces,
-            _cell_to_full_faces(context.dwdz),
-        )
-        coefficient = self._momentum_sgs_coefficient(context, config)
-        viscosity_on_faces = (
-            _cell_to_full_faces(coefficient) * delta**2 * face_magnitude
-        )
-        txz = -viscosity_on_faces * (context.dudz_on_faces + context.dwdx_on_faces)
-        tyz = -viscosity_on_faces * (context.dvdz_on_faces + context.dwdy_on_faces)
+        if isinstance(config, ModulatedGradientModel):
+            stresses = self._mgm_stress(
+                _cell_to_full_faces(context.dudx),
+                _cell_to_full_faces(context.dudy),
+                context.dudz_on_faces,
+                _cell_to_full_faces(context.dvdx),
+                _cell_to_full_faces(context.dvdy),
+                context.dvdz_on_faces,
+                context.dwdx_on_faces,
+                context.dwdy_on_faces,
+                _cell_to_full_faces(context.dwdz),
+                grid,
+                config,
+            )
+            txz, tyz = stresses[2], stresses[4]
+        else:
+            delta = (grid.dx * grid.dy * grid.dz) ** (1.0 / 3.0)
+            face_magnitude = _strain_magnitude(
+                _cell_to_full_faces(context.dudx),
+                _cell_to_full_faces(context.dudy),
+                context.dudz_on_faces,
+                _cell_to_full_faces(context.dvdx),
+                _cell_to_full_faces(context.dvdy),
+                context.dvdz_on_faces,
+                context.dwdx_on_faces,
+                context.dwdy_on_faces,
+                _cell_to_full_faces(context.dwdz),
+            )
+            coefficient = self._momentum_sgs_coefficient(context, config)
+            viscosity_on_faces = (
+                _cell_to_full_faces(coefficient) * delta**2 * face_magnitude
+            )
+            txz = -viscosity_on_faces * (
+                context.dudz_on_faces + context.dwdx_on_faces
+            )
+            tyz = -viscosity_on_faces * (
+                context.dvdz_on_faces + context.dwdy_on_faces
+            )
         txz = txz.at[0].set(0.0).at[-1].set(0.0)
         tyz = tyz.at[0].set(0.0).at[-1].set(0.0)
         txz = _two_thirds_filter(txz, grid=grid)
         tyz = _two_thirds_filter(tyz, grid=grid)
         return txz, tyz
+
+    @staticmethod
+    def _mgm_stress(
+        dudx,
+        dudy,
+        dudz,
+        dvdx,
+        dvdy,
+        dvdz,
+        dwdx,
+        dwdy,
+        dwdz,
+        grid,
+        config: ModulatedGradientModel,
+    ):
+        s11, s22, s33 = dudx, dvdy, dwdz
+        s12 = 0.5 * (dudy + dvdx)
+        s13 = 0.5 * (dudz + dwdx)
+        s23 = 0.5 * (dvdz + dwdy)
+        y_weight = (grid.dy / grid.dx) ** 2
+        z_weight = (grid.dz / (grid.dx * config.filter_grid_ratio)) ** 2
+        g11 = dudx**2 + y_weight * dudy**2 + z_weight * dudz**2
+        g22 = dvdx**2 + y_weight * dvdy**2 + z_weight * dvdz**2
+        g33 = dwdx**2 + y_weight * dwdy**2 + z_weight * dwdz**2
+        g12 = dudx * dvdx + y_weight * dudy * dvdy + z_weight * dudz * dvdz
+        g13 = dudx * dwdx + y_weight * dudy * dwdy + z_weight * dudz * dwdz
+        g23 = dvdx * dwdx + y_weight * dvdy * dwdy + z_weight * dvdz * dwdz
+        gkk = g11 + g22 + g33
+        valid = gkk > config.gradient_norm_epsilon
+        safe_gkk = jnp.where(valid, gkk, 1.0)
+        contraction = jnp.minimum(
+            g11 * s11
+            + g22 * s22
+            + g33 * s33
+            + 2.0 * (g12 * s12 + g13 * s13 + g23 * s23),
+            0.0,
+        )
+        delta = (
+            config.filter_grid_ratio * grid.dx
+            * config.filter_grid_ratio * grid.dy
+            * grid.dz
+        ) ** (1.0 / 3.0)
+        ce = config.dissipation_coefficient * jnp.sqrt(
+            grid.dz / (grid.dx * config.filter_grid_ratio)
+        )
+        ksgs = (2.0 * delta / ce) ** 2 * (contraction / safe_gkk) ** 2
+        modulation = 2.0 * ksgs / safe_gkk
+        magnitude = _strain_magnitude(
+            dudx,
+            dudy,
+            dudz,
+            dvdx,
+            dvdy,
+            dvdz,
+            dwdx,
+            dwdy,
+            dwdz,
+        )
+        fallback = -2.0 * (
+            config.fallback_coefficient**2 * delta**2 * magnitude
+            + config.kinematic_viscosity
+        )
+
+        def component(gradient, strain):
+            modeled = modulation * gradient - 2.0 * config.kinematic_viscosity * strain
+            return jnp.where(valid, modeled, fallback * strain)
+
+        return (
+            component(g11, s11),
+            component(g12, s12),
+            component(g13, s13),
+            component(g22, s22),
+            component(g23, s23),
+            component(g33, s33),
+        )
 
     @staticmethod
     def _momentum_sgs_coefficient(

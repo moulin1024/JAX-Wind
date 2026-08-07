@@ -575,6 +575,88 @@ def build_zslab_interpreter(
         y = jnp.zeros_like(context.v).at[0].set(jnp.where(index == 0, wall_y, 0.0))
         return x, y, jnp.zeros_like(context.w_upper)
 
+    def mgm_stress_local(
+        dudx,
+        dudy,
+        dudz,
+        dvdx,
+        dvdy,
+        dvdz,
+        dwdx,
+        dwdy,
+        dwdz,
+        filter_grid_ratio,
+        dissipation_coefficient,
+        fallback_coefficient,
+        gradient_norm_epsilon,
+        kinematic_viscosity,
+    ):
+        """Legacy model-4 MGM stress on one common staggered location."""
+        s11 = dudx
+        s22 = dvdy
+        s33 = dwdz
+        s12 = 0.5 * (dudy + dvdx)
+        s13 = 0.5 * (dudz + dwdx)
+        s23 = 0.5 * (dvdz + dwdy)
+
+        y_weight = (grid.dy / grid.dx) ** 2
+        z_weight = (grid.dz / (grid.dx * filter_grid_ratio)) ** 2
+        g11 = dudx**2 + y_weight * dudy**2 + z_weight * dudz**2
+        g22 = dvdx**2 + y_weight * dvdy**2 + z_weight * dvdz**2
+        g33 = dwdx**2 + y_weight * dwdy**2 + z_weight * dwdz**2
+        g12 = dudx * dvdx + y_weight * dudy * dvdy + z_weight * dudz * dvdz
+        g13 = dudx * dwdx + y_weight * dudy * dwdy + z_weight * dudz * dwdz
+        g23 = dvdx * dwdx + y_weight * dvdy * dwdy + z_weight * dvdz * dwdz
+        gkk = g11 + g22 + g33
+        valid = gkk > gradient_norm_epsilon
+        safe_gkk = jnp.where(valid, gkk, 1.0)
+        contraction = (
+            g11 * s11
+            + g22 * s22
+            + g33 * s33
+            + 2.0 * (g12 * s12 + g13 * s13 + g23 * s23)
+        )
+        contraction = jnp.minimum(contraction, 0.0)
+        delta = (
+            filter_grid_ratio * grid.dx
+            * filter_grid_ratio * grid.dy
+            * grid.dz
+        ) ** (1.0 / 3.0)
+        ce = dissipation_coefficient * jnp.sqrt(
+            grid.dz / (grid.dx * filter_grid_ratio)
+        )
+        ksgs = (2.0 * delta / ce) ** 2 * (contraction / safe_gkk) ** 2
+        modulation = 2.0 * ksgs / safe_gkk
+        molecular = 2.0 * kinematic_viscosity
+        magnitude = strain_magnitude_local(
+            dudx,
+            dudy,
+            dudz,
+            dvdx,
+            dvdy,
+            dvdz,
+            dwdx,
+            dwdy,
+            dwdz,
+        )
+        fallback = -2.0 * (
+            fallback_coefficient**2 * delta**2 * magnitude
+            + kinematic_viscosity
+        )
+
+        def component(gradient, strain):
+            modeled = modulation * gradient - molecular * strain
+            return jnp.where(valid, modeled, fallback * strain)
+
+        return (
+            component(g11, s11),
+            component(g12, s12),
+            component(g13, s13),
+            component(g22, s22),
+            component(g23, s23),
+            component(g33, s33),
+        )
+
     def dry_sgs_vertical_flux_local(context, coefficient):
         delta = (grid.dx * grid.dy * grid.dz) ** (1.0 / 3.0)
         face_magnitude = strain_magnitude_local(
@@ -609,6 +691,35 @@ def build_zslab_interpreter(
         tyz = two_thirds_filter_local(tyz)
         return txz, tyz
 
+    def dry_mgm_vertical_flux_local(
+        context,
+        filter_grid_ratio,
+        dissipation_coefficient,
+        fallback_coefficient,
+        gradient_norm_epsilon,
+        kinematic_viscosity,
+    ):
+        stresses = mgm_stress_local(
+            context.dudx_upper,
+            context.dudy_upper,
+            context.dudz_upper,
+            context.dvdx_upper,
+            context.dvdy_upper,
+            context.dvdz_upper,
+            context.dwdx_upper,
+            context.dwdy_upper,
+            context.dwdz_upper,
+            filter_grid_ratio,
+            dissipation_coefficient,
+            fallback_coefficient,
+            gradient_norm_epsilon,
+            kinematic_viscosity,
+        )
+        txz, tyz = stresses[2], stresses[4]
+        txz = txz.at[-1].set(jnp.where(context.upper_is_physical, 0.0, txz[-1]))
+        tyz = tyz.at[-1].set(jnp.where(context.upper_is_physical, 0.0, tyz[-1]))
+        return two_thirds_filter_local(txz), two_thirds_filter_local(tyz)
+
     def dry_sgs_local(context, coefficient):
         delta = (grid.dx * grid.dy * grid.dz) ** (1.0 / 3.0)
         cell_magnitude = strain_magnitude_local(
@@ -630,6 +741,77 @@ def build_zslab_interpreter(
         txz, tyz = dry_sgs_vertical_flux_local(context, coefficient)
         tzz = two_thirds_filter_local(tzz)
 
+        stress_halo = exchange_local(jnp.stack((txz, tyz, tzz), axis=0))
+        lower_txz_plane = jnp.where(
+            stress_halo.lower_is_physical,
+            jnp.zeros_like(txz[0]),
+            stress_halo.lower[0],
+        )
+        lower_tyz_plane = jnp.where(
+            stress_halo.lower_is_physical,
+            jnp.zeros_like(tyz[0]),
+            stress_halo.lower[1],
+        )
+        lower_txz = jnp.concatenate((lower_txz_plane[None], txz[:-1]), axis=0)
+        lower_tyz = jnp.concatenate((lower_tyz_plane[None], tyz[:-1]), axis=0)
+        next_tzz_plane = jnp.where(
+            stress_halo.upper_is_physical,
+            tzz[-1],
+            stress_halo.upper[2],
+        )
+        next_tzz = jnp.concatenate((tzz[1:], next_tzz_plane[None]), axis=0)
+        x = -(
+            truncated_derivative_local(txx, 0)
+            + truncated_derivative_local(txy, 1)
+            + (txz - lower_txz) / grid.dz
+        )
+        y = -(
+            truncated_derivative_local(txy, 0)
+            + truncated_derivative_local(tyy, 1)
+            + (tyz - lower_tyz) / grid.dz
+        )
+        z = -(
+            truncated_derivative_local(txz, 0)
+            + truncated_derivative_local(tyz, 1)
+            + (next_tzz - tzz) / grid.dz
+        )
+        z = z.at[-1].set(jnp.where(stress_halo.upper_is_physical, 0.0, z[-1]))
+        return x, y, z
+
+    def dry_mgm_local(
+        context,
+        filter_grid_ratio,
+        dissipation_coefficient,
+        fallback_coefficient,
+        gradient_norm_epsilon,
+        kinematic_viscosity,
+    ):
+        stresses = mgm_stress_local(
+            context.dudx,
+            context.dudy,
+            context.dudz_at_cells,
+            context.dvdx,
+            context.dvdy,
+            context.dvdz_at_cells,
+            context.dwdx_at_cells,
+            context.dwdy_at_cells,
+            -(context.dudx + context.dvdy),
+            filter_grid_ratio,
+            dissipation_coefficient,
+            fallback_coefficient,
+            gradient_norm_epsilon,
+            kinematic_viscosity,
+        )
+        txx, txy, _cell_txz, tyy, _cell_tyz, tzz = stresses
+        txz, tyz = dry_mgm_vertical_flux_local(
+            context,
+            filter_grid_ratio,
+            dissipation_coefficient,
+            fallback_coefficient,
+            gradient_norm_epsilon,
+            kinematic_viscosity,
+        )
+        tzz = two_thirds_filter_local(tzz)
         stress_halo = exchange_local(jnp.stack((txz, tyz, tzz), axis=0))
         lower_txz_plane = jnp.where(
             stress_halo.lower_is_physical,
@@ -811,6 +993,14 @@ def build_zslab_interpreter(
         dry_sgs_vertical_flux_local,
         in_axes=(0, 0),
     )
+    dry_mgm = mapped(
+        dry_mgm_local,
+        in_axes=(0, None, None, None, None, None),
+    )
+    dry_mgm_vertical_flux = mapped(
+        dry_mgm_vertical_flux_local,
+        in_axes=(0, None, None, None, None, None),
+    )
     lasd_accumulate = mapped(
         lasd_accumulate_local,
         in_axes=(0, 0, 0, 0, 0, 0, None),
@@ -901,6 +1091,8 @@ def build_zslab_interpreter(
         dry_wall,
         dry_sgs,
         dry_sgs_vertical_flux,
+        dry_mgm,
+        dry_mgm_vertical_flux,
         lasd_accumulate,
         lasd_accumulate_velocity,
         lasd_update,

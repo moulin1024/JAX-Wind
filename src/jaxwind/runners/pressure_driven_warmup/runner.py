@@ -268,7 +268,11 @@ def _diagnostics(state, divergence, case: CaseConfig, scales, jnp) -> dict[str, 
         "cfl_y": cfl_y,
         "cfl_z": cfl_z,
         "maximum_cfl": maximum_cfl,
-        "lasd_trajectory_cfl": maximum_cfl * case.sgs.update_interval_steps,
+        "lasd_trajectory_cfl": (
+            maximum_cfl * case.sgs.update_interval_steps
+            if case.sgs.model == "lasd"
+            else 0.0
+        ),
         "stress_equivalent_ustar_m_s": float(
             jnp.sqrt(jnp.mean(local_ustar * local_ustar))
         ),
@@ -356,14 +360,17 @@ def run_case(
         ConservativeScalarAdvection,
         DryFlowModel,
         FilteredNeutralLogWall,
+        IdentityClosureEvent,
         KinematicPressureGradient,
         LagrangianScaleDependentDynamic,
         LagrangianScaleDependentScalarFlux,
         LasdAcceptedStepEvent,
+        ModulatedGradientModel,
         NoBuoyancy,
         NoRayleighDamping,
         NoRotation,
         ScalarFluxBoundary,
+        StaticSmagorinskyScalarFlux,
     )
     from jaxwind.pressure import build_spectral_fd_pressure_adapter
 
@@ -417,16 +424,32 @@ def run_case(
         dtype=case.numerics.dtype,
         method=case.numerics.pressure_method,
     )
-    momentum_sgs = LagrangianScaleDependentDynamic(
-        filter_grid_ratio=case.sgs.filter_grid_ratio,
-        test_filter_ratio=case.sgs.test_filter_ratio,
-        update_interval=case.sgs.update_interval_steps,
-        timescale_coefficient=case.sgs.timescale_coefficient,
-        initial_coefficient=case.sgs.initial_coefficient,
-        minimum_coefficient=case.sgs.minimum_coefficient,
-        maximum_coefficient=case.sgs.maximum_coefficient,
-    )
-    scalar_sgs = LagrangianScaleDependentScalarFlux()
+    if case.sgs.model == "lasd":
+        momentum_sgs = LagrangianScaleDependentDynamic(
+            filter_grid_ratio=case.sgs.filter_grid_ratio,
+            test_filter_ratio=case.sgs.test_filter_ratio,
+            update_interval=case.sgs.update_interval_steps,
+            timescale_coefficient=case.sgs.timescale_coefficient,
+            initial_coefficient=case.sgs.initial_coefficient,
+            minimum_coefficient=case.sgs.minimum_coefficient,
+            maximum_coefficient=case.sgs.maximum_coefficient,
+        )
+        scalar_sgs = LagrangianScaleDependentScalarFlux()
+    else:
+        momentum_sgs = ModulatedGradientModel(
+            filter_grid_ratio=case.sgs.filter_grid_ratio,
+            dissipation_coefficient=case.sgs.dissipation_coefficient,
+            fallback_coefficient=case.sgs.fallback_coefficient,
+            gradient_norm_epsilon=scales.to_execution_inverse_time_squared(
+                case.sgs.gradient_norm_epsilon_s2
+            ),
+            kinematic_viscosity=scales.to_execution_kinematic_viscosity(
+                case.sgs.kinematic_viscosity_m2_s
+            ),
+        )
+        scalar_sgs = StaticSmagorinskyScalarFlux(
+            turbulent_prandtl=case.sgs.scalar_turbulent_prandtl,
+        )
     model = BoussinesqModel(
         DryFlowModel(
             ConservativeAdvection(),
@@ -472,7 +495,8 @@ def run_case(
             pressure_solver=pressure_solver,
             integrator_config=integrator_config,
         )
-        fields = algebra.initialize_lasd_closure(fields, model)
+        if case.sgs.model == "lasd":
+            fields = algebra.initialize_lasd_closure(fields, model)
         state = cold_start_boussinesq(
             fields,
             clock=AcceptedClock(0.0, 0),
@@ -487,6 +511,8 @@ def run_case(
             scale_fingerprint=scales.fingerprint,
             closure_fingerprint=(
                 momentum_sgs.fingerprint + "|" + scalar_sgs.fingerprint
+                if case.sgs.model == "lasd"
+                else None
             ),
         )
         statistics = (
@@ -505,10 +531,10 @@ def run_case(
         print("configured final time is already present in the checkpoint")
 
     vector_field = BoussinesqVectorField(algebra, model)
-    closure_event = LasdAcceptedStepEvent(
-        algebra,
-        model,
-        integrator_config.dt,
+    closure_event = (
+        LasdAcceptedStepEvent(algebra, model, integrator_config.dt)
+        if case.sgs.model == "lasd"
+        else IdentityClosureEvent()
     )
     boundary = lambda _clock, _environment: VerticalBoundary(0.0, 0.0)
     history_path = output_dir / "history.csv"
@@ -604,7 +630,8 @@ def run_case(
                     f"step={accepted_step}/{case.time.steps} "
                     f"time={row['time_hours']:.3f}h "
                     f"CFL={latest_diagnostic['maximum_cfl']:.3f} "
-                    f"LASD-CFL={latest_diagnostic['lasd_trajectory_cfl']:.3f} "
+                    f"trajectory-CFL="
+                    f"{latest_diagnostic['lasd_trajectory_cfl']:.3f} "
                     f"u*={latest_diagnostic['stress_equivalent_ustar_m_s']:.3f}m/s "
                     f"elapsed={row['elapsed_seconds']:.1f}s",
                     flush=True,

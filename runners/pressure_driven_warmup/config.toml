@@ -1,0 +1,58 @@
+[case]
+runner = "pressure_driven_warmup"
+name = "pressure_driven_warmup_64x64x64"
+
+[domain]
+nx = 64
+ny = 64
+nz = 64
+lx_m = 6283.185307179586
+ly_m = 6283.185307179586
+lz_m = 1000.0
+
+[flow]
+friction_velocity_m_s = 0.4
+roughness_length_m = 0.001
+forcing_height_m = 1000.0
+von_karman = 0.4
+initial_perturbation_rms_m_s = 0.1
+initial_correlation_length_m = 32.0
+
+[wall]
+model = "filtered_neutral_log"
+filter_grid_ratio = 1.5
+test_filter_ratio = 2.0
+
+[sgs]
+model = "lasd"
+update_interval_steps = 4
+filter_grid_ratio = 1.5
+test_filter_ratio = 2.0
+timescale_coefficient = 1.5
+initial_coefficient = 0.03
+minimum_coefficient = 1.0e-6
+maximum_coefficient = 0.81
+dissipation_coefficient = 3.0
+fallback_coefficient = 0.1
+gradient_norm_epsilon_s2 = 1.0e-12
+kinematic_viscosity_m2_s = 1.5e-5
+scalar_turbulent_prandtl = 0.4
+
+[time]
+integrator = "ab2"
+dt_seconds = 0.1
+duration_hours = 10.0
+
+[numerics]
+dtype = "float32"
+pressure_method = "spike"
+seed = 2025
+cfl_abort = 0.5
+lasd_trajectory_cfl_abort = 1.0
+
+[output]
+directory = "outputs/pressure_driven_warmup_64x64x64"
+log_every_steps = 1000
+sample_start_hours = 8.0
+sample_every_steps = 100
+checkpoint_every_steps = 36000

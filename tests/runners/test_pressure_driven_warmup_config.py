@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import os
 from pathlib import Path
 import subprocess
@@ -19,6 +20,7 @@ from jaxwind.runners.pressure_driven_warmup import ConfigError, load_case
 ROOT = Path(__file__).resolve().parents[2]
 CASE_DIR = ROOT / "runners" / "pressure_driven_warmup"
 CONFIG = CASE_DIR / "config.toml"
+MGM_CONFIG = CASE_DIR / "config_mgm.toml"
 
 
 def _cli_environment() -> dict[str, str]:
@@ -34,18 +36,18 @@ def _cli_environment() -> dict[str, str]:
 def test_canonical_case_resolves_physical_and_numerical_choices() -> None:
     case = load_case(CONFIG)
     assert case.runner == "pressure_driven_warmup"
-    assert (case.domain.nx, case.domain.ny, case.domain.nz) == (128, 64, 256)
-    assert case.domain.lx_m == 2048.0
-    assert case.domain.ly_m == 1024.0
-    assert case.domain.lz_m == 1024.0
+    assert (case.domain.nx, case.domain.ny, case.domain.nz) == (64, 64, 64)
+    assert case.domain.lx_m == pytest.approx(2_000.0 * math.pi)
+    assert case.domain.ly_m == pytest.approx(2_000.0 * math.pi)
+    assert case.domain.lz_m == 1_000.0
     assert (
         case.domain.dx_m,
         case.domain.dy_m,
         case.domain.dz_m,
-    ) == (16.0, 16.0, 4.0)
+    ) == pytest.approx((31.25 * math.pi, 31.25 * math.pi, 15.625))
     assert case.flow.friction_velocity_m_s == 0.4
     assert case.flow.roughness_length_m == 0.001
-    assert case.flow.pressure_acceleration_m_s2 == pytest.approx(1.5625e-4)
+    assert case.flow.pressure_acceleration_m_s2 == pytest.approx(1.6e-4)
     assert case.sgs.model == "lasd"
     assert case.time.integrator == "ab2"
     assert case.time.dt_seconds == 0.1
@@ -81,8 +83,45 @@ def test_dry_run_prints_the_resolved_plan_without_loading_jax() -> None:
     assert resolved["runner"] == "pressure_driven_warmup"
     assert resolved["time"]["steps"] == 360_000
     assert resolved["flow"]["pressure_acceleration_m_s2"] == pytest.approx(
-        1.5625e-4
+        1.6e-4
     )
+    assert "jax" not in completed.stderr.lower()
+
+
+def test_mgm_case_exposes_the_legacy_model_without_lasd_memory() -> None:
+    case = load_case(MGM_CONFIG)
+    assert case.sgs.model == "mgm"
+    assert case.sgs.filter_grid_ratio == 1.5
+    assert case.sgs.dissipation_coefficient == 3.0
+    assert case.sgs.fallback_coefficient == 0.1
+    assert case.sgs.gradient_norm_epsilon_s2 == pytest.approx(1.0e-12)
+    assert case.sgs.kinematic_viscosity_m2_s == pytest.approx(1.5e-5)
+    assert case.estimated_lasd_trajectory_cfl == 0.0
+    resolved = case.resolved()
+    assert resolved["sgs"]["model"] == "mgm"
+    assert "update_interval_steps" not in resolved["sgs"]
+
+
+def test_mgm_dry_run_selects_the_alternate_case() -> None:
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "jaxwind",
+            str(CASE_DIR),
+            "--config",
+            str(MGM_CONFIG),
+            "--dry-run",
+        ],
+        cwd=ROOT,
+        env=_cli_environment(),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    resolved = tomllib.loads(completed.stdout)
+    assert resolved["case"] == "pressure_driven_mgm_64x64x64"
+    assert resolved["sgs"]["model"] == "mgm"
     assert "jax" not in completed.stderr.lower()
 
 
@@ -105,7 +144,7 @@ def test_cli_runs_a_declarative_case_directory_without_run_py(
     assert not (case_dir / "run.py").exists()
     assert (
         tomllib.loads(completed.stdout)["case"]
-        == "pressure_driven_warmup_128x64x256"
+        == "pressure_driven_warmup_64x64x64"
     )
 
 
@@ -114,7 +153,7 @@ def test_config_rejects_a_lasd_trajectory_that_crosses_the_abort_limit(
 ) -> None:
     text = CONFIG.read_text().replace(
         "update_interval_steps = 4",
-        "update_interval_steps = 20",
+        "update_interval_steps = 100",
     )
     invalid = tmp_path / "invalid.toml"
     invalid.write_text(text)

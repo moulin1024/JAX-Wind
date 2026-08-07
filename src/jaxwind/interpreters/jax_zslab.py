@@ -164,6 +164,8 @@ class JaxZSlabInterpreter(ZSlabLasdMixin, ZSlabFlowMixin):
     _dry_wall: Callable
     _dry_sgs: Callable
     _dry_sgs_vertical_flux: Callable
+    _dry_mgm: Callable
+    _dry_mgm_vertical_flux: Callable
     _lasd_accumulate: Callable
     _lasd_accumulate_velocity: Callable
     _lasd_update: Callable

@@ -128,23 +128,42 @@ class SgsConfig:
     initial_coefficient: float
     minimum_coefficient: float
     maximum_coefficient: float
+    dissipation_coefficient: float
+    fallback_coefficient: float
+    gradient_norm_epsilon_s2: float
+    kinematic_viscosity_m2_s: float
+    scalar_turbulent_prandtl: float
 
     def __post_init__(self) -> None:
-        if self.model != "lasd":
-            raise ConfigError("sgs.model must be 'lasd'")
-        if self.update_interval_steps <= 0:
-            raise ConfigError("LASD update interval must be positive")
-        if self.filter_grid_ratio <= 0.0 or self.test_filter_ratio <= 1.0:
-            raise ConfigError("LASD filter ratios are invalid")
-        if self.timescale_coefficient <= 0.0:
-            raise ConfigError("LASD timescale coefficient must be positive")
-        if not (
-            0.0
-            <= self.minimum_coefficient
-            <= self.initial_coefficient
-            <= self.maximum_coefficient
-        ):
-            raise ConfigError("LASD coefficient bounds are inconsistent")
+        if self.model not in ("lasd", "mgm"):
+            raise ConfigError("sgs.model must be 'lasd' or 'mgm'")
+        if self.filter_grid_ratio <= 0.0:
+            raise ConfigError("SGS filter-grid ratio must be positive")
+        if self.scalar_turbulent_prandtl <= 0.0:
+            raise ConfigError("scalar turbulent Prandtl number must be positive")
+        if self.model == "lasd":
+            if self.update_interval_steps <= 0:
+                raise ConfigError("LASD update interval must be positive")
+            if self.test_filter_ratio <= 1.0:
+                raise ConfigError("LASD test-filter ratio must exceed one")
+            if self.timescale_coefficient <= 0.0:
+                raise ConfigError("LASD timescale coefficient must be positive")
+            if not (
+                0.0
+                <= self.minimum_coefficient
+                <= self.initial_coefficient
+                <= self.maximum_coefficient
+            ):
+                raise ConfigError("LASD coefficient bounds are inconsistent")
+        else:
+            if self.dissipation_coefficient <= 0.0:
+                raise ConfigError("MGM dissipation coefficient must be positive")
+            if self.fallback_coefficient < 0.0:
+                raise ConfigError("MGM fallback coefficient must be nonnegative")
+            if self.gradient_norm_epsilon_s2 <= 0.0:
+                raise ConfigError("MGM gradient-norm epsilon must be positive")
+            if self.kinematic_viscosity_m2_s < 0.0:
+                raise ConfigError("MGM kinematic viscosity must be nonnegative")
 
 
 @dataclass(frozen=True, slots=True)
@@ -242,7 +261,7 @@ class CaseConfig:
             raise ConfigError(
                 "estimated startup CFL exceeds numerics.cfl_abort; reduce dt"
             )
-        if (
+        if self.sgs.model == "lasd" and (
             self.estimated_lasd_trajectory_cfl
             >= self.numerics.lasd_trajectory_cfl_abort
         ):
@@ -273,6 +292,8 @@ class CaseConfig:
 
     @property
     def estimated_lasd_trajectory_cfl(self) -> float:
+        if self.sgs.model != "lasd":
+            return 0.0
         return self.estimated_startup_cfl * self.sgs.update_interval_steps
 
     @property
@@ -284,6 +305,26 @@ class CaseConfig:
         return step
 
     def resolved(self) -> dict[str, Any]:
+        sgs = {"model": self.sgs.model}
+        if self.sgs.model == "lasd":
+            sgs["update_interval_steps"] = self.sgs.update_interval_steps
+        else:
+            sgs.update(
+                {
+                    "filter_grid_ratio": self.sgs.filter_grid_ratio,
+                    "dissipation_coefficient": self.sgs.dissipation_coefficient,
+                    "fallback_coefficient": self.sgs.fallback_coefficient,
+                    "gradient_norm_epsilon_s2": (
+                        self.sgs.gradient_norm_epsilon_s2
+                    ),
+                    "kinematic_viscosity_m2_s": (
+                        self.sgs.kinematic_viscosity_m2_s
+                    ),
+                    "scalar_turbulent_prandtl": (
+                        self.sgs.scalar_turbulent_prandtl
+                    ),
+                }
+            )
         return {
             "runner": self.runner,
             "case": self.name,
@@ -309,10 +350,7 @@ class CaseConfig:
                 ),
                 "top_log_velocity_m_s": self.top_log_velocity_m_s,
             },
-            "sgs": {
-                "model": self.sgs.model,
-                "update_interval_steps": self.sgs.update_interval_steps,
-            },
+            "sgs": sgs,
             "time": {
                 "integrator": self.time.integrator,
                 "dt_seconds": self.time.dt_seconds,
@@ -394,6 +432,20 @@ def load_case(path: str | Path) -> CaseConfig:
             initial_coefficient=_number(sgs, "initial_coefficient"),
             minimum_coefficient=_number(sgs, "minimum_coefficient"),
             maximum_coefficient=_number(sgs, "maximum_coefficient"),
+            dissipation_coefficient=_number(sgs, "dissipation_coefficient"),
+            fallback_coefficient=_number(sgs, "fallback_coefficient"),
+            gradient_norm_epsilon_s2=_number(
+                sgs,
+                "gradient_norm_epsilon_s2",
+            ),
+            kinematic_viscosity_m2_s=_number(
+                sgs,
+                "kinematic_viscosity_m2_s",
+            ),
+            scalar_turbulent_prandtl=_number(
+                sgs,
+                "scalar_turbulent_prandtl",
+            ),
         ),
         time=TimeConfig(
             integrator=_string(time, "integrator"),

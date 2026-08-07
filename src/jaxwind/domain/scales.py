@@ -79,11 +79,23 @@ class ScaleSystem:
     def from_execution_acceleration(self, value):
         return value * self.acceleration
 
+    def to_execution_kinematic_viscosity(self, value):
+        return value / self.kinematic_viscosity
+
+    def from_execution_kinematic_viscosity(self, value):
+        return value * self.kinematic_viscosity
+
     def to_execution_inverse_time(self, value):
         return value / self.inverse_time
 
     def from_execution_inverse_time(self, value):
         return value * self.inverse_time
+
+    def to_execution_inverse_time_squared(self, value):
+        return value / (self.inverse_time * self.inverse_time)
+
+    def from_execution_inverse_time_squared(self, value):
+        return value * self.inverse_time * self.inverse_time
 
     def to_execution_grid(self, grid: UniformGrid) -> UniformGrid:
         return UniformGrid(

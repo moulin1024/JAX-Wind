@@ -85,6 +85,47 @@ class StaticSmagorinsky:
 
 
 @dataclass(frozen=True, slots=True)
+class ModulatedGradientModel:
+    """Memoryless legacy MGM momentum closure.
+
+    The model uses horizontally enlarged filter widths, diagnoses SGS kinetic
+    energy from the local gradient-tensor contraction, clips backscatter, and
+    falls back to a static Smagorinsky stress when the tensor norm is too small.
+    """
+
+    filter_grid_ratio: float = 1.5
+    dissipation_coefficient: float = 3.0
+    fallback_coefficient: float = 0.1
+    gradient_norm_epsilon: float = 1.0e-6
+    kinematic_viscosity: float = 0.0
+
+    def __post_init__(self) -> None:
+        positive = (
+            self.filter_grid_ratio,
+            self.dissipation_coefficient,
+            self.gradient_norm_epsilon,
+        )
+        if not all(math.isfinite(value) and value > 0.0 for value in positive):
+            raise ValueError("MGM filter, dissipation, and norm scales must be positive")
+        nonnegative = (self.fallback_coefficient, self.kinematic_viscosity)
+        if not all(
+            math.isfinite(value) and value >= 0.0 for value in nonnegative
+        ):
+            raise ValueError("MGM fallback coefficient and viscosity must be nonnegative")
+
+    @property
+    def fingerprint(self) -> str:
+        return (
+            "jaxwind.mgm.momentum.v1"
+            f"|fgr={self.filter_grid_ratio.hex()}"
+            f"|ce={self.dissipation_coefficient.hex()}"
+            f"|fallback={self.fallback_coefficient.hex()}"
+            f"|epsilon={self.gradient_norm_epsilon.hex()}"
+            f"|nu={self.kinematic_viscosity.hex()}"
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class NoRotation:
     """Explicit additive identity for non-rotating dry flow."""
 
@@ -118,7 +159,11 @@ class DryFlowModel:
     advection: ConservativeAdvection
     pressure_gradient: KinematicPressureGradient
     wall: NeutralLogWall | FilteredNeutralLogWall
-    sgs: StaticSmagorinsky | LagrangianScaleDependentDynamic
+    sgs: (
+        StaticSmagorinsky
+        | ModulatedGradientModel
+        | LagrangianScaleDependentDynamic
+    )
     rotation: NoRotation | CoriolisGeostrophic = NoRotation()
 
     def __post_init__(self) -> None:
@@ -130,7 +175,15 @@ class DryFlowModel:
                 (NeutralLogWall, FilteredNeutralLogWall),
                 "wall",
             ),
-            (self.sgs, (StaticSmagorinsky, LagrangianScaleDependentDynamic), "SGS"),
+            (
+                self.sgs,
+                (
+                    StaticSmagorinsky,
+                    ModulatedGradientModel,
+                    LagrangianScaleDependentDynamic,
+                ),
+                "SGS",
+            ),
             (self.rotation, (NoRotation, CoriolisGeostrophic), "rotation"),
         )
         for value, choice_type, name in expected:

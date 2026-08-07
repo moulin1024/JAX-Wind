@@ -35,6 +35,7 @@ from jaxwind.physics import (  # noqa: E402
     CoriolisGeostrophic,
     FilteredNeutralLogWall,
     KinematicPressureGradient,
+    ModulatedGradientModel,
     NeutralLogWall,
     StaticSmagorinsky,
 )
@@ -138,6 +139,12 @@ def main() -> int:
             StaticSmagorinsky(0.16),
         ),
         (
+            "mgm",
+            reference.sgs_tendency,
+            production.sgs_tendency,
+            ModulatedGradientModel(kinematic_viscosity=1.5e-5),
+        ),
+        (
             "coriolis_geostrophic",
             reference.coriolis_geostrophic_tendency,
             production.coriolis_geostrophic_tendency,
@@ -177,6 +184,19 @@ def main() -> int:
         sgs_config,
     )
     errors["sgs_vertical_flux"] = max(
+        float(jnp.max(jnp.abs(actual_txz - expected_txz[1:].reshape(shape)))),
+        float(jnp.max(jnp.abs(actual_tyz - expected_tyz[1:].reshape(shape)))),
+    )
+    mgm_config = ModulatedGradientModel(kinematic_viscosity=1.5e-5)
+    expected_txz, expected_tyz = reference.sgs_vertical_flux(
+        reference_context,
+        mgm_config,
+    )
+    actual_txz, actual_tyz = production.sgs_vertical_flux(
+        production_context,
+        mgm_config,
+    )
+    errors["mgm_vertical_flux"] = max(
         float(jnp.max(jnp.abs(actual_txz - expected_txz[1:].reshape(shape)))),
         float(jnp.max(jnp.abs(actual_tyz - expected_tyz[1:].reshape(shape)))),
     )

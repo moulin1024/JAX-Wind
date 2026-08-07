@@ -39,6 +39,7 @@ from jaxwind.domain import (
 from jaxwind.operators import VelocityVector
 from jaxwind.physics.dry_flow import (
     FilteredNeutralLogWall,
+    ModulatedGradientModel,
     NeutralLogWall,
     StaticSmagorinsky,
 )
@@ -441,14 +442,18 @@ class ZSlabLasdMixin:
     def scalar_sgs_tendency(
         self,
         context: ZSlabBoussinesqContext,
-        momentum_config: StaticSmagorinsky | LagrangianScaleDependentDynamic,
+        momentum_config: (
+            StaticSmagorinsky
+            | ModulatedGradientModel
+            | LagrangianScaleDependentDynamic
+        ),
         config: StaticSmagorinskyScalarFlux | LagrangianScaleDependentScalarFlux,
         boundary: ScalarFluxBoundary = ScalarFluxBoundary(),
     ) -> AddressableField:
-        static = isinstance(momentum_config, StaticSmagorinsky) and isinstance(
-            config,
-            StaticSmagorinskyScalarFlux,
-        )
+        static = isinstance(
+            momentum_config,
+            (StaticSmagorinsky, ModulatedGradientModel),
+        ) and isinstance(config, StaticSmagorinskyScalarFlux)
         dynamic = isinstance(
             momentum_config,
             LagrangianScaleDependentDynamic,
@@ -456,9 +461,14 @@ class ZSlabLasdMixin:
         if not (static or dynamic):
             raise TypeError("unsupported or inconsistent scalar SGS choice")
         if static:
+            momentum_coefficient = (
+                momentum_config.coefficient
+                if isinstance(momentum_config, StaticSmagorinsky)
+                else momentum_config.fallback_coefficient
+            )
             coefficient = jnp.full_like(
                 context.arrays.theta,
-                momentum_config.coefficient**2 / config.turbulent_prandtl,
+                momentum_coefficient**2 / config.turbulent_prandtl,
             )
         else:
             closure = context.momentum.closure

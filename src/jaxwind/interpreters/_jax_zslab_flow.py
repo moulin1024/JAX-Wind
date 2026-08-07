@@ -23,6 +23,7 @@ from jaxwind.physics.dry_flow import (
     CoriolisGeostrophic,
     FilteredNeutralLogWall,
     KinematicPressureGradient,
+    ModulatedGradientModel,
     NeutralLogWall,
     NoRotation,
     StaticSmagorinsky,
@@ -104,9 +105,19 @@ class ZSlabFlowMixin:
     def sgs_tendency(
         self,
         context: ZSlabDryFlowContext,
-        config: StaticSmagorinsky | LagrangianScaleDependentDynamic,
+        config: (
+            StaticSmagorinsky
+            | ModulatedGradientModel
+            | LagrangianScaleDependentDynamic
+        ),
     ) -> VelocityVector:
-        if not isinstance(config, (StaticSmagorinsky, LagrangianScaleDependentDynamic)):
+        if isinstance(config, ModulatedGradientModel):
+            x, y, z = self._dry_mgm(context.arrays, *self._mgm_parameters(config))
+            return self._dry_tendency(x, y, z)
+        if not isinstance(
+            config,
+            (StaticSmagorinsky, LagrangianScaleDependentDynamic),
+        ):
             raise TypeError("unsupported SGS choice")
         coefficient = self._momentum_sgs_coefficient(context, config)
         x, y, z = self._dry_sgs(context.arrays, coefficient)
@@ -115,10 +126,22 @@ class ZSlabFlowMixin:
     def sgs_vertical_flux(
         self,
         context: ZSlabDryFlowContext,
-        config: StaticSmagorinsky | LagrangianScaleDependentDynamic,
+        config: (
+            StaticSmagorinsky
+            | ModulatedGradientModel
+            | LagrangianScaleDependentDynamic
+        ),
     ) -> tuple[Any, Any]:
         """Return filtered addressable SGS xz and yz upper-face stresses."""
-        if not isinstance(config, (StaticSmagorinsky, LagrangianScaleDependentDynamic)):
+        if isinstance(config, ModulatedGradientModel):
+            return self._dry_mgm_vertical_flux(
+                context.arrays,
+                *self._mgm_parameters(config),
+            )
+        if not isinstance(
+            config,
+            (StaticSmagorinsky, LagrangianScaleDependentDynamic),
+        ):
             raise TypeError("unsupported SGS choice")
         return self._dry_sgs_vertical_flux(
             context.arrays,
@@ -136,6 +159,16 @@ class ZSlabFlowMixin:
         if not isinstance(closure, LasdClosureMemory):
             raise TypeError("momentum LASD requires initialized closure memory")
         return closure.momentum.coefficient.payload
+
+    @staticmethod
+    def _mgm_parameters(config: ModulatedGradientModel) -> tuple[float, ...]:
+        return (
+            config.filter_grid_ratio,
+            config.dissipation_coefficient,
+            config.fallback_coefficient,
+            config.gradient_norm_epsilon,
+            config.kinematic_viscosity,
+        )
 
     def coriolis_geostrophic_tendency(
         self,
