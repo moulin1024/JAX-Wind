@@ -327,10 +327,31 @@ def build_simulation(config: CaseConfig) -> Simulation:
     von_karman = float(momentum_spec.get("von_karman", 0.4))
     wall_filter_width = momentum_spec.get("wall_filter_width")
     wall_temporal_filter_gamma = momentum_spec.get("wall_temporal_filter_gamma")
+    wall_layer_matching_filter_ratio = momentum_spec.get(
+        "wall_layer_matching_filter_ratio"
+    )
+    wall_filter_reference_height = float(grid.z_widths[0])
+    if wall_layer_matching_filter_ratio is not None:
+        dx = max(grid.x_widths)
+        dy = max(grid.y_widths)
+        wall = grid.z_faces[0]
+        ratio = float(wall_layer_matching_filter_ratio)
+        for face, (upper, dz) in enumerate(zip(
+            grid.z_faces[1:-1],
+            grid.z_widths[:-1],
+            strict=True,
+        ), start=1):
+            if upper - wall >= ratio * (dx * dy * dz) ** (1.0 / 3.0):
+                wall_filter_reference_height = float(
+                    grid.z_faces[max(face, 2)] - wall
+                )
+                break
+        else:
+            wall_filter_reference_height = float(grid.z_faces[-2] - wall)
     wall_temporal_filter_timescale = (
         None
         if wall_temporal_filter_gamma is None
-        else float(grid.z_widths[0])
+        else wall_filter_reference_height
         / (
             float(wall_temporal_filter_gamma)
             * von_karman
@@ -352,6 +373,9 @@ def build_simulation(config: CaseConfig) -> Simulation:
         MeanMomentumConstraintConfig(
             timescale=float(mean_spec["timescale"]),
             gain=float(mean_spec.get("gain", 1.0)),
+            matching_filter_ratio=float(
+                mean_spec.get("matching_filter_ratio", 1.5)
+            ),
         )
         if mean_spec.get("enabled", False)
         else None
@@ -367,6 +391,11 @@ def build_simulation(config: CaseConfig) -> Simulation:
                 None if wall_filter_width is None else float(wall_filter_width)
             ),
             wall_temporal_filter_timescale=wall_temporal_filter_timescale,
+            wall_layer_matching_filter_ratio=(
+                None
+                if wall_layer_matching_filter_ratio is None
+                else float(wall_layer_matching_filter_ratio)
+            ),
             most_consistent_face_reconstruction=bool(
                 momentum_spec.get("most_consistent_face_reconstruction", True)
             ),
@@ -464,7 +493,14 @@ def _physics_fingerprint(config: CaseConfig) -> str:
         if key in config.data
     }
     sections["_solver_physics"] = {
-        "wall_closure": "finite_volume_filtered_most_face_v2",
+        "wall_closure": (
+            "shared_most_multicell_wall_layer_v1"
+            if config.section("momentum").get(
+                "wall_layer_matching_filter_ratio"
+            )
+            is not None
+            else "finite_volume_filtered_most_face_v2"
+        ),
         "most_consistent_face_reconstruction": bool(
             config.section("momentum").get(
                 "most_consistent_face_reconstruction",
@@ -624,6 +660,12 @@ def _atomic_checkpoint(
         payload["mean_momentum_filtered_acceleration"] = np.asarray(
             simulation.momentum.mean_momentum_state.filtered_acceleration
         )
+        payload["mean_momentum_stress_correction"] = np.asarray(
+            simulation.momentum.mean_momentum_state.stress_correction
+        )
+        payload["mean_momentum_previous_timestep"] = (
+            simulation.momentum.mean_momentum_state.previous_timestep
+        )
     temporary = destination.with_name(f".{destination.name}.tmp-{os.getpid()}")
     with temporary.open("wb") as stream:
         np.savez_compressed(stream, **payload)
@@ -703,6 +745,15 @@ def _restore(
                     checkpoint["mean_momentum_filtered_acceleration"],
                     dtype=simulation.dtype,
                 ),
+                jnp.asarray(
+                    checkpoint["mean_momentum_stress_correction"]
+                    if "mean_momentum_stress_correction" in checkpoint
+                    else np.zeros((simulation.grid.shape[0] + 1, 2)),
+                    dtype=simulation.dtype,
+                ),
+                float(checkpoint["mean_momentum_previous_timestep"])
+                if "mean_momentum_previous_timestep" in checkpoint
+                else 0.0,
             )
         )
     sample_array = np.asarray(checkpoint["samples"])
@@ -776,7 +827,11 @@ def _write_outputs(
         "friction_velocity_m_s": simulation.config.section("momentum")[
             "friction_velocity"
         ],
-        "wall_closure": "finite_volume_filtered_most_face_v2",
+        "wall_closure": (
+            "shared_most_multicell_wall_layer_v1"
+            if simulation.momentum.wall_layer_top_face is not None
+            else "finite_volume_filtered_most_face_v2"
+        ),
         "most_consistent_face_reconstruction": (
             simulation.momentum.config.most_consistent_face_reconstruction
         ),
@@ -788,7 +843,16 @@ def _write_outputs(
         "mean_momentum_constraint": (
             simulation.momentum.config.mean_momentum_constraint is not None
         ),
+        "mean_momentum_matching_height_m": (
+            simulation.momentum.mean_momentum_matching_height
+        ),
         "wall_first_cell_height_m": simulation.momentum.wall_cell_height,
+        "wall_layer_matching_height_m": (
+            simulation.momentum.wall_layer_matching_height
+        ),
+        "wall_layer_matching_filter_ratio": (
+            simulation.momentum.config.wall_layer_matching_filter_ratio
+        ),
         "wall_filter_width_grid_cells": (
             simulation.momentum.config.wall_filter_width
         ),

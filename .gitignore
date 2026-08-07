@@ -105,6 +105,12 @@ tmp
 /benchmark/GABLS1/**/__pycache__/
 /benchmark/GABLS1/**/*.pyc
 
+# Versioned pressure-driven neutral log-law configurations and diagnostics.
+!/benchmark/NeutralLogLawAMD/
+!/benchmark/NeutralLogLawAMD/**
+/benchmark/NeutralLogLawAMD/**/__pycache__/
+/benchmark/NeutralLogLawAMD/**/*.pyc
+
 # Versioned Yang et al. wind-tunnel benchmark specification.
 !/benchmark/yang2024/
 !/benchmark/yang2024/**

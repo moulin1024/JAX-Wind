@@ -146,6 +146,145 @@ def test_most_prescribed_heat_flux_closes_unstable_surface() -> None:
     assert float(fluxes.obukhov_length) < 0.0
 
 
+def test_shared_most_multicell_layer_closes_stable_and_unstable_profiles() -> None:
+    law = MoninObukhovWallLaw(
+        momentum_roughness_length=0.05,
+        thermal_roughness_length=0.02,
+        reference_potential_temperature=300.0,
+    )
+    lower, upper = 18.0, 31.0
+    horizontal = jnp.asarray([7.0, 2.0], dtype=jnp.float32)
+    for matching_temperature in (302.0, 298.0):
+        fluxes = law.surface_fluxes_from_layer(
+            horizontal,
+            jnp.asarray(matching_temperature, dtype=jnp.float32),
+            jnp.asarray(300.0, dtype=jnp.float32),
+            lower,
+            upper,
+        )
+        inverse_obukhov = jnp.where(
+            jnp.isfinite(fluxes.obukhov_length),
+            1.0 / fluxes.obukhov_length,
+            0.0,
+        )
+        momentum_transfer = law._layer_average_transfer_denominator(
+            inverse_obukhov,
+            lower,
+            upper,
+            law.momentum_roughness_length,
+            law.momentum_stability_correction,
+        )
+        heat_transfer = law._layer_average_transfer_denominator(
+            inverse_obukhov,
+            lower,
+            upper,
+            law.thermal_roughness_length,
+            law.heat_stability_correction,
+        )
+        assert np.isclose(
+            float(jnp.linalg.norm(horizontal)),
+            float(fluxes.friction_velocity * momentum_transfer / law.von_karman),
+            rtol=2.0e-5,
+        )
+        assert np.isclose(
+            matching_temperature - 300.0,
+            float(fluxes.temperature_scale * heat_transfer / law.von_karman),
+            rtol=2.0e-5,
+            atol=2.0e-5,
+        )
+        face_velocity, face_temperature = law.internal_face_profiles(
+            horizontal,
+            jnp.asarray(matching_temperature, dtype=jnp.float32),
+            fluxes,
+            lower,
+            upper,
+            jnp.asarray([4.0, 11.0, 20.0, 31.0], dtype=jnp.float32),
+            surface_temperature=jnp.asarray(300.0, dtype=jnp.float32),
+        )
+        assert face_velocity.shape == (4, 2)
+        assert face_temperature.shape == (4,)
+        assert np.all(np.isfinite(np.asarray(face_velocity)))
+        assert np.all(np.isfinite(np.asarray(face_temperature)))
+        momentum_diffusivity, heat_diffusivity = (
+            law.wall_layer_eddy_diffusivities(
+                fluxes,
+                jnp.asarray([4.0, 11.0, 20.0], dtype=jnp.float32),
+            )
+        )
+        assert np.all(np.asarray(momentum_diffusivity) > 0.0)
+        assert np.all(np.asarray(heat_diffusivity) > 0.0)
+
+
+def test_wall_layer_uses_automatic_matching_cell_and_shared_diffusivity() -> None:
+    grid = RectilinearGrid(
+        tuple(np.linspace(0.0, 800.0, 9)),
+        tuple(np.linspace(0.0, 800.0, 9)),
+        (0.0, 5.0, 12.0, 22.0, 36.0, 56.0, 84.0, 123.0, 180.0),
+    )
+    pressure = MatrixFreePoissonSolver(
+        grid,
+        PoissonBoundaryConditions.homogeneous_neumann(),
+        dtype=jnp.float32,
+        gmg=GMGConfig(min_coarse_cells=1),
+        krylov=PCGConfig(max_iterations=5),
+    )
+    momentum = MomentumOperators(
+        grid,
+        pressure,
+        MomentumConfig(
+            roughness_length=0.01,
+            pressure_acceleration=0.0,
+            mp5_dissipation_strength=0.0,
+            wall_layer_matching_filter_ratio=1.0,
+        ),
+    )
+    assert momentum.wall_layer_top_face is not None
+    matching_cell = momentum.wall_input_cell_index
+    cells = jnp.zeros((*grid.shape, 3), dtype=jnp.float32)
+    cells = cells.at[0, ..., 0].set(100.0)
+    cells = cells.at[matching_cell, ..., 0].set(8.0)
+    wall_velocity = momentum.instantaneous_wall_velocity(cells)
+    assert np.allclose(wall_velocity[..., 0], 8.0)
+
+    wall_stress = momentum.wall_stress(cells)
+    native = jnp.zeros((grid.shape[0] + 1, *grid.shape[1:], 3), dtype=jnp.float32)
+    native = native.at[1:, ..., 0].set(0.25)
+    coupled = momentum._couple_wall_layer_momentum_stress(native, wall_stress)
+    assert np.allclose(coupled[0], wall_stress)
+    assert np.allclose(coupled[1:], native[1:])
+
+    wall_viscosity = momentum.neutral_wall_layer_viscosity(cells)
+    assert wall_viscosity is not None
+    fluxes = momentum.wall_fluxes(cells)
+    expected_viscosity = (
+        momentum.config.von_karman
+        * np.asarray(momentum.z_centers[: wall_viscosity.shape[0]])[:, None, None]
+        * np.asarray(fluxes.friction_velocity)[None, ...]
+    )
+    np.testing.assert_allclose(
+        wall_viscosity,
+        expected_viscosity,
+        rtol=2.0e-6,
+    )
+
+    rhs = jnp.asarray(
+        np.random.default_rng(4).normal(size=(*grid.shape, 3)),
+        dtype=jnp.float32,
+    )
+    viscosity = jnp.full(grid.shape, 0.2, dtype=jnp.float32)
+    implicit_dt = jnp.asarray(0.3, dtype=jnp.float32)
+    solution = momentum.solve_vertical_sgs_diffusion(
+        rhs,
+        viscosity,
+        implicit_dt,
+    )
+    residual = solution - implicit_dt * momentum.principal_sgs_tendency(
+        solution,
+        viscosity,
+    )
+    np.testing.assert_allclose(residual, rhs, rtol=2.0e-5, atol=2.0e-5)
+
+
 def test_mean_momentum_constraint_closes_the_discrete_face_stress() -> None:
     grid = RectilinearGrid.uniform(8, 8, 8, lx=800.0, ly=800.0, lz=400.0)
     pressure = MatrixFreePoissonSolver(
@@ -169,7 +308,11 @@ def test_mean_momentum_constraint_closes_the_discrete_face_stress() -> None:
         ),
     )
     velocity = momentum.initial_log_profile(perturbation_amplitude=0.2, project=False)
-    momentum.reset_mean_momentum(velocity)
+    mean_state = momentum.reset_mean_momentum(velocity)
+    assert mean_state is not None
+    momentum.restore_mean_momentum(
+        mean_state._replace(previous_timestep=100.0)
+    )
     coefficient = momentum._active_lasd_coefficient(velocity)
     wall_velocity = momentum.active_wall_velocity(velocity)
     correction = momentum.mean_stress_correction(
@@ -205,13 +348,23 @@ def test_mean_momentum_constraint_closes_the_discrete_face_stress() -> None:
     wall_mean = momentum.surface_mean(
         momentum.wall_stress(cells, wall_velocity=wall_velocity)[..., :2]
     )
+    z_faces = np.asarray(grid.z_faces, dtype=float)
+    face_fraction = (z_faces - z_faces[0]) / (z_faces[-1] - z_faces[0])
+    target = np.asarray(wall_mean)[None, :] * (1.0 - face_fraction[:, None])
+    matching_height = momentum.mean_momentum_matching_height
+    assert matching_height is not None
+    blend = np.clip(1.0 - (z_faces - z_faces[0]) / matching_height, 0.0, 1.0)
+    expected = np.asarray(current) + blend[:, None] * (
+        target - np.asarray(current)
+    )
     np.testing.assert_allclose(
         np.asarray(current + correction),
-        np.broadcast_to(np.asarray(wall_mean), current.shape),
+        expected,
         rtol=2.0e-5,
         atol=2.0e-6,
     )
     np.testing.assert_array_equal(np.asarray(correction[0]), np.zeros(2))
+    np.testing.assert_array_equal(np.asarray(correction[-1]), np.zeros(2))
 
 
 def test_fv_dynamic_scalar_uses_multigrid_filter_and_is_bounded() -> None:

@@ -21,8 +21,8 @@ The active numerical path provides:
 - AMD closures, pressure-hierarchy FV-native momentum LASD, and an optional
   FV-dynamic scalar Germano closure using the same hierarchy;
 - explicit SSPRK3 and IMEX-ARK3 vertical SGS integration;
-- finite-volume-filtered neutral-log and Monin-Obukhov surface fluxes with a
-  similarity-consistent first-internal-face reconstruction; and
+- finite-volume-filtered neutral-log and Monin-Obukhov surface fluxes, with an
+  optional shared-MOST multi-control-volume wall layer; and
 - one `ABLSolver`/`ABLState` path for neutral and thermally stratified flows.
 
 Neutral, convective, and stable are not solver classes. The same solver is
@@ -48,7 +48,17 @@ driven. Prescribed surface temperature and prescribed heat flux can both use
 coupled MOST; the neutral limit uses the same interface. Momentum and scalar
 values transported through the first internal face are reconstructed from the
 same point-to-cell-average similarity relation that diagnoses the wall flux,
-including stability functions and the true stretched-cell bounds.
+including stability functions and the true stretched-cell bounds.  Setting
+`momentum.wall_layer_matching_filter_ratio` promotes that relation to a
+grid-native wall layer: the first face satisfying
+`z >= ratio * (dx*dy*dz)^(1/3)` is selected automatically, its lower control
+volume diagnoses one shared `(u_*, L, theta_*)`, and all lower velocity,
+temperature, momentum-diffusivity, and heat-diffusivity relations use that
+same solution.  The prognostic cells remain finite-volume LES/RANS cells:
+MOST supplies `K_m = kappa*u_*z/phi_m` and `K_h = kappa*u_*z/phi_h`, rather
+than enforcing a logarithmic velocity profile.  Native MP5 transport remains
+active, and native SGS resumes outside the matching face.  No physical
+matching height is supplied.
 
 With multilevel LASD momentum, thermodynamic cases may select the FV-dynamic
 scalar model:
@@ -72,7 +82,13 @@ logarithmic profile or assume stationary/neutral flow:
 enabled = true
 timescale = 600.0
 gain = 1.0
+matching_filter_ratio = 1.5
 ```
+
+The auxiliary shear stress is confined below the first face whose wall
+distance exceeds `matching_filter_ratio` times the local physical LES filter
+width.  It tapers to zero there and at both domain boundaries, so no matching
+height is supplied and the column-integrated momentum remains unchanged.
 
 It is disabled when the table is absent, so benchmark validation does not gain
 an implicit mean-profile forcing.

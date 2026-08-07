@@ -37,6 +37,7 @@ friction_velocity = 0.4
 roughness_length = 0.01
 wall_filter_width = 3.0
 wall_temporal_filter_gamma = 1.0
+wall_layer_matching_filter_ratio = 1.5
 pressure_acceleration = 0.00016
 coriolis_vertical = 0.0
 coriolis_horizontal = 0.0

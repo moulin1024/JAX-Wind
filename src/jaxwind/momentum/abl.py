@@ -307,6 +307,26 @@ class ABLSolver:
             )
         cells = _cell_velocity(velocity)
         horizontal_velocity = self.momentum.wall_velocity(cells)
+        top_face = self.momentum.wall_layer_top_face
+        if top_face is not None:
+            lower, upper = self.momentum.wall_input_layer_bounds
+            if self.config.surface_thermal_boundary == "flux":
+                return self.surface_law.surface_fluxes_from_layer_heat_flux(
+                    horizontal_velocity,
+                    self.scalar.model.lower_surface_flux,
+                    lower,
+                    upper,
+                )
+            matching_temperature = potential_temperature[
+                self.momentum.wall_input_cell_index
+            ]
+            return self.surface_law.surface_fluxes_from_layer(
+                horizontal_velocity,
+                matching_temperature,
+                self.surface_potential_temperature(time),
+                lower,
+                upper,
+            )
         if self.config.surface_thermal_boundary == "flux":
             return self.surface_law.surface_fluxes_from_heat_flux(
                 horizontal_velocity,
@@ -349,7 +369,7 @@ class ABLSolver:
         velocity: MACVelocity,
         potential_temperature: Array,
         time: Array,
-    ) -> tuple[Array, Array]:
+    ) -> tuple[Array, Array, Array]:
         """Return wall traction and the similarity-consistent first face."""
         cells = _cell_velocity(velocity)
         fluxes = self._surface_layer_fluxes(
@@ -361,9 +381,23 @@ class ABLSolver:
             face_velocity = 0.5 * (cells[0, ..., :2] + cells[1, ..., :2])
         elif self.surface_law is None:
             horizontal = self.momentum.wall_velocity(cells)
-            face_velocity = self.momentum.wall_law.first_internal_face_velocity(
+            face_velocity = self.momentum.wall_layer_face_velocities(horizontal)
+        elif self.momentum.wall_layer_top_face is not None:
+            horizontal = self.momentum.wall_velocity(cells)
+            lower, upper = self.momentum.wall_input_layer_bounds
+            surface_temperature = (
+                self.surface_potential_temperature(time)
+                if self.config.surface_thermal_boundary == "temperature"
+                else None
+            )
+            face_velocity, _ = self.surface_law.internal_face_profiles(
                 horizontal,
-                self.momentum.wall_cell_height,
+                potential_temperature[self.momentum.wall_input_cell_index],
+                fluxes,
+                lower,
+                upper,
+                self.momentum.wall_layer_internal_face_heights,
+                surface_temperature=surface_temperature,
             )
         else:
             horizontal = self.momentum.wall_velocity(cells)
@@ -372,7 +406,27 @@ class ABLSolver:
                 fluxes,
                 self.momentum.wall_cell_height,
             )
-        return self._momentum_wall_stress(fluxes), face_velocity
+        if self.momentum.wall_layer_top_face is None:
+            wall_layer_viscosity = jnp.zeros(
+                (0, *self.grid.shape[1:]),
+                dtype=cells.dtype,
+            )
+        elif self.surface_law is None:
+            wall_layer_viscosity = self.momentum.neutral_wall_layer_viscosity(
+                cells
+            )
+        else:
+            wall_layer_viscosity, _ = self.surface_law.wall_layer_eddy_diffusivities(
+                fluxes,
+                self.momentum.z_centers[
+                    : self.momentum.wall_layer_top_face
+                ],
+            )
+        return (
+            self._momentum_wall_stress(fluxes),
+            face_velocity,
+            wall_layer_viscosity,
+        )
 
     def _surface_first_face_temperature(
         self,
@@ -390,6 +444,16 @@ class ABLSolver:
             if self.config.surface_thermal_boundary == "temperature"
             else None
         )
+        if self.momentum.wall_layer_top_face is not None:
+            lower, upper = self.momentum.wall_input_layer_bounds
+            return self.surface_law.internal_face_temperatures(
+                scalar[self.momentum.wall_input_cell_index],
+                fluxes,
+                lower,
+                upper,
+                self.momentum.wall_layer_internal_face_heights,
+                surface_temperature=surface_temperature,
+            )
         return self.surface_law.first_internal_face_temperature(
             scalar[0],
             fluxes,
@@ -404,6 +468,22 @@ class ABLSolver:
         time: Array,
     ) -> Array:
         fluxes = self._surface_layer_fluxes(velocity, scalar, time)
+        wall_layer_diffusivity = None
+        top = self.momentum.wall_layer_top_face
+        if top is not None:
+            cells = _cell_velocity(velocity)
+            heights = self.momentum.z_centers[:top]
+            if self.surface_law is None:
+                wall_layer_diffusivity = (
+                    self.momentum.neutral_wall_layer_viscosity(cells)
+                )
+            else:
+                _, wall_layer_diffusivity = (
+                    self.surface_law.wall_layer_eddy_diffusivities(
+                        fluxes,
+                        heights,
+                    )
+                )
         tendency = self.scalar.tendency(
             scalar,
             velocity,
@@ -413,6 +493,8 @@ class ABLSolver:
                 fluxes,
                 time,
             ),
+            wall_layer_top_face=self.momentum.wall_layer_top_face,
+            wall_layer_diffusivity=wall_layer_diffusivity,
         )
         return tendency + self._rayleigh_scalar_tendency(scalar)
 
@@ -517,15 +599,18 @@ class ABLSolver:
         buoyancy: MACVelocity,
         mean_stress_correction: Array,
     ) -> MACVelocity:
-        wall_stress, face_velocity = self._surface_momentum_boundary(
+        wall_stress, face_velocity, wall_layer_viscosity = (
+            self._surface_momentum_boundary(
             velocity,
             potential_temperature,
             time,
+            )
         )
         momentum = self.momentum.tendency_with_wall_stress(
             velocity,
             wall_stress,
             first_internal_face_horizontal_velocity=face_velocity,
+            wall_layer_viscosity=wall_layer_viscosity,
             mean_stress_correction=mean_stress_correction,
         )
         return _velocity_sum(
@@ -632,10 +717,12 @@ class ABLSolver:
             )
         buoyancy = self.buoyancy_tendency(midpoint_temperature)
         coefficient = self.momentum._active_lasd_coefficient(state.velocity)
-        wall_stress, first_face_velocity = self._surface_momentum_boundary(
-            state.velocity,
-            midpoint_temperature,
-            jnp.asarray(state.time, dtype=midpoint_temperature.dtype),
+        wall_stress, first_face_velocity, _wall_layer_viscosity = (
+            self._surface_momentum_boundary(
+                state.velocity,
+                midpoint_temperature,
+                jnp.asarray(state.time, dtype=midpoint_temperature.dtype),
+            )
         )
         rayleigh_cells = self._rayleigh_momentum_cell_tendency(
             _cell_velocity(state.velocity)
@@ -712,7 +799,11 @@ class ABLSolver:
         self.momentum._pressure = projected.pressure
         self.momentum._advance_lasd(velocity, timestep)
         self.momentum._advance_wall_model(velocity, timestep)
-        self.momentum._advance_mean_momentum(velocity, timestep)
+        self.momentum._advance_mean_momentum(
+            velocity,
+            timestep,
+            mean_stress_correction,
+        )
         if self.surface_law is None:
             potential_temperature = self.scalar.step(
                 midpoint_temperature,
@@ -786,15 +877,39 @@ class ABLSolver:
     ) -> tuple[Array, Array, Array]:
         cells = _cell_velocity(velocity)
         gradient = self.momentum.velocity_gradient(cells)
+        wall_layer_momentum_diffusivity = None
+        wall_layer_scalar_diffusivity = None
+        top = self.momentum.wall_layer_top_face
+        if top is not None:
+            heights = self.momentum.z_centers[:top]
+            if self.surface_law is None:
+                wall_layer_momentum_diffusivity = (
+                    self.momentum.neutral_wall_layer_viscosity(cells)
+                )
+                wall_layer_scalar_diffusivity = wall_layer_momentum_diffusivity
+            else:
+                (
+                    wall_layer_momentum_diffusivity,
+                    wall_layer_scalar_diffusivity,
+                ) = self.surface_law.wall_layer_eddy_diffusivities(
+                    fluxes,
+                    heights,
+                )
         momentum_diffusivity = self.momentum.sgs_viscosity(
             cells,
             gradient=gradient,
+            wall_layer_viscosity=wall_layer_momentum_diffusivity,
         )
         scalar_diffusivity = self.scalar.sgs_diffusivity(
             potential_temperature,
             gradient,
             cell_velocity=cells,
         )
+        if wall_layer_scalar_diffusivity is not None:
+            count = wall_layer_scalar_diffusivity.shape[0]
+            scalar_diffusivity = scalar_diffusivity.at[:count].set(
+                wall_layer_scalar_diffusivity
+            )
         wall_velocity = self.momentum.wall_velocity(cells)
         wall_rate = self.momentum.surface_momentum_stability_rate(
             wall_velocity,
@@ -1158,6 +1273,7 @@ class ABLSolver:
             velocity_gradient,
             lower_surface_flux=surface_fluxes.heat_flux,
             cell_velocity=cells,
+            wall_layer_top_face=self.momentum.wall_layer_top_face,
         )
         scalar_diffusivity = jnp.maximum(
             scalar_diffusivity - self.scalar.model.molecular_diffusivity,

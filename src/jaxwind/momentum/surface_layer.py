@@ -216,6 +216,76 @@ class NeutralLogWallLaw:
             / self.cell_average_log_denominator(first_cell_height)
         )
 
+    def friction_velocity_from_layer(
+        self,
+        horizontal_velocity: Array,
+        lower_height: float,
+        upper_height: float,
+    ) -> Array:
+        """Diagnose ``u_*`` from one actual finite-volume layer average."""
+        if not 0.0 <= lower_height < upper_height:
+            raise ValueError("MOST layer bounds must satisfy 0 <= lower < upper")
+        average = self.cell_average_log_denominators(
+            jnp.asarray(lower_height),
+            jnp.asarray(upper_height),
+        )
+        speed = jnp.linalg.norm(horizontal_velocity, axis=-1)
+        return self.von_karman * speed / jnp.maximum(average, 1.0e-6)
+
+    def surface_fluxes_from_layer(
+        self,
+        horizontal_velocity: Array,
+        lower_height: float,
+        upper_height: float,
+    ) -> SurfaceLayerFluxes:
+        """Return neutral fluxes from an elevated matching control volume."""
+        ustar = self.friction_velocity_from_layer(
+            horizontal_velocity,
+            lower_height,
+            upper_height,
+        )
+        zeros = jnp.zeros_like(ustar)
+        return SurfaceLayerFluxes(
+            _stress_from_scale(horizontal_velocity, ustar),
+            zeros,
+            ustar,
+            zeros,
+            jnp.full_like(ustar, jnp.inf),
+        )
+
+    def internal_face_velocities(
+        self,
+        horizontal_velocity: Array,
+        lower_height: float,
+        upper_height: float,
+        face_heights: Array,
+    ) -> Array:
+        """Reconstruct all wall-layer faces from one shared neutral MOST law."""
+        average = self.cell_average_log_denominators(
+            jnp.asarray(lower_height),
+            jnp.asarray(upper_height),
+        )
+        face = self.point_log_denominator(face_heights)
+        scale_shape = (face.shape[0],) + (1,) * horizontal_velocity.ndim
+        return horizontal_velocity[None, ...] * jnp.reshape(
+            face / jnp.maximum(average, 1.0e-6),
+            scale_shape,
+        )
+
+    def wall_layer_eddy_viscosity(
+        self,
+        fluxes: SurfaceLayerFluxes,
+        heights: Array,
+    ) -> Array:
+        """Return neutral mixing-length viscosity at wall-layer cell centres."""
+        heights = jnp.asarray(heights, dtype=fluxes.friction_velocity.dtype)
+        shape = (heights.shape[0],) + (1,) * fluxes.friction_velocity.ndim
+        return (
+            self.von_karman
+            * jnp.reshape(heights, shape)
+            * fluxes.friction_velocity[None, ...]
+        )
+
     def surface_fluxes(
         self,
         horizontal_velocity: Array,
@@ -330,6 +400,26 @@ class MoninObukhovWallLaw:
         unstable = 2.0 * jnp.log(0.5 * (1.0 + x))
         return jnp.where(zeta >= 0.0, stable, unstable)
 
+    def momentum_gradient_function(self, zeta: Array) -> Array:
+        """Return the Businger--Dyer local momentum gradient function."""
+        zeta = self._bounded_zeta(zeta)
+        stable = 1.0 + self.stable_momentum_beta * zeta
+        unstable = jnp.maximum(
+            1.0 - self.unstable_momentum_gamma * zeta,
+            1.0,
+        ) ** (-0.25)
+        return jnp.where(zeta >= 0.0, stable, unstable)
+
+    def heat_gradient_function(self, zeta: Array) -> Array:
+        """Return the Businger--Dyer local heat gradient function."""
+        zeta = self._bounded_zeta(zeta)
+        stable = 1.0 + self.stable_heat_beta * zeta
+        unstable = jnp.maximum(
+            1.0 - self.unstable_heat_gamma * zeta,
+            1.0,
+        ) ** (-0.5)
+        return jnp.where(zeta >= 0.0, stable, unstable)
+
     def _average_transfer_denominator(
         self,
         inverse_obukhov: Array,
@@ -366,6 +456,55 @@ class MoninObukhovWallLaw:
             axis=0,
         )
         return neutral + correction_integral / first_cell_height
+
+    def _layer_average_transfer_denominator(
+        self,
+        inverse_obukhov: Array,
+        lower_height: float,
+        upper_height: float,
+        roughness_length: float,
+        correction: Callable[[Array], Array],
+    ) -> Array:
+        """Average one integrated MOST profile over an arbitrary FV cell."""
+        if not 0.0 <= lower_height < upper_height:
+            raise ValueError("MOST layer bounds must satisfy 0 <= lower < upper")
+        effective_upper = upper_height - self.displacement_height
+        if effective_upper <= roughness_length:
+            raise ValueError("MOST matching cell must extend above roughness")
+        nodes = jnp.asarray(_GAUSS_LEGENDRE_NODES, dtype=inverse_obukhov.dtype)
+        weights = jnp.asarray(_GAUSS_LEGENDRE_WEIGHTS, dtype=inverse_obukhov.dtype)
+        half_span = 0.5 * (upper_height - lower_height)
+        midpoint = 0.5 * (upper_height + lower_height)
+        heights = midpoint + half_span * nodes
+        quadrature_shape = (heights.shape[0],) + (1,) * inverse_obukhov.ndim
+        heights = jnp.reshape(heights, quadrature_shape)
+        weights = jnp.reshape(weights, quadrature_shape)
+        values = self.point_transfer_denominator(
+            inverse_obukhov[None, ...],
+            heights,
+            roughness_length,
+            correction,
+        )
+        return 0.5 * jnp.sum(weights * values, axis=0)
+
+    def point_transfer_denominator(
+        self,
+        inverse_obukhov: Array,
+        height: Array,
+        roughness_length: float,
+        correction: Callable[[Array], Array],
+    ) -> Array:
+        """Vectorized integrated MOST denominator, zero below roughness."""
+        height = jnp.asarray(height, dtype=inverse_obukhov.dtype)
+        effective = height - self.displacement_height
+        roughness = jnp.asarray(roughness_length, dtype=inverse_obukhov.dtype)
+        clipped = jnp.maximum(effective, roughness)
+        value = (
+            jnp.log(clipped / roughness)
+            - correction(clipped * inverse_obukhov)
+            + correction(roughness * inverse_obukhov)
+        )
+        return jnp.where(effective > roughness, value, 0.0)
 
     def _point_transfer_denominator(
         self,
@@ -667,6 +806,265 @@ class MoninObukhovWallLaw:
             ustar,
             temperature_scale,
             obukhov_length,
+        )
+
+    def surface_fluxes_from_layer(
+        self,
+        horizontal_velocity: Array,
+        potential_temperature: Array,
+        surface_potential_temperature: Array | float,
+        lower_height: float,
+        upper_height: float,
+    ) -> SurfaceLayerFluxes:
+        """Solve coupled momentum/heat MOST from one matching FV cell."""
+        speed = jnp.linalg.norm(horizontal_velocity, axis=-1)
+        surface = jnp.asarray(
+            surface_potential_temperature,
+            dtype=horizontal_velocity.dtype,
+        )
+        difference = jnp.asarray(
+            potential_temperature,
+            dtype=horizontal_velocity.dtype,
+        ) - surface
+        inverse_obukhov = jnp.zeros_like(speed)
+        for _ in range(self.iterations):
+            momentum = self._layer_average_transfer_denominator(
+                inverse_obukhov,
+                lower_height,
+                upper_height,
+                self.momentum_roughness_length,
+                self.momentum_stability_correction,
+            )
+            heat = self._layer_average_transfer_denominator(
+                inverse_obukhov,
+                lower_height,
+                upper_height,
+                self.thermal_roughness_length,
+                self.heat_stability_correction,
+            )
+            ustar = self.von_karman * speed / jnp.maximum(momentum, 1.0e-6)
+            temperature_scale = (
+                self.von_karman * difference / jnp.maximum(heat, 1.0e-6)
+            )
+            candidate = (
+                self.von_karman
+                * self.gravity
+                * temperature_scale
+                / (
+                    self.reference_potential_temperature
+                    * jnp.maximum(ustar * ustar, 1.0e-12)
+                )
+            )
+            candidate = jnp.clip(
+                candidate,
+                -self.maximum_abs_zeta / upper_height,
+                self.maximum_abs_zeta / upper_height,
+            )
+            inverse_obukhov = (
+                (1.0 - self.relaxation) * inverse_obukhov
+                + self.relaxation * candidate
+            )
+        momentum = self._layer_average_transfer_denominator(
+            inverse_obukhov,
+            lower_height,
+            upper_height,
+            self.momentum_roughness_length,
+            self.momentum_stability_correction,
+        )
+        heat = self._layer_average_transfer_denominator(
+            inverse_obukhov,
+            lower_height,
+            upper_height,
+            self.thermal_roughness_length,
+            self.heat_stability_correction,
+        )
+        ustar = self.von_karman * speed / jnp.maximum(momentum, 1.0e-6)
+        temperature_scale = self.von_karman * difference / jnp.maximum(
+            heat,
+            1.0e-6,
+        )
+        heat_flux = -ustar * temperature_scale
+        obukhov_length = jnp.where(
+            jnp.abs(inverse_obukhov) > 1.0e-12,
+            1.0 / inverse_obukhov,
+            jnp.inf,
+        )
+        return SurfaceLayerFluxes(
+            _stress_from_scale(horizontal_velocity, ustar),
+            heat_flux,
+            ustar,
+            temperature_scale,
+            obukhov_length,
+        )
+
+    def surface_fluxes_from_layer_heat_flux(
+        self,
+        horizontal_velocity: Array,
+        heat_flux: Array | float,
+        lower_height: float,
+        upper_height: float,
+    ) -> SurfaceLayerFluxes:
+        """Solve MOST at a matching FV cell for prescribed surface heat flux."""
+        speed = jnp.linalg.norm(horizontal_velocity, axis=-1)
+        prescribed = jnp.asarray(heat_flux, dtype=horizontal_velocity.dtype)
+        neutral = self._layer_average_transfer_denominator(
+            jnp.zeros_like(speed),
+            lower_height,
+            upper_height,
+            self.momentum_roughness_length,
+            self.momentum_stability_correction,
+        )
+        ustar = self.von_karman * speed / jnp.maximum(neutral, 1.0e-6)
+        for _ in range(self.iterations):
+            inverse_obukhov = -(
+                self.von_karman * self.gravity * prescribed
+            ) / (
+                self.reference_potential_temperature
+                * jnp.maximum(ustar**3, 1.0e-12)
+            )
+            inverse_obukhov = jnp.clip(
+                inverse_obukhov,
+                -self.maximum_abs_zeta / upper_height,
+                self.maximum_abs_zeta / upper_height,
+            )
+            momentum = self._layer_average_transfer_denominator(
+                inverse_obukhov,
+                lower_height,
+                upper_height,
+                self.momentum_roughness_length,
+                self.momentum_stability_correction,
+            )
+            candidate = self.von_karman * speed / jnp.maximum(momentum, 1.0e-6)
+            ustar = (1.0 - self.relaxation) * ustar + self.relaxation * candidate
+        inverse_obukhov = -(
+            self.von_karman * self.gravity * prescribed
+        ) / (
+            self.reference_potential_temperature
+            * jnp.maximum(ustar**3, 1.0e-12)
+        )
+        inverse_obukhov = jnp.clip(
+            inverse_obukhov,
+            -self.maximum_abs_zeta / upper_height,
+            self.maximum_abs_zeta / upper_height,
+        )
+        temperature_scale = -prescribed / jnp.maximum(ustar, 1.0e-12)
+        obukhov_length = jnp.where(
+            jnp.abs(inverse_obukhov) > 1.0e-12,
+            1.0 / inverse_obukhov,
+            jnp.inf,
+        )
+        return SurfaceLayerFluxes(
+            _stress_from_scale(horizontal_velocity, ustar),
+            jnp.broadcast_to(prescribed, ustar.shape),
+            ustar,
+            temperature_scale,
+            obukhov_length,
+        )
+
+    def internal_face_profiles(
+        self,
+        horizontal_velocity: Array,
+        cell_average_temperature: Array,
+        fluxes: SurfaceLayerFluxes,
+        lower_height: float,
+        upper_height: float,
+        face_heights: Array,
+        *,
+        surface_temperature: Array | float | None,
+    ) -> tuple[Array, Array]:
+        """Return shared-MOST velocity and temperature on wall-layer faces."""
+        inverse_obukhov = self._inverse_obukhov(fluxes)
+        heights = jnp.asarray(face_heights, dtype=horizontal_velocity.dtype)
+        expanded_inverse = inverse_obukhov[None, ...]
+        height_shape = (heights.shape[0],) + (1,) * inverse_obukhov.ndim
+        expanded_heights = jnp.reshape(heights, height_shape)
+        momentum = self.point_transfer_denominator(
+            expanded_inverse,
+            expanded_heights,
+            self.momentum_roughness_length,
+            self.momentum_stability_correction,
+        )
+        speed = jnp.linalg.norm(horizontal_velocity, axis=-1)
+        direction = horizontal_velocity / jnp.maximum(speed, 1.0e-12)[..., None]
+        face_velocity = (
+            fluxes.friction_velocity[None, ..., None]
+            * direction[None, ...]
+            * momentum[..., None]
+            / self.von_karman
+        )
+        face_temperature = self.internal_face_temperatures(
+            cell_average_temperature,
+            fluxes,
+            lower_height,
+            upper_height,
+            face_heights,
+            surface_temperature=surface_temperature,
+        )
+        return face_velocity, face_temperature
+
+    def internal_face_temperatures(
+        self,
+        cell_average_temperature: Array,
+        fluxes: SurfaceLayerFluxes,
+        lower_height: float,
+        upper_height: float,
+        face_heights: Array,
+        *,
+        surface_temperature: Array | float | None,
+    ) -> Array:
+        """Return the shared-MOST thermal profile on modeled z faces."""
+        inverse_obukhov = self._inverse_obukhov(fluxes)
+        heights = jnp.asarray(face_heights, dtype=cell_average_temperature.dtype)
+        height_shape = (heights.shape[0],) + (1,) * inverse_obukhov.ndim
+        heat = self.point_transfer_denominator(
+            inverse_obukhov[None, ...],
+            jnp.reshape(heights, height_shape),
+            self.thermal_roughness_length,
+            self.heat_stability_correction,
+        )
+        if surface_temperature is not None:
+            surface = jnp.asarray(
+                surface_temperature,
+                dtype=cell_average_temperature.dtype,
+            )
+            face_temperature = surface + (
+                fluxes.temperature_scale[None, ...] * heat / self.von_karman
+            )
+        else:
+            average = self._layer_average_transfer_denominator(
+                inverse_obukhov,
+                lower_height,
+                upper_height,
+                self.thermal_roughness_length,
+                self.heat_stability_correction,
+            )
+            intercept = cell_average_temperature - (
+                fluxes.temperature_scale * average / self.von_karman
+            )
+            face_temperature = intercept[None, ...] + (
+                fluxes.temperature_scale[None, ...] * heat / self.von_karman
+            )
+        return face_temperature
+
+    def wall_layer_eddy_diffusivities(
+        self,
+        fluxes: SurfaceLayerFluxes,
+        heights: Array,
+    ) -> tuple[Array, Array]:
+        """Return shared-MOST momentum and heat diffusivities at FV centres."""
+        inverse_obukhov = self._inverse_obukhov(fluxes)
+        heights = jnp.asarray(heights, dtype=fluxes.friction_velocity.dtype)
+        shape = (heights.shape[0],) + (1,) * inverse_obukhov.ndim
+        expanded_height = jnp.reshape(heights, shape)
+        zeta = expanded_height * inverse_obukhov[None, ...]
+        numerator = (
+            self.von_karman
+            * expanded_height
+            * fluxes.friction_velocity[None, ...]
+        )
+        return (
+            numerator / jnp.maximum(self.momentum_gradient_function(zeta), 1.0e-6),
+            numerator / jnp.maximum(self.heat_gradient_function(zeta), 1.0e-6),
         )
 
     @staticmethod

@@ -207,6 +207,7 @@ def validate_case(data: dict[str, Any]) -> None:
         "von_karman",
         "wall_filter_width",
         "wall_temporal_filter_gamma",
+        "wall_layer_matching_filter_ratio",
     )
     face_reconstruction = momentum.get("most_consistent_face_reconstruction", True)
     if not isinstance(face_reconstruction, bool):
@@ -220,6 +221,7 @@ def validate_case(data: dict[str, Any]) -> None:
             raise ValueError("mean_momentum.enabled must be boolean")
         if enabled_constraint:
             _positive(mean_momentum, "timescale")
+            _optional_positive(mean_momentum, "matching_filter_ratio")
             gain = mean_momentum.get("gain", 1.0)
             if (
                 isinstance(gain, bool)
