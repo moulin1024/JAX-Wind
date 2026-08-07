@@ -743,6 +743,7 @@ def build_zslab_interpreter(
     *,
     addressable_shards: tuple[int, ...] | None = None,
     axis_name: str = "jaxwind_z",
+    porte_agel_wall_correction: bool = True,
 ) -> JaxZSlabInterpreter:
     """Build the sole production interpreter.
 
@@ -759,4 +760,5 @@ def build_zslab_interpreter(
         decomposition,
         addressable_shards=addressable_shards,
         axis_name=axis_name,
+        porte_agel_wall_correction=porte_agel_wall_correction,
     )

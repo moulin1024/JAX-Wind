@@ -21,12 +21,13 @@ def _write_profile(path: Path) -> None:
         writer.writerow((900.0, 13.5))
 
 
-def test_default_entrypoint_is_the_complete_64_cubed_mgm_case() -> None:
+def test_default_entrypoint_uses_the_configured_mgm_case() -> None:
     args = run._arguments([])
-    case = load_case(run.CONFIG)
-    assert (case.domain.nx, case.domain.ny, case.domain.nz) == (64, 64, 64)
+    case = load_case(run.CONFIG, statistics_fraction=0.2)
     assert case.sgs.model == "mgm"
-    assert case.time.steps == 360_000
+    assert case.output.sample_start_hours == pytest.approx(
+        0.8 * case.time.duration_hours
+    )
     assert args.max_steps is None
     assert not args.allow_cpu
     assert args.dt is None
@@ -34,8 +35,12 @@ def test_default_entrypoint_is_the_complete_64_cubed_mgm_case() -> None:
 
 
 def test_time_overrides_keep_statistics_in_the_final_twenty_percent() -> None:
-    case = load_case(run.CONFIG)
-    overridden = run._override_time(case, dt=0.2, hours=2.0)
+    overridden = load_case(
+        run.CONFIG,
+        dt_seconds=0.2,
+        duration_hours=2.0,
+        statistics_fraction=0.2,
+    )
     assert overridden.time.dt_seconds == 0.2
     assert overridden.time.duration_hours == 2.0
     assert overridden.time.steps == 36_000

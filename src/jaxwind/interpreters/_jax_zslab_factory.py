@@ -33,8 +33,11 @@ def build_zslab_interpreter(
     *,
     addressable_shards: tuple[int, ...] | None = None,
     axis_name: str = "jaxwind_z",
+    porte_agel_wall_correction: bool = True,
 ) -> JaxZSlabInterpreter:
     """Build mapped kernels without capturing any field-sized constants."""
+    if not isinstance(porte_agel_wall_correction, bool):
+        raise TypeError("Porté-Agel wall correction flag must be boolean")
     shard_count = decomposition.shard_count
     if addressable_shards is None:
         if shard_count != 1:
@@ -251,18 +254,24 @@ def build_zslab_interpreter(
             jnp.where(halo.upper_is_physical, 0.0, dvdz_upper[-1])
         )
         index = lax.axis_index(axis_name)
-        wall_correction = 1.0 / math.log(3.0)
+        porte_agel_factor = 1.0 / math.log(3.0) - 1.0
+        corrected_dudz = dudz_upper[0] + porte_agel_factor * jnp.mean(
+            dudz_upper[0]
+        )
+        corrected_dvdz = dvdz_upper[0] + porte_agel_factor * jnp.mean(
+            dvdz_upper[0]
+        )
         dudz_upper = dudz_upper.at[0].set(
             jnp.where(
-                index == 0,
-                wall_correction * dudz_upper[0],
+                (index == 0) & porte_agel_wall_correction,
+                corrected_dudz,
                 dudz_upper[0],
             )
         )
         dvdz_upper = dvdz_upper.at[0].set(
             jnp.where(
-                index == 0,
-                wall_correction * dvdz_upper[0],
+                (index == 0) & porte_agel_wall_correction,
+                corrected_dvdz,
                 dvdz_upper[0],
             )
         )

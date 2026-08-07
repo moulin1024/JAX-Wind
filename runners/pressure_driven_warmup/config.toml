@@ -22,6 +22,7 @@ initial_correlation_length_m = 32.0
 model = "filtered_neutral_log"
 filter_grid_ratio = 1.5
 test_filter_ratio = 2.0
+porte_agel_correction = true
 
 [sgs]
 model = "lasd"

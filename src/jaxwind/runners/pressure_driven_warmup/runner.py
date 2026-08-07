@@ -416,6 +416,7 @@ def run_case(
     algebra = build_zslab_interpreter(
         decomposition,
         addressable_shards=addressable_shards,
+        porte_agel_wall_correction=case.wall.porte_agel_correction,
     )
     pressure_solver = build_spectral_fd_pressure_adapter(
         decomposition,
@@ -463,6 +464,7 @@ def run_case(
                 von_karman=case.flow.von_karman,
                 filter_grid_ratio=case.wall.filter_grid_ratio,
                 test_filter_ratio=case.wall.test_filter_ratio,
+                porte_agel_correction=case.wall.porte_agel_correction,
             ),
             momentum_sgs,
             NoRotation(),

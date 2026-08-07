@@ -50,6 +50,18 @@ def _number(table: dict[str, Any], key: str) -> float:
     return result
 
 
+def _boolean(
+    table: dict[str, Any],
+    key: str,
+    *,
+    default: bool | None = None,
+) -> bool:
+    value = table.get(key, default)
+    if not isinstance(value, bool):
+        raise ConfigError(f"{key} must be a boolean")
+    return value
+
+
 @dataclass(frozen=True, slots=True)
 class DomainConfig:
     nx: int
@@ -110,6 +122,7 @@ class WallConfig:
     model: str
     filter_grid_ratio: float
     test_filter_ratio: float
+    porte_agel_correction: bool
 
     def __post_init__(self) -> None:
         if self.model != "filtered_neutral_log":
@@ -350,6 +363,12 @@ class CaseConfig:
                 ),
                 "top_log_velocity_m_s": self.top_log_velocity_m_s,
             },
+            "wall": {
+                "model": self.wall.model,
+                "filter_grid_ratio": self.wall.filter_grid_ratio,
+                "test_filter_ratio": self.wall.test_filter_ratio,
+                "porte_agel_correction": self.wall.porte_agel_correction,
+            },
             "sgs": sgs,
             "time": {
                 "integrator": self.time.integrator,
@@ -381,7 +400,13 @@ class CaseConfig:
         return toml_dumps(self.resolved())
 
 
-def load_case(path: str | Path) -> CaseConfig:
+def load_case(
+    path: str | Path,
+    *,
+    dt_seconds: float | None = None,
+    duration_hours: float | None = None,
+    statistics_fraction: float | None = None,
+) -> CaseConfig:
     source = Path(path)
     with source.open("rb") as stream:
         document = tomllib.load(stream)
@@ -394,6 +419,28 @@ def load_case(path: str | Path) -> CaseConfig:
     time = _table(document, "time")
     numerics = _table(document, "numerics")
     output = _table(document, "output")
+    configured_dt = _number(time, "dt_seconds")
+    configured_duration = _number(time, "duration_hours")
+    resolved_dt = (
+        configured_dt
+        if dt_seconds is None
+        else _number({"dt_seconds": dt_seconds}, "dt_seconds")
+    )
+    resolved_duration = (
+        configured_duration
+        if duration_hours is None
+        else _number({"duration_hours": duration_hours}, "duration_hours")
+    )
+    if statistics_fraction is None:
+        sample_start_hours = _number(output, "sample_start_hours")
+    else:
+        fraction = _number(
+            {"statistics_fraction": statistics_fraction},
+            "statistics_fraction",
+        )
+        if not 0.0 < fraction <= 1.0:
+            raise ConfigError("statistics_fraction must lie in (0, 1]")
+        sample_start_hours = (1.0 - fraction) * resolved_duration
 
     return CaseConfig(
         runner=_string(case, "runner"),
@@ -422,6 +469,11 @@ def load_case(path: str | Path) -> CaseConfig:
             model=_string(wall, "model"),
             filter_grid_ratio=_number(wall, "filter_grid_ratio"),
             test_filter_ratio=_number(wall, "test_filter_ratio"),
+            porte_agel_correction=_boolean(
+                wall,
+                "porte_agel_correction",
+                default=True,
+            ),
         ),
         sgs=SgsConfig(
             model=_string(sgs, "model"),
@@ -449,8 +501,8 @@ def load_case(path: str | Path) -> CaseConfig:
         ),
         time=TimeConfig(
             integrator=_string(time, "integrator"),
-            dt_seconds=_number(time, "dt_seconds"),
-            duration_hours=_number(time, "duration_hours"),
+            dt_seconds=resolved_dt,
+            duration_hours=resolved_duration,
         ),
         numerics=NumericsConfig(
             dtype=_string(numerics, "dtype"),
@@ -464,7 +516,7 @@ def load_case(path: str | Path) -> CaseConfig:
         output=OutputConfig(
             directory=_string(output, "directory"),
             log_every_steps=_integer(output, "log_every_steps"),
-            sample_start_hours=_number(output, "sample_start_hours"),
+            sample_start_hours=sample_start_hours,
             sample_every_steps=_integer(output, "sample_every_steps"),
             checkpoint_every_steps=_integer(output, "checkpoint_every_steps"),
         ),

@@ -139,9 +139,13 @@ class JaxOracleProjection(OracleLasdMixin, OracleFlowMixin):
         w_at_cells = 0.5 * (w[:-1] + w[1:])
         dudz_on_faces = _cell_gradient_on_full_faces(u, grid.dz)
         dvdz_on_faces = _cell_gradient_on_full_faces(v, grid.dz)
-        wall_correction = 1.0 / math.log(3.0)
-        dudz_on_faces = dudz_on_faces.at[1].multiply(wall_correction)
-        dvdz_on_faces = dvdz_on_faces.at[1].multiply(wall_correction)
+        porte_agel_factor = 1.0 / math.log(3.0) - 1.0
+        dudz_on_faces = dudz_on_faces.at[1].add(
+            porte_agel_factor * jnp.mean(dudz_on_faces[1])
+        )
+        dvdz_on_faces = dvdz_on_faces.at[1].add(
+            porte_agel_factor * jnp.mean(dvdz_on_faces[1])
+        )
         dudz_at_cells = 0.5 * (dudz_on_faces[:-1] + dudz_on_faces[1:])
         dvdz_at_cells = 0.5 * (dvdz_on_faces[:-1] + dvdz_on_faces[1:])
         return OracleDryFlowContext(

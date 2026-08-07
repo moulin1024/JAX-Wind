@@ -14,10 +14,11 @@ u_*^2 / H = (0.4 m/s)^2 / 1000 m = 1.6e-4 m/s^2.
 ```
 
 The flow starts from the neutral logarithmic profile with small correlated
-velocity perturbations. It uses a filtered neutral log-law lower wall and the
-Lagrangian scale-dependent dynamic (LASD) closure. Buoyancy, rotation, and
-top Rayleigh damping are disabled by this runner, so pressure forcing and wall
-stress are the only mean momentum sources and sinks.
+velocity perturbations. It uses a filtered neutral log-law lower wall with the
+Porté-Agel (2000) first-interior-face shear correction and the Lagrangian
+scale-dependent dynamic (LASD) closure. Buoyancy, rotation, and top Rayleigh
+damping are disabled by this runner, so pressure forcing and wall stress are
+the only mean momentum sources and sinks.
 
 ## Modulated gradient model option
 
@@ -26,8 +27,11 @@ model (MGM) ported from `legacy/fortran_cuda/src/sgs_mgm.cuf` (`model = 4`).
 The port preserves the legacy anisotropic gradient tensor, clipped
 backscatter, aspect-ratio-corrected dissipation coefficient, molecular
 viscosity, and the `Cs = 0.1` Smagorinsky fallback used when `Gkk` is
-ill-conditioned. The passive scalar uses a fixed turbulent Prandtl number and
-does not allocate LASD closure memory.
+ill-conditioned. The MGM benchmark explicitly sets
+`wall.porte_agel_correction = true`, matching the legacy correction that adds
+`(1/log(3) - 1)` times the horizontal mean shear at the first interior face.
+The passive scalar uses a fixed turbulent Prandtl number and does not allocate
+LASD closure memory.
 
 Validate or run the MGM variant with:
 

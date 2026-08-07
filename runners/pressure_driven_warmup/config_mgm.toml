@@ -3,11 +3,11 @@ runner = "pressure_driven_warmup"
 name = "pressure_driven_mgm_64x64x64"
 
 [domain]
-nx = 64
-ny = 64
-nz = 64
-lx_m = 6283.185307179586
-ly_m = 6283.185307179586
+nx = 32
+ny = 32
+nz = 32
+lx_m = 4000
+ly_m = 4000
 lz_m = 1000.0
 
 [flow]
@@ -22,6 +22,7 @@ initial_correlation_length_m = 32.0
 model = "filtered_neutral_log"
 filter_grid_ratio = 1.5
 test_filter_ratio = 2.0
+porte_agel_correction = true
 
 [sgs]
 model = "mgm"
@@ -43,7 +44,7 @@ maximum_coefficient = 0.81
 [time]
 integrator = "ab2"
 dt_seconds = 0.1
-duration_hours = 10.0
+duration_hours = 1.0
 
 [numerics]
 dtype = "float32"
@@ -55,6 +56,6 @@ lasd_trajectory_cfl_abort = 1.0
 [output]
 directory = "outputs/pressure_driven_mgm_64x64x64"
 log_every_steps = 1000
-sample_start_hours = 8.0
+sample_start_hours = 0.8
 sample_every_steps = 100
 checkpoint_every_steps = 36000

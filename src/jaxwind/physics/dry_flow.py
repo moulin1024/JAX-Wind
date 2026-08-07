@@ -59,6 +59,7 @@ class FilteredNeutralLogWall:
     von_karman: float = 0.4
     filter_grid_ratio: float = 1.5
     test_filter_ratio: float = 2.0
+    porte_agel_correction: bool = True
 
     def __post_init__(self) -> None:
         if (
@@ -71,6 +72,8 @@ class FilteredNeutralLogWall:
         ratios = (self.filter_grid_ratio, self.test_filter_ratio)
         if not all(math.isfinite(value) and value > 0.0 for value in ratios):
             raise ValueError("wall filter ratios must be finite and positive")
+        if not isinstance(self.porte_agel_correction, bool):
+            raise TypeError("Porté-Agel wall correction flag must be boolean")
 
 
 @dataclass(frozen=True, slots=True)

@@ -48,6 +48,7 @@ def test_canonical_case_resolves_physical_and_numerical_choices() -> None:
     assert case.flow.friction_velocity_m_s == 0.4
     assert case.flow.roughness_length_m == 0.001
     assert case.flow.pressure_acceleration_m_s2 == pytest.approx(1.6e-4)
+    assert case.wall.porte_agel_correction
     assert case.sgs.model == "lasd"
     assert case.time.integrator == "ab2"
     assert case.time.dt_seconds == 0.1
@@ -90,6 +91,7 @@ def test_dry_run_prints_the_resolved_plan_without_loading_jax() -> None:
 
 def test_mgm_case_exposes_the_legacy_model_without_lasd_memory() -> None:
     case = load_case(MGM_CONFIG)
+    assert case.wall.porte_agel_correction
     assert case.sgs.model == "mgm"
     assert case.sgs.filter_grid_ratio == 1.5
     assert case.sgs.dissipation_coefficient == 3.0
@@ -98,6 +100,7 @@ def test_mgm_case_exposes_the_legacy_model_without_lasd_memory() -> None:
     assert case.sgs.kinematic_viscosity_m2_s == pytest.approx(1.5e-5)
     assert case.estimated_lasd_trajectory_cfl == 0.0
     resolved = case.resolved()
+    assert resolved["wall"]["porte_agel_correction"] is True
     assert resolved["sgs"]["model"] == "mgm"
     assert "update_interval_steps" not in resolved["sgs"]
 
@@ -121,8 +124,19 @@ def test_mgm_dry_run_selects_the_alternate_case() -> None:
     )
     resolved = tomllib.loads(completed.stdout)
     assert resolved["case"] == "pressure_driven_mgm_64x64x64"
+    assert resolved["wall"]["porte_agel_correction"] is True
     assert resolved["sgs"]["model"] == "mgm"
     assert "jax" not in completed.stderr.lower()
+
+
+def test_legacy_case_without_explicit_porte_agel_flag_keeps_correction(
+    tmp_path: Path,
+) -> None:
+    legacy = tmp_path / "legacy_config.toml"
+    legacy.write_text(
+        MGM_CONFIG.read_text().replace("porte_agel_correction = true\n", "")
+    )
+    assert load_case(legacy).wall.porte_agel_correction
 
 
 def test_cli_runs_a_declarative_case_directory_without_run_py(

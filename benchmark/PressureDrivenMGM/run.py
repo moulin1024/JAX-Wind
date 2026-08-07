@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 from contextlib import redirect_stderr, redirect_stdout
 import csv
-from dataclasses import replace
 import importlib.util
 import math
 import os
@@ -133,23 +132,6 @@ def _configure_pressure_solver() -> Path | None:
         "spectral_fd is unavailable. From the JAX-Wind repository run: "
         "git submodule update --init --recursive"
     )
-
-
-def _override_time(case, *, dt: float | None, hours: float | None):
-    """Apply command-line time overrides while preserving a final-20% average."""
-
-    if dt is None and hours is None:
-        return case
-    duration_hours = case.time.duration_hours if hours is None else hours
-    time = replace(
-        case.time,
-        dt_seconds=case.time.dt_seconds if dt is None else dt,
-        duration_hours=duration_hours,
-    )
-    output = case.output
-    if hours is not None:
-        output = replace(output, sample_start_hours=0.8 * duration_hours)
-    return replace(case, time=time, output=output)
 
 
 def _polyline(points: list[tuple[float, float]]) -> str:
@@ -290,13 +272,14 @@ def main(argv: list[str] | None = None) -> int:
     args = _arguments(argv)
     from jaxwind.runners.pressure_driven_warmup import load_case, run_case
 
-    case = _override_time(load_case(CONFIG), dt=args.dt, hours=args.hours)
-    if case.sgs.model != "mgm" or (
-        case.domain.nx,
-        case.domain.ny,
-        case.domain.nz,
-    ) != (64, 64, 64):
-        raise RuntimeError("the canonical benchmark must remain the 64^3 MGM case")
+    case = load_case(
+        CONFIG,
+        dt_seconds=args.dt,
+        duration_hours=args.hours,
+        statistics_fraction=0.2,
+    )
+    if case.sgs.model != "mgm":
+        raise RuntimeError("the pressure-driven MGM benchmark requires sgs.model=mgm")
     output = args.output.resolve()
     profile_path = output / "profiles.csv"
     figure_path = output / "loglaw_velocity_profile.svg"

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 
 import jax
 
@@ -107,6 +108,12 @@ def main() -> int:
         addressable_shards=tuple(range(args.devices)),
     )
     production_context = production.dry_flow_context(production_velocity)
+    uncorrected = build_zslab_interpreter(
+        decomposition,
+        addressable_shards=tuple(range(args.devices)),
+        porte_agel_wall_correction=False,
+    )
+    uncorrected_context = uncorrected.dry_flow_context(production_velocity)
     term_cases = (
         (
             "advection",
@@ -152,6 +159,40 @@ def main() -> int:
         ),
     )
     errors = {}
+    porte_agel_factor = 1.0 / math.log(3.0) - 1.0
+    expected_dudz = uncorrected_context.arrays.dudz_upper[0, 0] + (
+        porte_agel_factor
+        * jnp.mean(uncorrected_context.arrays.dudz_upper[0, 0])
+    )
+    expected_dvdz = uncorrected_context.arrays.dvdz_upper[0, 0] + (
+        porte_agel_factor
+        * jnp.mean(uncorrected_context.arrays.dvdz_upper[0, 0])
+    )
+    errors["porte_agel_switch"] = max(
+        float(
+            jnp.max(
+                jnp.abs(
+                    production_context.arrays.dudz_upper[0, 0] - expected_dudz
+                )
+            )
+        ),
+        float(
+            jnp.max(
+                jnp.abs(
+                    production_context.arrays.dvdz_upper[0, 0] - expected_dvdz
+                )
+            )
+        ),
+    )
+    errors["porte_agel_has_effect"] = bool(
+        jnp.max(
+            jnp.abs(
+                production_context.arrays.dudz_upper[0, 0]
+                - uncorrected_context.arrays.dudz_upper[0, 0]
+            )
+        )
+        > 0.0
+    )
     reference_terms = []
     production_terms = []
     for name, reference_term, production_term, config in term_cases:

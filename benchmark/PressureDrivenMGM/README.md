@@ -3,7 +3,8 @@
 This benchmark runs the canonical neutral atmospheric boundary layer with the
 modulated gradient model (MGM): a `2000 pi m x 2000 pi m x 1000 m` domain,
 `64 x 64 x 64` cells, a `0.1 s` time step, and 10 simulated hours. Statistics
-cover the final two hours.
+cover the final two hours. Its filtered neutral wall explicitly enables the
+Porté-Agel (2000) first-interior-face shear correction.
 
 From the repository root, run everything with one command on a GPU node:
 

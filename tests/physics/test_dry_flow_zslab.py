@@ -45,6 +45,7 @@ class DryFlowZSlabCommutingTests(unittest.TestCase):
                 result = json.loads(completed.stdout.strip().splitlines()[-1])
                 tolerance = 8.0e-6 if dtype == "float32" else 2.0e-12
                 for term in (
+                    "porte_agel_switch",
                     "advection",
                     "pressure_gradient",
                     "wall",
@@ -57,6 +58,7 @@ class DryFlowZSlabCommutingTests(unittest.TestCase):
                     "combined",
                 ):
                     self.assertLess(result[term], tolerance, (term, result))
+                self.assertTrue(result["porte_agel_has_effect"])
                 self.assertTrue(result["dtype_preserved"])
 
 
