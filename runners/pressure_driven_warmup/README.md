@@ -45,6 +45,13 @@ statistics are sampled every 10 s during the final two hours. Restartable
 checkpoints are written hourly, and the completed run writes
 `checkpoint_final.npz` for downstream precursor cases.
 
+For the complete MGM GPU run plus the neutral log-law velocity plot, use the
+one-command benchmark from the repository root:
+
+```bash
+python -m benchmark.PressureDrivenMGM
+```
+
 Validate the case without importing JAX:
 
 ```bash

@@ -31,7 +31,8 @@ implementations directly testable.
 - conservative dry-flow and scalar transport with horizontal two-thirds
   truncation;
 - neutral log-law walls, pressure-gradient forcing, Coriolis forcing, static
-  Smagorinsky, and Lagrangian scale-dependent dynamic (LASD) closures;
+  Smagorinsky, modulated gradient model (MGM), and Lagrangian scale-dependent
+  dynamic (LASD) closures;
 - Boussinesq buoyancy, prescribed scalar fluxes, and optional upper-level
   Rayleigh damping;
 - actuator-disk and rigid blade-element actuator-line forcing, including an
@@ -245,6 +246,8 @@ the production-module size guard are described in
 
 The repository includes research workflows for:
 
+- the one-command [pressure-driven neutral MGM GPU benchmark](benchmark/PressureDrivenMGM/README.md),
+  including automatic restart and a log-law velocity-profile plot;
 - the [Andrén et al. (1994) neutral Ekman
   intercomparison](benchmark/Andren1994/README.md);
 - the [Nieuwstadt et al. (1993) dry convective boundary-layer
