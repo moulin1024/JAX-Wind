@@ -11,11 +11,24 @@ From the repository root, run everything with one command on a GPU node:
 python -m benchmark.PressureDrivenMGM
 ```
 
+The repository's `external/bw1000_benchmark` pressure-solver submodule must be
+present. A recursive clone already includes it; for an existing non-recursive
+clone, initialize it once with `git submodule update --init --recursive`.
+
 The command checks that JAX sees a GPU, automatically resumes
 `checkpoint_latest.npz` when present, runs the shared
 `runners/pressure_driven_warmup/config_mgm.toml` case, writes `run.log`, and
 generates `loglaw_velocity_profile.svg` from `profiles.csv`. Results default to
 `outputs/pressure_driven_mgm_64x64x64_gpu/`.
+
+Override the configured timestep and simulated duration directly when needed:
+
+```bash
+python -m benchmark.PressureDrivenMGM --dt 0.2 --hours 2
+```
+
+An `--hours` override keeps profile sampling over the final 20% of the run.
+Values edited directly in `config_mgm.toml` are also accepted.
 
 Use `--restart PATH` to select a different checkpoint or `--plot-only` to
 regenerate the figure without running JAX. To start an independent run, pass a

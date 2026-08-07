@@ -6,13 +6,20 @@ from __future__ import annotations
 import argparse
 from contextlib import redirect_stderr, redirect_stdout
 import csv
+from dataclasses import replace
+import importlib.util
 import math
+import os
 from pathlib import Path
 import sys
 from typing import TextIO
 
 
 ROOT = Path(__file__).resolve().parents[2]
+SOURCE = ROOT / "src"
+if str(SOURCE) not in sys.path:
+    sys.path.insert(0, str(SOURCE))
+
 CONFIG = ROOT / "runners" / "pressure_driven_warmup" / "config_mgm.toml"
 DEFAULT_OUTPUT = ROOT / "outputs" / "pressure_driven_mgm_64x64x64_gpu"
 
@@ -45,6 +52,16 @@ def _arguments(argv: list[str] | None) -> argparse.Namespace:
     )
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument(
+        "--dt",
+        type=float,
+        help="override time.dt_seconds from config_mgm.toml",
+    )
+    parser.add_argument(
+        "--hours",
+        type=float,
+        help="override time.duration_hours and average over the final 20%%",
+    )
+    parser.add_argument(
         "--restart",
         type=Path,
         help="restart checkpoint; the default automatically resumes the output directory",
@@ -67,6 +84,10 @@ def _arguments(argv: list[str] | None) -> argparse.Namespace:
     args = parser.parse_args(argv)
     if args.max_steps is not None and args.max_steps <= 0:
         parser.error("--max-steps must be positive")
+    if args.dt is not None and args.dt <= 0.0:
+        parser.error("--dt must be positive")
+    if args.hours is not None and args.hours <= 0.0:
+        parser.error("--hours must be positive")
     return args
 
 
@@ -85,6 +106,50 @@ def _require_gpu(jax, *, allow_cpu: bool) -> tuple[object, ...]:
     selected = accelerators or devices
     print("JAX devices:", ", ".join(map(str, selected)), flush=True)
     return selected
+
+
+def _configure_pressure_solver() -> Path | None:
+    """Find an installed, submodule, or sibling spectral-fd checkout."""
+
+    if importlib.util.find_spec("spectral_fd") is not None:
+        return None
+    configured = os.environ.get("JAXWIND_SPECTRAL_FD_SOURCE")
+    candidates = tuple(
+        path
+        for path in (
+            Path(configured).expanduser() if configured else None,
+            ROOT / "external" / "bw1000_benchmark",
+            ROOT.parent / "bw1000_benchmark",
+        )
+        if path is not None
+    )
+    for candidate in candidates:
+        if (candidate / "spectral_fd" / "__init__.py").is_file():
+            resolved = candidate.resolve()
+            sys.path.insert(0, str(resolved))
+            os.environ["JAXWIND_SPECTRAL_FD_SOURCE"] = str(resolved)
+            return resolved
+    raise RuntimeError(
+        "spectral_fd is unavailable. From the JAX-Wind repository run: "
+        "git submodule update --init --recursive"
+    )
+
+
+def _override_time(case, *, dt: float | None, hours: float | None):
+    """Apply command-line time overrides while preserving a final-20% average."""
+
+    if dt is None and hours is None:
+        return case
+    duration_hours = case.time.duration_hours if hours is None else hours
+    time = replace(
+        case.time,
+        dt_seconds=case.time.dt_seconds if dt is None else dt,
+        duration_hours=duration_hours,
+    )
+    output = case.output
+    if hours is not None:
+        output = replace(output, sample_start_hours=0.8 * duration_hours)
+    return replace(case, time=time, output=output)
 
 
 def _polyline(points: list[tuple[float, float]]) -> str:
@@ -225,16 +290,13 @@ def main(argv: list[str] | None = None) -> int:
     args = _arguments(argv)
     from jaxwind.runners.pressure_driven_warmup import load_case, run_case
 
-    case = load_case(CONFIG)
+    case = _override_time(load_case(CONFIG), dt=args.dt, hours=args.hours)
     if case.sgs.model != "mgm" or (
         case.domain.nx,
         case.domain.ny,
         case.domain.nz,
     ) != (64, 64, 64):
         raise RuntimeError("the canonical benchmark must remain the 64^3 MGM case")
-    if case.time.steps != 360_000:
-        raise RuntimeError("the canonical benchmark must remain the 10-hour run")
-
     output = args.output.resolve()
     profile_path = output / "profiles.csv"
     figure_path = output / "loglaw_velocity_profile.svg"
@@ -242,6 +304,9 @@ def main(argv: list[str] | None = None) -> int:
         import jax
 
         _require_gpu(jax, allow_cpu=args.allow_cpu)
+        pressure_source = _configure_pressure_solver()
+        if pressure_source is not None:
+            print(f"spectral_fd source: {pressure_source}", flush=True)
         output.mkdir(parents=True, exist_ok=True)
         latest = output / "checkpoint_latest.npz"
         restart = args.restart

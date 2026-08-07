@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import csv
+import os
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
@@ -26,6 +29,42 @@ def test_default_entrypoint_is_the_complete_64_cubed_mgm_case() -> None:
     assert case.time.steps == 360_000
     assert args.max_steps is None
     assert not args.allow_cpu
+    assert args.dt is None
+    assert args.hours is None
+
+
+def test_time_overrides_keep_statistics_in_the_final_twenty_percent() -> None:
+    case = load_case(run.CONFIG)
+    overridden = run._override_time(case, dt=0.2, hours=2.0)
+    assert overridden.time.dt_seconds == 0.2
+    assert overridden.time.duration_hours == 2.0
+    assert overridden.time.steps == 36_000
+    assert overridden.output.sample_start_hours == pytest.approx(1.6)
+    assert overridden.sample_start_step == 28_800
+
+
+def test_entrypoint_finds_src_checkout_without_an_editable_install() -> None:
+    environment = os.environ.copy()
+    environment.pop("PYTHONPATH", None)
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import importlib.util; "
+                "from benchmark.PressureDrivenMGM.run import ROOT, SOURCE; "
+                "spec = importlib.util.find_spec('jaxwind'); "
+                "assert SOURCE == ROOT / 'src'; "
+                "assert spec is not None and str(spec.origin).startswith(str(SOURCE))"
+            ),
+        ],
+        cwd=run.ROOT,
+        env=environment,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.stderr == ""
 
 
 def test_log_law_plot_is_dependency_free_svg(tmp_path: Path) -> None:
@@ -60,3 +99,30 @@ def test_gpu_guard_rejects_an_accidental_cpu_long_run() -> None:
     with pytest.raises(RuntimeError, match="no JAX GPU"):
         run._require_gpu(Jax, allow_cpu=False)
     assert run._require_gpu(Jax, allow_cpu=True)
+
+
+def test_pressure_solver_preflight_finds_the_submodule(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checkout = tmp_path / "external" / "bw1000_benchmark"
+    package = checkout / "spectral_fd"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("")
+    monkeypatch.setattr(run, "ROOT", tmp_path)
+    monkeypatch.setattr(run.importlib.util, "find_spec", lambda _name: None)
+    monkeypatch.delenv("JAXWIND_SPECTRAL_FD_SOURCE", raising=False)
+
+    assert run._configure_pressure_solver() == checkout.resolve()
+    assert os.environ["JAXWIND_SPECTRAL_FD_SOURCE"] == str(checkout.resolve())
+
+
+def test_pressure_solver_preflight_has_an_actionable_missing_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(run, "ROOT", tmp_path)
+    monkeypatch.setattr(run.importlib.util, "find_spec", lambda _name: None)
+    monkeypatch.delenv("JAXWIND_SPECTRAL_FD_SOURCE", raising=False)
+    with pytest.raises(RuntimeError, match="git submodule update"):
+        run._configure_pressure_solver()
