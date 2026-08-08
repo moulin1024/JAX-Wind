@@ -2,10 +2,10 @@
 
 This benchmark runs the configured neutral atmospheric boundary layer with the
 modulated gradient model (MGM). The main solver follows
-`neutral_abl_mgm_jax.py`: rotational convection, a sharp `fgr = 1.5` resolved
-filter, the Lu--Porté-Agel horizontal-plane dynamic MGM coefficient, filtered
-log-law wall gradients, and the Porté-Agel (2000) first-interior-face shear
-correction. Domain, timestep, duration, and sampling controls come from
+the shared solver numerics: conservative convection with horizontal
+three-halves padding, the Lu--Porté-Agel horizontal-plane dynamic MGM
+coefficient, filtered log-law wall gradients, and the Porté-Agel (2000)
+first-interior-face shear correction. Domain, timestep, duration, and sampling controls come from
 `runners/pressure_driven_warmup/config_mgm.toml`.
 
 From the repository root, run everything with one command on a GPU node:

@@ -29,8 +29,9 @@ molecular viscosity, and the `Cs = 0.1` Smagorinsky fallback used when `Gkk`
 is ill-conditioned. Its dissipation coefficient is diagnosed independently on
 every horizontal plane from the Lu--Porté-Agel conditional/unconditional cubic
 transfer moments; `dissipation_coefficient = 1` is the neutral-ABL demo's
-unit multiplier. All SGS paths select rotational convection and apply the same
-sharp `filter_grid_ratio = 1.5` filter to accepted velocity states.
+unit multiplier. MGM, LASD, and AMD all use conservative convection with the
+same horizontal three-halves padding. Accepted velocity states retain the full
+resolved bandwidth apart from the even-grid Nyquist modes.
 The benchmark explicitly sets
 `wall.porte_agel_correction = true`, matching the legacy correction that adds
 `(1/log(3) - 1)` times the horizontal mean shear at the first interior face.

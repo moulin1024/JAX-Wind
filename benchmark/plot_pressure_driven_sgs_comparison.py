@@ -14,14 +14,14 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CASES = {
-    "MGM": ROOT / "outputs" / "pressure_driven_mgm_32x32x32_cpu_rotational_filtered",
-    "LASD": ROOT / "outputs" / "pressure_driven_lasd_32x32x32_cpu_rotational_filtered",
-    "AMD": ROOT / "outputs" / "pressure_driven_amd_32x32x32_cpu_rotational_filtered",
+    "MGM": ROOT / "outputs" / "pressure_driven_mgm_32x32x32_cpu_conservative_32padding",
+    "LASD": ROOT / "outputs" / "pressure_driven_lasd_32x32x32_cpu_conservative_32padding",
+    "AMD": ROOT / "outputs" / "pressure_driven_amd_32x32x32_cpu_conservative_32padding",
 }
 DEFAULT_OUTPUT = (
     ROOT
     / "outputs"
-    / "pressure_driven_mgm_lasd_amd_32x32x32_cpu_rotational_filtered_comparison.png"
+    / "pressure_driven_mgm_lasd_amd_32x32x32_cpu_conservative_32padding_comparison.png"
 )
 
 
@@ -119,7 +119,7 @@ def main() -> int:
     axis.set_xlabel(r"Mean streamwise velocity  $U/u_*$")
     axis.set_ylabel(r"Normalized height  $z/z_0$")
     axis.set_title(
-        r"Neutral ABL — rotational + resolved 2/3 filter, $32^3$ CPU, 2.5 h"
+        r"Neutral ABL — conservative + 3/2 padding, $32^3$ CPU, 2.5 h"
     )
     axis.grid(True, which="major", color="#C7CCD1", linewidth=0.8, alpha=0.75)
     axis.grid(True, which="minor", color="#E2E5E8", linewidth=0.55, alpha=0.65)

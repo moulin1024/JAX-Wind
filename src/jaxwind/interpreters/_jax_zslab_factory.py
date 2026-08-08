@@ -1,8 +1,4 @@
-"""Compilation of mapped kernels for the z-slab interpreter.
-
-The public interpreter owns semantic validation and field construction.  This
-module owns only JAX kernel assembly and mapping.
-"""
+"""Compilation of mapped kernels for the z-slab interpreter."""
 
 from __future__ import annotations
 
@@ -21,6 +17,10 @@ from ._jax_zslab_wind import (
 )
 from ._jax_zslab_lasd_kernels import build_lasd_kernels
 from ._jax_zslab_amd import build_amd_kernels
+from ._jax_zslab_conservative import build_conservative_advection_kernels
+from ._jax_zslab_fused_common import build_padded_momentum_gradients_kernel
+from ._jax_zslab_fused_mgm import build_fused_mgm_boussinesq_kernel
+from ._jax_zslab_fused_neutral import build_fused_neutral_boussinesq_kernels
 from .jax_zslab import (
     JaxZSlabInterpreter,
     PackedHaloArrays,
@@ -28,6 +28,12 @@ from .jax_zslab import (
     ZSlabScalarArrays,
 )
 from ._jax_zslab_mgm import build_mgm_kernels
+from ._jax_zslab_smag import build_smagorinsky_kernels
+from ._jax_zslab_spectral import build_horizontal_spectral_kernels
+from ._jax_zslab_sources import (
+    build_boussinesq_source_kernels,
+    strain_magnitude_local,
+)
 
 
 def build_zslab_interpreter(
@@ -36,16 +42,16 @@ def build_zslab_interpreter(
     addressable_shards: tuple[int, ...] | None = None,
     axis_name: str = "jaxwind_z",
     porte_agel_wall_correction: bool = True,
-    resolved_filter_grid_ratio: float | None = None,
+    nonlinear_padding_ratio: float = 1.5,
+    frozen_zero_scalar: bool = False,
 ) -> JaxZSlabInterpreter:
-    """Build mapped kernels without capturing any field-sized constants."""
+    """Build mapped kernels with horizontally padded nonlinear products."""
     if not isinstance(porte_agel_wall_correction, bool):
         raise TypeError("Porté-Agel wall correction flag must be boolean")
-    if resolved_filter_grid_ratio is not None and (
-        not math.isfinite(resolved_filter_grid_ratio)
-        or resolved_filter_grid_ratio <= 1.0
-    ):
-        raise ValueError("resolved filter-grid ratio must exceed one")
+    if not isinstance(frozen_zero_scalar, bool):
+        raise TypeError("frozen zero scalar flag must be boolean")
+    if not math.isfinite(nonlinear_padding_ratio) or nonlinear_padding_ratio < 1.5:
+        raise ValueError("nonlinear padding ratio must be at least 1.5")
     shard_count = decomposition.shard_count
     if addressable_shards is None:
         if shard_count != 1:
@@ -137,102 +143,29 @@ def build_zslab_interpreter(
         return upper_faces.at[-1].set(last)
 
     grid = decomposition.grid
-    kx = 2.0 * jnp.pi * jnp.fft.rfftfreq(grid.nx, d=grid.lx / grid.nx)
-    ky = 2.0 * jnp.pi * jnp.fft.fftfreq(grid.ny, d=grid.ly / grid.ny)
-    keep = jnp.ones((grid.ny, grid.nx // 2 + 1))
-    if grid.nx % 2 == 0:
-        kx = kx.at[-1].set(0.0)
-        keep = keep.at[:, -1].set(0.0)
-    if grid.ny % 2 == 0:
-        ky = ky.at[grid.ny // 2].set(0.0)
-        keep = keep.at[grid.ny // 2, :].set(0.0)
-
-    x_mode = jnp.arange(grid.nx // 2 + 1)
-    y_mode = jnp.fft.fftfreq(grid.ny) * grid.ny
-    two_thirds = (jnp.abs(y_mode)[:, None] <= grid.ny // 3) & (
-        x_mode[None, :] <= grid.nx // 3
+    spectral = build_horizontal_spectral_kernels(grid, nonlinear_padding_ratio)
+    kx, ky, keep, state_keep = (
+        spectral.kx,
+        spectral.ky,
+        spectral.keep,
+        spectral.state_keep,
     )
-    if resolved_filter_grid_ratio is None:
-        state_keep = keep
-        nonlinear_keep = two_thirds
-    else:
-        cutoff_x = int(grid.nx / (2.0 * resolved_filter_grid_ratio) + 0.5)
-        cutoff_y = int(grid.ny / (2.0 * resolved_filter_grid_ratio) + 0.5)
-        resolved_keep = (jnp.abs(y_mode)[:, None] < cutoff_y) & (
-            x_mode[None, :] < cutoff_x
-        )
-        state_keep = resolved_keep
-        nonlinear_keep = resolved_keep
-
-    def horizontal_derivative_local(values, axis):
-        spectrum = jnp.fft.rfftn(values, axes=(-2, -1))
-        local_kx = kx.astype(values.real.dtype)
-        local_ky = ky.astype(values.real.dtype)
-        if axis == 0:
-            multiplier = 1j * local_kx
-        else:
-            multiplier = 1j * local_ky[:, None]
-        return jnp.fft.irfftn(
-            spectrum * multiplier * keep.astype(values.real.dtype),
-            s=(grid.ny, grid.nx),
-            axes=(-2, -1),
-        ).astype(values.dtype)
-
-    def two_thirds_filter_local(values):
-        spectrum = jnp.fft.rfftn(values, axes=(-2, -1))
-        return jnp.fft.irfftn(
-            spectrum * nonlinear_keep,
-            s=(grid.ny, grid.nx),
-            axes=(-2, -1),
-        ).astype(values.dtype)
-
-    def wall_filter_local(values, filter_width):
-        spectrum = jnp.fft.rfftn(values, axes=(-2, -1))
-        cutoff_x = jnp.floor(grid.nx / (2.0 * filter_width))
-        cutoff_y = jnp.floor(grid.ny / (2.0 * filter_width))
-        wall_keep = (jnp.abs(y_mode)[:, None] < cutoff_y) & (x_mode[None, :] < cutoff_x)
-        return jnp.fft.irfftn(
-            spectrum * wall_keep,
-            s=(grid.ny, grid.nx),
-            axes=(-2, -1),
-        ).astype(values.dtype)
-
-    def truncated_derivative_local(values, axis):
-        spectrum = jnp.fft.rfftn(values, axes=(-2, -1))
-        local_kx = kx.astype(values.real.dtype)
-        local_ky = ky.astype(values.real.dtype)
-        if axis == 0:
-            multiplier = 1j * local_kx
-        else:
-            multiplier = 1j * local_ky[:, None]
-        return jnp.fft.irfftn(
-            spectrum * multiplier * nonlinear_keep,
-            s=(grid.ny, grid.nx),
-            axes=(-2, -1),
-        ).astype(values.dtype)
-
-    def strain_magnitude_local(
-        dudx,
-        dudy,
-        dudz,
-        dvdx,
-        dvdy,
-        dvdz,
-        dwdx,
-        dwdy,
-        dwdz,
-    ):
-        sxy = 0.5 * (dudy + dvdx)
-        sxz = 0.5 * (dudz + dwdx)
-        syz = 0.5 * (dvdz + dwdy)
-        symmetric_dot = (
-            dudx * dudx
-            + dvdy * dvdy
-            + dwdz * dwdz
-            + 2.0 * (sxy * sxy + sxz * sxz + syz * syz)
-        )
-        return jnp.sqrt(jnp.maximum(2.0 * symmetric_dot, 0.0))
-
+    pad_horizontal_local = spectral.pad
+    truncate_padded_spectrum_local = spectral.project_spectrum
+    truncate_padded_local = spectral.truncate
+    horizontal_derivative_local = spectral.derivative
+    horizontal_gradient_pair_local = spectral.gradient_pair
+    horizontal_spectral_flux_divergence_local = spectral.spectral_flux_divergence
+    horizontal_flux_divergence_local = spectral.flux_divergence
+    padded_horizontal_flux_divergence_local = spectral.padded_flux_divergence
+    wall_filter_local = spectral.wall_filter
+    padded_momentum_gradients_local = build_padded_momentum_gradients_kernel(
+        grid=grid,
+        axis_name=axis_name,
+        cells_per_shard=decomposition.cells_per_shard,
+        porte_agel_wall_correction=porte_agel_wall_correction,
+        padded_horizontal_gradient_pair_local=spectral.padded_gradient_pair,
+    )
     def dry_flow_context_local(u, v, w_upper, lower_boundary):
         halo = exchange_local(jnp.stack((u, v, w_upper), axis=0))
         lower_boundary_plane = jnp.broadcast_to(
@@ -301,30 +234,29 @@ def build_zslab_interpreter(
         dudz_lower = jnp.concatenate((lower_dudz[None], dudz_upper[:-1]), axis=0)
         dvdz_lower = jnp.concatenate((lower_dvdz[None], dvdz_upper[:-1]), axis=0)
 
-        dudx = horizontal_derivative_local(u, 0)
-        dudy = horizontal_derivative_local(u, 1)
-        dvdx = horizontal_derivative_local(v, 0)
-        dvdy = horizontal_derivative_local(v, 1)
-        dwdx_at_cells = horizontal_derivative_local(w_at_cells, 0)
-        dwdy_at_cells = horizontal_derivative_local(w_at_cells, 1)
+        horizontal_x, horizontal_y = horizontal_gradient_pair_local(
+            jnp.stack((u, v, w_at_cells, w_upper), axis=0)
+        )
+        dudx, dvdx, dwdx_at_cells, dwdx_upper = horizontal_x
+        dudy, dvdy, dwdy_at_cells, dwdy_upper = horizontal_y
         dwdz = (w_upper - lower_faces) / grid.dz
-        dwdx_upper = horizontal_derivative_local(w_upper, 0)
-        dwdy_upper = horizontal_derivative_local(w_upper, 1)
-
+        next_horizontal_x, next_horizontal_y = horizontal_gradient_pair_local(
+            jnp.stack((next_u_plane, next_v_plane), axis=0)
+        )
         next_dudx = jnp.concatenate(
-            (dudx[1:], horizontal_derivative_local(next_u_plane, 0)[None]),
+            (dudx[1:], next_horizontal_x[0][None]),
             axis=0,
         )
         next_dudy = jnp.concatenate(
-            (dudy[1:], horizontal_derivative_local(next_u_plane, 1)[None]),
+            (dudy[1:], next_horizontal_y[0][None]),
             axis=0,
         )
         next_dvdx = jnp.concatenate(
-            (dvdx[1:], horizontal_derivative_local(next_v_plane, 0)[None]),
+            (dvdx[1:], next_horizontal_x[1][None]),
             axis=0,
         )
         next_dvdy = jnp.concatenate(
-            (dvdy[1:], horizontal_derivative_local(next_v_plane, 1)[None]),
+            (dvdy[1:], next_horizontal_y[1][None]),
             axis=0,
         )
         next_dwdz_plane = (next_w_upper - w_upper[-1]) / grid.dz
@@ -404,75 +336,64 @@ def build_zslab_interpreter(
                 centered_dtheta_dz[-1],
             )
         )
+        dtheta_dx, dtheta_dy = horizontal_gradient_pair_local(theta)
         return ZSlabScalarArrays(
             theta,
             theta_upper,
             theta_lower,
-            horizontal_derivative_local(theta, 0),
-            horizontal_derivative_local(theta, 1),
+            dtheta_dx,
+            dtheta_dy,
             centered_dtheta_dz,
             dtheta_dz_upper,
             halo.upper_is_physical,
         )
 
-    def buoyancy_local(scalar, coefficient):
-        local_coefficient = jnp.asarray(coefficient, dtype=scalar.theta.dtype)
-        hydrostatic_free_theta = scalar.theta_upper - jnp.mean(
-            scalar.theta_upper,
-            axis=(-2, -1),
-            keepdims=True,
-        )
-        z = local_coefficient * hydrostatic_free_theta
-        return z.at[-1].set(jnp.where(scalar.upper_is_physical, 0.0, z[-1]))
-
-    def rayleigh_damping_local(
-        u,
-        v,
-        w_upper,
-        start_height,
-        maximum_rate,
-        target_u,
-        target_v,
-    ):
-        index = lax.axis_index(axis_name)
-        local_nz = u.shape[0]
-        global_cell = index * local_nz + jnp.arange(local_nz, dtype=u.dtype)
-        cell_height = (global_cell + 0.5) * grid.dz
-        upper_face_height = (global_cell + 1.0) * grid.dz
-        depth = grid.lz - jnp.asarray(start_height, dtype=u.dtype)
-        cell_eta = jnp.clip((cell_height - start_height) / depth, 0.0, 1.0)
-        face_eta = jnp.clip(
-            (upper_face_height - start_height) / depth,
-            0.0,
-            1.0,
-        )
-        cell_rate = jnp.asarray(maximum_rate, dtype=u.dtype) * cell_eta**2
-        face_rate = jnp.asarray(maximum_rate, dtype=w_upper.dtype) * (
-            face_eta.astype(w_upper.dtype) ** 2
-        )
-        return (
-            -cell_rate[:, None, None] * (u - target_u),
-            -cell_rate[:, None, None] * (v - target_v),
-            -face_rate[:, None, None] * w_upper,
-        )
+    buoyancy_local, rayleigh_damping_local = build_boussinesq_source_kernels(
+        grid=grid, axis_name=axis_name
+    )
 
     def scalar_advection_local(scalar, momentum):
         w_lower = jnp.concatenate(
             (momentum.w_lower[None], momentum.w_upper[:-1]),
             axis=0,
         )
-        upper_flux = two_thirds_filter_local(momentum.w_upper * scalar.theta_upper)
-        lower_flux = two_thirds_filter_local(w_lower * scalar.theta_lower)
-        return -(
-            truncated_derivative_local(momentum.u * scalar.theta, 0)
-            + truncated_derivative_local(momentum.v * scalar.theta, 1)
-            + (upper_flux - lower_flux) / grid.dz
+        padded = pad_horizontal_local(
+            jnp.stack(
+                (
+                    momentum.u,
+                    momentum.v,
+                    momentum.w_upper,
+                    w_lower,
+                    scalar.theta,
+                    scalar.theta_upper,
+                    scalar.theta_lower,
+                ),
+                axis=0,
+            )
         )
+        padded_u, padded_v, padded_w_upper, padded_w_lower = padded[:4]
+        padded_theta, padded_theta_upper, padded_theta_lower = padded[4:]
+        horizontal = padded_horizontal_flux_divergence_local(
+            (padded_u * padded_theta)[None],
+            (padded_v * padded_theta)[None],
+        )[0]
+        upper_flux, lower_flux = truncate_padded_local(
+            jnp.stack(
+                (
+                    padded_w_upper * padded_theta_upper,
+                    padded_w_lower * padded_theta_lower,
+                ),
+                axis=0,
+            )
+        )
+        return -(horizontal + (upper_flux - lower_flux) / grid.dz)
 
     def scalar_sgs_local(
         scalar,
         momentum,
         coefficient,
+        minimum_coefficient,
+        maximum_coefficient,
         lower_boundary_flux,
         upper_boundary_flux,
         stability_buoyancy_coefficient,
@@ -480,32 +401,57 @@ def build_zslab_interpreter(
         stability_power,
     ):
         delta = (grid.dx * grid.dy * grid.dz) ** (1.0 / 3.0)
+        momentum_gradients = tuple(
+            pad_horizontal_local(
+                jnp.stack(
+                    (
+                        momentum.dudx,
+                        momentum.dudy,
+                        momentum.dudz_at_cells,
+                        momentum.dvdx,
+                        momentum.dvdy,
+                        momentum.dvdz_at_cells,
+                        momentum.dwdx_at_cells,
+                        momentum.dwdy_at_cells,
+                        momentum.dwdz,
+                    ),
+                    axis=0,
+                )
+            )
+        )
         cell_magnitude = strain_magnitude_local(
-            momentum.dudx,
-            momentum.dudy,
-            momentum.dudz_at_cells,
-            momentum.dvdx,
-            momentum.dvdy,
-            momentum.dvdz_at_cells,
-            momentum.dwdx_at_cells,
-            momentum.dwdy_at_cells,
-            momentum.dwdz,
+            *momentum_gradients,
+        )
+        face_gradients = tuple(
+            pad_horizontal_local(
+                jnp.stack(
+                    (
+                        momentum.dudx_upper,
+                        momentum.dudy_upper,
+                        momentum.dudz_upper,
+                        momentum.dvdx_upper,
+                        momentum.dvdy_upper,
+                        momentum.dvdz_upper,
+                        momentum.dwdx_upper,
+                        momentum.dwdy_upper,
+                        momentum.dwdz_upper,
+                    ),
+                    axis=0,
+                )
+            )
         )
         face_magnitude = strain_magnitude_local(
-            momentum.dudx_upper,
-            momentum.dudy_upper,
-            momentum.dudz_upper,
-            momentum.dvdx_upper,
-            momentum.dvdy_upper,
-            momentum.dvdz_upper,
-            momentum.dwdx_upper,
-            momentum.dwdy_upper,
-            momentum.dwdz_upper,
+            *face_gradients,
         )
-        local_coefficient = coefficient.astype(scalar.theta.dtype)
+        local_coefficient = jnp.clip(
+            pad_horizontal_local(coefficient.astype(scalar.theta.dtype)),
+            minimum_coefficient,
+            maximum_coefficient,
+        )
+        padded_dtheta_dz = pad_horizontal_local(scalar.dtheta_dz_at_cells)
         n2 = jnp.maximum(
             jnp.asarray(stability_buoyancy_coefficient, dtype=scalar.theta.dtype)
-            * scalar.dtheta_dz_at_cells,
+            * padded_dtheta_dz,
             0.0,
         )
         richardson = n2 / jnp.maximum(cell_magnitude**2, 1.0e-24)
@@ -526,13 +472,25 @@ def build_zslab_interpreter(
         face_coefficient = 0.5 * (effective_coefficient + next_coefficient)
         cell_diffusivity = effective_coefficient * delta**2 * cell_magnitude
         face_diffusivity = face_coefficient * delta**2 * face_magnitude
-        qx = -cell_diffusivity * scalar.dtheta_dx
-        qy = -cell_diffusivity * scalar.dtheta_dy
-        qz = -face_diffusivity * scalar.dtheta_dz_upper
+        padded_scalar_gradients = pad_horizontal_local(
+            jnp.stack(
+                (scalar.dtheta_dx, scalar.dtheta_dy, scalar.dtheta_dz_upper),
+                axis=0,
+            )
+        )
+        qx, qy, qz = truncate_padded_local(
+            jnp.stack(
+                (
+                    -cell_diffusivity * padded_scalar_gradients[0],
+                    -cell_diffusivity * padded_scalar_gradients[1],
+                    -face_diffusivity * padded_scalar_gradients[2],
+                ),
+                axis=0,
+            )
+        )
         qz = qz.at[-1].set(
             jnp.where(scalar.upper_is_physical, upper_boundary_flux, qz[-1])
         )
-        qz = two_thirds_filter_local(qz)
         flux_halo = exchange_local(qz[None, ...])
         lower_plane = jnp.where(
             flux_halo.lower_is_physical,
@@ -540,46 +498,19 @@ def build_zslab_interpreter(
             flux_halo.lower[0],
         )
         lower_qz = jnp.concatenate((lower_plane[None], qz[:-1]), axis=0)
-        return -(
-            truncated_derivative_local(qx, 0)
-            + truncated_derivative_local(qy, 1)
-            + (qz - lower_qz) / grid.dz
-        )
+        horizontal = horizontal_flux_divergence_local(qx[None], qy[None])[0]
+        return -(horizontal + (qz - lower_qz) / grid.dz)
 
-    def dry_advection_local(context):
-        upper_u_flux = two_thirds_filter_local(context.w_upper * context.u_upper)
-        upper_v_flux = two_thirds_filter_local(context.w_upper * context.v_upper)
-        lower_u_flux_plane = two_thirds_filter_local(context.w_lower * context.u_lower)
-        lower_v_flux_plane = two_thirds_filter_local(context.w_lower * context.v_lower)
-        lower_u_flux = jnp.concatenate(
-            (lower_u_flux_plane[None], upper_u_flux[:-1]),
-            axis=0,
+    dry_advection_local, dry_advection_from_padded_local = (
+        build_conservative_advection_kernels(
+            grid=grid,
+            pad_horizontal_local=pad_horizontal_local,
+            truncate_padded_local=truncate_padded_local,
+            padded_horizontal_flux_divergence_local=(
+                padded_horizontal_flux_divergence_local
+            ),
         )
-        lower_v_flux = jnp.concatenate(
-            (lower_v_flux_plane[None], upper_v_flux[:-1]),
-            axis=0,
-        )
-        x = -(
-            truncated_derivative_local(context.u * context.u, 0)
-            + truncated_derivative_local(context.v * context.u, 1)
-            + (upper_u_flux - lower_u_flux) / grid.dz
-        )
-        y = -(
-            truncated_derivative_local(context.u * context.v, 0)
-            + truncated_derivative_local(context.v * context.v, 1)
-            + (upper_v_flux - lower_v_flux) / grid.dz
-        )
-        vertical_flux = two_thirds_filter_local(context.w_at_cells * context.w_at_cells)
-        next_vertical_flux = two_thirds_filter_local(
-            context.w_next_cell * context.w_next_cell
-        )
-        z = -(
-            truncated_derivative_local(context.u_upper * context.w_upper, 0)
-            + truncated_derivative_local(context.v_upper * context.w_upper, 1)
-            + (next_vertical_flux - vertical_flux) / grid.dz
-        )
-        z = z.at[-1].set(jnp.where(context.upper_is_physical, 0.0, z[-1]))
-        return x, y, z
+    )
 
     def dry_wall_local(context, drag, filtered, filter_width):
         index = lax.axis_index(axis_name)
@@ -589,127 +520,118 @@ def build_zslab_interpreter(
         )
         wall_u = jnp.where(filtered, wall_velocity[0], context.u[0])
         wall_v = jnp.where(filtered, wall_velocity[1], context.v[0])
-        speed = jnp.sqrt(wall_u * wall_u + wall_v * wall_v)
-        wall_x = -drag * speed * wall_u / grid.dz
-        wall_y = -drag * speed * wall_v / grid.dz
+        padded_wall_u, padded_wall_v = pad_horizontal_local(
+            jnp.stack((wall_u, wall_v), axis=0)
+        )
+        speed = jnp.hypot(padded_wall_u, padded_wall_v)
+        wall_x, wall_y = truncate_padded_local(
+            jnp.stack(
+                (
+                    -drag * speed * padded_wall_u / grid.dz,
+                    -drag * speed * padded_wall_v / grid.dz,
+                ),
+                axis=0,
+            )
+        )
         x = jnp.zeros_like(context.u).at[0].set(jnp.where(index == 0, wall_x, 0.0))
         y = jnp.zeros_like(context.v).at[0].set(jnp.where(index == 0, wall_y, 0.0))
         return x, y, jnp.zeros_like(context.w_upper)
 
-    def dry_sgs_vertical_flux_local(context, coefficient):
-        delta = (grid.dx * grid.dy * grid.dz) ** (1.0 / 3.0)
-        face_magnitude = strain_magnitude_local(
-            context.dudx_upper,
-            context.dudy_upper,
-            context.dudz_upper,
-            context.dvdx_upper,
-            context.dvdy_upper,
-            context.dvdz_upper,
-            context.dwdx_upper,
-            context.dwdy_upper,
-            context.dwdz_upper,
-        )
-        coefficient_halo = exchange_local(coefficient[None, ...])
-        next_coefficient_plane = jnp.where(
-            coefficient_halo.upper_is_physical,
-            coefficient[-1],
-            coefficient_halo.upper[0],
-        )
-        next_coefficient = jnp.concatenate(
-            (coefficient[1:], next_coefficient_plane[None]),
-            axis=0,
-        )
-        face_viscosity = (
-            0.5 * (coefficient + next_coefficient) * delta**2 * face_magnitude
-        )
-        txz = -face_viscosity * (context.dudz_upper + context.dwdx_upper)
-        tyz = -face_viscosity * (context.dvdz_upper + context.dwdy_upper)
-        txz = txz.at[-1].set(jnp.where(context.upper_is_physical, 0.0, txz[-1]))
-        tyz = tyz.at[-1].set(jnp.where(context.upper_is_physical, 0.0, tyz[-1]))
-        txz = two_thirds_filter_local(txz)
-        tyz = two_thirds_filter_local(tyz)
-        return txz, tyz
-
-    def dry_sgs_local(context, coefficient):
-        delta = (grid.dx * grid.dy * grid.dz) ** (1.0 / 3.0)
-        cell_magnitude = strain_magnitude_local(
-            context.dudx,
-            context.dudy,
-            context.dudz_at_cells,
-            context.dvdx,
-            context.dvdy,
-            context.dvdz_at_cells,
-            context.dwdx_at_cells,
-            context.dwdy_at_cells,
-            context.dwdz,
-        )
-        cell_viscosity = coefficient * delta**2 * cell_magnitude
-        txx = -2.0 * cell_viscosity * context.dudx
-        txy = -cell_viscosity * (context.dudy + context.dvdx)
-        tyy = -2.0 * cell_viscosity * context.dvdy
-        tzz = -2.0 * cell_viscosity * context.dwdz
-        txz, tyz = dry_sgs_vertical_flux_local(context, coefficient)
-        tzz = two_thirds_filter_local(tzz)
-
-        stress_halo = exchange_local(jnp.stack((txz, tyz, tzz), axis=0))
-        lower_txz_plane = jnp.where(
-            stress_halo.lower_is_physical,
-            jnp.zeros_like(txz[0]),
-            stress_halo.lower[0],
-        )
-        lower_tyz_plane = jnp.where(
-            stress_halo.lower_is_physical,
-            jnp.zeros_like(tyz[0]),
-            stress_halo.lower[1],
-        )
-        lower_txz = jnp.concatenate((lower_txz_plane[None], txz[:-1]), axis=0)
-        lower_tyz = jnp.concatenate((lower_tyz_plane[None], tyz[:-1]), axis=0)
-        next_tzz_plane = jnp.where(
-            stress_halo.upper_is_physical,
-            tzz[-1],
-            stress_halo.upper[2],
-        )
-        next_tzz = jnp.concatenate((tzz[1:], next_tzz_plane[None]), axis=0)
-        x = -(
-            truncated_derivative_local(txx, 0)
-            + truncated_derivative_local(txy, 1)
-            + (txz - lower_txz) / grid.dz
-        )
-        y = -(
-            truncated_derivative_local(txy, 0)
-            + truncated_derivative_local(tyy, 1)
-            + (tyz - lower_tyz) / grid.dz
-        )
-        z = -(
-            truncated_derivative_local(txz, 0)
-            + truncated_derivative_local(tyz, 1)
-            + (next_tzz - tzz) / grid.dz
-        )
-        z = z.at[-1].set(jnp.where(stress_halo.upper_is_physical, 0.0, z[-1]))
-        return x, y, z
+    (
+        dry_sgs_local,
+        dry_sgs_vertical_flux_local,
+        dry_sgs_from_padded_gradients_local,
+        dry_sgs_tke_transfer_local,
+    ) = build_smagorinsky_kernels(
+        grid=grid,
+        axis_name=axis_name,
+        exchange_local=exchange_local,
+        strain_magnitude_local=strain_magnitude_local,
+        pad_horizontal_local=pad_horizontal_local,
+        truncate_padded_spectrum_local=truncate_padded_spectrum_local,
+        truncate_padded_local=truncate_padded_local,
+        horizontal_spectral_flux_divergence_local=(
+            horizontal_spectral_flux_divergence_local
+        ),
+    )
 
     (
         dry_rotational_advection_local,
         dry_mgm_local,
         dry_mgm_vertical_flux_local,
+        dry_mgm_from_padded_gradients_local,
+        dry_mgm_sgs_tke_local,
+        dry_mgm_tke_transfer_local,
     ) = build_mgm_kernels(
         grid=grid,
         axis_name=axis_name,
         exchange_local=exchange_local,
         wall_filter_local=wall_filter_local,
         strain_magnitude_local=strain_magnitude_local,
-        two_thirds_filter_local=two_thirds_filter_local,
-        truncated_derivative_local=truncated_derivative_local,
+        pad_horizontal_local=pad_horizontal_local,
+        truncate_padded_spectrum_local=truncate_padded_spectrum_local,
+        horizontal_spectral_flux_divergence_local=(
+            horizontal_spectral_flux_divergence_local
+        ),
+        horizontal_flux_divergence_local=horizontal_flux_divergence_local,
+    )
+    fused_mgm_boussinesq_local = build_fused_mgm_boussinesq_kernel(
+        grid=grid,
+        axis_name=axis_name,
+        frozen_zero_scalar=frozen_zero_scalar,
+        exchange_local=exchange_local,
+        strain_magnitude_local=strain_magnitude_local,
+        pad_horizontal_local=pad_horizontal_local,
+        truncate_padded_spectrum_local=truncate_padded_spectrum_local,
+        truncate_padded_local=truncate_padded_local,
+        padded_horizontal_gradient_pair_local=spectral.padded_gradient_pair,
+        horizontal_spectral_flux_divergence_local=(
+            horizontal_spectral_flux_divergence_local
+        ),
+        padded_horizontal_flux_divergence_local=(
+            padded_horizontal_flux_divergence_local
+        ),
+        wall_filter_local=wall_filter_local,
+        dry_flow_context_local=dry_flow_context_local,
+        scalar_context_local=scalar_context_local,
+        dry_advection_from_padded_local=dry_advection_from_padded_local,
+        padded_momentum_gradients_local=padded_momentum_gradients_local,
+        dry_mgm_from_padded_gradients_local=(dry_mgm_from_padded_gradients_local),
     )
     (
         dry_amd_local,
         dry_amd_vertical_flux_local,
         scalar_amd_local,
+        dry_amd_from_padded_gradients_local,
+        amd_diagnostics_local,
+        amd_tke_transfer_local,
     ) = build_amd_kernels(
         grid=grid,
+        axis_name=axis_name,
         exchange_local=exchange_local,
-        two_thirds_filter_local=two_thirds_filter_local,
-        truncated_derivative_local=truncated_derivative_local,
+        strain_magnitude_local=strain_magnitude_local,
+        pad_horizontal_local=pad_horizontal_local,
+        truncate_padded_local=truncate_padded_local,
+        horizontal_derivative_local=horizontal_derivative_local,
+    )
+    fused_amd_boussinesq_local, fused_lasd_boussinesq_local = (
+        build_fused_neutral_boussinesq_kernels(
+            grid=grid,
+            axis_name=axis_name,
+            frozen_zero_scalar=frozen_zero_scalar,
+            pad_horizontal_local=pad_horizontal_local,
+            truncate_padded_local=truncate_padded_local,
+            wall_filter_local=wall_filter_local,
+            dry_flow_context_local=dry_flow_context_local,
+            dry_advection_from_padded_local=dry_advection_from_padded_local,
+            padded_momentum_gradients_local=padded_momentum_gradients_local,
+            dry_amd_from_padded_gradients_local=(
+                dry_amd_from_padded_gradients_local
+            ),
+            dry_sgs_from_padded_gradients_local=(
+                dry_sgs_from_padded_gradients_local
+            ),
+        )
     )
 
     def horizontal_divergence_local(x_velocity, y_velocity):
@@ -798,7 +720,8 @@ def build_zslab_interpreter(
         shard_count=shard_count,
         exchange_local=exchange_local,
         strain_magnitude_local=strain_magnitude_local,
-        two_thirds_filter_local=two_thirds_filter_local,
+        pad_horizontal_local=pad_horizontal_local,
+        truncate_padded_local=truncate_padded_local,
     )
 
     wind_tunnel_local = build_wind_tunnel_kernel(
@@ -855,13 +778,25 @@ def build_zslab_interpreter(
         in_axes=(0, None, None, None, None, None),
     )
     dry_wall = mapped(dry_wall_local, in_axes=(0, None, None, None))
-    dry_sgs = mapped(dry_sgs_local, in_axes=(0, 0))
+    dry_sgs = mapped(dry_sgs_local, in_axes=(0, 0, None, None))
     dry_sgs_vertical_flux = mapped(
         dry_sgs_vertical_flux_local,
-        in_axes=(0, 0),
+        in_axes=(0, 0, None, None),
+    )
+    dry_sgs_tke_transfer = mapped(
+        dry_sgs_tke_transfer_local,
+        in_axes=(0, 0, None, None, None),
     )
     dry_amd = mapped(dry_amd_local)
     dry_amd_vertical_flux = mapped(dry_amd_vertical_flux_local)
+    amd_diagnostics = mapped(
+        amd_diagnostics_local,
+        in_axes=(0, None, None),
+    )
+    amd_tke_transfer = mapped(
+        amd_tke_transfer_local,
+        in_axes=(0, None),
+    )
     dry_mgm = mapped(
         dry_mgm_local,
         in_axes=(0,) + (None,) * 10,
@@ -869,6 +804,26 @@ def build_zslab_interpreter(
     dry_mgm_vertical_flux = mapped(
         dry_mgm_vertical_flux_local,
         in_axes=(0, None, None, None, None, None),
+    )
+    mgm_sgs_tke = mapped(
+        dry_mgm_sgs_tke_local,
+        in_axes=(0,) + (None,) * 10,
+    )
+    mgm_tke_transfer = mapped(
+        dry_mgm_tke_transfer_local,
+        in_axes=(0,) + (None,) * 10,
+    )
+    fused_mgm_boussinesq = mapped(
+        fused_mgm_boussinesq_local,
+        in_axes=(0, 0, 0, None, 0) + (None,) * 16,
+    )
+    fused_amd_boussinesq = mapped(
+        fused_amd_boussinesq_local,
+        in_axes=(0, 0, 0, None, 0) + (None,) * 5,
+    )
+    fused_lasd_boussinesq = mapped(
+        fused_lasd_boussinesq_local,
+        in_axes=(0, 0, 0, None, 0, 0) + (None,) * 7,
     )
     lasd_accumulate = mapped(
         lasd_accumulate_local,
@@ -931,7 +886,7 @@ def build_zslab_interpreter(
     scalar_advection = mapped(scalar_advection_local, in_axes=(0, 0))
     scalar_sgs = mapped(
         scalar_sgs_local,
-        in_axes=(0, 0, 0, None, None, None, None, None),
+        in_axes=(0, 0, 0) + (None,) * 7,
     )
     scalar_amd = mapped(
         scalar_amd_local,
@@ -945,6 +900,7 @@ def build_zslab_interpreter(
     return JaxZSlabInterpreter(
         decomposition,
         addressable_shards,
+        frozen_zero_scalar,
         exchange_packed,
         pressure_gradient,
         divergence,
@@ -965,10 +921,18 @@ def build_zslab_interpreter(
         dry_wall,
         dry_sgs,
         dry_sgs_vertical_flux,
+        dry_sgs_tke_transfer,
         dry_amd,
         dry_amd_vertical_flux,
+        amd_diagnostics,
+        amd_tke_transfer,
         dry_mgm,
         dry_mgm_vertical_flux,
+        mgm_sgs_tke,
+        mgm_tke_transfer,
+        fused_mgm_boussinesq,
+        fused_amd_boussinesq,
+        fused_lasd_boussinesq,
         lasd_accumulate,
         lasd_accumulate_velocity,
         lasd_update,

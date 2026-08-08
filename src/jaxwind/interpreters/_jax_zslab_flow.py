@@ -138,7 +138,8 @@ class ZSlabFlowMixin:
         ):
             raise TypeError("unsupported SGS choice")
         coefficient = self._momentum_sgs_coefficient(context, config)
-        x, y, z = self._dry_sgs(context.arrays, coefficient)
+        bounds = self._momentum_sgs_coefficient_bounds(config)
+        x, y, z = self._dry_sgs(context.arrays, coefficient, *bounds)
         return self._dry_tendency(x, y, z)
 
     def sgs_vertical_flux(
@@ -167,7 +168,77 @@ class ZSlabFlowMixin:
         return self._dry_sgs_vertical_flux(
             context.arrays,
             self._momentum_sgs_coefficient(context, config),
+            *self._momentum_sgs_coefficient_bounds(config),
         )
+
+    def momentum_sgs_diagnostic_fields(
+        self,
+        context: ZSlabDryFlowContext,
+        config: AnisotropicMinimumDissipation | ModulatedGradientModel,
+        *,
+        dissipation_coefficient: float = 0.93,
+        wall: NeutralLogWall | FilteredNeutralLogWall | None = None,
+    ):
+        """Diagnose owned-cell SGS energy without changing closure dynamics."""
+        from .jax_zslab import MomentumSgsDiagnosticFields
+
+        if not math.isfinite(dissipation_coefficient) or dissipation_coefficient <= 0:
+            raise ValueError("diagnostic SGS dissipation coefficient must be positive")
+        if isinstance(config, ModulatedGradientModel):
+            sgs_tke = self._mgm_sgs_tke(
+                context.arrays,
+                *self._mgm_parameters(config),
+                *self._wall_gradient_parameters(wall),
+            )
+            return MomentumSgsDiagnosticFields(jnp.zeros_like(sgs_tke), sgs_tke)
+        if isinstance(config, AnisotropicMinimumDissipation):
+            wall_gradient_factor = self._diagnostic_wall_gradient_factor(wall)
+            viscosity, sgs_tke = self._amd_diagnostics(
+                context.arrays,
+                dissipation_coefficient,
+                wall_gradient_factor,
+            )
+            return MomentumSgsDiagnosticFields(viscosity, sgs_tke)
+        raise TypeError("SGS energy diagnostics require MGM or AMD momentum")
+
+    def momentum_sgs_tke_transfer(
+        self,
+        context: ZSlabDryFlowContext,
+        config: (
+            StaticSmagorinsky
+            | AnisotropicMinimumDissipation
+            | ModulatedGradientModel
+            | LagrangianScaleDependentDynamic
+        ),
+        *,
+        wall: NeutralLogWall | FilteredNeutralLogWall | None = None,
+    ):
+        """Return signed SGS transfer from resolved TKE at owned cell centres.
+
+        Forward transfer to unresolved scales is negative, matching the sign used
+        by Andrén et al. (1994) Fig. 11. Horizontal nonlinear products use the
+        interpreter's padded path and the first cell uses the configured log wall.
+        """
+        if isinstance(config, ModulatedGradientModel):
+            return self._mgm_tke_transfer(
+                context.arrays,
+                *self._mgm_parameters(config),
+                *self._wall_gradient_parameters(wall),
+            )
+        wall_gradient_factor = self._diagnostic_wall_gradient_factor(wall)
+        if isinstance(config, AnisotropicMinimumDissipation):
+            return self._amd_tke_transfer(
+                context.arrays,
+                wall_gradient_factor,
+            )
+        if isinstance(config, (StaticSmagorinsky, LagrangianScaleDependentDynamic)):
+            return self._dry_sgs_tke_transfer(
+                context.arrays,
+                self._momentum_sgs_coefficient(context, config),
+                *self._momentum_sgs_coefficient_bounds(config),
+                wall_gradient_factor,
+            )
+        raise TypeError("unsupported SGS transfer diagnostic")
 
     @staticmethod
     def _momentum_sgs_coefficient(
@@ -180,6 +251,14 @@ class ZSlabFlowMixin:
         if not isinstance(closure, LasdClosureMemory):
             raise TypeError("momentum LASD requires initialized closure memory")
         return closure.momentum.coefficient.payload
+
+    @staticmethod
+    def _momentum_sgs_coefficient_bounds(
+        config: StaticSmagorinsky | LagrangianScaleDependentDynamic,
+    ) -> tuple[float, float]:
+        if isinstance(config, StaticSmagorinsky):
+            return 0.0, math.inf
+        return config.minimum_coefficient, config.maximum_coefficient
 
     @staticmethod
     def _mgm_parameters(config: ModulatedGradientModel) -> tuple[float, ...]:
@@ -202,6 +281,21 @@ class ZSlabFlowMixin:
         filtered = isinstance(wall, FilteredNeutralLogWall)
         width = wall.filter_grid_ratio * wall.test_filter_ratio if filtered else 1.0
         return True, wall.roughness_length, wall.von_karman, filtered, width
+
+    def _diagnostic_wall_gradient_factor(
+        self,
+        wall: NeutralLogWall | FilteredNeutralLogWall | None,
+    ) -> float:
+        if wall is None:
+            return 0.0
+        if not isinstance(wall, (NeutralLogWall, FilteredNeutralLogWall)):
+            raise TypeError("diagnostic wall-gradient choice is unsupported")
+        reference_height = 0.5 * self.decomposition.grid.dz
+        if wall.roughness_length >= reference_height:
+            raise ValueError("wall roughness must be below the first cell centre")
+        return 1.0 / (
+            math.log(reference_height / wall.roughness_length) * reference_height
+        )
 
     def coriolis_geostrophic_tendency(
         self,

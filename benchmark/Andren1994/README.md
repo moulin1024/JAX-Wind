@@ -14,17 +14,42 @@ default one-second step follows the Andrén--Moeng entry in the paper's runtime
 table. Float32 and the communication-reducing SPIKE pressure method are used by
 default.
 
-Run momentum/scalar LASD as an external fifth SGS model:
+Run the three SGS choices through the same conservative, 3/2-padded path:
 
 ```bash
-python benchmark/Andren1994/run_lasd.py
+CUDA_VISIBLE_DEVICES=0 python benchmark/Andren1994/run_lasd.py --sgs mgm \
+  --output benchmark/Andren1994/results/mgm_40x40x40_total_tke
+CUDA_VISIBLE_DEVICES=0 python benchmark/Andren1994/run_lasd.py --sgs amd \
+  --output benchmark/Andren1994/results/amd_40x40x40_total_tke
+CUDA_VISIBLE_DEVICES=0 python benchmark/Andren1994/run_lasd.py --sgs lasd \
+  --output benchmark/Andren1994/results/lasd_40x40x40_total_tke
 ```
 
-This path transports the paper's passive scalar with the prescribed
+This runner transports the paper's passive scalar with the prescribed
 `1e-3 kg m-2 s-1` surface flux and zero upper flux. It uses `dt=0.8 s` and a
 five-step LASD update interval so the total-CFL warning target (`0.2`) and the
 one-halo trajectory target (`CFL × interval < 1`) remain credible. These are
 warnings, not solution clips.
+
+Figure 2 uses resolved plus diagnostic SGS kinetic energy for all three
+models. MGM exports the kinetic energy already diagnosed by its
+gradient-contraction closure. AMD reconstructs SGS energy from its modeled
+production with the same local-equilibrium dissipation coefficient (`Ce=0.93`)
+and neutral log-wall shear correction used by LASD. These diagnostics do not
+feed back into momentum and therefore do not alter the resolved trajectory.
+
+The focused pre-run check is intentionally small:
+
+```bash
+PYTHONPATH=src python -m pytest -q \
+  tests/interpreters/test_fused_neutral_sgs.py::FusedNeutralSgsTests::test_mgm_and_amd_diagnose_nonnegative_sgs_energy \
+  benchmark/Andren1994/tests/test_case.py::test_three_sgs_models_share_three_halves_padding
+python benchmark/Andren1994/run_lasd.py --quick --sgs mgm --output /tmp/andren-mgm
+python benchmark/Andren1994/run_lasd.py --quick --sgs amd --output /tmp/andren-amd
+```
+
+This checks the diagnostic kernels, common numerics, and serialized nonzero
+SGS contribution without running the repository-wide integration suite.
 
 Collect the complete resolved vertical scalar-flux budget for paper Fig. 13 by
 continuing the developed `tf=10` state over another `3/f` window:
@@ -73,7 +98,13 @@ quantity marker, closure fingerprint, and both AB2 tendency histories in
 checkpoint schema v2. `statistics_samples.npz` preserves the averaging history
 across restart. `profiles.csv` retains resolved, diagnostic SGS, and total
 velocity/scalar variance and flux, while `spectra.csv` contains x spectra at
-the level nearest `zf/u*=0.1`.
+the level nearest `zf/u*=0.1`. New histories also retain both component surface
+stresses required by the paper's Fig. 3 stationarity measures `Cu` and `Cv`.
+Each SGS model also samples the signed resolved-TKE transfer
+`tau_ij*d_j(u_i)` required by Fig. 11. Forward transfer is negative. The
+dimensional and `f*u*^2`-normalized profiles are written to `profiles.csv`, and
+the paper-overlay command adds `fig11_jaxwind_overlay.png` when that column is
+present.
 
 The SGS energy and scalar variance are explicitly diagnostic local-equilibrium
 quantities. LASD predicts deviatoric stress and scalar flux; it does not evolve
@@ -117,7 +148,8 @@ python benchmark/Andren1994/overlay_paper_figures.py \
 
 This produces one sheet, `andren1994_all_figures_jaxwind_overlay.png`, containing
 all 19 numbered paper figures in order. For LASD, curves are registered on
-Figs. 2, 4(a,b), 5, 6, 7, 8, 13(a-d), 14(a,b), and 15(a-d) when the corresponding
+Figs. 2, 3(a,b), 4(a,b), 5, 6, 7, 8, 13(a-d), 14(a,b), and 15(a-d) when the
+corresponding
 diagnostics exist. Fig. 13 overlays the same six colored JAX-Wind budget terms
 on all four original code panels; other plots use red for a resolved/total
 JAX-Wind curve and blue for a diagnostic SGS contribution. Paper-only tiles

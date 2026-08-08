@@ -14,7 +14,8 @@ def build_lasd_kernels(
     shard_count: int,
     exchange_local,
     strain_magnitude_local,
-    two_thirds_filter_local,
+    pad_horizontal_local,
+    truncate_padded_local,
 ):
     def lasd_diagnostics_local(
         scalar,
@@ -112,11 +113,13 @@ def build_lasd_kernels(
         )
         flux_x = -scalar_diffusivity * scalar.dtheta_dx
         flux_y = -scalar_diffusivity * scalar.dtheta_dy
-        flux_z = -face_diffusivity * scalar.dtheta_dz_upper
+        flux_z = truncate_padded_local(
+            -pad_horizontal_local(face_diffusivity)
+            * pad_horizontal_local(scalar.dtheta_dz_upper)
+        )
         flux_z = flux_z.at[-1].set(
             jnp.where(scalar.upper_is_physical, upper_boundary_flux, flux_z[-1])
         )
-        flux_z = two_thirds_filter_local(flux_z)
         flux_halo = exchange_local(flux_z[None, ...])
         lower_flux_plane = jnp.where(
             flux_halo.lower_is_physical,

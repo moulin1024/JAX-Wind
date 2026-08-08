@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 import math
 from typing import Any
 
@@ -63,13 +64,15 @@ from .jax_oracle_core import (
     OracleDryFlowContext,
     _cell_gradient_on_full_faces,
     _cell_to_full_faces,
+    _horizontal_derivative,
     _oracle_tendency,
     _oracle_tendency_from_velocity,
+    _pad_horizontal,
+    _padded_product,
     _require_tiny_global,
     _require_velocity_component,
     _strain_magnitude,
-    _truncated_horizontal_derivative,
-    _two_thirds_filter,
+    _truncate_padded,
     _wall_filter,
 )
 
@@ -120,26 +123,29 @@ class OracleFlowMixin:
         u = velocity.x.payload
         v = velocity.y.payload
         w = velocity.z.payload
-        vertical_u_flux = _two_thirds_filter(
-            w * context.u_on_faces,
-            grid=grid,
-        )
-        vertical_v_flux = _two_thirds_filter(
-            w * context.v_on_faces,
-            grid=grid,
-        )
+        vertical_u_flux = _padded_product(w, context.u_on_faces, grid=grid)
+        vertical_v_flux = _padded_product(w, context.v_on_faces, grid=grid)
         x_tendency = -(
-            _truncated_horizontal_derivative(u * u, grid=grid, axis="x")
-            + _truncated_horizontal_derivative(v * u, grid=grid, axis="y")
+            _horizontal_derivative(
+                _padded_product(u, u, grid=grid), grid=grid, axis="x"
+            )
+            + _horizontal_derivative(
+                _padded_product(v, u, grid=grid), grid=grid, axis="y"
+            )
             + (vertical_u_flux[1:] - vertical_u_flux[:-1]) / grid.dz
         )
         y_tendency = -(
-            _truncated_horizontal_derivative(u * v, grid=grid, axis="x")
-            + _truncated_horizontal_derivative(v * v, grid=grid, axis="y")
+            _horizontal_derivative(
+                _padded_product(u, v, grid=grid), grid=grid, axis="x"
+            )
+            + _horizontal_derivative(
+                _padded_product(v, v, grid=grid), grid=grid, axis="y"
+            )
             + (vertical_v_flux[1:] - vertical_v_flux[:-1]) / grid.dz
         )
-        vertical_w_flux = _two_thirds_filter(
-            context.w_at_cells * context.w_at_cells,
+        vertical_w_flux = _padded_product(
+            context.w_at_cells,
+            context.w_at_cells,
             grid=grid,
         )
         vertical_w_derivative = _cell_gradient_on_full_faces(
@@ -147,13 +153,13 @@ class OracleFlowMixin:
             grid.dz,
         )
         z_tendency = -(
-            _truncated_horizontal_derivative(
-                context.u_on_faces * w,
+            _horizontal_derivative(
+                _padded_product(context.u_on_faces, w, grid=grid),
                 grid=grid,
                 axis="x",
             )
-            + _truncated_horizontal_derivative(
-                context.v_on_faces * w,
+            + _horizontal_derivative(
+                _padded_product(context.v_on_faces, w, grid=grid),
                 grid=grid,
                 axis="y",
             )
@@ -237,9 +243,13 @@ class OracleFlowMixin:
                 filter_width=width,
             )
             u0, v0 = filtered[0], filtered[1]
-        speed = jnp.sqrt(u0 * u0 + v0 * v0)
-        x = jnp.zeros_like(velocity.x.payload).at[0].set(-drag * speed * u0 / grid.dz)
-        y = jnp.zeros_like(velocity.y.payload).at[0].set(-drag * speed * v0 / grid.dz)
+        padded_u0 = _pad_horizontal(u0, grid=grid)
+        padded_v0 = _pad_horizontal(v0, grid=grid)
+        speed = jnp.hypot(padded_u0, padded_v0)
+        wall_x = _truncate_padded(-drag * speed * padded_u0 / grid.dz, grid=grid)
+        wall_y = _truncate_padded(-drag * speed * padded_v0 / grid.dz, grid=grid)
+        x = jnp.zeros_like(velocity.x.payload).at[0].set(wall_x)
+        y = jnp.zeros_like(velocity.y.payload).at[0].set(wall_y)
         z = jnp.zeros_like(velocity.z.payload)
         return _oracle_tendency(context, x, y, z)
 
@@ -266,6 +276,25 @@ class OracleFlowMixin:
             raise TypeError("unsupported SGS choice")
         velocity = context.velocity
         grid = velocity.x.ownership.grid
+        padded_context = replace(
+            context,
+            u_on_faces=_pad_horizontal(context.u_on_faces, grid=grid),
+            v_on_faces=_pad_horizontal(context.v_on_faces, grid=grid),
+            w_at_cells=_pad_horizontal(context.w_at_cells, grid=grid),
+            dudx=_pad_horizontal(context.dudx, grid=grid),
+            dudy=_pad_horizontal(context.dudy, grid=grid),
+            dudz_at_cells=_pad_horizontal(context.dudz_at_cells, grid=grid),
+            dvdx=_pad_horizontal(context.dvdx, grid=grid),
+            dvdy=_pad_horizontal(context.dvdy, grid=grid),
+            dvdz_at_cells=_pad_horizontal(context.dvdz_at_cells, grid=grid),
+            dwdx_at_cells=_pad_horizontal(context.dwdx_at_cells, grid=grid),
+            dwdy_at_cells=_pad_horizontal(context.dwdy_at_cells, grid=grid),
+            dwdz=_pad_horizontal(context.dwdz, grid=grid),
+            dudz_on_faces=_pad_horizontal(context.dudz_on_faces, grid=grid),
+            dvdz_on_faces=_pad_horizontal(context.dvdz_on_faces, grid=grid),
+            dwdx_on_faces=_pad_horizontal(context.dwdx_on_faces, grid=grid),
+            dwdy_on_faces=_pad_horizontal(context.dwdy_on_faces, grid=grid),
+        )
         if isinstance(config, ModulatedGradientModel):
             dudz_at_cells = context.dudz_at_cells
             dvdz_at_cells = context.dvdz_at_cells
@@ -273,59 +302,87 @@ class OracleFlowMixin:
                 wall_gradient = self._wall_gradient(context, wall)
                 dudz_at_cells = dudz_at_cells.at[0].set(wall_gradient[0])
                 dvdz_at_cells = dvdz_at_cells.at[0].set(wall_gradient[1])
-            txx, txy, _txz, tyy, _tyz, tzz = self._mgm_stress(
-                context.dudx,
-                context.dudy,
-                dudz_at_cells,
-                context.dvdx,
-                context.dvdy,
-                dvdz_at_cells,
-                context.dwdx_at_cells,
-                context.dwdy_at_cells,
-                -(context.dudx + context.dvdy),
+            padded_stresses = self._mgm_stress(
+                padded_context.dudx,
+                padded_context.dudy,
+                _pad_horizontal(dudz_at_cells, grid=grid),
+                padded_context.dvdx,
+                padded_context.dvdy,
+                _pad_horizontal(dvdz_at_cells, grid=grid),
+                padded_context.dwdx_at_cells,
+                padded_context.dwdy_at_cells,
+                -(padded_context.dudx + padded_context.dvdy),
                 grid,
                 config,
             )
+            txx, txy, _txz, tyy, _tyz, tzz = tuple(
+                _truncate_padded(value, grid=grid) for value in padded_stresses
+            )
         elif isinstance(config, AnisotropicMinimumDissipation):
-            eddy_viscosity = self._amd_eddy_viscosity(context)
-            txx = -2.0 * eddy_viscosity * context.dudx
-            txy = -eddy_viscosity * (context.dudy + context.dvdx)
-            tyy = -2.0 * eddy_viscosity * context.dvdy
-            tzz = -2.0 * eddy_viscosity * context.dwdz
+            eddy_viscosity = self._amd_eddy_viscosity(padded_context)
+            txx = _truncate_padded(
+                -2.0 * eddy_viscosity * padded_context.dudx, grid=grid
+            )
+            txy = _truncate_padded(
+                -eddy_viscosity * (padded_context.dudy + padded_context.dvdx),
+                grid=grid,
+            )
+            tyy = _truncate_padded(
+                -2.0 * eddy_viscosity * padded_context.dvdy, grid=grid
+            )
+            tzz = _truncate_padded(
+                -2.0 * eddy_viscosity * padded_context.dwdz, grid=grid
+            )
         else:
             delta = (grid.dx * grid.dy * grid.dz) ** (1.0 / 3.0)
             magnitude = _strain_magnitude(
-                context.dudx,
-                context.dudy,
-                context.dudz_at_cells,
-                context.dvdx,
-                context.dvdy,
-                context.dvdz_at_cells,
-                context.dwdx_at_cells,
-                context.dwdy_at_cells,
-                context.dwdz,
+                padded_context.dudx,
+                padded_context.dudy,
+                padded_context.dudz_at_cells,
+                padded_context.dvdx,
+                padded_context.dvdy,
+                padded_context.dvdz_at_cells,
+                padded_context.dwdx_at_cells,
+                padded_context.dwdy_at_cells,
+                padded_context.dwdz,
             )
-            coefficient = self._momentum_sgs_coefficient(context, config)
+            coefficient = _pad_horizontal(
+                self._momentum_sgs_coefficient(context, config), grid=grid
+            )
+            if isinstance(config, LagrangianScaleDependentDynamic):
+                coefficient = jnp.clip(
+                    coefficient,
+                    config.minimum_coefficient,
+                    config.maximum_coefficient,
+                )
             eddy_viscosity = coefficient * delta**2 * magnitude
-            txx = -2.0 * eddy_viscosity * context.dudx
-            txy = -eddy_viscosity * (context.dudy + context.dvdx)
-            tyy = -2.0 * eddy_viscosity * context.dvdy
-            tzz = -2.0 * eddy_viscosity * context.dwdz
+            txx = _truncate_padded(
+                -2.0 * eddy_viscosity * padded_context.dudx, grid=grid
+            )
+            txy = _truncate_padded(
+                -eddy_viscosity * (padded_context.dudy + padded_context.dvdx),
+                grid=grid,
+            )
+            tyy = _truncate_padded(
+                -2.0 * eddy_viscosity * padded_context.dvdy, grid=grid
+            )
+            tzz = _truncate_padded(
+                -2.0 * eddy_viscosity * padded_context.dwdz, grid=grid
+            )
         txz, tyz = self.sgs_vertical_flux(context, config)
-        tzz = _two_thirds_filter(tzz, grid=grid)
         x = -(
-            _truncated_horizontal_derivative(txx, grid=grid, axis="x")
-            + _truncated_horizontal_derivative(txy, grid=grid, axis="y")
+            _horizontal_derivative(txx, grid=grid, axis="x")
+            + _horizontal_derivative(txy, grid=grid, axis="y")
             + (txz[1:] - txz[:-1]) / grid.dz
         )
         y = -(
-            _truncated_horizontal_derivative(txy, grid=grid, axis="x")
-            + _truncated_horizontal_derivative(tyy, grid=grid, axis="y")
+            _horizontal_derivative(txy, grid=grid, axis="x")
+            + _horizontal_derivative(tyy, grid=grid, axis="y")
             + (tyz[1:] - tyz[:-1]) / grid.dz
         )
         z = -(
-            _truncated_horizontal_derivative(txz, grid=grid, axis="x")
-            + _truncated_horizontal_derivative(tyz, grid=grid, axis="y")
+            _horizontal_derivative(txz, grid=grid, axis="x")
+            + _horizontal_derivative(tyz, grid=grid, axis="y")
             + _cell_gradient_on_full_faces(tzz, grid.dz)
         )
         z = z.at[0].set(0.0).at[-1].set(0.0)
@@ -353,54 +410,89 @@ class OracleFlowMixin:
         ):
             raise TypeError("unsupported SGS choice")
         grid = context.velocity.x.ownership.grid
+        padded_context = replace(
+            context,
+            dudx=_pad_horizontal(context.dudx, grid=grid),
+            dudy=_pad_horizontal(context.dudy, grid=grid),
+            dudz_at_cells=_pad_horizontal(context.dudz_at_cells, grid=grid),
+            dvdx=_pad_horizontal(context.dvdx, grid=grid),
+            dvdy=_pad_horizontal(context.dvdy, grid=grid),
+            dvdz_at_cells=_pad_horizontal(context.dvdz_at_cells, grid=grid),
+            dwdx_at_cells=_pad_horizontal(context.dwdx_at_cells, grid=grid),
+            dwdy_at_cells=_pad_horizontal(context.dwdy_at_cells, grid=grid),
+            dwdz=_pad_horizontal(context.dwdz, grid=grid),
+            dudz_on_faces=_pad_horizontal(context.dudz_on_faces, grid=grid),
+            dvdz_on_faces=_pad_horizontal(context.dvdz_on_faces, grid=grid),
+            dwdx_on_faces=_pad_horizontal(context.dwdx_on_faces, grid=grid),
+            dwdy_on_faces=_pad_horizontal(context.dwdy_on_faces, grid=grid),
+        )
         if isinstance(config, ModulatedGradientModel):
-            stresses = self._mgm_stress(
-                _cell_to_full_faces(context.dudx),
-                _cell_to_full_faces(context.dudy),
-                context.dudz_on_faces,
-                _cell_to_full_faces(context.dvdx),
-                _cell_to_full_faces(context.dvdy),
-                context.dvdz_on_faces,
-                context.dwdx_on_faces,
-                context.dwdy_on_faces,
-                _cell_to_full_faces(context.dwdz),
+            padded_stresses = self._mgm_stress(
+                _cell_to_full_faces(padded_context.dudx),
+                _cell_to_full_faces(padded_context.dudy),
+                padded_context.dudz_on_faces,
+                _cell_to_full_faces(padded_context.dvdx),
+                _cell_to_full_faces(padded_context.dvdy),
+                padded_context.dvdz_on_faces,
+                padded_context.dwdx_on_faces,
+                padded_context.dwdy_on_faces,
+                _cell_to_full_faces(padded_context.dwdz),
                 grid,
                 config,
             )
-            txz, tyz = stresses[2], stresses[4]
+            txz = _truncate_padded(padded_stresses[2], grid=grid)
+            tyz = _truncate_padded(padded_stresses[4], grid=grid)
         elif isinstance(config, AnisotropicMinimumDissipation):
             viscosity_on_faces = _cell_to_full_faces(
-                self._amd_eddy_viscosity(context)
+                self._amd_eddy_viscosity(padded_context)
             )
-            txz = -viscosity_on_faces * (
-                context.dudz_on_faces + context.dwdx_on_faces
+            txz = _truncate_padded(
+                -viscosity_on_faces
+                * (padded_context.dudz_on_faces + padded_context.dwdx_on_faces),
+                grid=grid,
             )
-            tyz = -viscosity_on_faces * (
-                context.dvdz_on_faces + context.dwdy_on_faces
+            tyz = _truncate_padded(
+                -viscosity_on_faces
+                * (padded_context.dvdz_on_faces + padded_context.dwdy_on_faces),
+                grid=grid,
             )
         else:
             delta = (grid.dx * grid.dy * grid.dz) ** (1.0 / 3.0)
             face_magnitude = _strain_magnitude(
-                _cell_to_full_faces(context.dudx),
-                _cell_to_full_faces(context.dudy),
-                context.dudz_on_faces,
-                _cell_to_full_faces(context.dvdx),
-                _cell_to_full_faces(context.dvdy),
-                context.dvdz_on_faces,
-                context.dwdx_on_faces,
-                context.dwdy_on_faces,
-                _cell_to_full_faces(context.dwdz),
+                _cell_to_full_faces(padded_context.dudx),
+                _cell_to_full_faces(padded_context.dudy),
+                padded_context.dudz_on_faces,
+                _cell_to_full_faces(padded_context.dvdx),
+                _cell_to_full_faces(padded_context.dvdy),
+                padded_context.dvdz_on_faces,
+                padded_context.dwdx_on_faces,
+                padded_context.dwdy_on_faces,
+                _cell_to_full_faces(padded_context.dwdz),
             )
-            coefficient = self._momentum_sgs_coefficient(context, config)
+            coefficient = _pad_horizontal(
+                self._momentum_sgs_coefficient(context, config), grid=grid
+            )
+            if isinstance(config, LagrangianScaleDependentDynamic):
+                coefficient = jnp.clip(
+                    coefficient,
+                    config.minimum_coefficient,
+                    config.maximum_coefficient,
+                )
             viscosity_on_faces = (
                 _cell_to_full_faces(coefficient) * delta**2 * face_magnitude
             )
-            txz = -viscosity_on_faces * (context.dudz_on_faces + context.dwdx_on_faces)
-            tyz = -viscosity_on_faces * (context.dvdz_on_faces + context.dwdy_on_faces)
+            txz = _truncate_padded(
+                -viscosity_on_faces
+                * (padded_context.dudz_on_faces + padded_context.dwdx_on_faces),
+                grid=grid,
+            )
+            tyz = _truncate_padded(
+                -viscosity_on_faces
+                * (padded_context.dvdz_on_faces + padded_context.dwdy_on_faces),
+                grid=grid,
+            )
         txz = txz.at[0].set(0.0).at[-1].set(0.0)
         tyz = tyz.at[0].set(0.0).at[-1].set(0.0)
-        txz = _two_thirds_filter(txz, grid=grid)
-        tyz = _two_thirds_filter(tyz, grid=grid)
         return txz, tyz
 
     @staticmethod

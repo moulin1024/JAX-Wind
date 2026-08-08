@@ -123,6 +123,13 @@ class ZSlabBoussinesqContext:
     arrays: ZSlabScalarArrays
 
 
+class MomentumSgsDiagnosticFields(NamedTuple):
+    """Owned-cell diagnostic fields for a momentum SGS closure."""
+
+    momentum_diffusivity: Any
+    sgs_tke: Any
+
+
 class ActuatorLineDiagnostic(NamedTuple):
     """Replicated per-element aerodynamic data from a z-slab evaluation."""
 
@@ -145,6 +152,7 @@ class JaxZSlabInterpreter(ZSlabLasdMixin, ZSlabFlowMixin):
 
     decomposition: EqualZSlab
     addressable_shards: tuple[int, ...]
+    frozen_zero_scalar: bool
     exchange_packed: Callable
     _pressure_gradient: Callable
     _divergence: Callable
@@ -165,10 +173,18 @@ class JaxZSlabInterpreter(ZSlabLasdMixin, ZSlabFlowMixin):
     _dry_wall: Callable
     _dry_sgs: Callable
     _dry_sgs_vertical_flux: Callable
+    _dry_sgs_tke_transfer: Callable
     _dry_amd: Callable
     _dry_amd_vertical_flux: Callable
+    _amd_diagnostics: Callable
+    _amd_tke_transfer: Callable
     _dry_mgm: Callable
     _dry_mgm_vertical_flux: Callable
+    _mgm_sgs_tke: Callable
+    _mgm_tke_transfer: Callable
+    _fused_mgm_boussinesq: Callable
+    _fused_amd_boussinesq: Callable
+    _fused_lasd_boussinesq: Callable
     _lasd_accumulate: Callable
     _lasd_accumulate_velocity: Callable
     _lasd_update: Callable
@@ -748,13 +764,16 @@ def build_zslab_interpreter(
     addressable_shards: tuple[int, ...] | None = None,
     axis_name: str = "jaxwind_z",
     porte_agel_wall_correction: bool = True,
-    resolved_filter_grid_ratio: float | None = None,
+    nonlinear_padding_ratio: float = 1.5,
+    frozen_zero_scalar: bool = False,
 ) -> JaxZSlabInterpreter:
     """Build the sole production interpreter.
 
     A one-shard decomposition is the ordinary single-process case and defaults
     to its only addressable shard. Multi-shard decompositions use the same
     interpreter and require the caller's addressable global shard indices.
+    ``frozen_zero_scalar`` is reserved for runners whose passive scalar and
+    scalar boundary fluxes are identically zero for the entire integration.
     """
 
     from ._jax_zslab_factory import (
@@ -766,5 +785,6 @@ def build_zslab_interpreter(
         addressable_shards=addressable_shards,
         axis_name=axis_name,
         porte_agel_wall_correction=porte_agel_wall_correction,
-        resolved_filter_grid_ratio=resolved_filter_grid_ratio,
+        nonlinear_padding_ratio=nonlinear_padding_ratio,
+        frozen_zero_scalar=frozen_zero_scalar,
     )

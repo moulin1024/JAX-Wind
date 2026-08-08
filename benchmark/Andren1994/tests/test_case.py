@@ -11,8 +11,11 @@ from benchmark.Andren1994.overlay_paper_figures import (
     FIGURE13_AXES,
     FIGURE14_AXES,
     FIGURE15_AXES,
+    FIGURE11_AXIS,
+    FIGURE3_AXES,
     FIGURE7_AXIS,
     Axis,
+    _momentum_stationarity,
     _pixels,
 )
 
@@ -61,6 +64,14 @@ def test_lasd_fifth_model_uses_safe_trajectory_cadence() -> None:
     assert math.isclose(args.hours * 3600.0 * run.F_CORIOLIS, 10.0)
 
 
+def test_three_sgs_models_share_three_halves_padding() -> None:
+    assert run_lasd.NONLINEAR_PADDING_RATIO == 1.5
+    for model in ("mgm", "lasd", "amd"):
+        args = run_lasd.parse_args(["--quick", "--sgs", model])
+        assert args.sgs == model
+        assert args.output.name == f"{model}_quick"
+
+
 def test_profile_variance_excludes_temporal_plane_mean_drift() -> None:
     samples = [
         {
@@ -73,6 +84,22 @@ def test_profile_variance_excludes_temporal_plane_mean_drift() -> None:
     assert np.allclose(averaged["resolved_scalar_variance"], 2.0)
     contaminated = averaged["scalar2"] - averaged["scalar"] ** 2
     assert contaminated[0] > 60.0
+
+
+def test_statistics_restart_accepts_new_fig11_profile(tmp_path) -> None:
+    path = tmp_path / "statistics_samples.npz"
+    samples = [
+        {"base": np.asarray([1.0, 2.0])},
+        {
+            "base": np.asarray([3.0, 4.0]),
+            "resolved_tke_sgs_transfer": np.asarray([-5.0, -2.0]),
+        },
+    ]
+    run_lasd._write_statistics_state(path, [1.0, 2.0], samples)
+    _, loaded = run_lasd._load_statistics_state(path)
+    assert np.all(np.isnan(loaded[0]["resolved_tke_sgs_transfer"]))
+    averaged = run_lasd._average_profile_samples(loaded)
+    assert np.allclose(averaged["resolved_tke_sgs_transfer"], [-5.0, -2.0])
 
 
 def test_fig13_budget_normalization_and_tendency_are_explicit() -> None:
@@ -109,6 +136,20 @@ def test_paper_overlay_axis_registration_maps_exact_corners() -> None:
     assert log_points == [(10, 220), (110, 20)]
 
 
+def test_figure3_stationarity_is_one_for_balanced_component_momentum() -> None:
+    surface_uw = np.asarray([-0.1])
+    surface_vw = np.asarray([-0.05])
+    u = np.full((1, 2), 10.0 - 250.0)
+    v = np.full((1, 2), 500.0)
+    cu, cv = _momentum_stationarity(u, v, surface_uw, surface_vw, dz=1.0)
+    assert np.allclose(cu, 1.0)
+    assert np.allclose(cv, 1.0)
+    assert FIGURE3_AXES == (
+        Axis(332, 138, 741, 551, 0.0, 14.0, 0.0, 2.0),
+        Axis(333, 795, 742, 1208, 0.0, 14.0, 0.0, 3.0),
+    )
+
+
 def test_figure7_registration_uses_the_printed_frame_and_range() -> None:
     assert FIGURE7_AXIS == Axis(324, 832, 736, 1243, 0.0, 8.0, 0.0, 0.35)
     points = _pixels(
@@ -134,6 +175,15 @@ def test_figure14_registration_uses_each_printed_panel() -> None:
         np.asarray([0.0, 15.0]),
         np.asarray([0.0, 0.35]),
     ) == [(327, 1217), (735, 806)]
+
+
+def test_figure11_registration_uses_signed_dissipation_range() -> None:
+    assert FIGURE11_AXIS == Axis(350, 136, 757, 549, -150.0, 0.0, 0.0, 0.35)
+    assert _pixels(
+        FIGURE11_AXIS,
+        np.asarray([-150.0, 0.0]),
+        np.asarray([0.0, 0.35]),
+    ) == [(350, 549), (757, 136)]
 
 
 def test_figure13_registration_uses_all_four_budget_panels() -> None:
@@ -179,9 +229,10 @@ def test_paper_overlay_sheet_registers_every_numbered_figure() -> None:
         4,
         5,
         6,
-        7,
-        8,
-        13,
+            7,
+            8,
+            11,
+            13,
         14,
         15,
     }

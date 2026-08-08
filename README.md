@@ -28,8 +28,8 @@ implementations directly testable.
   [`spectral-fd`](external/bw1000_benchmark/README.md);
 - fixed-step AB2 integration with explicit startup, accepted-time diagnostics,
   and restart-complete tendency history;
-- conservative dry-flow and scalar transport with horizontal two-thirds
-  truncation;
+- conservative dry-flow and scalar transport with horizontal three-halves
+  padding dealiasing;
 - neutral log-law walls, pressure-gradient forcing, Coriolis forcing, static
   Smagorinsky, modulated gradient model (MGM), and Lagrangian scale-dependent
   dynamic (LASD) closures;

@@ -345,6 +345,7 @@ def run_case(
         AnisotropicMinimumDissipation,
         BoussinesqModel,
         BoussinesqVectorField,
+        ConservativeAdvection,
         ConservativeScalarAdvection,
         DryFlowModel,
         FilteredNeutralLogWall,
@@ -357,7 +358,6 @@ def run_case(
         NoBuoyancy,
         NoRayleighDamping,
         NoRotation,
-        RotationalAdvection,
         ScalarFluxBoundary,
         StaticSmagorinskyScalarFlux,
     )
@@ -406,7 +406,10 @@ def run_case(
         decomposition,
         addressable_shards=addressable_shards,
         porte_agel_wall_correction=case.wall.porte_agel_correction,
-        resolved_filter_grid_ratio=case.sgs.filter_grid_ratio,
+        nonlinear_padding_ratio=1.5,
+        # This runner initializes an unused passive scalar to exact zero and
+        # imposes zero scalar fluxes for the complete integration.
+        frozen_zero_scalar=True,
     )
     pressure_solver = build_spectral_fd_pressure_adapter(
         decomposition,
@@ -448,7 +451,7 @@ def run_case(
         )
     model = BoussinesqModel(
         DryFlowModel(
-            RotationalAdvection(),
+            ConservativeAdvection(),
             KinematicPressureGradient(
                 scales.to_execution_acceleration(case.flow.pressure_acceleration_m_s2)
             ),
@@ -470,8 +473,9 @@ def run_case(
     )
     physics_fingerprint = (
         momentum_sgs.fingerprint
-        + "|advection=rotational"
-        + f"|resolved-fgr={case.sgs.filter_grid_ratio.hex()}"
+        + "|advection=conservative"
+        + "|dealiasing=three-halves-padding"
+        + ("|coefficient-padding=bounded" if case.sgs.model == "lasd" else "")
     )
     integrator_config = AB2Config(scales.to_execution_time(case.time.dt_seconds))
     checkpoint_layout = ZSlabCheckpointLayout(
@@ -670,6 +674,12 @@ def run_case(
 
     summary = {
         **case.resolved(),
+        "physics": {
+            "momentum_advection": "conservative",
+            "dealiasing": "three-halves-padding",
+            "nonlinear_padding_ratio": 1.5,
+            "fingerprint": physics_fingerprint,
+        },
         "runtime": {
             "jax_backend": jax.default_backend(),
             "jax_devices": shard_count,

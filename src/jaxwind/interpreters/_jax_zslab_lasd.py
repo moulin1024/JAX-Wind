@@ -23,9 +23,11 @@ from jaxwind.domain import (
     MomentumLasdMm,
     MomentumLasdNn,
     MomentumLasdQn,
+    PassiveScalarConcentration,
     PassiveScalarTendency,
     PotentialTemperaturePerturbation,
     PotentialTemperatureTendency,
+    Projected,
     ScalarLasdCoefficient,
     ScalarLasdLm,
     ScalarLasdMm,
@@ -39,13 +41,18 @@ from jaxwind.domain import (
 from jaxwind.operators import VelocityVector
 from jaxwind.physics.dry_flow import (
     AnisotropicMinimumDissipation,
+    ConservativeAdvection,
     FilteredNeutralLogWall,
+    KinematicPressureGradient,
     ModulatedGradientModel,
     NeutralLogWall,
+    NoRotation,
     StaticSmagorinsky,
 )
 from jaxwind.physics.boussinesq import (
     BoussinesqFields,
+    BoussinesqModel,
+    BoussinesqTendency,
     ConservativeScalarAdvection,
     LinearBoussinesqBuoyancy,
     NoBuoyancy,
@@ -169,9 +176,7 @@ class ZSlabLasdMixin:
             fall_width=fall_width,
         )
         blend = -jnp.expm1(
-            -jnp.asarray(dt, dtype)
-            * mask
-            / jnp.asarray(fringe.relaxation_time, dtype)
+            -jnp.asarray(dt, dtype) * mask / jnp.asarray(fringe.relaxation_time, dtype)
         )[None, None, None, :]
 
         def field(
@@ -200,18 +205,24 @@ class ZSlabLasdMixin:
         target_s = target.scalar
         relaxed = LasdClosureMemory(
             MomentumLasdMemory(
-                *(field(left, right) for left, right in zip(
-                    current_m.fields(),
-                    target_m.fields(),
-                    strict=True,
-                ))
+                *(
+                    field(left, right)
+                    for left, right in zip(
+                        current_m.fields(),
+                        target_m.fields(),
+                        strict=True,
+                    )
+                )
             ),
             ScalarLasdMemory(
-                *(field(left, right) for left, right in zip(
-                    current_s.fields(),
-                    target_s.fields(),
-                    strict=True,
-                ))
+                *(
+                    field(left, right)
+                    for left, right in zip(
+                        current_s.fields(),
+                        target_s.fields(),
+                        strict=True,
+                    )
+                )
             ),
             closure.configuration_fingerprint,
         )
@@ -261,17 +272,15 @@ class ZSlabLasdMixin:
             self._validate_field(velocity.z.owned, ZFace)
             if velocity.z.owned.quantity is not VerticalVelocity:
                 raise TypeError("LASD trajectory requires vertical velocity")
-            trajectory_x, trajectory_y, trajectory_z = (
-                self._lasd_accumulate_velocity(
-                    velocity.x.payload,
-                    velocity.y.payload,
-                    velocity.z.owned.payload,
-                    velocity.z.lower_boundary,
-                    old_m.trajectory_x.payload,
-                    old_m.trajectory_y.payload,
-                    old_m.trajectory_z.payload,
-                    interval,
-                )
+            trajectory_x, trajectory_y, trajectory_z = self._lasd_accumulate_velocity(
+                velocity.x.payload,
+                velocity.y.payload,
+                velocity.z.owned.payload,
+                velocity.z.lower_boundary,
+                old_m.trajectory_x.payload,
+                old_m.trajectory_y.payload,
+                old_m.trajectory_z.payload,
+                interval,
             )
         field = lambda template, payload: self._addressable_closure_field(  # noqa: E731
             template,
@@ -360,6 +369,140 @@ class ZSlabLasdMixin:
         context: ZSlabBoussinesqContext,
     ) -> ZSlabDryFlowContext:
         return context.momentum
+
+    def fused_boussinesq_tendency(
+        self,
+        fields: BoussinesqFields,
+        model: BoussinesqModel,
+    ) -> BoussinesqTendency | None:
+        """Use one mapped executable for compatible neutral SGS models."""
+        momentum_model = model.momentum
+        wall = momentum_model.wall
+        common = (
+            isinstance(momentum_model.advection, ConservativeAdvection)
+            and isinstance(momentum_model.pressure_gradient, KinematicPressureGradient)
+            and isinstance(wall, (NeutralLogWall, FilteredNeutralLogWall))
+            and isinstance(momentum_model.rotation, NoRotation)
+            and isinstance(model.scalar_advection, ConservativeScalarAdvection)
+            and isinstance(model.buoyancy, NoBuoyancy)
+            and isinstance(model.rayleigh_damping, NoRayleighDamping)
+            and isinstance(model.scalar_boundary, ScalarFluxBoundary)
+        )
+        sgs = momentum_model.sgs
+        mgm = isinstance(sgs, ModulatedGradientModel) and isinstance(
+            model.scalar_sgs, StaticSmagorinskyScalarFlux
+        )
+        amd = isinstance(sgs, AnisotropicMinimumDissipation) and isinstance(
+            model.scalar_sgs, StaticSmagorinskyScalarFlux
+        )
+        lasd = isinstance(sgs, LagrangianScaleDependentDynamic) and isinstance(
+            model.scalar_sgs, LagrangianScaleDependentScalarFlux
+        )
+        frozen_model = self.frozen_zero_scalar and (amd or lasd)
+        if not common or not (mgm or frozen_model):
+            return None
+
+        velocity = fields.velocity
+        self._validate_velocity_cell(velocity.x, XVelocity)
+        self._validate_velocity_cell(velocity.y, YVelocity)
+        self._validate_field(velocity.z.owned, ZFace)
+        if velocity.z.owned.quantity is not VerticalVelocity:
+            raise TypeError("dry-flow vertical velocity requires VerticalVelocity")
+        if not (
+            velocity.x.phase is Projected
+            and velocity.y.phase is Projected
+            and velocity.z.owned.phase is Projected
+        ):
+            raise TypeError("dry-flow context requires projected velocity")
+        scalar = fields.potential_temperature
+        self._validate_field(scalar, Cell)
+        if scalar.quantity not in (
+            PotentialTemperaturePerturbation,
+            PassiveScalarConcentration,
+        ):
+            raise TypeError("Boussinesq context requires a supported scalar quantity")
+        if scalar.phase is not Accepted:
+            raise TypeError("Boussinesq context requires accepted scalar state")
+        if frozen_model and (
+            scalar.quantity is not PassiveScalarConcentration
+            or model.scalar_boundary.lower_flux != 0.0
+            or model.scalar_boundary.upper_flux != 0.0
+        ):
+            raise ValueError(
+                "frozen zero scalar fusion requires a passive scalar and zero fluxes"
+            )
+
+        reference_height = 0.5 * self.decomposition.grid.dz
+        if wall.roughness_length >= reference_height:
+            raise ValueError("wall roughness must be below the first cell centre")
+        drag = (
+            wall.von_karman / math.log(reference_height / wall.roughness_length)
+        ) ** 2
+        filtered = isinstance(wall, FilteredNeutralLogWall)
+        wall_filter_width = (
+            wall.filter_grid_ratio * wall.test_filter_ratio if filtered else 1.0
+        )
+        common_arguments = (
+            velocity.x.payload,
+            velocity.y.payload,
+            velocity.z.owned.payload,
+            velocity.z.lower_boundary,
+            scalar.payload,
+        )
+        forcing_arguments = (
+            momentum_model.pressure_gradient.x_acceleration,
+            momentum_model.pressure_gradient.y_acceleration,
+            drag,
+            filtered,
+            wall_filter_width,
+        )
+        if mgm:
+            x, y, z, scalar_payload = self._fused_mgm_boussinesq(
+                *common_arguments,
+                *forcing_arguments,
+                sgs.filter_grid_ratio,
+                sgs.dissipation_coefficient,
+                sgs.fallback_coefficient,
+                sgs.gradient_norm_epsilon,
+                sgs.kinematic_viscosity,
+                True,
+                wall.roughness_length,
+                wall.von_karman,
+                sgs.fallback_coefficient**2 / model.scalar_sgs.turbulent_prandtl,
+                model.scalar_boundary.lower_flux,
+                model.scalar_boundary.upper_flux,
+            )
+        elif amd:
+            x, y, z, scalar_payload = self._fused_amd_boussinesq(
+                *common_arguments,
+                *forcing_arguments,
+            )
+        else:
+            closure = fields.closure
+            if not isinstance(closure, LasdClosureMemory):
+                raise TypeError("LASD fusion requires initialized closure memory")
+            x, y, z, scalar_payload = self._fused_lasd_boussinesq(
+                *common_arguments,
+                closure.momentum.coefficient.payload,
+                *forcing_arguments,
+                sgs.minimum_coefficient,
+                sgs.maximum_coefficient,
+            )
+        scalar_quantity = (
+            PotentialTemperatureTendency
+            if scalar.quantity is PotentialTemperaturePerturbation
+            else PassiveScalarTendency
+        )
+        return BoussinesqTendency(
+            self._dry_tendency(x, y, z),
+            AddressableField(
+                scalar_quantity,
+                Cell,
+                self._expected_regions(Cell),
+                Evaluated,
+                scalar_payload.astype(scalar.payload.dtype),
+            ),
+        )
 
     def _scalar_tendency(
         self,
@@ -490,17 +633,23 @@ class ZSlabLasdMixin:
                 context.arrays.theta,
                 momentum_coefficient**2 / config.turbulent_prandtl,
             )
+            coefficient_bounds = (0.0, math.inf)
         else:
             closure = context.momentum.closure
             if not isinstance(closure, LasdClosureMemory):
                 raise TypeError("scalar LASD requires initialized closure memory")
             coefficient = closure.scalar.coefficient.payload
+            coefficient_bounds = (
+                config.minimum_coefficient,
+                config.maximum_coefficient,
+            )
         return self._scalar_tendency(
             context,
             self._scalar_sgs(
                 context.arrays,
                 context.momentum.arrays,
                 coefficient,
+                *coefficient_bounds,
                 boundary.lower_flux,
                 boundary.upper_flux,
                 config.stability_buoyancy_coefficient if dynamic else 0.0,
@@ -583,7 +732,5 @@ class ZSlabLasdMixin:
             Cell,
             self._expected_regions(Cell),
             Evaluated,
-            self._combine_payloads(
-                tuple(term.payload for term in tendencies)
-            ),
+            self._combine_payloads(tuple(term.payload for term in tendencies)),
         )

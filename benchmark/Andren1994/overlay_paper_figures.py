@@ -53,6 +53,11 @@ class FigureSpec:
 # Pixel registration of the actual Fig. 7 plot frame on rendered PDF page 13.
 # Its printed abscissa ends at 8.0; caption/legend whitespace is not axis area.
 FIGURE7_AXIS = Axis(324, 832, 736, 1243, 0.0, 8.0, 0.0, 0.35)
+FIGURE3_AXES = (
+    Axis(332, 138, 741, 551, 0.0, 14.0, 0.0, 2.0),
+    Axis(333, 795, 742, 1208, 0.0, 14.0, 0.0, 3.0),
+)
+FIGURE11_AXIS = Axis(350, 136, 757, 549, -150.0, 0.0, 0.0, 0.35)
 FIGURE14_AXES = (
     Axis(332, 138, 740, 551, 0.0, 10.0, 0.0, 0.35),
     Axis(327, 806, 735, 1217, 0.0, 15.0, 0.0, 0.35),
@@ -77,7 +82,7 @@ FIGURE15_AXES = (
 FIGURES = (
     FigureSpec(1, 5, (120, 455, 900, 1370)),
     FigureSpec(2, 8, (100, 90, 900, 675), "JAX-Wind total TKE"),
-    FigureSpec(3, 9, (205, 90, 830, 1365)),
+    FigureSpec(3, 9, (100, 90, 900, 1365)),
     FigureSpec(4, 10, (250, 90, 820, 1360), "JAX-Wind on panels (a,b)"),
     FigureSpec(5, 11, (100, 90, 900, 900), "JAX-Wind total variances"),
     FigureSpec(6, 12, (100, 90, 900, 1335), "JAX-Wind total flux"),
@@ -85,7 +90,7 @@ FIGURES = (
     FigureSpec(8, 14, (245, 90, 800, 690), "JAX-Wind scalar flux"),
     FigureSpec(9, 15, (215, 90, 815, 700)),
     FigureSpec(10, 15, (215, 730, 815, 1365)),
-    FigureSpec(11, 17, (220, 90, 815, 690)),
+    FigureSpec(11, 17, (220, 90, 815, 690), "JAX-Wind TKE SGS transfer"),
     FigureSpec(12, 18, (125, 90, 905, 1370)),
     FigureSpec(13, 19, (115, 90, 905, 985), "JAX-Wind complete scalar-flux budget"),
     FigureSpec(14, 20, (240, 90, 810, 1350), "JAX-Wind LASD diffusivities"),
@@ -283,6 +288,7 @@ def _profile_data(results: Path, statistics_ustar: float) -> dict[str, np.ndarra
         "total_wc_over_ustar_cstar",
         "momentum_diffusivity_m2_s",
         "scalar_diffusivity_m2_s",
+        "resolved_tke_sgs_transfer_over_f_ustar2",
     )
     for name in optional:
         data[name] = np.asarray(profile[name]) if name in names else None
@@ -300,6 +306,100 @@ def _history_data(results: Path, statistics_ustar: float) -> dict[str, np.ndarra
     return {
         "tf": np.asarray(history["time_seconds"]) * 1.0e-4,
         "total_tke": 1.0e-4 * np.asarray(history[tke_name]) / statistics_ustar**3,
+    }
+
+
+def _momentum_stationarity(
+    u: NDArray[np.floating],
+    v: NDArray[np.floating],
+    surface_uw: NDArray[np.floating],
+    surface_vw: NDArray[np.floating],
+    *,
+    dz: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return paper Eqs. (6)-(7), using midpoint vertical quadrature."""
+    coriolis = 1.0e-4
+    geostrophic_u = 10.0
+    geostrophic_v = 0.0
+    integrated_v_deficit = np.sum(v - geostrophic_v, axis=1) * dz
+    integrated_u_deficit = np.sum(u - geostrophic_u, axis=1) * dz
+    cu = -coriolis * integrated_v_deficit / surface_uw
+    cv = coriolis * integrated_u_deficit / surface_vw
+    return cu, cv
+
+
+def _figure3_data(results: Path) -> dict[str, np.ndarray | str] | None:
+    """Load Cu/Cv, reconstructing only the stress direction for legacy runs."""
+    samples_path = results / "statistics_samples.npz"
+    if not samples_path.exists():
+        return None
+    with np.load(samples_path, allow_pickle=False) as samples:
+        required = {"profile_times", "u", "v"}
+        if not required.issubset(samples.files):
+            return None
+        times = np.asarray(samples["profile_times"], dtype=float)
+        u = np.asarray(samples["u"], dtype=float)
+        v = np.asarray(samples["v"], dtype=float)
+
+    history = np.genfromtxt(results / "history.csv", delimiter=",", names=True)
+    names = set(history.dtype.names or ())
+    history_times = np.atleast_1d(np.asarray(history["time_seconds"], dtype=float))
+
+    def reconstructed_stress() -> tuple[np.ndarray, np.ndarray] | None:
+        needed = {"ustar", "near_wall_u", "near_wall_v"}
+        if not needed.issubset(names):
+            return None
+        ustar = np.interp(times, history_times, np.atleast_1d(history["ustar"]))
+        near_u = np.interp(
+            times, history_times, np.atleast_1d(history["near_wall_u"])
+        )
+        near_v = np.interp(
+            times, history_times, np.atleast_1d(history["near_wall_v"])
+        )
+        speed = np.maximum(np.hypot(near_u, near_v), np.finfo(float).tiny)
+        return -(ustar**2) * near_u / speed, -(ustar**2) * near_v / speed
+
+    if {"surface_uw_m2_s2", "surface_vw_m2_s2"}.issubset(names):
+        raw_uw = np.atleast_1d(history["surface_uw_m2_s2"]).astype(float)
+        raw_vw = np.atleast_1d(history["surface_vw_m2_s2"]).astype(float)
+        exact = np.isfinite(raw_uw) & np.isfinite(raw_vw)
+        if np.all(exact):
+            surface_uw = np.interp(times, history_times, raw_uw)
+            surface_vw = np.interp(times, history_times, raw_vw)
+            stress_kind = "exact component wall stress"
+        else:
+            reconstructed = reconstructed_stress()
+            if reconstructed is None or not np.any(exact):
+                return None
+            surface_uw, surface_vw = reconstructed
+            exact_range = (times >= history_times[exact][0]) & (
+                times <= history_times[exact][-1]
+            )
+            surface_uw[exact_range] = np.interp(
+                times[exact_range], history_times[exact], raw_uw[exact]
+            )
+            surface_vw[exact_range] = np.interp(
+                times[exact_range], history_times[exact], raw_vw[exact]
+            )
+            stress_kind = "mixed exact and reconstructed component wall stress"
+    else:
+        # Older result archives retained u* and the first-cell mean wind but not the
+        # two component stresses.  Reconstruct their direction from that mean wind;
+        # the magnitude remains exact because |tau_0| = u*^2.
+        reconstructed = reconstructed_stress()
+        if reconstructed is None:
+            return None
+        surface_uw, surface_vw = reconstructed
+        stress_kind = "wall-stress direction reconstructed from first-cell mean wind"
+
+    summary = json.loads((results / "summary.json").read_text())
+    dz = float(summary["grid"]["lz"]) / u.shape[1]
+    cu, cv = _momentum_stationarity(u, v, surface_uw, surface_vw, dz=dz)
+    return {
+        "tf": times * 1.0e-4,
+        "cu": cu,
+        "cv": cv,
+        "stress_kind": stress_kind,
     }
 
 
@@ -499,6 +599,7 @@ def main() -> None:
     summary = json.loads((args.results / "summary.json").read_text())
     statistics_ustar = summary["comparison"]["statistics_ustar_m_s"]
     history = _history_data(args.results, statistics_ustar)
+    figure3_data = _figure3_data(args.results)
     profile = _profile_data(args.results, statistics_ustar)
     spectra = _spectra_data(args.results)
     budget = _budget_data(args.results)
@@ -525,6 +626,30 @@ def main() -> None:
         "JAX-Wind LASD total" if is_lasd else "JAX-Wind resolved",
     )
     figure2 = _crop(figure2, (100, 90, 900, 675))
+
+    figure3 = None
+    if figure3_data is not None:
+        figure3 = pages[9]
+        _draw_curve(
+            figure3,
+            FIGURE3_AXES[0],
+            figure3_data["tf"],
+            figure3_data["cu"],
+        )
+        _draw_curve(
+            figure3,
+            FIGURE3_AXES[1],
+            figure3_data["tf"],
+            figure3_data["cv"],
+        )
+        label = (
+            "JAX-Wind"
+            if figure3_data["stress_kind"] == "exact component wall stress"
+            else "JAX-Wind (reconstructed stress angle)"
+        )
+        _label(figure3, (330, 650), label, size=18)
+        figure3 = _crop(figure3, (100, 90, 900, 1365))
+        active_comparisons[3] = "JAX-Wind Cu, Cv"
 
     figure4 = pages[10]
     _draw_curve(
@@ -581,6 +706,19 @@ def main() -> None:
     )
     _label(figure6, (390, 690), "JAX-Wind total")
     figure6 = _crop(figure6, (100, 90, 900, 1335))
+
+    figure11 = None
+    if profile["resolved_tke_sgs_transfer_over_f_ustar2"] is not None:
+        figure11 = pages[17]
+        _draw_curve(
+            figure11,
+            FIGURE11_AXIS,
+            profile["resolved_tke_sgs_transfer_over_f_ustar2"],
+            profile["height"],
+        )
+        _label(figure11, (370, 285), "JAX-Wind signed SGS transfer", size=16)
+        figure11 = _crop(figure11, (220, 90, 815, 690))
+        active_comparisons[11] = "JAX-Wind TKE SGS transfer"
 
     scalar_outputs = []
     if profile["total_scalar_variance_over_cstar2"] is not None:
@@ -702,6 +840,11 @@ def main() -> None:
 
     outputs = (
         ("Figure 2 - integrated TKE", "fig02_jaxwind_overlay.png", figure2),
+    ) + (
+        (("Figure 3 - momentum stationarity", "fig03_jaxwind_overlay.png", figure3),)
+        if figure3 is not None
+        else ()
+    ) + (
         (
             "Figure 4 - mean velocity/scalar gradients",
             "fig04_jaxwind_overlay.png",
@@ -709,6 +852,10 @@ def main() -> None:
         ),
         ("Figure 5 - velocity variances", "fig05_jaxwind_overlay.png", figure5),
         ("Figure 6 - momentum fluxes", "fig06_jaxwind_overlay.png", figure6),
+    ) + (
+        (("Figure 11 - TKE SGS transfer", "fig11_jaxwind_overlay.png", figure11),)
+        if figure11 is not None
+        else ()
     ) + tuple(scalar_outputs)
     for _, filename, image in outputs:
         image.save(output / filename, dpi=(180, 180))

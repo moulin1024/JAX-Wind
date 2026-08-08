@@ -229,40 +229,66 @@ def _wall_filter(values, *, grid, filter_width: float):
     ).astype(values.dtype)
 
 
-def _two_thirds_mask(grid, dtype):
-    """Fixed sharp mask used only for nonlinear horizontal products."""
-    x_mode = jnp.arange(grid.nx // 2 + 1)
-    y_mode = jnp.fft.fftfreq(grid.ny) * grid.ny
-    keep_x = x_mode <= grid.nx // 3
-    keep_y = jnp.abs(y_mode) <= grid.ny // 3
-    return (keep_y[:, None] & keep_x[None, :]).astype(dtype)
-
-
-def _two_thirds_filter(values, *, grid):
-    spectrum = jnp.fft.rfftn(values, axes=(-2, -1))
-    mask = _two_thirds_mask(grid, values.real.dtype)
-    return jnp.fft.irfftn(
-        spectrum * mask,
-        s=(grid.ny, grid.nx),
+def _pad_horizontal(values, *, grid, padding_ratio: float = 1.5):
+    padded_ny = int(math.ceil(padding_ratio * grid.ny))
+    padded_nx = int(math.ceil(padding_ratio * grid.nx))
+    before_y = padded_ny // 2 - grid.ny // 2
+    before_x = padded_nx // 2 - grid.nx // 2
+    after_y = padded_ny - grid.ny - before_y
+    after_x = padded_nx - grid.nx - before_x
+    keep = jnp.ones((grid.ny, grid.nx), dtype=values.real.dtype)
+    if grid.nx % 2 == 0:
+        keep = keep.at[:, grid.nx // 2].set(0.0)
+    if grid.ny % 2 == 0:
+        keep = keep.at[grid.ny // 2, :].set(0.0)
+    shifted = jnp.fft.fftshift(
+        jnp.fft.fftn(values, axes=(-2, -1)) * keep,
         axes=(-2, -1),
+    )
+    padded = jnp.pad(
+        shifted,
+        ((0, 0),) * (values.ndim - 2)
+        + ((before_y, after_y), (before_x, after_x)),
+    )
+    scale = (padded_ny * padded_nx) / (grid.ny * grid.nx)
+    return (
+        jnp.fft.ifftn(
+            jnp.fft.ifftshift(padded, axes=(-2, -1)),
+            axes=(-2, -1),
+        ).real
+        * scale
     ).astype(values.dtype)
 
 
-def _truncated_horizontal_derivative(values, *, grid, axis: str):
-    kx, ky, _ = _horizontal_symbols(grid, values.real.dtype)
-    spectrum = jnp.fft.rfftn(values, axes=(-2, -1))
-    if axis == "x":
-        multiplier = 1j * kx[None, None, :]
-    elif axis == "y":
-        multiplier = 1j * ky[None, :, None]
-    else:
-        raise ValueError("horizontal derivative axis must be 'x' or 'y'")
-    mask = _two_thirds_mask(grid, values.real.dtype)
-    return jnp.fft.irfftn(
-        spectrum * multiplier * mask,
-        s=(grid.ny, grid.nx),
+def _truncate_padded(values, *, grid, padding_ratio: float = 1.5):
+    padded_ny = int(math.ceil(padding_ratio * grid.ny))
+    padded_nx = int(math.ceil(padding_ratio * grid.nx))
+    before_y = padded_ny // 2 - grid.ny // 2
+    before_x = padded_nx // 2 - grid.nx // 2
+    shifted = jnp.fft.fftshift(
+        jnp.fft.fftn(values, axes=(-2, -1)),
         axes=(-2, -1),
+    )
+    cropped = shifted[
+        ...,
+        before_y : before_y + grid.ny,
+        before_x : before_x + grid.nx,
+    ]
+    scale = (grid.ny * grid.nx) / (padded_ny * padded_nx)
+    return (
+        jnp.fft.ifftn(
+            jnp.fft.ifftshift(cropped, axes=(-2, -1)),
+            axes=(-2, -1),
+        ).real
+        * scale
     ).astype(values.dtype)
+
+
+def _padded_product(left, right, *, grid):
+    return _truncate_padded(
+        _pad_horizontal(left, grid=grid) * _pad_horizontal(right, grid=grid),
+        grid=grid,
+    )
 
 
 def _require_velocity_component(field: Field, quantity: type) -> GlobalTestRegion:

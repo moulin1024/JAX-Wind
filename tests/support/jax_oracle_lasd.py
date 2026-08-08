@@ -66,17 +66,19 @@ from .jax_oracle_core import (
     OracleDryFlowContext,
     _cell_to_full_faces,
     _history_boundary,
+    _horizontal_derivative,
     _lagrangian_average,
     _lasd_beta,
     _momentum_lasd_contractions,
     _oracle_tendency,
+    _pad_horizontal,
+    _padded_product,
     _require_tiny_global,
     _safe_divide,
     _scalar_cell_gradient,
     _scalar_lasd_contractions,
     _strain_magnitude,
-    _truncated_horizontal_derivative,
-    _two_thirds_filter,
+    _truncate_padded,
 )
 
 
@@ -534,18 +536,19 @@ class OracleLasdMixin:
         momentum = context.momentum
         grid = context.potential_temperature.ownership.grid
         theta = context.potential_temperature.payload
-        vertical_flux = _two_thirds_filter(
-            momentum.velocity.z.payload * context.theta_on_faces,
+        vertical_flux = _padded_product(
+            momentum.velocity.z.payload,
+            context.theta_on_faces,
             grid=grid,
         )
         tendency = -(
-            _truncated_horizontal_derivative(
-                momentum.velocity.x.payload * theta,
+            _horizontal_derivative(
+                _padded_product(momentum.velocity.x.payload, theta, grid=grid),
                 grid=grid,
                 axis="x",
             )
-            + _truncated_horizontal_derivative(
-                momentum.velocity.y.payload * theta,
+            + _horizontal_derivative(
+                _padded_product(momentum.velocity.y.payload, theta, grid=grid),
                 grid=grid,
                 axis="y",
             )
@@ -581,27 +584,43 @@ class OracleLasdMixin:
         momentum = context.momentum
         grid = context.potential_temperature.ownership.grid
         delta = (grid.dx * grid.dy * grid.dz) ** (1.0 / 3.0)
+        padded_momentum = replace(
+            momentum,
+            dudx=_pad_horizontal(momentum.dudx, grid=grid),
+            dudy=_pad_horizontal(momentum.dudy, grid=grid),
+            dudz_at_cells=_pad_horizontal(momentum.dudz_at_cells, grid=grid),
+            dvdx=_pad_horizontal(momentum.dvdx, grid=grid),
+            dvdy=_pad_horizontal(momentum.dvdy, grid=grid),
+            dvdz_at_cells=_pad_horizontal(momentum.dvdz_at_cells, grid=grid),
+            dwdx_at_cells=_pad_horizontal(momentum.dwdx_at_cells, grid=grid),
+            dwdy_at_cells=_pad_horizontal(momentum.dwdy_at_cells, grid=grid),
+            dwdz=_pad_horizontal(momentum.dwdz, grid=grid),
+            dudz_on_faces=_pad_horizontal(momentum.dudz_on_faces, grid=grid),
+            dvdz_on_faces=_pad_horizontal(momentum.dvdz_on_faces, grid=grid),
+            dwdx_on_faces=_pad_horizontal(momentum.dwdx_on_faces, grid=grid),
+            dwdy_on_faces=_pad_horizontal(momentum.dwdy_on_faces, grid=grid),
+        )
         cell_magnitude = _strain_magnitude(
-            momentum.dudx,
-            momentum.dudy,
-            momentum.dudz_at_cells,
-            momentum.dvdx,
-            momentum.dvdy,
-            momentum.dvdz_at_cells,
-            momentum.dwdx_at_cells,
-            momentum.dwdy_at_cells,
-            momentum.dwdz,
+            padded_momentum.dudx,
+            padded_momentum.dudy,
+            padded_momentum.dudz_at_cells,
+            padded_momentum.dvdx,
+            padded_momentum.dvdy,
+            padded_momentum.dvdz_at_cells,
+            padded_momentum.dwdx_at_cells,
+            padded_momentum.dwdy_at_cells,
+            padded_momentum.dwdz,
         )
         face_magnitude = _strain_magnitude(
-            _cell_to_full_faces(momentum.dudx),
-            _cell_to_full_faces(momentum.dudy),
-            momentum.dudz_on_faces,
-            _cell_to_full_faces(momentum.dvdx),
-            _cell_to_full_faces(momentum.dvdy),
-            momentum.dvdz_on_faces,
-            momentum.dwdx_on_faces,
-            momentum.dwdy_on_faces,
-            _cell_to_full_faces(momentum.dwdz),
+            _cell_to_full_faces(padded_momentum.dudx),
+            _cell_to_full_faces(padded_momentum.dudy),
+            padded_momentum.dudz_on_faces,
+            _cell_to_full_faces(padded_momentum.dvdx),
+            _cell_to_full_faces(padded_momentum.dvdy),
+            padded_momentum.dvdz_on_faces,
+            padded_momentum.dwdx_on_faces,
+            padded_momentum.dwdy_on_faces,
+            _cell_to_full_faces(padded_momentum.dwdz),
         )
         if static:
             scalar_coefficient = jnp.full_like(
@@ -612,9 +631,17 @@ class OracleLasdMixin:
             closure = momentum.closure
             if not isinstance(closure, LasdClosureMemory):
                 raise TypeError("scalar LASD requires initialized closure memory")
-            scalar_coefficient = closure.scalar.coefficient.payload
+            scalar_coefficient = _pad_horizontal(
+                closure.scalar.coefficient.payload,
+                grid=grid,
+            )
+            scalar_coefficient = jnp.clip(
+                scalar_coefficient,
+                config.minimum_coefficient,
+                config.maximum_coefficient,
+            )
         if amd:
-            viscosity = self._amd_eddy_viscosity(momentum)
+            viscosity = self._amd_eddy_viscosity(padded_momentum)
             cell_diffusivity = viscosity / config.turbulent_prandtl
             face_diffusivity = (
                 _cell_to_full_faces(viscosity) / config.turbulent_prandtl
@@ -624,7 +651,9 @@ class OracleLasdMixin:
             if dynamic and config.stability_buoyancy_coefficient > 0.0:
                 n2 = jnp.maximum(
                     config.stability_buoyancy_coefficient
-                    * _scalar_cell_gradient(context)[..., 2],
+                    * _pad_horizontal(
+                        _scalar_cell_gradient(context)[..., 2], grid=grid
+                    ),
                     0.0,
                 )
                 richardson = n2 / jnp.maximum(cell_magnitude**2, 1.0e-24)
@@ -638,14 +667,23 @@ class OracleLasdMixin:
                 * delta**2
                 * face_magnitude
             )
-        qx = -cell_diffusivity * context.dtheta_dx
-        qy = -cell_diffusivity * context.dtheta_dy
-        qz = -face_diffusivity * context.dtheta_dz_on_faces
+        qx = _truncate_padded(
+            -cell_diffusivity * _pad_horizontal(context.dtheta_dx, grid=grid),
+            grid=grid,
+        )
+        qy = _truncate_padded(
+            -cell_diffusivity * _pad_horizontal(context.dtheta_dy, grid=grid),
+            grid=grid,
+        )
+        qz = _truncate_padded(
+            -face_diffusivity
+            * _pad_horizontal(context.dtheta_dz_on_faces, grid=grid),
+            grid=grid,
+        )
         qz = qz.at[0].set(boundary.lower_flux).at[-1].set(boundary.upper_flux)
-        qz = _two_thirds_filter(qz, grid=grid)
         tendency = -(
-            _truncated_horizontal_derivative(qx, grid=grid, axis="x")
-            + _truncated_horizontal_derivative(qy, grid=grid, axis="y")
+            _horizontal_derivative(qx, grid=grid, axis="x")
+            + _horizontal_derivative(qy, grid=grid, axis="y")
             + (qz[1:] - qz[:-1]) / grid.dz
         )
         return self._oracle_scalar_tendency(context, tendency)
@@ -779,9 +817,12 @@ class OracleLasdMixin:
             )
         flux_x = -scalar_diffusivity * context.dtheta_dx
         flux_y = -scalar_diffusivity * context.dtheta_dy
-        flux_z = -face_diffusivity * context.dtheta_dz_on_faces
+        flux_z = _padded_product(
+            -face_diffusivity,
+            context.dtheta_dz_on_faces,
+            grid=grid,
+        )
         flux_z = flux_z.at[0].set(boundary.lower_flux).at[-1].set(boundary.upper_flux)
-        flux_z = _two_thirds_filter(flux_z, grid=grid)
 
         shear_production = momentum_diffusivity * diagnostic_magnitude**2
         buoyancy_destruction = (

@@ -15,7 +15,7 @@ from .lasd import LagrangianScaleDependentDynamic
 
 @dataclass(frozen=True, slots=True)
 class ConservativeAdvection:
-    """Fixed conservative flux form with two-thirds product truncation."""
+    """Conservative flux form with horizontal three-halves dealiasing."""
 
 
 @dataclass(frozen=True, slots=True)

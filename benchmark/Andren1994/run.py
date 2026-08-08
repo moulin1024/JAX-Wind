@@ -17,8 +17,6 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from benchmark.NeutralEkman import run as neutral_runner  # noqa: E402
-
 import jax  # noqa: E402
 import jax.numpy as jnp  # noqa: E402
 
@@ -372,6 +370,13 @@ def finalize_comparison(args: argparse.Namespace, summary: dict) -> dict:
 
 
 def main(argv: list[str] | None = None) -> int:
+    try:
+        from benchmark.NeutralEkman import run as neutral_runner
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "the legacy static-Smagorinsky runner is unavailable; use run_lasd.py "
+            "with --sgs mgm, --sgs lasd, or --sgs amd"
+        ) from exc
     args = parse_args(argv)
     solver_args = solver_namespace(args)
     summary = neutral_runner.run_case(

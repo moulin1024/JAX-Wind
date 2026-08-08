@@ -92,11 +92,6 @@ def main() -> int:
         decomposition,
         addressable_shards=(None if args.devices == 1 else tuple(range(args.devices))),
     )
-    aligned_interpreter = build_zslab_interpreter(
-        decomposition,
-        addressable_shards=(None if args.devices == 1 else tuple(range(args.devices))),
-        resolved_filter_grid_ratio=1.5,
-    )
     distributed_gradient = interpreter.pressure_gradient_z(
         addressable_pressure,
         boundary,
@@ -184,14 +179,18 @@ def main() -> int:
             global_w[0],
         ),
     )
-    aligned_velocity = aligned_interpreter.enforce_normal_boundary(
+    aligned_velocity = interpreter.enforce_normal_boundary(
         distributed_velocity,
         VerticalBoundary(dtype(0.0), dtype(0.0)),
     )
-    expected_aligned_u = jnp.mean(
+    aligned_spectrum = jnp.fft.rfftn(
         distributed_velocity.x.payload,
-        axis=(-2, -1),
-        keepdims=True,
+        axes=(-2, -1),
+    ).at[..., -1].set(0.0)
+    expected_aligned_u = jnp.fft.irfftn(
+        aligned_spectrum,
+        s=(grid.ny, grid.nx),
+        axes=(-2, -1),
     )
     line = BladeElementActuatorLine(
         x=2.0,
@@ -300,7 +299,7 @@ def main() -> int:
         ],
         "extract_identity": distributed_gradient.extract_owned()
         is distributed_gradient.owned,
-        "resolved_filter_error": float(
+        "state_bandwidth_error": float(
             jnp.max(jnp.abs(aligned_velocity.x.payload - expected_aligned_u))
         ),
     }
