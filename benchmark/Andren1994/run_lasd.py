@@ -109,6 +109,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--lasd-update-interval", type=int, default=5)
     parser.add_argument("--max-cfl-warning", type=float, default=0.25)
     parser.add_argument("--method", choices=("transpose", "spike"), default="spike")
+    parser.add_argument("--thomas-chunk", type=int, default=20)
     parser.add_argument("--restart", type=Path)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--quick", action="store_true")
@@ -138,6 +139,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error("sampling, logging, and checkpoint intervals must be positive")
     if args.lasd_update_interval <= 0:
         parser.error("LASD update interval must be positive")
+    if args.thomas_chunk <= 0:
+        parser.error("Thomas chunk must be positive")
     if args.fig13_budget and args.sgs != "lasd":
         parser.error("--fig13-budget is currently defined only for LASD")
     return args
@@ -621,6 +624,7 @@ def run(args: argparse.Namespace) -> dict:
         runtime=runtime_from_initialized_jax(jax),
         dtype=args.dtype,
         method=args.method,
+        thomas_chunk=args.thomas_chunk,
     )
     if args.sgs == "lasd":
         momentum_sgs = LagrangianScaleDependentDynamic(

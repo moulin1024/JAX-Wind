@@ -13,7 +13,7 @@ def build_fused_neutral_boussinesq_kernels(
     frozen_zero_scalar,
     scalar_context_local,
     scalar_advection_local,
-    scalar_sgs_local,
+    scalar_sgs_from_padded_momentum_gradients_local,
     scalar_amd_local,
     pad_horizontal_local,
     truncate_padded_local,
@@ -241,17 +241,22 @@ def build_fused_neutral_boussinesq_kernels(
         if not frozen_zero_scalar:
             scalar = scalar_context_local(theta)
             scalar_tendency = scalar_advection_local(scalar, momentum)
-            scalar_tendency = scalar_tendency + scalar_sgs_local(
-                scalar,
-                momentum,
-                scalar_coefficient,
-                minimum_scalar_coefficient,
-                maximum_scalar_coefficient,
-                lower_scalar_flux,
-                upper_scalar_flux,
-                stability_buoyancy_coefficient,
-                stability_beta,
-                stability_power,
+            scalar_tendency = (
+                scalar_tendency
+                + scalar_sgs_from_padded_momentum_gradients_local(
+                    scalar,
+                    momentum,
+                    cell_gradients,
+                    face_gradients,
+                    scalar_coefficient,
+                    minimum_scalar_coefficient,
+                    maximum_scalar_coefficient,
+                    lower_scalar_flux,
+                    upper_scalar_flux,
+                    stability_buoyancy_coefficient,
+                    stability_beta,
+                    stability_power,
+                )
             )
         return (
             *momentum_tendency,

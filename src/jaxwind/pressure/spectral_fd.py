@@ -87,6 +87,7 @@ def build_spectral_fd_pressure_adapter(
     dtype: str,
     method: str = "transpose",
     tridiag: str = "thomas",
+    thomas_chunk: int = 1,
     spike_interface_collective: str = "allgather",
     spike_interface_solver: str = "selected-rows",
 ) -> SpectralFDPressureAdapter:
@@ -109,6 +110,7 @@ def build_spectral_fd_pressure_adapter(
         dtype=dtype,
         method=method,
         tridiag=tridiag,
+        thomas_chunk=thomas_chunk,
         data_layout="z-first",
         discretization="cell-centered-compatible",
         nyquist_filter=True,

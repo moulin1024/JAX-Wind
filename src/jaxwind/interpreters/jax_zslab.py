@@ -356,13 +356,27 @@ class JaxZSlabInterpreter(ZSlabLasdMixin, ZSlabFlowMixin):
             raise TypeError("vertical velocity requires VerticalVelocity")
         if velocity.z.owned.phase not in (Candidate, Projected):
             raise TypeError("vertical velocity must be Candidate or Projected")
-        x_payload = self._filter_horizontal(velocity.x.payload)
-        y_payload = self._filter_horizontal(velocity.y.payload)
-        z_payload = self._filter_horizontal(velocity.z.owned.payload)
-        dtype_probe = velocity.z.owned.payload[0, 0, 0, 0]
+        x_payload, y_payload, z_payload = self._filter_horizontal(
+            velocity.x.payload,
+            velocity.y.payload,
+            velocity.z.owned.payload,
+        )
+        boundary_dtype = velocity.z.owned.payload.dtype
+        boundary_shape = (
+            self.decomposition.grid.ny,
+            self.decomposition.grid.nx,
+        )
+
+        def filtered_boundary(value):
+            array = jnp.asarray(value, dtype=boundary_dtype)
+            if array.ndim == 0:
+                return jnp.broadcast_to(array, boundary_shape)
+            return self._filter_boundary(array)
+
+        lower_boundary = filtered_boundary(boundary.lower)
         upper_payload = self._enforce_upper_boundary(
             z_payload,
-            self._filter_boundary(boundary.upper, dtype_probe),
+            filtered_boundary(boundary.upper),
         )
         owned = AddressableField(
             VerticalVelocity,
@@ -388,7 +402,7 @@ class JaxZSlabInterpreter(ZSlabLasdMixin, ZSlabFlowMixin):
             ),
             ZFaceFieldContext(
                 owned,
-                self._filter_boundary(boundary.lower, dtype_probe),
+                lower_boundary,
             ),
         )
 
@@ -542,21 +556,18 @@ class JaxZSlabInterpreter(ZSlabLasdMixin, ZSlabFlowMixin):
         dt: float,
     ) -> VelocityVector:
         """Return the projected velocity without changing semantic ownership."""
-        x_payload = self._correct(velocity.x.payload, gradient.x.payload, dt)
-        y_payload = self._correct(velocity.y.payload, gradient.y.payload, dt)
-        z_payload = self._correct(
+        x_payload, y_payload, z_payload, lower_boundaries = self._correct(
+            velocity.x.payload,
+            velocity.y.payload,
             velocity.z.owned.payload,
+            gradient.x.payload,
+            gradient.y.payload,
             gradient.z.owned.payload,
+            velocity.z.lower_boundary,
+            gradient.z.lower_boundary,
             dt,
         )
-        boundary_dt = jnp.asarray(dt, dtype=z_payload.dtype)
-        lower_boundary = jnp.asarray(
-            velocity.z.lower_boundary,
-            dtype=z_payload.dtype,
-        ) - boundary_dt * jnp.asarray(
-            gradient.z.lower_boundary,
-            dtype=z_payload.dtype,
-        )
+        lower_boundary = lower_boundaries[0]
         return VelocityVector(
             AddressableField(
                 XVelocity,

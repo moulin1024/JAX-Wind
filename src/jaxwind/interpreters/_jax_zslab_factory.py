@@ -388,9 +388,11 @@ def build_zslab_interpreter(
         )
         return -(horizontal + (upper_flux - lower_flux) / grid.dz)
 
-    def scalar_sgs_local(
+    def scalar_sgs_from_padded_momentum_gradients_local(
         scalar,
         momentum,
+        momentum_gradients,
+        face_gradients,
         coefficient,
         minimum_coefficient,
         maximum_coefficient,
@@ -401,44 +403,8 @@ def build_zslab_interpreter(
         stability_power,
     ):
         delta = (grid.dx * grid.dy * grid.dz) ** (1.0 / 3.0)
-        momentum_gradients = tuple(
-            pad_horizontal_local(
-                jnp.stack(
-                    (
-                        momentum.dudx,
-                        momentum.dudy,
-                        momentum.dudz_at_cells,
-                        momentum.dvdx,
-                        momentum.dvdy,
-                        momentum.dvdz_at_cells,
-                        momentum.dwdx_at_cells,
-                        momentum.dwdy_at_cells,
-                        momentum.dwdz,
-                    ),
-                    axis=0,
-                )
-            )
-        )
         cell_magnitude = strain_magnitude_local(
             *momentum_gradients,
-        )
-        face_gradients = tuple(
-            pad_horizontal_local(
-                jnp.stack(
-                    (
-                        momentum.dudx_upper,
-                        momentum.dudy_upper,
-                        momentum.dudz_upper,
-                        momentum.dvdx_upper,
-                        momentum.dvdy_upper,
-                        momentum.dvdz_upper,
-                        momentum.dwdx_upper,
-                        momentum.dwdy_upper,
-                        momentum.dwdz_upper,
-                    ),
-                    axis=0,
-                )
-            )
         )
         face_magnitude = strain_magnitude_local(
             *face_gradients,
@@ -500,6 +466,69 @@ def build_zslab_interpreter(
         lower_qz = jnp.concatenate((lower_plane[None], qz[:-1]), axis=0)
         horizontal = horizontal_flux_divergence_local(qx[None], qy[None])[0]
         return -(horizontal + (qz - lower_qz) / grid.dz)
+
+    def scalar_sgs_local(
+        scalar,
+        momentum,
+        coefficient,
+        minimum_coefficient,
+        maximum_coefficient,
+        lower_boundary_flux,
+        upper_boundary_flux,
+        stability_buoyancy_coefficient,
+        stability_beta,
+        stability_power,
+    ):
+        momentum_gradients = tuple(
+            pad_horizontal_local(
+                jnp.stack(
+                    (
+                        momentum.dudx,
+                        momentum.dudy,
+                        momentum.dudz_at_cells,
+                        momentum.dvdx,
+                        momentum.dvdy,
+                        momentum.dvdz_at_cells,
+                        momentum.dwdx_at_cells,
+                        momentum.dwdy_at_cells,
+                        momentum.dwdz,
+                    ),
+                    axis=0,
+                )
+            )
+        )
+        face_gradients = tuple(
+            pad_horizontal_local(
+                jnp.stack(
+                    (
+                        momentum.dudx_upper,
+                        momentum.dudy_upper,
+                        momentum.dudz_upper,
+                        momentum.dvdx_upper,
+                        momentum.dvdy_upper,
+                        momentum.dvdz_upper,
+                        momentum.dwdx_upper,
+                        momentum.dwdy_upper,
+                        momentum.dwdz_upper,
+                    ),
+                    axis=0,
+                )
+            )
+        )
+        return scalar_sgs_from_padded_momentum_gradients_local(
+            scalar,
+            momentum,
+            momentum_gradients,
+            face_gradients,
+            coefficient,
+            minimum_coefficient,
+            maximum_coefficient,
+            lower_boundary_flux,
+            upper_boundary_flux,
+            stability_buoyancy_coefficient,
+            stability_beta,
+            stability_power,
+        )
 
     dry_advection_local, dry_advection_from_padded_local = (
         build_conservative_advection_kernels(
@@ -621,7 +650,9 @@ def build_zslab_interpreter(
             frozen_zero_scalar=frozen_zero_scalar,
             scalar_context_local=scalar_context_local,
             scalar_advection_local=scalar_advection_local,
-            scalar_sgs_local=scalar_sgs_local,
+            scalar_sgs_from_padded_momentum_gradients_local=(
+                scalar_sgs_from_padded_momentum_gradients_local
+            ),
             scalar_amd_local=scalar_amd_local,
             pad_horizontal_local=pad_horizontal_local,
             truncate_padded_local=truncate_padded_local,
@@ -672,9 +703,13 @@ def build_zslab_interpreter(
             axes=(-2, -1),
         ).astype(values.dtype)
 
-    def filter_boundary(boundary, dtype_probe):
+    def filter_velocity_local(x, y, z):
+        filtered = filter_horizontal_local(jnp.stack((x, y, z), axis=0))
+        return filtered[0], filtered[1], filtered[2]
+
+    def filter_boundary(boundary):
         plane = jnp.broadcast_to(
-            jnp.asarray(boundary, dtype=dtype_probe.dtype),
+            jnp.asarray(boundary),
             (grid.ny, grid.nx),
         )
         spectrum = jnp.fft.rfftn(plane, axes=(-2, -1))
@@ -684,9 +719,25 @@ def build_zslab_interpreter(
             axes=(-2, -1),
         ).astype(plane.dtype)
 
-    def correct_local(candidate, gradient, dt):
-        local_dt = jnp.asarray(dt, dtype=candidate.dtype)
-        return candidate - local_dt * gradient
+    def correct_local(
+        candidate_x,
+        candidate_y,
+        candidate_z,
+        gradient_x,
+        gradient_y,
+        gradient_z,
+        lower_boundary,
+        lower_gradient,
+        dt,
+    ):
+        local_dt = jnp.asarray(dt, dtype=candidate_x.dtype)
+        return (
+            candidate_x - local_dt * gradient_x,
+            candidate_y - local_dt * gradient_y,
+            candidate_z - local_dt * gradient_z,
+            jnp.asarray(lower_boundary, dtype=candidate_x.dtype)
+            - local_dt * jnp.asarray(lower_gradient, dtype=candidate_x.dtype),
+        )
 
     def ab2_update_local(
         state,
@@ -751,8 +802,11 @@ def build_zslab_interpreter(
         in_axes=(0, 0),
     )
     horizontal_gradient = mapped(horizontal_gradient_local)
-    filter_horizontal = mapped(filter_horizontal_local)
-    correct = mapped(correct_local, in_axes=(0, 0, None))
+    filter_horizontal = mapped(filter_velocity_local, in_axes=(0, 0, 0))
+    correct = mapped(
+        correct_local,
+        in_axes=(0, 0, 0, 0, 0, 0, None, None, None),
+    )
     ab2_update = mapped(
         ab2_update_local,
         in_axes=(0, 0, 0, None, None, None),

@@ -61,6 +61,7 @@ def test_lasd_fifth_model_uses_safe_trajectory_cadence() -> None:
     assert (args.nx, args.ny, args.nz) == (40, 40, 40)
     assert args.dt == 0.8
     assert args.lasd_update_interval == 5
+    assert args.thomas_chunk == 20
     assert math.isclose(args.hours * 3600.0 * run.F_CORIOLIS, 10.0)
 
 
