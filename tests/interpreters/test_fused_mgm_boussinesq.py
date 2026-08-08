@@ -37,12 +37,12 @@ from jaxwind.physics import (  # noqa: E402
     BoussinesqVectorField,
     ConservativeAdvection,
     ConservativeScalarAdvection,
+    CoriolisGeostrophic,
     DryFlowModel,
     FilteredNeutralLogWall,
     KinematicPressureGradient,
     ModulatedGradientModel,
     NoBuoyancy,
-    NoRotation,
     StaticSmagorinskyScalarFlux,
 )
 
@@ -95,7 +95,7 @@ class FusedMgmBoussinesqTests(unittest.TestCase):
                 KinematicPressureGradient(0.002, -0.001),
                 FilteredNeutralLogWall(0.01),
                 ModulatedGradientModel(kinematic_viscosity=1.5e-5),
-                NoRotation(),
+                CoriolisGeostrophic(0.03, 1.2, -0.2, 0.01),
             ),
             ConservativeScalarAdvection(),
             StaticSmagorinskyScalarFlux(0.4),
@@ -111,6 +111,7 @@ class FusedMgmBoussinesqTests(unittest.TestCase):
         expected_scalar = algebra.combine_scalar_tendencies(
             contributions.scalar_values()
         )
+        self.assertIsNotNone(algebra.fused_boussinesq_tendency(fields, model))
         actual = vector_field(evaluation).tendency
         for expected, fused in (
             (expected_velocity.x.payload, actual.velocity.x.payload),

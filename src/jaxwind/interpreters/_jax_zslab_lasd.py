@@ -42,6 +42,7 @@ from jaxwind.operators import VelocityVector
 from jaxwind.physics.dry_flow import (
     AnisotropicMinimumDissipation,
     ConservativeAdvection,
+    CoriolisGeostrophic,
     FilteredNeutralLogWall,
     KinematicPressureGradient,
     ModulatedGradientModel,
@@ -382,7 +383,10 @@ class ZSlabLasdMixin:
             isinstance(momentum_model.advection, ConservativeAdvection)
             and isinstance(momentum_model.pressure_gradient, KinematicPressureGradient)
             and isinstance(wall, (NeutralLogWall, FilteredNeutralLogWall))
-            and isinstance(momentum_model.rotation, NoRotation)
+            and isinstance(
+                momentum_model.rotation,
+                (NoRotation, CoriolisGeostrophic),
+            )
             and isinstance(model.scalar_advection, ConservativeScalarAdvection)
             and isinstance(model.buoyancy, NoBuoyancy)
             and isinstance(model.rayleigh_damping, NoRayleighDamping)
@@ -398,8 +402,8 @@ class ZSlabLasdMixin:
         lasd = isinstance(sgs, LagrangianScaleDependentDynamic) and isinstance(
             model.scalar_sgs, LagrangianScaleDependentScalarFlux
         )
-        frozen_model = self.frozen_zero_scalar and (amd or lasd)
-        if not common or not (mgm or frozen_model):
+        frozen_model = self.frozen_zero_scalar and (mgm or amd or lasd)
+        if not common or not (mgm or amd or lasd):
             return None
 
         velocity = fields.velocity
@@ -442,6 +446,17 @@ class ZSlabLasdMixin:
         wall_filter_width = (
             wall.filter_grid_ratio * wall.test_filter_ratio if filtered else 1.0
         )
+        rotation = momentum_model.rotation
+        rotation_arguments = (
+            (
+                rotation.coriolis_parameter,
+                rotation.geostrophic_x_velocity,
+                rotation.geostrophic_y_velocity,
+                rotation.horizontal_coriolis_parameter,
+            )
+            if isinstance(rotation, CoriolisGeostrophic)
+            else (0.0, 0.0, 0.0, 0.0)
+        )
         common_arguments = (
             velocity.x.payload,
             velocity.y.payload,
@@ -452,6 +467,7 @@ class ZSlabLasdMixin:
         forcing_arguments = (
             momentum_model.pressure_gradient.x_acceleration,
             momentum_model.pressure_gradient.y_acceleration,
+            *rotation_arguments,
             drag,
             filtered,
             wall_filter_width,
@@ -476,6 +492,9 @@ class ZSlabLasdMixin:
             x, y, z, scalar_payload = self._fused_amd_boussinesq(
                 *common_arguments,
                 *forcing_arguments,
+                model.scalar_sgs.turbulent_prandtl,
+                model.scalar_boundary.lower_flux,
+                model.scalar_boundary.upper_flux,
             )
         else:
             closure = fields.closure
@@ -484,9 +503,17 @@ class ZSlabLasdMixin:
             x, y, z, scalar_payload = self._fused_lasd_boussinesq(
                 *common_arguments,
                 closure.momentum.coefficient.payload,
+                closure.scalar.coefficient.payload,
                 *forcing_arguments,
                 sgs.minimum_coefficient,
                 sgs.maximum_coefficient,
+                model.scalar_sgs.minimum_coefficient,
+                model.scalar_sgs.maximum_coefficient,
+                model.scalar_boundary.lower_flux,
+                model.scalar_boundary.upper_flux,
+                model.scalar_sgs.stability_buoyancy_coefficient,
+                model.scalar_sgs.stability_beta,
+                model.scalar_sgs.stability_power,
             )
         scalar_quantity = (
             PotentialTemperatureTendency

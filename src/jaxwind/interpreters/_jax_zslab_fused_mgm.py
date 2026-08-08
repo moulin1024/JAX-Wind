@@ -108,6 +108,10 @@ def build_fused_mgm_boussinesq_kernel(
         theta,
         pressure_x_acceleration,
         pressure_y_acceleration,
+        coriolis_parameter,
+        geostrophic_x_velocity,
+        geostrophic_y_velocity,
+        horizontal_coriolis_parameter,
         wall_drag,
         wall_filtered,
         wall_filter_width,
@@ -194,6 +198,25 @@ def build_fused_mgm_boussinesq_kernel(
         x = advection[0] + wall[0] + sgs[0] + pressure_x_acceleration
         y = advection[1] + wall[1] + sgs[1] + pressure_y_acceleration
         z = advection[2] + wall[2] + sgs[2]
+
+        local_f = jnp.asarray(coriolis_parameter, dtype=u.dtype)
+        horizontal_f = jnp.asarray(
+            horizontal_coriolis_parameter,
+            dtype=u.dtype,
+        )
+        x = (
+            x
+            + local_f * (v - geostrophic_y_velocity)
+            - (horizontal_f * momentum.w_at_cells)
+        )
+        y = y - local_f * (u - geostrophic_x_velocity)
+        coriolis_z = horizontal_f.astype(w_upper.dtype) * (
+            momentum.u_upper - geostrophic_x_velocity
+        )
+        coriolis_z = coriolis_z.at[-1].set(
+            jnp.where(momentum.upper_is_physical, 0.0, coriolis_z[-1])
+        )
+        z = z + coriolis_z
 
         if frozen_zero_scalar:
             scalar_tendency = jnp.zeros_like(theta)

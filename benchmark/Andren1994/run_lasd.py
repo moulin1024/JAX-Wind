@@ -777,6 +777,9 @@ def run(args: argparse.Namespace) -> dict:
     last_result = None
     initial_step = state.clock.step
     for iteration in range(requested_steps):
+        final_iteration = iteration + 1 == requested_steps
+        next_step = state.clock.step + 1
+        diagnostic_step = next_step % args.sample_every == 0 or final_iteration
         last_result = step_boussinesq(
             state,
             config=config,
@@ -786,10 +789,10 @@ def run(args: argparse.Namespace) -> dict:
             algebra=algebra,
             pressure_solver=pressure_solver,
             closure_event=closure_event,
+            compute_projection_residual=diagnostic_step,
         )
         state = last_result.state
-        final_iteration = iteration + 1 == requested_steps
-        if state.clock.step % args.sample_every == 0 or final_iteration:
+        if diagnostic_step:
             divergence = last_result.diagnostic.projection.divergence.payload
             divergence.block_until_ready()
             history, profiles = instantaneous_diagnostics(

@@ -619,6 +619,10 @@ def build_zslab_interpreter(
             grid=grid,
             axis_name=axis_name,
             frozen_zero_scalar=frozen_zero_scalar,
+            scalar_context_local=scalar_context_local,
+            scalar_advection_local=scalar_advection_local,
+            scalar_sgs_local=scalar_sgs_local,
+            scalar_amd_local=scalar_amd_local,
             pad_horizontal_local=pad_horizontal_local,
             truncate_padded_local=truncate_padded_local,
             wall_filter_local=wall_filter_local,
@@ -815,15 +819,15 @@ def build_zslab_interpreter(
     )
     fused_mgm_boussinesq = mapped(
         fused_mgm_boussinesq_local,
-        in_axes=(0, 0, 0, None, 0) + (None,) * 16,
+        in_axes=(0, 0, 0, None, 0) + (None,) * 20,
     )
     fused_amd_boussinesq = mapped(
         fused_amd_boussinesq_local,
-        in_axes=(0, 0, 0, None, 0) + (None,) * 5,
+        in_axes=(0, 0, 0, None, 0) + (None,) * 12,
     )
     fused_lasd_boussinesq = mapped(
         fused_lasd_boussinesq_local,
-        in_axes=(0, 0, 0, None, 0, 0) + (None,) * 7,
+        in_axes=(0, 0, 0, None, 0, 0, 0) + (None,) * 18,
     )
     lasd_accumulate = mapped(
         lasd_accumulate_local,

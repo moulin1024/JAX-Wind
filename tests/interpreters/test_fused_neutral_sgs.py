@@ -37,6 +37,7 @@ from jaxwind.physics import (  # noqa: E402
     BoussinesqVectorField,
     ConservativeAdvection,
     ConservativeScalarAdvection,
+    CoriolisGeostrophic,
     DryFlowModel,
     FilteredNeutralLogWall,
     KinematicPressureGradient,
@@ -45,6 +46,7 @@ from jaxwind.physics import (  # noqa: E402
     ModulatedGradientModel,
     NoBuoyancy,
     NoRotation,
+    ScalarFluxBoundary,
     StaticSmagorinskyScalarFlux,
 )
 
@@ -90,28 +92,45 @@ class FusedNeutralSgsTests(unittest.TestCase):
                 jnp.zeros(shape, dtype=jnp.float64),
             ),
         )
-
-    def assert_fused_matches_contributions(self, model: BoussinesqModel) -> None:
-        generic = build_zslab_interpreter(self.decomposition)
-        fused = build_zslab_interpreter(
-            self.decomposition,
-            frozen_zero_scalar=True,
+        theta = 0.4 * z + 0.05 * jnp.sin(x - y)
+        self.active_fields = BoussinesqFields(
+            velocity,
+            AddressableField(
+                PassiveScalarConcentration,
+                Cell,
+                regions,
+                Accepted,
+                theta.reshape(shape),
+            ),
         )
-        fields = self.fields
+
+    def assert_fused_matches_contributions(
+        self,
+        model: BoussinesqModel,
+        *,
+        fields: BoussinesqFields | None = None,
+        frozen_zero_scalar: bool = True,
+    ) -> None:
+        algebra = build_zslab_interpreter(
+            self.decomposition,
+            frozen_zero_scalar=frozen_zero_scalar,
+        )
+        fields = self.fields if fields is None else fields
         if isinstance(model.momentum.sgs, LagrangianScaleDependentDynamic):
-            fields = fused.initialize_lasd_closure(fields, model)
+            fields = algebra.initialize_lasd_closure(fields, model)
         evaluation = Evaluation(fields, AcceptedClock(0.0, 0), None)
         contributions = BoussinesqVectorField(
-            generic,
+            algebra,
             model,
         ).evaluate_contributions(evaluation)
-        expected_velocity = generic.combine_tendencies(
+        expected_velocity = algebra.combine_tendencies(
             contributions.momentum_values()
         )
-        expected_scalar = generic.combine_scalar_tendencies(
+        expected_scalar = algebra.combine_scalar_tendencies(
             contributions.scalar_values()
         )
-        actual = BoussinesqVectorField(fused, model)(evaluation).tendency
+        self.assertIsNotNone(algebra.fused_boussinesq_tendency(fields, model))
+        actual = BoussinesqVectorField(algebra, model)(evaluation).tendency
         for expected, fused_payload in (
             (expected_velocity.x.payload, actual.velocity.x.payload),
             (expected_velocity.y.payload, actual.velocity.y.payload),
@@ -153,6 +172,44 @@ class FusedNeutralSgsTests(unittest.TestCase):
                 LagrangianScaleDependentScalarFlux(),
                 NoBuoyancy(),
             )
+        )
+
+    def test_amd_active_scalar_coriolis_fusion_matches_contributions(self) -> None:
+        self.assert_fused_matches_contributions(
+            BoussinesqModel(
+                DryFlowModel(
+                    ConservativeAdvection(),
+                    KinematicPressureGradient(0.002, -0.001),
+                    FilteredNeutralLogWall(0.01),
+                    AnisotropicMinimumDissipation(),
+                    CoriolisGeostrophic(0.03, 1.2, -0.2, 0.01),
+                ),
+                ConservativeScalarAdvection(),
+                StaticSmagorinskyScalarFlux(0.4),
+                NoBuoyancy(),
+                scalar_boundary=ScalarFluxBoundary(0.002, -0.001),
+            ),
+            fields=self.active_fields,
+            frozen_zero_scalar=False,
+        )
+
+    def test_lasd_active_scalar_coriolis_fusion_matches_contributions(self) -> None:
+        self.assert_fused_matches_contributions(
+            BoussinesqModel(
+                DryFlowModel(
+                    ConservativeAdvection(),
+                    KinematicPressureGradient(0.002, -0.001),
+                    FilteredNeutralLogWall(0.01),
+                    LagrangianScaleDependentDynamic(update_interval=4),
+                    CoriolisGeostrophic(0.03, 1.2, -0.2, 0.01),
+                ),
+                ConservativeScalarAdvection(),
+                LagrangianScaleDependentScalarFlux(),
+                NoBuoyancy(),
+                scalar_boundary=ScalarFluxBoundary(0.002, -0.001),
+            ),
+            fields=self.active_fields,
+            frozen_zero_scalar=False,
         )
 
     def test_mgm_and_amd_diagnose_nonnegative_sgs_energy(self) -> None:
