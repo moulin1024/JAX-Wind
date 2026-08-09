@@ -1,0 +1,27 @@
+sgs = "lasd"
+nx = 40
+ny = 40
+nz = 48
+dt = 1.25
+steps = 9646
+sample_every = 20
+log_every = 96
+lasd_update_interval = 8
+dtype = "float32"
+method = "spike"
+seed = 0
+output_dir = "benchmark_results/Nieuwstadt1993_lasd_40x40x48_gpu"
+quick = false
+implementation = "new semantic src/jaxwind"
+pressure_api = "external spectral_fd runtime API"
+integrator = "AB2"
+jax_backend = "gpu"
+jax_devices = ["cuda:0"]
+momentum_advection = "conservative"
+scalar_advection = "conservative"
+dealiasing = "three-halves-padding"
+nonlinear_padding_ratio = 1.5
+
+[scalar_stability_correction]
+beta = 30.0
+power = 2.0
