@@ -1,0 +1,51 @@
+[case]
+name = "GABLS1-LASD-32"
+runner = "gabls1"
+
+[domain]
+nx = 32
+ny = 32
+nz = 32
+lx_m = 400.0
+ly_m = 400.0
+lz_m = 400.0
+
+[flow]
+geostrophic_u_m_s = 8.0
+geostrophic_v_m_s = 0.0
+coriolis_s = 0.000139
+roughness_length_m = 0.1
+von_karman = 0.4
+
+[thermal]
+initial_temperature_k = 265.0
+reference_temperature_k = 263.5
+inversion_height_m = 100.0
+inversion_gradient_k_m = 0.01
+perturbation_amplitude_k = 0.1
+perturbation_height_m = 50.0
+surface_cooling_k_s = -6.944444444444444e-05
+thermal_roughness_length_m = 0.1
+gravity_m_s2 = 9.81
+
+[sgs]
+model = "lasd"
+scalar_turbulent_prandtl = 0.4
+lasd_update_interval = 5
+
+[time]
+dt_seconds = 0.25
+duration_hours = 9.0
+sample_start_hours = 8.0
+
+[numerics]
+dtype = "float32"
+pressure_method = "spike"
+seed = 0
+cfl_warning = 0.9
+
+[output]
+directory = "benchmark_results/gabls1_lasd_32cubed"
+sample_every_steps = 240
+log_every_steps = 1200
+checkpoint_every_steps = 12000

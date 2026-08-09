@@ -1,0 +1,7 @@
+{
+  "source": "https://gabls.metoffice.gov.uk/gabls_data_zip/res_6.25m.tar.gz",
+  "sha256": "166ac6a20733269d285d3ae694df5573c222e89648eb346824a0947bc3b9f31f",
+  "resolution_m": 6.25,
+  "files": 90,
+  "citation": "Beare et al. (2006), Boundary-Layer Meteorology 118, 247-272, doi:10.1007/s10546-004-2820-6"
+}
