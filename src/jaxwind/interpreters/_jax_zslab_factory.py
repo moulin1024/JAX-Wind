@@ -352,6 +352,59 @@ def build_zslab_interpreter(
         grid=grid, axis_name=axis_name
     )
 
+    def scalar_advection_from_padded_local(
+        padded_u,
+        padded_v,
+        padded_w_upper,
+        padded_w_lower,
+        padded_theta,
+        padded_theta_upper,
+        padded_theta_lower,
+    ):
+        horizontal = padded_horizontal_flux_divergence_local(
+            (padded_u * padded_theta)[None],
+            (padded_v * padded_theta)[None],
+        )[0]
+        upper_flux, lower_flux = truncate_padded_local(
+            jnp.stack(
+                (
+                    padded_w_upper * padded_theta_upper,
+                    padded_w_lower * padded_theta_lower,
+                ),
+                axis=0,
+            )
+        )
+        return -(horizontal + (upper_flux - lower_flux) / grid.dz)
+
+    def scalar_advection_from_padded_momentum_local(
+        scalar,
+        padded_momentum,
+        padded_lower,
+    ):
+        padded_scalar = pad_horizontal_local(
+            jnp.stack(
+                (
+                    scalar.theta,
+                    scalar.theta_upper,
+                    scalar.theta_lower,
+                ),
+                axis=0,
+            )
+        )
+        padded_w_lower = jnp.concatenate(
+            (padded_lower[0][None], padded_momentum[2][:-1]),
+            axis=0,
+        )
+        return scalar_advection_from_padded_local(
+            padded_momentum[0],
+            padded_momentum[1],
+            padded_momentum[2],
+            padded_w_lower,
+            padded_scalar[0],
+            padded_scalar[1],
+            padded_scalar[2],
+        )
+
     def scalar_advection_local(scalar, momentum):
         w_lower = jnp.concatenate(
             (momentum.w_lower[None], momentum.w_upper[:-1]),
@@ -371,22 +424,15 @@ def build_zslab_interpreter(
                 axis=0,
             )
         )
-        padded_u, padded_v, padded_w_upper, padded_w_lower = padded[:4]
-        padded_theta, padded_theta_upper, padded_theta_lower = padded[4:]
-        horizontal = padded_horizontal_flux_divergence_local(
-            (padded_u * padded_theta)[None],
-            (padded_v * padded_theta)[None],
-        )[0]
-        upper_flux, lower_flux = truncate_padded_local(
-            jnp.stack(
-                (
-                    padded_w_upper * padded_theta_upper,
-                    padded_w_lower * padded_theta_lower,
-                ),
-                axis=0,
-            )
+        return scalar_advection_from_padded_local(
+            padded[0],
+            padded[1],
+            padded[2],
+            padded[3],
+            padded[4],
+            padded[5],
+            padded[6],
         )
-        return -(horizontal + (upper_flux - lower_flux) / grid.dz)
 
     def scalar_sgs_from_padded_momentum_gradients_local(
         scalar,
@@ -649,7 +695,9 @@ def build_zslab_interpreter(
             axis_name=axis_name,
             frozen_zero_scalar=frozen_zero_scalar,
             scalar_context_local=scalar_context_local,
-            scalar_advection_local=scalar_advection_local,
+            scalar_advection_from_padded_momentum_local=(
+                scalar_advection_from_padded_momentum_local
+            ),
             scalar_sgs_from_padded_momentum_gradients_local=(
                 scalar_sgs_from_padded_momentum_gradients_local
             ),

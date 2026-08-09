@@ -12,7 +12,7 @@ def build_fused_neutral_boussinesq_kernels(
     axis_name,
     frozen_zero_scalar,
     scalar_context_local,
-    scalar_advection_local,
+    scalar_advection_from_padded_momentum_local,
     scalar_sgs_from_padded_momentum_gradients_local,
     scalar_amd_local,
     pad_horizontal_local,
@@ -88,7 +88,15 @@ def build_fused_neutral_boussinesq_kernels(
             jnp.zeros_like(v).at[0].set(jnp.where(bottom, wall_y, 0.0)),
             jnp.zeros_like(w_upper),
         )
-        return momentum, advection, wall, cell_gradients, face_gradients
+        return (
+            momentum,
+            advection,
+            wall,
+            cell_gradients,
+            face_gradients,
+            padded_momentum,
+            padded_lower,
+        )
 
     def combine_local(advection, wall, sgs, pressure_x, pressure_y):
         return (
@@ -143,16 +151,22 @@ def build_fused_neutral_boussinesq_kernels(
         lower_scalar_flux,
         upper_scalar_flux,
     ):
-        momentum, advection, wall, cell_gradients, face_gradients = (
-            shared_momentum_local(
-                u,
-                v,
-                w_upper,
-                lower_boundary,
-                wall_drag,
-                wall_filtered,
-                wall_filter_width,
-            )
+        (
+            momentum,
+            advection,
+            wall,
+            cell_gradients,
+            face_gradients,
+            padded_momentum,
+            padded_lower,
+        ) = shared_momentum_local(
+            u,
+            v,
+            w_upper,
+            lower_boundary,
+            wall_drag,
+            wall_filtered,
+            wall_filter_width,
         )
         sgs = dry_amd_from_padded_gradients_local(
             momentum,
@@ -170,7 +184,11 @@ def build_fused_neutral_boussinesq_kernels(
         scalar_tendency = jnp.zeros_like(theta)
         if not frozen_zero_scalar:
             scalar = scalar_context_local(theta)
-            scalar_tendency = scalar_advection_local(scalar, momentum)
+            scalar_tendency = scalar_advection_from_padded_momentum_local(
+                scalar,
+                padded_momentum,
+                padded_lower,
+            )
             scalar_tendency = scalar_tendency + scalar_amd_local(
                 scalar,
                 momentum,
@@ -210,16 +228,22 @@ def build_fused_neutral_boussinesq_kernels(
         stability_beta,
         stability_power,
     ):
-        momentum, advection, wall, cell_gradients, face_gradients = (
-            shared_momentum_local(
-                u,
-                v,
-                w_upper,
-                lower_boundary,
-                wall_drag,
-                wall_filtered,
-                wall_filter_width,
-            )
+        (
+            momentum,
+            advection,
+            wall,
+            cell_gradients,
+            face_gradients,
+            padded_momentum,
+            padded_lower,
+        ) = shared_momentum_local(
+            u,
+            v,
+            w_upper,
+            lower_boundary,
+            wall_drag,
+            wall_filtered,
+            wall_filter_width,
         )
         sgs = dry_sgs_from_padded_gradients_local(
             momentum,
@@ -240,7 +264,11 @@ def build_fused_neutral_boussinesq_kernels(
         scalar_tendency = jnp.zeros_like(theta)
         if not frozen_zero_scalar:
             scalar = scalar_context_local(theta)
-            scalar_tendency = scalar_advection_local(scalar, momentum)
+            scalar_tendency = scalar_advection_from_padded_momentum_local(
+                scalar,
+                padded_momentum,
+                padded_lower,
+            )
             scalar_tendency = (
                 scalar_tendency
                 + scalar_sgs_from_padded_momentum_gradients_local(
