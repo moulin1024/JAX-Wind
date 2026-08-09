@@ -43,6 +43,7 @@ from jaxwind.physics import (  # noqa: E402
     KinematicPressureGradient,
     LagrangianScaleDependentDynamic,
     LagrangianScaleDependentScalarFlux,
+    LinearBoussinesqBuoyancy,
     ModulatedGradientModel,
     NoBuoyancy,
     NoRotation,
@@ -211,6 +212,74 @@ class FusedNeutralSgsTests(unittest.TestCase):
             fields=self.active_fields,
             frozen_zero_scalar=False,
         )
+
+    def test_lasd_stable_sources_fusion_matches_individual_terms(self) -> None:
+        model = BoussinesqModel(
+            DryFlowModel(
+                ConservativeAdvection(),
+                KinematicPressureGradient(0.002, -0.001),
+                FilteredNeutralLogWall(0.01),
+                LagrangianScaleDependentDynamic(update_interval=4),
+                CoriolisGeostrophic(0.03, 1.2, -0.2, 0.01),
+            ),
+            ConservativeScalarAdvection(),
+            LagrangianScaleDependentScalarFlux(),
+            LinearBoussinesqBuoyancy(0.025),
+        )
+        algebra = build_zslab_interpreter(
+            self.decomposition,
+            frozen_zero_scalar=False,
+        )
+        fields = algebra.initialize_lasd_closure(self.active_fields, model)
+        evaluation = Evaluation(fields, AcceptedClock(0.0, 0), None)
+        contributions = BoussinesqVectorField(
+            algebra,
+            model,
+        ).evaluate_contributions(evaluation)
+        wall_x, wall_y, scalar_source = 0.013, -0.007, -0.004
+        imposed_wall = algebra._dry_tendency(
+            jnp.zeros_like(fields.velocity.x.payload).at[:, 0].set(wall_x),
+            jnp.zeros_like(fields.velocity.y.payload).at[:, 0].set(wall_y),
+            jnp.zeros_like(fields.velocity.z.owned.payload),
+        )
+        expected_velocity = algebra.combine_tendencies(
+            (
+                contributions.advection,
+                contributions.pressure_gradient,
+                imposed_wall,
+                contributions.momentum_sgs,
+                contributions.coriolis_geostrophic,
+                contributions.buoyancy,
+                contributions.rayleigh_damping,
+            )
+        )
+        context = algebra.boussinesq_context(fields)
+        scalar_surface = algebra._scalar_tendency(
+            context,
+            jnp.zeros_like(fields.potential_temperature.payload)
+            .at[:, 0]
+            .set(scalar_source),
+        )
+        expected_scalar = algebra.combine_scalar_tendencies(
+            (*contributions.scalar_values(), scalar_surface)
+        )
+        actual = algebra.fused_boussinesq_tendency(
+            fields,
+            model,
+            wall_acceleration=(wall_x, wall_y),
+            scalar_surface_source=scalar_source,
+        )
+        self.assertIsNotNone(actual)
+        for expected, fused_payload in (
+            (expected_velocity.x.payload, actual.velocity.x.payload),
+            (expected_velocity.y.payload, actual.velocity.y.payload),
+            (expected_velocity.z.owned.payload, actual.velocity.z.owned.payload),
+            (expected_scalar.payload, actual.potential_temperature.payload),
+        ):
+            self.assertLess(
+                float(jnp.max(jnp.abs(expected - fused_payload))),
+                3.0e-12,
+            )
 
     def test_mgm_and_amd_diagnose_nonnegative_sgs_energy(self) -> None:
         algebra = build_zslab_interpreter(self.decomposition)

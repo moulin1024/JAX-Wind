@@ -702,6 +702,7 @@ def build_zslab_interpreter(
                 scalar_sgs_from_padded_momentum_gradients_local
             ),
             scalar_amd_local=scalar_amd_local,
+            buoyancy_local=buoyancy_local,
             pad_horizontal_local=pad_horizontal_local,
             truncate_padded_local=truncate_padded_local,
             wall_filter_local=wall_filter_local,
@@ -929,7 +930,8 @@ def build_zslab_interpreter(
     )
     fused_lasd_boussinesq = mapped(
         fused_lasd_boussinesq_local,
-        in_axes=(0, 0, 0, None, 0, 0, 0) + (None,) * 18,
+        in_axes=(0, 0, 0, None, 0, 0, 0) + (None,) * 23,
+        static_broadcasted_argnums=(29,),
     )
     lasd_accumulate = mapped(
         lasd_accumulate_local,

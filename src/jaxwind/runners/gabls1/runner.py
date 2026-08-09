@@ -270,6 +270,7 @@ def _stable_vector_field(
     mechanical_scales,
     thermal_scales,
     wall_law,
+    jax,
     jnp,
 ):
     from jaxwind.physics import (
@@ -278,43 +279,82 @@ def _stable_vector_field(
         BoussinesqVectorFieldResult,
     )
 
+    def surface_sources(x_payload, y_payload, theta_payload, execution_time):
+        physical_time = mechanical_scales.from_execution_time(execution_time)
+        surface_temperature = (
+            case.thermal.initial_temperature_k
+            + case.thermal.surface_cooling_k_s * physical_time
+        )
+        mean_u = case.flow.geostrophic_u_m_s + (
+            mechanical_scales.from_execution_velocity(jnp.mean(x_payload[:, 0]))
+        )
+        mean_v = case.flow.geostrophic_v_m_s + (
+            mechanical_scales.from_execution_velocity(jnp.mean(y_payload[:, 0]))
+        )
+        mean_theta = case.thermal.initial_temperature_k + (
+            thermal_scales.from_execution_potential_temperature(
+                jnp.mean(theta_payload[:, 0])
+            )
+        )
+        fluxes = wall_law.surface_fluxes(
+            mean_u,
+            mean_v,
+            mean_theta,
+            surface_temperature,
+            0.5 * case.domain.dz_m,
+        )
+        wall_x = mechanical_scales.to_execution_acceleration(
+            -fluxes.stress_x / case.domain.dz_m
+        )
+        wall_y = mechanical_scales.to_execution_acceleration(
+            -fluxes.stress_y / case.domain.dz_m
+        )
+        scalar_surface = thermal_scales.to_execution_temperature_tendency(
+            fluxes.heat_flux / case.domain.dz_m
+        )
+        return wall_x, wall_y, scalar_surface
+
+    surface_sources = jax.jit(surface_sources)
+
     class StableVectorField:
         def __call__(self, evaluation):
             fields = evaluation.velocity
+            wall_x, wall_y, scalar_surface = surface_sources(
+                fields.velocity.x.payload,
+                fields.velocity.y.payload,
+                fields.potential_temperature.payload,
+                evaluation.time.time,
+            )
+            fused_tendency = algebra.fused_boussinesq_tendency(
+                fields,
+                model,
+                wall_acceleration=(wall_x, wall_y),
+                scalar_surface_source=scalar_surface,
+            )
+            if fused_tendency is not None:
+                return BoussinesqVectorFieldResult(
+                    fused_tendency,
+                    BoussinesqDiagnostic(evaluation.time),
+                )
+
             context = algebra.boussinesq_context(fields)
             momentum = algebra.momentum_context(context)
-            fluxes, _surface_temperature = _surface_fluxes(
-                fields,
-                evaluation.time.time,
-                case=case,
-                mechanical_scales=mechanical_scales,
-                thermal_scales=thermal_scales,
-                wall_law=wall_law,
-                jnp=jnp,
+            wall_x_payload = (
+                jnp.zeros_like(fields.velocity.x.payload).at[:, 0].set(wall_x)
             )
-            zeros_x = jnp.zeros_like(fields.velocity.x.payload)
-            zeros_y = jnp.zeros_like(fields.velocity.y.payload)
-            zeros_z = jnp.zeros_like(fields.velocity.z.owned.payload)
-            wall_x = zeros_x.at[:, 0].set(
-                mechanical_scales.to_execution_acceleration(
-                    -fluxes.stress_x / case.domain.dz_m
-                )
+            wall_y_payload = (
+                jnp.zeros_like(fields.velocity.y.payload).at[:, 0].set(wall_y)
             )
-            wall_y = zeros_y.at[:, 0].set(
-                mechanical_scales.to_execution_acceleration(
-                    -fluxes.stress_y / case.domain.dz_m
-                )
+            wall = algebra._dry_tendency(
+                wall_x_payload,
+                wall_y_payload,
+                jnp.zeros_like(fields.velocity.z.owned.payload),
             )
-            wall = algebra._dry_tendency(wall_x, wall_y, zeros_z)
-            scalar_surface_payload = jnp.zeros_like(
-                fields.potential_temperature.payload
-            ).at[:, 0].set(
-                thermal_scales.to_execution_temperature_tendency(
-                    fluxes.heat_flux / case.domain.dz_m
-                )
-            )
-            scalar_surface = algebra._scalar_tendency(
-                context, scalar_surface_payload
+            scalar_surface_tendency = algebra._scalar_tendency(
+                context,
+                jnp.zeros_like(fields.potential_temperature.payload)
+                .at[:, 0]
+                .set(scalar_surface),
             )
             momentum_tendency = algebra.combine_tendencies(
                 (
@@ -352,7 +392,7 @@ def _stable_vector_field(
                         model.scalar_sgs,
                         model.scalar_boundary,
                     ),
-                    scalar_surface,
+                    scalar_surface_tendency,
                 )
             )
             return BoussinesqVectorFieldResult(
@@ -892,6 +932,7 @@ def run_case(
         mechanical_scales=mechanical_scales,
         thermal_scales=thermal_scales,
         wall_law=wall_law,
+        jax=jax,
         jnp=jnp,
     )
     closure_event = (
@@ -923,6 +964,16 @@ def run_case(
     started = time.perf_counter()
     latest: dict[str, float] = {}
     initial_step = state.clock.step
+    timing_warmup_steps = min(
+        steps_to_run,
+        2 * case.sgs.lasd_update_interval
+        if case.sgs.model == "lasd"
+        else 2,
+    )
+    timing_warmup_elapsed: float | None = None
+    timing_end_step = max(timing_warmup_steps, steps_to_run - 1)
+    timing_end_elapsed: float | None = None
+    solver_elapsed: float | None = None
     try:
         for local_step in range(1, steps_to_run + 1):
             next_step = state.clock.step + 1
@@ -942,6 +993,15 @@ def run_case(
                 compute_projection_residual=should_log,
             )
             state = result.state
+            if local_step == timing_warmup_steps:
+                state.fields.velocity.x.payload.block_until_ready()
+                timing_warmup_elapsed = time.perf_counter() - started
+            if local_step == timing_end_step:
+                state.fields.velocity.x.payload.block_until_ready()
+                timing_end_elapsed = time.perf_counter() - started
+            if final_local:
+                state.fields.velocity.x.payload.block_until_ready()
+                solver_elapsed = time.perf_counter() - started
             should_sample = (
                 state.clock.step >= case.time.sample_start_step
                 and (state.clock.step - case.time.sample_start_step)
@@ -1055,6 +1115,19 @@ def run_case(
             physics_fingerprint=physics_fingerprint,
         )
     elapsed = time.perf_counter() - started
+    post_warmup_steps = timing_end_step - timing_warmup_steps
+    post_warmup_elapsed = (
+        timing_end_elapsed - timing_warmup_elapsed
+        if (
+            timing_end_elapsed is not None
+            and timing_warmup_elapsed is not None
+            and post_warmup_steps
+        )
+        else None
+    )
+    post_warmup_rate = (
+        post_warmup_steps / post_warmup_elapsed if post_warmup_elapsed else None
+    )
     summary = {
         "schema": "jaxwind.gabls1.semantic-sgs.v1",
         "case": case.resolved(),
@@ -1084,6 +1157,14 @@ def run_case(
             / 3600.0,
             "elapsed_seconds": elapsed,
             "steps_per_second": steps_to_run / elapsed if elapsed else math.inf,
+            "solver_elapsed_seconds": solver_elapsed,
+            "timing_warmup_steps": timing_warmup_steps,
+            "timing_warmup_elapsed_seconds": timing_warmup_elapsed,
+            "timing_end_step": timing_end_step,
+            "timing_end_elapsed_seconds": timing_end_elapsed,
+            "post_warmup_steps": post_warmup_steps,
+            "post_warmup_elapsed_seconds": post_warmup_elapsed,
+            "post_warmup_steps_per_second": post_warmup_rate,
             "profile_samples": statistics.count,
             "reached_final_time": state.clock.step == case.time.steps,
             **latest,
