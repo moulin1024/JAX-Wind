@@ -12,7 +12,6 @@ from pathlib import Path
 
 BENCHMARK_DIR = Path(__file__).resolve().parent
 ROOT = BENCHMARK_DIR.parents[1]
-DEFAULT_OUTPUT = ROOT / "benchmark_results" / "Nieuwstadt1993_new"
 REFERENCE_DIR = BENCHMARK_DIR / "reference"
 
 
@@ -23,7 +22,8 @@ def parse_args() -> argparse.Namespace:
             "digitized data, and overlay the result on the paper figures."
         )
     )
-    parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT)
+    parser.add_argument("--sgs", choices=("mgm", "lasd", "amd"), default="lasd")
+    parser.add_argument("--output-dir", type=Path)
     parser.add_argument(
         "--quick",
         action="store_true",
@@ -32,8 +32,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-steps", type=int)
     parser.add_argument("--sample-every", type=int, default=20)
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--run-label", default="JAX-Wind new LASD 40×40×48")
-    parser.add_argument("--legend-label", default="JAX-Wind new LASD 40×40×48 GPU")
+    parser.add_argument("--run-label")
+    parser.add_argument("--legend-label")
     parser.add_argument("--nx", type=int, default=40)
     parser.add_argument("--ny", type=int, default=40)
     parser.add_argument("--nz", type=int, default=48)
@@ -59,13 +59,42 @@ def run_command(command: list[str], env: dict[str, str]) -> None:
 
 def main() -> None:
     args = parse_args()
-    output_dir = args.output_dir.resolve()
+    output_dir = (
+        args.output_dir
+        if args.output_dir is not None
+        else ROOT
+        / "benchmark_results"
+        / (
+            f"Nieuwstadt1993_{args.sgs}_quick"
+            if args.quick
+            else f"Nieuwstadt1993_{args.sgs}_{args.nx}x{args.ny}x{args.nz}"
+        )
+    ).resolve()
+    model_label = args.sgs.upper()
+    display_grid = (8, 8, 8) if args.quick else (args.nx, args.ny, args.nz)
+    run_label = args.run_label or (
+        f"JAX-Wind {model_label} "
+        f"{display_grid[0]}×{display_grid[1]}×{display_grid[2]}"
+    )
+    legend_label = args.legend_label or f"{run_label} GPU"
     output_dir.mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
     env["MPLBACKEND"] = "Agg"
-    pressure_source = Path(
-        env.get("JAXWIND_SPECTRAL_FD_SOURCE", ROOT / "external" / "bw1000_benchmark")
+    configured_pressure_source = Path(
+        env.get("JAXWIND_SPECTRAL_FD_SOURCE", ROOT.parent / "bw1000_benchmark")
     ).resolve()
+    pressure_source = next(
+        (
+            candidate.resolve()
+            for candidate in (
+                configured_pressure_source,
+                ROOT.parent / "bw1000_benchmark",
+                ROOT / "external" / "bw1000_benchmark",
+            )
+            if (candidate / "spectral_fd").is_dir()
+        ),
+        configured_pressure_source,
+    )
     env["JAXWIND_SPECTRAL_FD_SOURCE"] = str(pressure_source)
     env["PYTHONPATH"] = os.pathsep.join(
         (str(ROOT / "src"), str(pressure_source), env.get("PYTHONPATH", ""))
@@ -75,6 +104,8 @@ def main() -> None:
         solve_command = [
             sys.executable,
             str(BENCHMARK_DIR / "run_new.py"),
+            "--sgs",
+            args.sgs,
             "--output-dir",
             str(output_dir),
             "--nx",
@@ -123,7 +154,7 @@ def main() -> None:
                 "--output-dir",
                 str(output_dir / "comparison"),
                 "--run-label",
-                args.run_label,
+                run_label,
             ],
             env,
         )
@@ -141,10 +172,10 @@ def main() -> None:
                 str(output_dir),
                 "--output",
                 str(
-                    BENCHMARK_DIR / "Nieuwstadt1993_LASD_complete_overlay.png"
+                    output_dir / f"nieuwstadt1993_{args.sgs}_complete_overlay.png"
                 ),
                 "--legend-label",
-                args.legend_label,
+                legend_label,
             ],
             env,
         )

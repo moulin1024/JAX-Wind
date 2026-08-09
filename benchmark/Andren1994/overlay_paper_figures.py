@@ -93,7 +93,7 @@ FIGURES = (
     FigureSpec(11, 17, (220, 90, 815, 690), "JAX-Wind TKE SGS transfer"),
     FigureSpec(12, 18, (125, 90, 905, 1370)),
     FigureSpec(13, 19, (115, 90, 905, 985), "JAX-Wind complete scalar-flux budget"),
-    FigureSpec(14, 20, (240, 90, 810, 1350), "JAX-Wind LASD diffusivities"),
+    FigureSpec(14, 20, (240, 90, 810, 1350), "JAX-Wind SGS diffusivities"),
     FigureSpec(15, 21, (105, 450, 905, 1370), "JAX-Wind spectra"),
     FigureSpec(16, 23, (195, 90, 815, 1340)),
     FigureSpec(17, 24, (205, 90, 815, 700)),
@@ -478,7 +478,8 @@ def _make_montage(images: list[tuple[str, Image.Image]]) -> Image.Image:
 def _make_all_figure_montage(
     images: list[tuple[FigureSpec, Image.Image]],
     *,
-    is_lasd: bool,
+    model_label: str,
+    has_sgs_diagnostics: bool,
     active_comparisons: dict[int, str],
 ) -> Image.Image:
     """Lay all numbered figures out in paper order on one readable sheet."""
@@ -521,10 +522,7 @@ def _make_all_figure_montage(
     draw = ImageDraw.Draw(montage)
     draw.text(
         (outer_gap, outer_gap),
-        (
-            "Andrén et al. (1994): paper figures + JAX-Wind "
-            + ("LASD" if is_lasd else "static Smagorinsky")
-        ),
+        f"Andrén et al. (1994): paper figures + JAX-Wind {model_label}",
         font=header_font,
         fill=(20, 25, 32),
     )
@@ -542,9 +540,10 @@ def _make_all_figure_montage(
     draw.text(
         (outer_gap + 112, legend_y),
         (
-            "JAX-Wind LASD: red = total/resolved; blue = diagnostic SGS contribution"
-            if is_lasd
-            else "JAX-Wind static Smagorinsky: red = available resolved/total diagnostic"
+            f"JAX-Wind {model_label}: red = total/resolved; "
+            "blue = diagnostic SGS contribution"
+            if has_sgs_diagnostics
+            else f"JAX-Wind {model_label}: red = available resolved/total diagnostic"
         ),
         font=legend_font,
         fill=(40, 46, 54),
@@ -603,11 +602,27 @@ def main() -> None:
     profile = _profile_data(args.results, statistics_ustar)
     spectra = _spectra_data(args.results)
     budget = _budget_data(args.results)
-    is_lasd = profile["total_scalar_variance_over_cstar2"] is not None
+    sgs_model = str(summary.get("case", {}).get("sgs_model", "unknown"))
+    model_label = {
+        "lasd": "LASD",
+        "mgm": "MGM",
+        "amd": "AMD",
+        "static-smagorinsky": "static Smagorinsky",
+        "static_smagorinsky": "static Smagorinsky",
+    }.get(sgs_model.lower(), sgs_model.upper())
+    has_sgs_diagnostics = profile["total_scalar_variance_over_cstar2"] is not None
     active_comparisons = {
-        2: "JAX-Wind total TKE" if is_lasd else "JAX-Wind resolved TKE",
-        4: "JAX-Wind on panels (a,b)" if is_lasd else "JAX-Wind on panel (a)",
-        5: "JAX-Wind total variances" if is_lasd else "JAX-Wind resolved variances",
+        2: "JAX-Wind total TKE" if has_sgs_diagnostics else "JAX-Wind resolved TKE",
+        4: (
+            "JAX-Wind on panels (a,b)"
+            if has_sgs_diagnostics
+            else "JAX-Wind on panel (a)"
+        ),
+        5: (
+            "JAX-Wind total variances"
+            if has_sgs_diagnostics
+            else "JAX-Wind resolved variances"
+        ),
         6: "JAX-Wind total flux",
     }
 
@@ -623,7 +638,9 @@ def main() -> None:
     _label(
         figure2,
         (510, 505),
-        "JAX-Wind LASD total" if is_lasd else "JAX-Wind resolved",
+        f"JAX-Wind {model_label} total"
+        if has_sgs_diagnostics
+        else "JAX-Wind resolved",
     )
     figure2 = _crop(figure2, (100, 90, 900, 675))
 
@@ -668,7 +685,7 @@ def main() -> None:
     _label(
         figure4,
         (555, 500),
-        "JAX-Wind LASD" if is_lasd else "JAX-Wind static Smag.",
+        f"JAX-Wind {model_label}",
     )
     figure4 = _crop(figure4, (250, 90, 820, 1360))
 
@@ -687,7 +704,11 @@ def main() -> None:
     _label(
         figure5,
         (560, 660),
-        "JAX-Wind total (diagnostic SGS)" if is_lasd else "JAX-Wind resolved",
+        (
+            "JAX-Wind total (diagnostic SGS)"
+            if has_sgs_diagnostics
+            else "JAX-Wind resolved"
+        ),
     )
     figure5 = _crop(figure5, (100, 90, 900, 900))
 
@@ -776,7 +797,7 @@ def main() -> None:
             profile["scalar_diffusivity_m2_s"],
             profile["height"],
         )
-        _label(figure14, (500, 745), "JAX-Wind LASD")
+        _label(figure14, (500, 745), f"JAX-Wind {model_label}")
         figure14 = _crop(figure14, (240, 90, 810, 1350))
         scalar_outputs.append(
             ("Figure 14 - SGS diffusivities", "fig14_jaxwind_overlay.png", figure14)
@@ -785,7 +806,7 @@ def main() -> None:
             {
                 7: "JAX-Wind scalar variance",
                 8: "JAX-Wind scalar flux",
-                14: "JAX-Wind LASD diffusivities",
+                14: f"JAX-Wind {model_label} diffusivities",
             }
         )
 
@@ -831,7 +852,7 @@ def main() -> None:
                 spectra["k_ustar_over_f"],
                 spectra[name],
             )
-        _label(figure15, (640, 470), "JAX-Wind LASD")
+        _label(figure15, (640, 470), f"JAX-Wind {model_label}")
         figure15 = _crop(figure15, (105, 450, 905, 1370))
         scalar_outputs.append(
             ("Figure 15 - spectra", "fig15_jaxwind_overlay.png", figure15)
@@ -865,7 +886,8 @@ def main() -> None:
     all_figures = [(spec, _crop(pages[spec.page], spec.crop)) for spec in FIGURES]
     all_montage = _make_all_figure_montage(
         all_figures,
-        is_lasd=is_lasd,
+        model_label=model_label,
+        has_sgs_diagnostics=has_sgs_diagnostics,
         active_comparisons=active_comparisons,
     )
     all_output = output / "andren1994_all_figures_jaxwind_overlay.png"

@@ -322,7 +322,9 @@ def composite_font(size: int) -> ImageFont.FreeTypeFont:
     return ImageFont.truetype(font_path, size)
 
 
-def compose_figures(figures: list[Image.Image]) -> Image.Image:
+def compose_figures(
+    figures: list[Image.Image], *, legend_label: str
+) -> Image.Image:
     rows = (len(figures) + COMPOSITE_COLUMNS - 1) // COMPOSITE_COLUMNS
     tile_width, tile_height = COMPOSITE_TILE_SIZE
     width = (
@@ -342,7 +344,7 @@ def compose_figures(figures: list[Image.Image]) -> Image.Image:
     draw = ImageDraw.Draw(composite)
     draw.text(
         (COMPOSITE_GAP, 10),
-        "Nieuwstadt et al. (1993): paper figures + new semantic JAX-Wind LASD",
+        f"Nieuwstadt et al. (1993): paper figures + {legend_label}",
         font=composite_font(34),
         fill=(20, 25, 32),
     )
@@ -423,7 +425,7 @@ def main() -> None:
             )
         )
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    compose_figures(overlaid).save(args.output)
+    compose_figures(overlaid, legend_label=args.legend_label).save(args.output)
     print(f"[overlay] wrote complete figure collection {args.output}")
 
 

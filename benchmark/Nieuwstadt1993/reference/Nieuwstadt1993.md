@@ -65,10 +65,12 @@ implementation:
 - conservative, horizontally dealiased momentum and scalar transport;
 - the external `spectral_fd` cell-centred pressure API with a compatible
   impermeable top boundary;
-- locally averaged scale-dependent dynamic (LASD) SGS closure for momentum
-  and potential temperature;
-- a stable-stratification scalar diffusivity correction with beta 30 and
-  power 2, expressed through the execution-scale buoyancy coefficient;
+- selectable MGM, LASD, and AMD momentum closures through the same resolved
+  state and conservative, three-halves-padded transport path;
+- matching static scalar SGS fluxes with turbulent Prandtl number 0.4 for MGM
+  and AMD, and scale-dependent dynamic scalar flux for LASD;
+- a LASD-only stable-stratification scalar diffusivity correction with beta 30
+  and power 2, expressed through the execution-scale buoyancy coefficient;
 - LASD coefficients updated every eight steps, keeping
   `cs_count * max(CFLx, CFLy, CFLz) < 1` in the reference GPU run.
 
@@ -78,6 +80,20 @@ profiles, time histories, conditional averages, kinetic-energy budget terms,
 spectra, summary statistics, and standalone plots. `overlay_figures.py` maps
 those diagnostics onto paper Figs. 1--17. The official scan is registered by
 `extract_paper_figures.py` after PDF pages 8--20 have been rendered at 200 dpi.
+
+Run the canonical `40 x 40 x 48` cases from the repository root with:
+
+```bash
+JAX_PLATFORMS=cuda python -m benchmark.Nieuwstadt1993.run_new --sgs mgm
+JAX_PLATFORMS=cuda python -m benchmark.Nieuwstadt1993.run_new --sgs lasd
+JAX_PLATFORMS=cuda python -m benchmark.Nieuwstadt1993.run_new --sgs amd
+```
+
+Default outputs are model-specific directories under `benchmark_results/`.
+Add `--quick` for the eight-step end-to-end smoke case, or `--output-dir PATH`
+to select a cluster scratch/output location. Every run writes `profiles.csv`,
+`time_series.csv`, `benchmark_stats.npz`, `summary.csv`, `summary.json`, and
+`resolved_config.toml` in addition to the standalone diagnostic plots.
 
 The primary automated acceptance criteria are the three bulk targets above,
 finite/non-negative SGS diagnostics where required, valid spectrum sampling
