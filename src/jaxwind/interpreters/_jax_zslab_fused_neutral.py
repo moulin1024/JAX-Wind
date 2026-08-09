@@ -15,6 +15,7 @@ def build_fused_neutral_boussinesq_kernels(
     scalar_advection_from_padded_momentum_local,
     scalar_sgs_from_padded_momentum_gradients_local,
     scalar_amd_local,
+    buoyancy_local,
     pad_horizontal_local,
     truncate_padded_local,
     wall_filter_local,
@@ -227,6 +228,11 @@ def build_fused_neutral_boussinesq_kernels(
         stability_buoyancy_coefficient,
         stability_beta,
         stability_power,
+        imposed_wall_x,
+        imposed_wall_y,
+        imposed_scalar_source,
+        buoyancy_coefficient,
+        use_imposed_sources,
     ):
         (
             momentum,
@@ -245,6 +251,17 @@ def build_fused_neutral_boussinesq_kernels(
             wall_filtered,
             wall_filter_width,
         )
+        if use_imposed_sources:
+            bottom = lax.axis_index(axis_name) == 0
+            wall = (
+                jnp.zeros_like(u).at[0].set(
+                    jnp.where(bottom, imposed_wall_x, 0.0)
+                ),
+                jnp.zeros_like(v).at[0].set(
+                    jnp.where(bottom, imposed_wall_y, 0.0)
+                ),
+                jnp.zeros_like(w_upper),
+            )
         sgs = dry_sgs_from_padded_gradients_local(
             momentum,
             cell_gradients,
@@ -285,6 +302,17 @@ def build_fused_neutral_boussinesq_kernels(
                     stability_beta,
                     stability_power,
                 )
+            )
+        if use_imposed_sources:
+            bottom = lax.axis_index(axis_name) == 0
+            momentum_tendency = (
+                momentum_tendency[0],
+                momentum_tendency[1],
+                momentum_tendency[2]
+                + buoyancy_local(scalar, buoyancy_coefficient),
+            )
+            scalar_tendency = scalar_tendency.at[0].add(
+                jnp.where(bottom, imposed_scalar_source, 0.0)
             )
         return (
             *momentum_tendency,

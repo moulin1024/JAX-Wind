@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import jax
 import jax.numpy as jnp
 from jax import lax
 
@@ -271,29 +270,39 @@ def build_lasd_kernels(
             trajectory_x,
             trajectory_y,
             trajectory_z,
+
             update_interval,
         )
-
-    def lasd_filter_local(values, filter_width):
-        spectrum = jnp.fft.rfftn(values, axes=(-2, -1))
+    def lasd_filter_two_scales_components_local(
+        values,
+        first_filter_width,
+        second_filter_width,
+    ):
+        components = jnp.moveaxis(values, -1, 0)
+        spectrum = jnp.fft.rfftn(components, axes=(-2, -1))
         x_mode = jnp.arange(grid.nx // 2 + 1)
         y_mode = jnp.abs(jnp.fft.fftfreq(grid.ny) * grid.ny)
-        cutoff_x = jnp.floor(grid.nx / (2.0 * filter_width) + 0.5)
-        cutoff_y = jnp.floor(grid.ny / (2.0 * filter_width) + 0.5)
-        mask = (y_mode[:, None] < cutoff_y) & (x_mode[None, :] < cutoff_x)
-        return jnp.fft.irfftn(
-            spectrum * mask[None, ...],
+
+        def mask(filter_width):
+            cutoff_x = jnp.floor(grid.nx / (2.0 * filter_width) + 0.5)
+            cutoff_y = jnp.floor(grid.ny / (2.0 * filter_width) + 0.5)
+            return (y_mode[:, None] < cutoff_y) & (x_mode[None, :] < cutoff_x)
+
+        component_count = components.shape[0]
+        filtered = jnp.fft.irfftn(
+            jnp.concatenate(
+                (
+                    spectrum * mask(first_filter_width)[None, ...],
+                    spectrum * mask(second_filter_width)[None, ...],
+                ),
+                axis=0,
+            ),
             s=(grid.ny, grid.nx),
             axes=(-2, -1),
         ).astype(values.dtype)
-
-    def lasd_filter_components_local(values, filter_width):
-        return jnp.moveaxis(
-            jax.vmap(lambda value: lasd_filter_local(value, filter_width))(
-                jnp.moveaxis(values, -1, 0)
-            ),
-            0,
-            -1,
+        return (
+            jnp.moveaxis(filtered[:component_count], 0, -1),
+            jnp.moveaxis(filtered[component_count:], 0, -1),
         )
 
     def strain_tensor_local(momentum):
@@ -322,29 +331,15 @@ def build_lasd_kernels(
     def tensor_magnitude_local(tensor):
         return jnp.sqrt(jnp.maximum(2.0 * symmetric_dot_local(tensor, tensor), 0.0))
 
-    def momentum_contractions_local(momentum, filter_grid_ratio, ratio):
-        tensor = strain_tensor_local(momentum)
-        magnitude = tensor_magnitude_local(tensor)
-        velocity = jnp.stack((momentum.u, momentum.v, momentum.w_at_cells), axis=-1)
-        products = jnp.stack(
-            (
-                velocity[..., 0] ** 2,
-                velocity[..., 0] * velocity[..., 1],
-                velocity[..., 0] * velocity[..., 2],
-                velocity[..., 1] ** 2,
-                velocity[..., 1] * velocity[..., 2],
-                velocity[..., 2] ** 2,
-            ),
-            axis=-1,
-        )
-        width = filter_grid_ratio * ratio
-        velocity_hat = lasd_filter_components_local(velocity, width)
-        products_hat = lasd_filter_components_local(products, width)
-        tensor_hat = lasd_filter_components_local(tensor, width)
-        magnitude_tensor_hat = lasd_filter_components_local(
-            magnitude[..., None] * tensor,
-            width,
-        )
+    def contractions_from_filtered_local(filtered, ratio):
+        velocity_hat = filtered[..., 0:3]
+        products_hat = filtered[..., 3:9]
+        tensor_hat = filtered[..., 9:15]
+        magnitude_tensor_hat = filtered[..., 15:21]
+        scalar_hat = filtered[..., 21]
+        velocity_scalar_hat = filtered[..., 22:25]
+        gradient_hat = filtered[..., 25:28]
+        strain_gradient_hat = filtered[..., 28:31]
         resolved = jnp.stack(
             (
                 products_hat[..., 0] - velocity_hat[..., 0] ** 2,
@@ -365,19 +360,36 @@ def build_lasd_kernels(
                 - ratio**2 * tensor_magnitude_local(tensor_hat)[..., None] * tensor_hat
             )
         )
-        return symmetric_dot_local(resolved, model), symmetric_dot_local(model, model)
-
-    def scalar_contractions_local(
+        scalar_resolved = velocity_scalar_hat - velocity_hat * scalar_hat[..., None]
+        scalar_model = delta**2 * (
+            strain_gradient_hat
+            - ratio**2 * tensor_magnitude_local(tensor_hat)[..., None] * gradient_hat
+        )
+        return (
+            symmetric_dot_local(resolved, model),
+            symmetric_dot_local(model, model),
+            jnp.sum(scalar_resolved * scalar_model, axis=-1),
+            jnp.sum(scalar_model * scalar_model, axis=-1),
+        )
+    def momentum_scalar_contractions_local(
         momentum,
         scalar,
         filter_grid_ratio,
-        ratio,
+        test_ratio,
     ):
         tensor = strain_tensor_local(momentum)
+
         magnitude = tensor_magnitude_local(tensor)
         velocity = jnp.stack((momentum.u, momentum.v, momentum.w_at_cells), axis=-1)
-        gradient = jnp.stack(
-            (scalar.dtheta_dx, scalar.dtheta_dy, scalar.dtheta_dz_at_cells),
+        products = jnp.stack(
+            (
+                velocity[..., 0] ** 2,
+                velocity[..., 0] * velocity[..., 1],
+                velocity[..., 0] * velocity[..., 2],
+                velocity[..., 1] ** 2,
+                velocity[..., 1] * velocity[..., 2],
+                velocity[..., 2] ** 2,
+            ),
             axis=-1,
         )
         scalar_anomaly = scalar.theta - jnp.mean(
@@ -386,23 +398,35 @@ def build_lasd_kernels(
             keepdims=True,
         )
         velocity_scalar = velocity * scalar_anomaly[..., None]
-        width = filter_grid_ratio * ratio
-        velocity_hat = lasd_filter_components_local(velocity, width)
-        scalar_hat = lasd_filter_local(scalar_anomaly, width)
-        velocity_scalar_hat = lasd_filter_components_local(velocity_scalar, width)
-        gradient_hat = lasd_filter_components_local(gradient, width)
-        strain_gradient_hat = lasd_filter_components_local(
-            magnitude[..., None] * gradient,
-            width,
+        gradient = jnp.stack(
+            (scalar.dtheta_dx, scalar.dtheta_dy, scalar.dtheta_dz_at_cells),
+            axis=-1,
         )
-        tensor_hat = lasd_filter_components_local(tensor, width)
-        resolved = velocity_scalar_hat - velocity_hat * scalar_hat[..., None]
-        delta = (grid.dx * grid.dy * grid.dz) ** (1.0 / 3.0)
-        model = delta**2 * (
-            strain_gradient_hat
-            - ratio**2 * tensor_magnitude_local(tensor_hat)[..., None] * gradient_hat
+        # Filter all unique momentum/scalar products together and reuse their
+        # forward transform for both LASD test scales.
+        unfiltered = jnp.concatenate(
+            (
+                velocity,
+                products,
+                tensor,
+                magnitude[..., None] * tensor,
+                scalar_anomaly[..., None],
+                velocity_scalar,
+                gradient,
+                magnitude[..., None] * gradient,
+            ),
+            axis=-1,
         )
-        return jnp.sum(resolved * model, axis=-1), jnp.sum(model * model, axis=-1)
+        filtered_2d, filtered_4d = lasd_filter_two_scales_components_local(
+            unfiltered,
+            filter_grid_ratio * test_ratio,
+            filter_grid_ratio * test_ratio**2,
+        )
+        return (
+            *contractions_from_filtered_local(filtered_2d, test_ratio),
+            *contractions_from_filtered_local(filtered_4d, test_ratio**2),
+        )
+
 
     def safe_divide_local(numerator, denominator):
         valid = jnp.abs(denominator) > 1.0e-30
@@ -411,7 +435,6 @@ def build_lasd_kernels(
             numerator / jnp.where(valid, denominator, 1.0),
             0.0,
         )
-
     def beta_local(coefficient_2d, coefficient_4d, test_ratio, scale_dependent):
         exponent = jnp.log(test_ratio) / (jnp.log(test_ratio**2) - jnp.log(test_ratio))
         raw = (
@@ -566,23 +589,20 @@ def build_lasd_kernels(
         scalar_maximum,
         scalar_scale_dependent,
     ):
-        lm, mm = momentum_contractions_local(momentum, filter_grid_ratio, test_ratio)
-        qn, nn = momentum_contractions_local(
-            momentum,
-            filter_grid_ratio,
-            test_ratio**2,
-        )
-        scalar_lm, scalar_mm = scalar_contractions_local(
+        (
+            lm,
+            mm,
+            scalar_lm,
+            scalar_mm,
+            qn,
+            nn,
+            scalar_qn,
+            scalar_nn,
+        ) = momentum_scalar_contractions_local(
             momentum,
             scalar,
             filter_grid_ratio,
             test_ratio,
-        )
-        scalar_qn, scalar_nn = scalar_contractions_local(
-            momentum,
-            scalar,
-            filter_grid_ratio,
-            test_ratio**2,
         )
         histories = (
             jnp.where(first_update, momentum_initial * mm, lm_old),

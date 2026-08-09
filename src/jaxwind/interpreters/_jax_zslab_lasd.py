@@ -375,8 +375,18 @@ class ZSlabLasdMixin:
         self,
         fields: BoussinesqFields,
         model: BoussinesqModel,
+        *,
+        wall_acceleration: tuple[Any, Any] | None = None,
+        scalar_surface_source: Any | None = None,
     ) -> BoussinesqTendency | None:
-        """Use one mapped executable for compatible neutral SGS models."""
+        """Use one mapped executable for compatible SGS models."""
+        if (wall_acceleration is None) != (scalar_surface_source is None):
+            raise ValueError(
+                "imposed wall acceleration and scalar source must be supplied together"
+            )
+        use_imposed_sources = wall_acceleration is not None
+        if wall_acceleration is not None and len(wall_acceleration) != 2:
+            raise ValueError("wall acceleration must contain x and y components")
         momentum_model = model.momentum
         wall = momentum_model.wall
         common = (
@@ -388,7 +398,13 @@ class ZSlabLasdMixin:
                 (NoRotation, CoriolisGeostrophic),
             )
             and isinstance(model.scalar_advection, ConservativeScalarAdvection)
-            and isinstance(model.buoyancy, NoBuoyancy)
+            and (
+                isinstance(model.buoyancy, NoBuoyancy)
+                or (
+                    use_imposed_sources
+                    and isinstance(model.buoyancy, LinearBoussinesqBuoyancy)
+                )
+            )
             and isinstance(model.rayleigh_damping, NoRayleighDamping)
             and isinstance(model.scalar_boundary, ScalarFluxBoundary)
         )
@@ -405,6 +421,10 @@ class ZSlabLasdMixin:
         frozen_model = self.frozen_zero_scalar and (mgm or amd or lasd)
         if not common or not (mgm or amd or lasd):
             return None
+        if use_imposed_sources and not lasd:
+            return None
+        if use_imposed_sources and frozen_model:
+            raise ValueError("imposed stable sources require an active scalar")
 
         velocity = fields.velocity
         self._validate_velocity_cell(velocity.x, XVelocity)
@@ -514,6 +534,18 @@ class ZSlabLasdMixin:
                 model.scalar_sgs.stability_buoyancy_coefficient,
                 model.scalar_sgs.stability_beta,
                 model.scalar_sgs.stability_power,
+                *(wall_acceleration or (0.0, 0.0)),
+                (
+                    scalar_surface_source
+                    if scalar_surface_source is not None
+                    else 0.0
+                ),
+                (
+                    model.buoyancy.acceleration_per_temperature
+                    if isinstance(model.buoyancy, LinearBoussinesqBuoyancy)
+                    else 0.0
+                ),
+                use_imposed_sources,
             )
         scalar_quantity = (
             PotentialTemperatureTendency
