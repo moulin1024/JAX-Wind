@@ -140,43 +140,66 @@ class ActuatorLineDiagnostic(NamedTuple):
 
 
 @dataclass(frozen=True, slots=True)
+class _ProjectionKernels:
+    exchange_packed: Callable
+    pressure_gradient: Callable
+    divergence: Callable
+    enforce_upper_boundary: Callable
+    horizontal_divergence: Callable
+    horizontal_gradient: Callable
+    filter_horizontal: Callable
+    filter_boundary: Callable
+    correct: Callable
+
+
+@dataclass(frozen=True, slots=True)
+class _FlowKernels:
+    ab2_update: Callable
+    combine_payloads: Callable
+    context: Callable
+    advection: Callable
+    rotational_advection: Callable
+    wall: Callable
+    sgs: Callable
+    sgs_vertical_flux: Callable
+    sgs_tke_transfer: Callable
+
+
+@dataclass(frozen=True, slots=True)
+class _LasdKernels:
+    relax_field: Callable
+    accumulate: Callable
+    accumulate_velocity: Callable
+    update: Callable
+    diagnostics: Callable
+
+
+@dataclass(frozen=True, slots=True)
+class _ScalarKernels:
+    context: Callable
+    advection: Callable
+    sgs: Callable
+    buoyancy: Callable
+    rayleigh_damping: Callable
+
+
+@dataclass(frozen=True, slots=True)
+class _WindKernels:
+    tendency: Callable
+    actuator_line: Callable
+
+
+@dataclass(frozen=True, slots=True)
 class JaxZSlabInterpreter(ZSlabLasdMixin, ZSlabFlowMixin):
     """Higher-order JAX interpretation of the first equal z-slab topology."""
 
     decomposition: EqualZSlab
     addressable_shards: tuple[int, ...]
-    frozen_zero_scalar: bool
-    exchange_packed: Callable
-    _pressure_gradient: Callable
-    _divergence: Callable
-    _enforce_upper_boundary: Callable
-    _horizontal_divergence: Callable
-    _horizontal_gradient: Callable
-    _filter_horizontal: Callable
-    _filter_boundary: Callable
-    _correct: Callable
-    _ab2_update: Callable
-    _combine_payloads: Callable
-    _relax_lasd_field: Callable
-    _wind_tunnel: Callable
-    _actuator_line: Callable
-    _dry_flow_context: Callable
-    _dry_advection: Callable
-    _dry_rotational_advection: Callable
-    _dry_wall: Callable
-    _dry_sgs: Callable
-    _dry_sgs_vertical_flux: Callable
-    _dry_sgs_tke_transfer: Callable
-    _fused_lasd_boussinesq: Callable
-    _lasd_accumulate: Callable
-    _lasd_accumulate_velocity: Callable
-    _lasd_update: Callable
-    _lasd_diagnostics: Callable
-    _scalar_context: Callable
-    _scalar_advection: Callable
-    _scalar_sgs: Callable
-    _buoyancy: Callable
-    _rayleigh_damping: Callable
+    projection: _ProjectionKernels
+    flow: _FlowKernels
+    lasd: _LasdKernels
+    scalar: _ScalarKernels
+    wind: _WindKernels
 
     def halo_context_elements_per_shard(self, component_count: int) -> int:
         """Stored lower and upper context planes for one addressable shard."""
@@ -210,7 +233,7 @@ class JaxZSlabInterpreter(ZSlabLasdMixin, ZSlabFlowMixin):
                 else jnp.zeros((point_count,), dtype=dtype)
             )
 
-        values = self._actuator_line(
+        values = self.wind.actuator_line(
             velocity.x.payload,
             velocity.y.payload,
             velocity.z.owned.payload,
@@ -284,7 +307,7 @@ class JaxZSlabInterpreter(ZSlabLasdMixin, ZSlabFlowMixin):
         self._validate_field(pressure, Cell)
         if pressure.quantity is not PressureCorrection:
             raise TypeError("pressure_gradient_z requires PressureCorrection")
-        payload = self._pressure_gradient(pressure.payload, boundary_gradient.upper)
+        payload = self.projection.pressure_gradient(pressure.payload, boundary_gradient.upper)
         owned = AddressableField(
             VerticalPressureGradient,
             ZFace,
@@ -302,7 +325,7 @@ class JaxZSlabInterpreter(ZSlabLasdMixin, ZSlabFlowMixin):
             VerticalPressureGradient,
         ):
             raise TypeError("divergence_z requires a vertical face-normal quantity")
-        payload = self._divergence(
+        payload = self.projection.divergence(
             vertical_faces.owned.payload,
             vertical_faces.lower_boundary,
         )
@@ -338,7 +361,7 @@ class JaxZSlabInterpreter(ZSlabLasdMixin, ZSlabFlowMixin):
             raise TypeError("vertical velocity requires VerticalVelocity")
         if velocity.z.owned.phase not in (Candidate, Projected):
             raise TypeError("vertical velocity must be Candidate or Projected")
-        x_payload, y_payload, z_payload = self._filter_horizontal(
+        x_payload, y_payload, z_payload = self.projection.filter_horizontal(
             velocity.x.payload,
             velocity.y.payload,
             velocity.z.owned.payload,
@@ -353,10 +376,10 @@ class JaxZSlabInterpreter(ZSlabLasdMixin, ZSlabFlowMixin):
             array = jnp.asarray(value, dtype=boundary_dtype)
             if array.ndim == 0:
                 return jnp.broadcast_to(array, boundary_shape)
-            return self._filter_boundary(array)
+            return self.projection.filter_boundary(array)
 
         lower_boundary = filtered_boundary(boundary.lower)
-        upper_payload = self._enforce_upper_boundary(
+        upper_payload = self.projection.enforce_upper_boundary(
             z_payload,
             filtered_boundary(boundary.upper),
         )
@@ -443,7 +466,7 @@ class JaxZSlabInterpreter(ZSlabLasdMixin, ZSlabFlowMixin):
             and velocity.z.owned.phase is Projected
         ):
             raise TypeError("dry-flow context requires projected velocity")
-        arrays = self._dry_flow_context(
+        arrays = self.flow.context(
             velocity.x.payload,
             velocity.y.payload,
             velocity.z.owned.payload,
@@ -471,7 +494,7 @@ class JaxZSlabInterpreter(ZSlabLasdMixin, ZSlabFlowMixin):
         return ZSlabBoussinesqContext(
             momentum,
             scalar,
-            self._scalar_context(scalar.payload),
+            self.scalar.context(scalar.payload),
         )
 
     def velocity_divergence(self, velocity: VelocityVector) -> AddressableField:
@@ -479,7 +502,7 @@ class JaxZSlabInterpreter(ZSlabLasdMixin, ZSlabFlowMixin):
         self._validate_velocity_cell(velocity.x, XVelocity)
         self._validate_velocity_cell(velocity.y, YVelocity)
         vertical = self.divergence_z(velocity.z)
-        horizontal = self._horizontal_divergence(
+        horizontal = self.projection.horizontal_divergence(
             velocity.x.payload,
             velocity.y.payload,
         )
@@ -512,7 +535,7 @@ class JaxZSlabInterpreter(ZSlabLasdMixin, ZSlabFlowMixin):
         self._validate_field(pressure, Cell)
         if pressure.quantity is not PressureCorrection:
             raise TypeError("pressure gradient requires PressureCorrection")
-        gradient_x, gradient_y = self._horizontal_gradient(pressure.payload)
+        gradient_x, gradient_y = self.projection.horizontal_gradient(pressure.payload)
         return PressureGradient(
             AddressableField(
                 XPressureGradient,
@@ -538,7 +561,7 @@ class JaxZSlabInterpreter(ZSlabLasdMixin, ZSlabFlowMixin):
         dt: float,
     ) -> VelocityVector:
         """Return the projected velocity without changing semantic ownership."""
-        x_payload, y_payload, z_payload, lower_boundaries = self._correct(
+        x_payload, y_payload, z_payload, lower_boundaries = self.projection.correct(
             velocity.x.payload,
             velocity.y.payload,
             velocity.z.owned.payload,
@@ -620,7 +643,7 @@ class JaxZSlabInterpreter(ZSlabLasdMixin, ZSlabFlowMixin):
                 raise TypeError("AB2 requires an evaluated vertical tendency")
 
         def update(state, current, previous):
-            return self._ab2_update(
+            return self.flow.ab2_update(
                 state,
                 current,
                 previous,
@@ -721,7 +744,7 @@ class JaxZSlabInterpreter(ZSlabLasdMixin, ZSlabFlowMixin):
             Cell,
             self._expected_regions(Cell),
             Candidate,
-            self._ab2_update(
+            self.flow.ab2_update(
                 scalar.payload,
                 current_tendency.payload,
                 previous_tendency.payload,
@@ -758,15 +781,12 @@ def build_zslab_interpreter(
     axis_name: str = "jaxwind_z",
     porte_agel_wall_correction: bool = True,
     nonlinear_padding_ratio: float = 1.5,
-    frozen_zero_scalar: bool = False,
 ) -> JaxZSlabInterpreter:
     """Build the sole production interpreter.
 
     A one-shard decomposition is the ordinary single-process case and defaults
     to its only addressable shard. Multi-shard decompositions use the same
     interpreter and require the caller's addressable global shard indices.
-    ``frozen_zero_scalar`` is reserved for runners whose passive scalar and
-    scalar boundary fluxes are identically zero for the entire integration.
     """
 
     from ._jax_zslab_factory import (
@@ -779,5 +799,4 @@ def build_zslab_interpreter(
         axis_name=axis_name,
         porte_agel_wall_correction=porte_agel_wall_correction,
         nonlinear_padding_ratio=nonlinear_padding_ratio,
-        frozen_zero_scalar=frozen_zero_scalar,
     )

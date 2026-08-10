@@ -17,14 +17,18 @@ from ._jax_zslab_wind import (
 )
 from ._jax_zslab_lasd_kernels import build_lasd_kernels
 from ._jax_zslab_conservative import build_conservative_advection_kernels
-from ._jax_zslab_fused_common import build_padded_momentum_gradients_kernel
-from ._jax_zslab_fused_neutral import build_fused_neutral_boussinesq_kernels
+from ._jax_zslab_gradients import build_padded_momentum_gradients_kernel
 from ._jax_zslab_rotational import build_rotational_advection_kernel
 from .jax_zslab import (
     JaxZSlabInterpreter,
     PackedHaloArrays,
     ZSlabDryFlowArrays,
     ZSlabScalarArrays,
+    _FlowKernels,
+    _LasdKernels,
+    _ProjectionKernels,
+    _ScalarKernels,
+    _WindKernels,
 )
 from ._jax_zslab_smag import build_smagorinsky_kernels
 from ._jax_zslab_spectral import build_horizontal_spectral_kernels
@@ -41,13 +45,10 @@ def build_zslab_interpreter(
     axis_name: str = "jaxwind_z",
     porte_agel_wall_correction: bool = True,
     nonlinear_padding_ratio: float = 1.5,
-    frozen_zero_scalar: bool = False,
 ) -> JaxZSlabInterpreter:
     """Build mapped kernels with horizontally padded nonlinear products."""
     if not isinstance(porte_agel_wall_correction, bool):
         raise TypeError("Porté-Agel wall correction flag must be boolean")
-    if not isinstance(frozen_zero_scalar, bool):
-        raise TypeError("frozen zero scalar flag must be boolean")
     if not math.isfinite(nonlinear_padding_ratio) or nonlinear_padding_ratio < 1.5:
         raise ValueError("nonlinear padding ratio must be at least 1.5")
     shard_count = decomposition.shard_count
@@ -633,27 +634,6 @@ def build_zslab_interpreter(
         axis_name=axis_name,
         wall_filter_local=wall_filter_local,
     )
-    fused_lasd_boussinesq_local = build_fused_neutral_boussinesq_kernels(
-        grid=grid,
-        axis_name=axis_name,
-        frozen_zero_scalar=frozen_zero_scalar,
-        scalar_context_local=scalar_context_local,
-        scalar_advection_from_padded_momentum_local=(
-            scalar_advection_from_padded_momentum_local
-        ),
-        scalar_sgs_from_padded_momentum_gradients_local=(
-            scalar_sgs_from_padded_momentum_gradients_local
-        ),
-        buoyancy_local=buoyancy_local,
-        pad_horizontal_local=pad_horizontal_local,
-        truncate_padded_local=truncate_padded_local,
-        wall_filter_local=wall_filter_local,
-        dry_flow_context_local=dry_flow_context_local,
-        dry_advection_from_padded_local=dry_advection_from_padded_local,
-        padded_momentum_gradients_local=padded_momentum_gradients_local,
-        dry_sgs_from_padded_gradients_local=dry_sgs_from_padded_gradients_local,
-    )
-
     def horizontal_divergence_local(x_velocity, y_velocity):
         x_spectrum = jnp.fft.rfftn(x_velocity, axes=(-2, -1))
         y_spectrum = jnp.fft.rfftn(y_velocity, axes=(-2, -1))
@@ -830,11 +810,6 @@ def build_zslab_interpreter(
         dry_sgs_tke_transfer_local,
         in_axes=(0, 0, None, None, None),
     )
-    fused_lasd_boussinesq = mapped(
-        fused_lasd_boussinesq_local,
-        in_axes=(0, 0, 0, None, 0, 0, 0) + (None,) * 23,
-        static_broadcasted_argnums=(29,),
-    )
     lasd_accumulate = mapped(
         lasd_accumulate_local,
         in_axes=(0, 0, 0, 0, 0, 0, None),
@@ -906,36 +881,41 @@ def build_zslab_interpreter(
     return JaxZSlabInterpreter(
         decomposition,
         addressable_shards,
-        frozen_zero_scalar,
-        exchange_packed,
-        pressure_gradient,
-        divergence,
-        enforce_upper_boundary,
-        horizontal_divergence,
-        horizontal_gradient,
-        filter_horizontal,
-        jax.jit(filter_boundary),
-        correct,
-        ab2_update,
-        combine_payloads,
-        relax_lasd_field,
-        wind_tunnel,
-        actuator_line,
-        dry_flow_context,
-        dry_advection,
-        dry_rotational_advection,
-        dry_wall,
-        dry_sgs,
-        dry_sgs_vertical_flux,
-        dry_sgs_tke_transfer,
-        fused_lasd_boussinesq,
-        lasd_accumulate,
-        lasd_accumulate_velocity,
-        lasd_update,
-        lasd_diagnostics,
-        scalar_context,
-        scalar_advection,
-        scalar_sgs,
-        buoyancy,
-        rayleigh_damping,
+        _ProjectionKernels(
+            exchange_packed,
+            pressure_gradient,
+            divergence,
+            enforce_upper_boundary,
+            horizontal_divergence,
+            horizontal_gradient,
+            filter_horizontal,
+            jax.jit(filter_boundary),
+            correct,
+        ),
+        _FlowKernels(
+            ab2_update,
+            combine_payloads,
+            dry_flow_context,
+            dry_advection,
+            dry_rotational_advection,
+            dry_wall,
+            dry_sgs,
+            dry_sgs_vertical_flux,
+            dry_sgs_tke_transfer,
+        ),
+        _LasdKernels(
+            relax_lasd_field,
+            lasd_accumulate,
+            lasd_accumulate_velocity,
+            lasd_update,
+            lasd_diagnostics,
+        ),
+        _ScalarKernels(
+            scalar_context,
+            scalar_advection,
+            scalar_sgs,
+            buoyancy,
+            rayleigh_damping,
+        ),
+        _WindKernels(wind_tunnel, actuator_line),
     )

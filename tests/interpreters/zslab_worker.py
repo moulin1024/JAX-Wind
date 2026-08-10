@@ -260,9 +260,9 @@ def main() -> int:
     )
 
     packed = jnp.stack((sharded_pressure, 2.0 * sharded_pressure), axis=1)
-    halo = interpreter.exchange_packed(packed)
+    halo = interpreter.projection.exchange_packed(packed)
     halo.lower.block_until_ready()
-    repeated_halo = interpreter.exchange_packed(packed)
+    repeated_halo = interpreter.projection.exchange_packed(packed)
     expected_lower = jnp.zeros_like(halo.lower)
     expected_upper = jnp.zeros_like(halo.upper)
     expected_lower = expected_lower.at[1:].set(packed[:-1, :, -1])

@@ -59,9 +59,9 @@ class ZSlabFlowMixin:
         wall: NeutralLogWall | FilteredNeutralLogWall | None = None,
     ) -> VelocityVector:
         if isinstance(config, ConservativeAdvection):
-            x, y, z = self._dry_advection(context.arrays)
+            x, y, z = self.flow.advection(context.arrays)
         elif isinstance(config, RotationalAdvection):
-            x, y, z = self._dry_rotational_advection(
+            x, y, z = self.flow.rotational_advection(
                 context.arrays,
                 *self._wall_gradient_parameters(wall),
             )
@@ -102,7 +102,7 @@ class ZSlabFlowMixin:
         filter_width = (
             config.filter_grid_ratio * config.test_filter_ratio if filtered else 1.0
         )
-        x, y, z = self._dry_wall(
+        x, y, z = self.flow.wall(
             context.arrays,
             drag,
             filtered,
@@ -123,7 +123,7 @@ class ZSlabFlowMixin:
             raise TypeError("unsupported SGS choice")
         coefficient = self._momentum_sgs_coefficient(context, config)
         bounds = self._momentum_sgs_coefficient_bounds(config)
-        x, y, z = self._dry_sgs(context.arrays, coefficient, *bounds)
+        x, y, z = self.flow.sgs(context.arrays, coefficient, *bounds)
         return self._dry_tendency(x, y, z)
 
     def sgs_vertical_flux(
@@ -137,7 +137,7 @@ class ZSlabFlowMixin:
             (StaticSmagorinsky, LagrangianScaleDependentDynamic),
         ):
             raise TypeError("unsupported SGS choice")
-        return self._dry_sgs_vertical_flux(
+        return self.flow.sgs_vertical_flux(
             context.arrays,
             self._momentum_sgs_coefficient(context, config),
             *self._momentum_sgs_coefficient_bounds(config),
@@ -158,7 +158,7 @@ class ZSlabFlowMixin:
         """
         wall_gradient_factor = self._diagnostic_wall_gradient_factor(wall)
         if isinstance(config, (StaticSmagorinsky, LagrangianScaleDependentDynamic)):
-            return self._dry_sgs_tke_transfer(
+            return self.flow.sgs_tke_transfer(
                 context.arrays,
                 self._momentum_sgs_coefficient(context, config),
                 *self._momentum_sgs_coefficient_bounds(config),
@@ -332,7 +332,7 @@ class ZSlabFlowMixin:
         else:
             raise TypeError("unsupported wind-tunnel fringe choice")
 
-        x, y, z = self._wind_tunnel(
+        x, y, z = self.wind.tendency(
             velocity.x.payload,
             velocity.y.payload,
             velocity.z.owned.payload,
@@ -355,7 +355,7 @@ class ZSlabFlowMixin:
                     else jnp.zeros((point_count,), dtype=dtype)
                 )
 
-            line_values = self._actuator_line(
+            line_values = self.wind.actuator_line(
                 velocity.x.payload,
                 velocity.y.payload,
                 velocity.z.owned.payload,
@@ -422,8 +422,8 @@ class ZSlabFlowMixin:
             ):
                 raise TypeError("combined tendencies must preserve component dtypes")
         return self._dry_tendency(
-            self._combine_payloads(tuple(term.x.payload for term in tendencies)),
-            self._combine_payloads(tuple(term.y.payload for term in tendencies)),
-            self._combine_payloads(tuple(term.z.owned.payload for term in tendencies)),
-            self._combine_payloads(tuple(term.z.lower_boundary for term in tendencies)),
+            self.flow.combine_payloads(tuple(term.x.payload for term in tendencies)),
+            self.flow.combine_payloads(tuple(term.y.payload for term in tendencies)),
+            self.flow.combine_payloads(tuple(term.z.owned.payload for term in tendencies)),
+            self.flow.combine_payloads(tuple(term.z.lower_boundary for term in tendencies)),
         )

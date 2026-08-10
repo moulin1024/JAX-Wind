@@ -1,7 +1,8 @@
-"""Execute a configured pressure-driven neutral JAX-Wind warmup."""
+"""Pressure-driven neutral ABL case over the public JAX-Wind solver."""
 
 from __future__ import annotations
 
+import argparse
 import csv
 import json
 import math
@@ -13,12 +14,13 @@ from typing import Any
 
 import numpy as np
 
-from .config import CaseConfig
-from .log_law import write_log_law_svg
+from .config import CaseConfig, load_case
+from .reporting import write_log_law_svg
 
 
 HERE = Path(__file__).resolve().parent
-SOURCE_CHECKOUT_ROOT = HERE.parents[3]
+SOURCE_CHECKOUT_ROOT = HERE.parents[1]
+DEFAULT_CONFIG = HERE / "config.toml"
 
 
 class ProfileStatistics:
@@ -302,7 +304,7 @@ def _write_profiles(
         )
 
 
-def run_case(
+def evaluate(
     case: CaseConfig,
     *,
     output_dir: Path,
@@ -332,11 +334,8 @@ def run_case(
         load_boussinesq_checkpoint,
         save_boussinesq_checkpoint,
     )
-    from jaxwind.integrators import (
-        AB2Config,
-        cold_start_boussinesq,
-        step_boussinesq,
-    )
+    from jaxwind import build_solver
+    from jaxwind.integrators import AB2Config, cold_start_boussinesq
     from jaxwind.interpreters.jax_zslab import build_zslab_interpreter
     from jaxwind.physics import (
         BoussinesqModel,
@@ -358,7 +357,7 @@ def run_case(
 
     if jax.process_count() != 1:
         raise RuntimeError(
-            "this runner currently supports one JAX process with one or more "
+            "this case currently supports one JAX process with one or more "
             "local devices"
         )
     shard_count = jax.device_count()
@@ -401,9 +400,6 @@ def run_case(
         addressable_shards=addressable_shards,
         porte_agel_wall_correction=case.wall.porte_agel_correction,
         nonlinear_padding_ratio=1.5,
-        # This runner initializes an unused passive scalar to exact zero and
-        # imposes zero scalar fluxes for the complete integration.
-        frozen_zero_scalar=True,
     )
     pressure_solver = build_spectral_fd_pressure_adapter(
         decomposition,
@@ -507,6 +503,15 @@ def run_case(
     def boundary(_clock, _environment):
         return VerticalBoundary(0.0, 0.0)
 
+    advance = build_solver(
+        config=integrator_config,
+        vector_field=vector_field,
+        normal_boundary=boundary,
+        algebra=algebra,
+        pressure_solver=pressure_solver,
+        closure_event=closure_event,
+    )
+
     history_path = output_dir / "history.csv"
     history_exists = history_path.exists() and restart is not None
     history_stream = history_path.open("a" if history_exists else "w", newline="")
@@ -535,15 +540,8 @@ def run_case(
                 next_accepted_step % case.output.log_every_steps == 0
                 or local_step == steps_to_run
             )
-            result = step_boussinesq(
+            result = advance(
                 state,
-                config=integrator_config,
-                environment=None,
-                vector_field=vector_field,
-                normal_boundary=boundary,
-                algebra=algebra,
-                pressure_solver=pressure_solver,
-                closure_event=closure_event,
                 compute_projection_residual=should_log,
             )
             state = result.state
@@ -635,7 +633,7 @@ def run_case(
             friction_velocity_m_s=case.flow.friction_velocity_m_s,
             roughness_length_m=case.flow.roughness_length_m,
             von_karman=case.flow.von_karman,
-            model_label=case.sgs.model.upper(),
+            model_label="LASD",
             statistics_label=(
                 f"{case.output.sample_start_hours:g}--"
                 f"{case.time.duration_hours:g} h"
@@ -671,6 +669,35 @@ def run_case(
         },
     }
     (output_dir / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
-    if case.runner != "abl":
-        print(json.dumps(summary, indent=2), flush=True)
+    print(json.dumps(summary, indent=2), flush=True)
     return summary
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--restart", type=Path)
+    parser.add_argument("--max-steps", type=int)
+    parser.add_argument("--overwrite", action="store_true")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parser().parse_args(argv)
+    case = load_case(args.config)
+    if args.dry_run:
+        print(case.resolved_toml(), end="")
+        return 0
+    evaluate(
+        case,
+        output_dir=Path(case.output.directory),
+        restart=args.restart,
+        max_steps=args.max_steps,
+        overwrite=args.overwrite,
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,4 +1,4 @@
-"""Shared padded state for fused neutral Boussinesq right-hand sides."""
+"""Shared padded momentum-gradient kernels."""
 
 from __future__ import annotations
 

@@ -1,27 +1,27 @@
-# Pressure-driven LASD benchmark
+# Pressure-driven neutral ABL with LASD
 
-This directory is a pure declarative case. Its `config.toml` selects the
-package-owned pressure-driven runner and the Lagrangian scale-dependent
-dynamic (LASD) closure; it contains no benchmark-specific execution code.
+This case directly constructs the JAX-Wind solver with:
 
-Run it on a GPU node from the repository root with:
+- conservative, horizontally dealiased momentum transport;
+- filtered neutral log-law wall stress;
+- constant streamwise pressure-gradient forcing;
+- Lagrangian scale-dependent dynamic momentum closure;
+- fixed-step AB2 integration; and
+- compatible pressure projection through `spectral-fd`.
 
-```bash
-jaxwind benchmark/PressureDrivenLASD/config.toml
-```
-
-Results default to `outputs/pressure_driven_lasd_64x64x64_gpu/`. The uniform
-case runner writes restartable checkpoints, resolved configuration, profiles,
-history, summary, and `loglaw_velocity_profile.svg` over the final 20% of
-simulated time. The pressure-solver submodule must be initialized once with
-`git submodule update --init --recursive`.
-
-Validate the complete resolved configuration without importing JAX:
+Inspect the resolved case:
 
 ```bash
-jaxwind benchmark/PressureDrivenLASD/config.toml --dry-run
+python -m benchmark.PressureDrivenLASD.case --dry-run
 ```
 
-Smoke variants and continuations are separate TOML configurations. Set their
-`time`, `output.directory`, and optional `execution.restart_checkpoint`
-entries in the file before launching it; the CLI does not override case data.
+Run it, or use a short smoke integration:
+
+```bash
+python -m benchmark.PressureDrivenLASD.case
+python -m benchmark.PressureDrivenLASD.case --max-steps 10 --overwrite
+```
+
+The case owns configuration, initialization, profile statistics, checkpoints,
+history, summary output, and the log-law plot. The package owns the solver and
+has no knowledge of this benchmark's name or output layout.

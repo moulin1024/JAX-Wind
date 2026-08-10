@@ -5,9 +5,9 @@ from pathlib import Path
 
 import pytest
 
-from jaxwind.cli import main
-from jaxwind.runners import load_case
-from jaxwind.runners.pressure_driven_warmup.log_law import write_log_law_svg
+from benchmark.PressureDrivenLASD.case import main
+from benchmark.PressureDrivenLASD.config import load_case
+from benchmark.PressureDrivenLASD.reporting import write_log_law_svg
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -24,32 +24,27 @@ def _write_profile(path: Path) -> None:
         writer.writerow((900.0, 13.5))
 
 
-def test_benchmark_is_a_pure_declarative_case() -> None:
+def test_benchmark_owns_a_direct_solver_case() -> None:
     assert CONFIG.is_file()
-    assert not tuple(CASE_DIR.glob("*.py"))
+    assert (CASE_DIR / "case.py").is_file()
 
-    configured = load_case(CASE_DIR)
-    case = configured.configuration
-    assert configured.runner_name == "pressure_driven_warmup"
-    assert configured.config_path == CONFIG
-    assert case.sgs.model == "lasd"
+    case = load_case(CONFIG)
     assert case.output.sample_start_hours == pytest.approx(
         0.8 * case.time.duration_hours
     )
-    assert configured.output_directory == Path(
+    assert Path(case.output.directory) == Path(
         "outputs/pressure_driven_lasd_64x64x64_gpu"
     )
 
 
-def test_uniform_cli_resolves_benchmark_configuration(capsys) -> None:
-    assert main([str(CONFIG), "--dry-run"]) == 0
+def test_case_resolves_its_configuration(capsys) -> None:
+    assert main(["--config", str(CONFIG), "--dry-run"]) == 0
     output = capsys.readouterr().out
-    assert 'runner = "pressure_driven_warmup"' in output
-    assert 'model = "lasd"' in output
     assert 'case = "pressure_driven_lasd_64x64x64"' in output
+    assert 'closure = "lagrangian-scale-dependent-dynamic"' in output
 
 
-def test_log_law_plot_is_a_runner_owned_dependency_free_svg(tmp_path: Path) -> None:
+def test_log_law_plot_is_a_case_owned_dependency_free_svg(tmp_path: Path) -> None:
     profile = tmp_path / "profiles.csv"
     figure = tmp_path / "loglaw.svg"
     _write_profile(profile)

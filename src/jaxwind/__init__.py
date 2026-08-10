@@ -21,6 +21,7 @@ from .domain import (
     VerticalBoundary,
     ZFace,
 )
+from .solver import Advance, build_solver, solve
 
 __all__ = [
     "CELL",
@@ -42,5 +43,7 @@ __all__ = [
     "UniformGrid",
     "VerticalBoundary",
     "ZFace",
+    "Advance",
+    "build_solver",
+    "solve",
 ]
-

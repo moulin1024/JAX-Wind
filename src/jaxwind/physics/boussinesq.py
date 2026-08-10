@@ -263,14 +263,6 @@ class BoussinesqVectorField:
         )
 
     def __call__(self, evaluation: Any) -> BoussinesqVectorFieldResult:
-        fused = getattr(self.algebra, "fused_boussinesq_tendency", None)
-        if fused is not None:
-            tendency = fused(evaluation.velocity, self.model)
-            if tendency is not None:
-                return BoussinesqVectorFieldResult(
-                    tendency,
-                    BoussinesqDiagnostic(evaluation.time),
-                )
         contributions = self.evaluate_contributions(evaluation)
         return BoussinesqVectorFieldResult(
             BoussinesqTendency(

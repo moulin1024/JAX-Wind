@@ -32,6 +32,12 @@ def test_zslab_is_the_only_public_interpreter_module() -> None:
     assert public_modules == {"jax_zslab.py"}
 
 
+def test_package_has_no_case_dispatch_layer() -> None:
+    assert not (SOURCE_ROOT / "runners").exists()
+    assert not (SOURCE_ROOT / "cli.py").exists()
+    assert not (SOURCE_ROOT / "__main__.py").exists()
+
+
 def test_production_never_imports_test_support() -> None:
     violations = []
     for path in SOURCE_ROOT.rglob("*.py"):
@@ -47,3 +53,23 @@ def test_production_never_imports_test_support() -> None:
                 violations.append(str(path.relative_to(SOURCE_ROOT)))
 
     assert not violations, f"production imports test-only modules: {violations}"
+
+
+def test_production_never_imports_benchmarks() -> None:
+    violations = []
+    for path in SOURCE_ROOT.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                modules = tuple(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                modules = (node.module,)
+            else:
+                continue
+            if any(
+                name == "benchmark" or name.startswith("benchmark.")
+                for name in modules
+            ):
+                violations.append(str(path.relative_to(SOURCE_ROOT)))
+
+    assert not violations, f"production imports benchmark code: {violations}"

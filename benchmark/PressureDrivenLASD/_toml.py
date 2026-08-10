@@ -1,4 +1,4 @@
-"""Small deterministic TOML writer for resolved runner configurations."""
+"""Small deterministic TOML writer for resolved case configurations."""
 
 from __future__ import annotations
 
@@ -40,7 +40,7 @@ def dumps(document: Mapping[str, Any]) -> str:
     """Serialize nested scalar mappings as deterministic TOML.
 
     ``None`` entries are omitted because TOML intentionally has no null value.
-    Resolved runner configurations contain only scalar values, scalar arrays,
+    Resolved case configurations contain only scalar values, scalar arrays,
     and nested tables, so supporting the broader TOML data model is unnecessary.
     """
 

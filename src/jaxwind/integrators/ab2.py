@@ -83,6 +83,18 @@ class VectorFieldResult(Generic[T, D]):
 
 
 @dataclass(frozen=True, slots=True)
+class _AB2Stage(Generic[V, T, D]):
+    value: V
+    evaluated: VectorFieldResult[T, D]
+    previous_tendency: T
+    evaluation_time: EvaluationTime
+    current_weight: float
+    previous_weight: float
+    used_euler_startup: bool
+    preparation_diagnostic: Any
+
+
+@dataclass(frozen=True, slots=True)
 class AB2StepDiagnostic(Generic[D, P]):
     evaluation_time: EvaluationTime
     accepted_clock: AcceptedClock
@@ -127,6 +139,56 @@ def cold_start(
     return AB2PersistentState(velocity, clock, ColdStart(), config.fingerprint)
 
 
+def _stage_ab2(
+    state: Any,
+    *,
+    value: V,
+    config: AB2Config,
+    environment: E,
+    vector_field: VectorField,
+    prepare: Any = None,
+) -> _AB2Stage:
+    """Evaluate the control law shared by every AB2 prognostic product."""
+
+    if state.integrator_fingerprint != config.fingerprint:
+        raise ValueError("AB2 state fingerprint does not match the configuration")
+    if prepare is None:
+        prepared = value
+        preparation_diagnostic = None
+    else:
+        prepared, preparation_diagnostic = prepare(
+            value,
+            state.clock,
+            environment,
+        )
+    evaluation_time = EvaluationTime(
+        state.clock.time,
+        state.clock.step,
+        "ab2-current",
+    )
+    evaluated = vector_field(Evaluation(prepared, evaluation_time, environment))
+    if isinstance(state.history, ColdStart):
+        previous = evaluated.tendency
+        current_weight = 1.0
+        previous_weight = 0.0
+        startup = True
+    else:
+        previous = state.history.value
+        current_weight = 1.5
+        previous_weight = -0.5
+        startup = False
+    return _AB2Stage(
+        prepared,
+        evaluated,
+        previous,
+        evaluation_time,
+        current_weight,
+        previous_weight,
+        startup,
+        preparation_diagnostic,
+    )
+
+
 def step(
     state: AB2PersistentState,
     *,
@@ -139,31 +201,20 @@ def step(
     compute_projection_residual: bool = True,
 ) -> AB2StepResult:
     """Advance one accepted step with one vector evaluation and one projection."""
-    if state.integrator_fingerprint != config.fingerprint:
-        raise ValueError("AB2 state fingerprint does not match the configuration")
-    evaluation_time = EvaluationTime(
-        state.clock.time,
-        state.clock.step,
-        "ab2-current",
+    staged = _stage_ab2(
+        state,
+        value=state.velocity,
+        config=config,
+        environment=environment,
+        vector_field=vector_field,
     )
-    evaluated = vector_field(Evaluation(state.velocity, evaluation_time, environment))
-    if isinstance(state.history, ColdStart):
-        previous = evaluated.tendency
-        current_weight = 1.0
-        previous_weight = 0.0
-        startup = True
-    else:
-        previous = state.history.value
-        current_weight = 1.5
-        previous_weight = -0.5
-        startup = False
     candidate = algebra.ab2_candidate_velocity(
-        state.velocity,
-        evaluated.tendency,
-        previous,
+        staged.value,
+        staged.evaluated.tendency,
+        staged.previous_tendency,
         dt=config.dt,
-        current_weight=current_weight,
-        previous_weight=previous_weight,
+        current_weight=staged.current_weight,
+        previous_weight=staged.previous_weight,
     )
     accepted_clock = state.clock.advance(config.dt)
     projected: ProjectionResult = project(
@@ -177,14 +228,14 @@ def step(
     accepted = AB2PersistentState(
         projected.velocity,
         accepted_clock,
-        PreviousTendency(evaluated.tendency),
+        PreviousTendency(staged.evaluated.tendency),
         config.fingerprint,
     )
     diagnostic = AB2StepDiagnostic(
-        evaluation_time,
+        staged.evaluation_time,
         accepted_clock,
-        startup,
-        evaluated.diagnostic,
+        staged.used_euler_startup,
+        staged.evaluated.diagnostic,
         projected,
     )
     return AB2StepResult(accepted, diagnostic)

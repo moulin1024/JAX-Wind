@@ -1,5 +1,4 @@
 [case]
-runner = "pressure_driven_warmup"
 name = "pressure_driven_lasd_64x64x64"
 
 [domain]
@@ -19,13 +18,11 @@ initial_perturbation_rms_m_s = 0.1
 initial_correlation_length_m = 32.0
 
 [wall]
-model = "filtered_neutral_log"
 filter_grid_ratio = 1.5
 test_filter_ratio = 2.0
 porte_agel_correction = true
 
 [sgs]
-model = "lasd"
 update_interval_steps = 4
 filter_grid_ratio = 1.5
 test_filter_ratio = 2.0
@@ -35,7 +32,6 @@ minimum_coefficient = 1.0e-6
 maximum_coefficient = 0.81
 
 [time]
-integrator = "ab2"
 dt_seconds = 0.1
 duration_hours = 10.0
 

@@ -132,7 +132,7 @@ class ModalBladeState:
 
 @dataclass(frozen=True, slots=True)
 class ModalBladeDiagnostics:
-    """Small structural output set suitable for runner histories."""
+    """Small structural output set suitable for case histories."""
 
     generalized_force_n: np.ndarray
     flap_tip_deflection_m: np.ndarray

@@ -1,4 +1,4 @@
-"""TOML configuration for the built-in pressure-driven neutral warmup runner."""
+"""Case-owned configuration for the pressure-driven neutral ABL benchmark."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - Python 3.10 development fallback
     import tomli as tomllib
 
-from .._toml import dumps as toml_dumps
+from ._toml import dumps as toml_dumps
 
 
 class ConfigError(ValueError):
@@ -119,21 +119,17 @@ class FlowConfig:
 
 @dataclass(frozen=True, slots=True)
 class WallConfig:
-    model: str
     filter_grid_ratio: float
     test_filter_ratio: float
     porte_agel_correction: bool
 
     def __post_init__(self) -> None:
-        if self.model != "filtered_neutral_log":
-            raise ConfigError("wall.model must be 'filtered_neutral_log'")
         if self.filter_grid_ratio <= 0.0 or self.test_filter_ratio <= 1.0:
             raise ConfigError("wall filter ratios are invalid")
 
 
 @dataclass(frozen=True, slots=True)
 class SgsConfig:
-    model: str
     update_interval_steps: int
     filter_grid_ratio: float
     test_filter_ratio: float
@@ -143,8 +139,6 @@ class SgsConfig:
     maximum_coefficient: float
 
     def __post_init__(self) -> None:
-        if self.model != "lasd":
-            raise ConfigError("sgs.model must be 'lasd'")
         if self.filter_grid_ratio <= 0.0:
             raise ConfigError("SGS filter-grid ratio must be positive")
         if self.update_interval_steps <= 0:
@@ -164,13 +158,10 @@ class SgsConfig:
 
 @dataclass(frozen=True, slots=True)
 class TimeConfig:
-    integrator: str
     dt_seconds: float
     duration_hours: float
 
     def __post_init__(self) -> None:
-        if self.integrator != "ab2":
-            raise ConfigError("time.integrator must be 'ab2'")
         if self.dt_seconds <= 0.0 or self.duration_hours <= 0.0:
             raise ConfigError("time step and duration must be positive")
         _ = self.steps
@@ -230,7 +221,6 @@ class OutputConfig:
 
 @dataclass(frozen=True, slots=True)
 class CaseConfig:
-    runner: str
     name: str
     domain: DomainConfig
     flow: FlowConfig
@@ -241,10 +231,6 @@ class CaseConfig:
     output: OutputConfig
 
     def __post_init__(self) -> None:
-        if self.runner != "pressure_driven_warmup":
-            raise ConfigError(
-                "case.runner must be 'pressure_driven_warmup' for this runner"
-            )
         if not self.name:
             raise ConfigError("case.name must be non-empty")
         if self.flow.forcing_height_m > self.domain.lz_m:
@@ -257,7 +243,7 @@ class CaseConfig:
             raise ConfigError(
                 "estimated startup CFL exceeds numerics.cfl_abort; reduce dt"
             )
-        if self.sgs.model == "lasd" and (
+        if (
             self.estimated_lasd_trajectory_cfl
             >= self.numerics.lasd_trajectory_cfl_abort
         ):
@@ -299,12 +285,7 @@ class CaseConfig:
         return step
 
     def resolved(self) -> dict[str, Any]:
-        sgs = {
-            "model": self.sgs.model,
-            "update_interval_steps": self.sgs.update_interval_steps,
-        }
         return {
-            "runner": self.runner,
             "case": self.name,
             "domain": {
                 "cells": [self.domain.nx, self.domain.ny, self.domain.nz],
@@ -329,14 +310,16 @@ class CaseConfig:
                 "top_log_velocity_m_s": self.top_log_velocity_m_s,
             },
             "wall": {
-                "model": self.wall.model,
                 "filter_grid_ratio": self.wall.filter_grid_ratio,
                 "test_filter_ratio": self.wall.test_filter_ratio,
                 "porte_agel_correction": self.wall.porte_agel_correction,
             },
-            "sgs": sgs,
+            "sgs": {
+                "closure": "lagrangian-scale-dependent-dynamic",
+                "update_interval_steps": self.sgs.update_interval_steps,
+            },
             "time": {
-                "integrator": self.time.integrator,
+                "method": "ab2",
                 "dt_seconds": self.time.dt_seconds,
                 "duration_hours": self.time.duration_hours,
                 "steps": self.time.steps,
@@ -408,7 +391,6 @@ def load_case(
         sample_start_hours = (1.0 - fraction) * resolved_duration
 
     return CaseConfig(
-        runner=_string(case, "runner"),
         name=_string(case, "name"),
         domain=DomainConfig(
             nx=_integer(domain, "nx"),
@@ -431,7 +413,6 @@ def load_case(
             ),
         ),
         wall=WallConfig(
-            model=_string(wall, "model"),
             filter_grid_ratio=_number(wall, "filter_grid_ratio"),
             test_filter_ratio=_number(wall, "test_filter_ratio"),
             porte_agel_correction=_boolean(
@@ -441,7 +422,6 @@ def load_case(
             ),
         ),
         sgs=SgsConfig(
-            model=_string(sgs, "model"),
             update_interval_steps=_integer(sgs, "update_interval_steps"),
             filter_grid_ratio=_number(sgs, "filter_grid_ratio"),
             test_filter_ratio=_number(sgs, "test_filter_ratio"),
@@ -451,7 +431,6 @@ def load_case(
             maximum_coefficient=_number(sgs, "maximum_coefficient"),
         ),
         time=TimeConfig(
-            integrator=_string(time, "integrator"),
             dt_seconds=resolved_dt,
             duration_hours=resolved_duration,
         ),

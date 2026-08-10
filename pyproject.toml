@@ -5,12 +5,9 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "jaxwind"
 version = "0.0.0"
-description = "Document-first JAX large-eddy simulation core"
+description = "Functional JAX large-eddy simulation solver"
 requires-python = ">=3.11"
 dependencies = ["jax>=0.4.30"]
-
-[project.scripts]
-jaxwind = "jaxwind.cli:main"
 
 [project.optional-dependencies]
 pressure = ["spectral-fd>=0.2.0"]
