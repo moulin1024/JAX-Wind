@@ -2,12 +2,13 @@
 
 JAX-Wind is a functional large-eddy simulation solver for atmospheric boundary
 layers and wind-energy flows. The package owns numerical meaning and state
-transitions; benchmark directories own concrete cases, diagnostics, and files.
+transitions; directories under `cases/` contain data only, while
+`applications/` owns configuration interpretation, diagnostics, and effects.
 
-The first active case is a pressure-driven neutral atmospheric boundary layer
-with conservative momentum transport, a filtered logarithmic wall law,
-Lagrangian scale-dependent dynamic (LASD) closure, AB2 integration, and a
-compatible spectral/finite-difference pressure projection.
+The active cases are a pressure-driven neutral atmospheric boundary layer and
+the Andrén et al. (1994) neutral ABL intercomparison. Both use conservative
+momentum transport, Lagrangian scale-dependent dynamic (LASD) closure, AB2
+integration, and compatible spectral/finite-difference pressure projection.
 
 ## Install
 
@@ -28,26 +29,43 @@ machine.
 Validate and display the resolved case without importing JAX:
 
 ```bash
-python -m benchmark.PressureDrivenLASD.case --dry-run
+python -m applications.pressure_driven_lasd \
+  cases/PressureDrivenLASD/config.toml --dry-run
 ```
 
 Run the configured case:
 
 ```bash
-python -m benchmark.PressureDrivenLASD.case
+python -m applications.pressure_driven_lasd \
+  cases/PressureDrivenLASD/config.toml
 ```
 
 For a short integration, use `--max-steps`. Restart and overwrite behavior are
-explicit case arguments:
+explicit application arguments:
 
 ```bash
-python -m benchmark.PressureDrivenLASD.case --max-steps 10 --overwrite
-python -m benchmark.PressureDrivenLASD.case \
+python -m applications.pressure_driven_lasd \
+  cases/PressureDrivenLASD/config.toml --max-steps 10 --overwrite
+python -m applications.pressure_driven_lasd \
+  cases/PressureDrivenLASD/config.toml \
   --restart outputs/pressure_driven_lasd_64x64x64_gpu/checkpoint_latest.npz
 ```
 
-There is no package runner registry or case-dispatch CLI. A case imports
-JAX-Wind and constructs the solver directly.
+There is no package runner registry or case-name dispatch. An explicitly
+selected application reads case data and constructs the JAX-Wind solver.
+
+The Andrén case uses a strict, fixed-schema TOML configuration. The generic
+ABL application translates its SI values into existing physical components
+without an Ekman mode, stability selector, or case branch in the solver.
+Neutral, stable, and convective are consequences of scalar buoyancy coupling,
+initial stratification, and surface heat transfer—not applications:
+
+```bash
+python -m applications.abl \
+  cases/Andren1994/config.toml --dry-run
+python -m applications.abl \
+  cases/Andren1994/config.toml --max-steps 10 --overwrite
+```
 
 ## Solver boundary
 
@@ -69,8 +87,9 @@ advance = build_solver(
 final_state = solve(initial_state, steps=20, advance=advance)
 ```
 
-The pressure-driven benchmark uses the same `advance` function and owns its
-checkpoint, statistics, acceptance, and reporting schedule.
+The pressure-driven application uses the same `advance` function and owns
+checkpointing, statistics, acceptance, and reporting. The case supplies only
+their configuration values.
 
 ## Package structure
 
@@ -84,7 +103,9 @@ checkpoint, statistics, acceptance, and reporting schedule.
 | `src/jaxwind/pressure` | Explicit adapter to `spectral-fd` |
 | `src/jaxwind/solver.py` | Solver composition and repeated pure transitions |
 | `src/jaxwind/effects` | Versioned checkpoint persistence |
-| `benchmark/PressureDrivenLASD` | The active physical case and reporting |
+| `applications` | Case schemas, initialization, diagnostics, and effects |
+| `cases/PressureDrivenLASD` | Pressure-driven configuration data |
+| `cases/Andren1994` | Andrén configuration and reference data |
 
 The interpreter retains the established equal-z-slab implementation so its
 one-device and distributed results continue to share the same numerical path.
@@ -105,7 +126,7 @@ opt-in because they bind coordinator sockets.
 ## Historical material
 
 `legacy/` contains prior JAX, C++, and Fortran/CUDA implementations.
-`legacy/benchmarks/` preserves literature data and offline analysis from the
-earlier case implementations; none of it is a package execution entry point.
+`legacy/cases/` preserves literature data and offline analysis from earlier
+case implementations; none of it is a package execution entry point.
 
 JAX-Wind is released under the [MIT License](LICENSE).

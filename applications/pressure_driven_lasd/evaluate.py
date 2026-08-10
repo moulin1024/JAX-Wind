@@ -1,4 +1,4 @@
-"""Pressure-driven neutral ABL case over the public JAX-Wind solver."""
+"""Evaluate pressure-driven neutral-ABL case data through JAX-Wind."""
 
 from __future__ import annotations
 
@@ -20,7 +20,9 @@ from .reporting import write_log_law_svg
 
 HERE = Path(__file__).resolve().parent
 SOURCE_CHECKOUT_ROOT = HERE.parents[1]
-DEFAULT_CONFIG = HERE / "config.toml"
+DEFAULT_CONFIG = (
+    SOURCE_CHECKOUT_ROOT / "cases" / "PressureDrivenLASD" / "config.toml"
+)
 
 
 class ProfileStatistics:
@@ -400,6 +402,7 @@ def evaluate(
         addressable_shards=addressable_shards,
         porte_agel_wall_correction=case.wall.porte_agel_correction,
         nonlinear_padding_ratio=1.5,
+        frozen_zero_scalar=True,
     )
     pressure_solver = build_spectral_fd_pressure_adapter(
         decomposition,
@@ -675,7 +678,7 @@ def evaluate(
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
+    parser.add_argument("config", type=Path, nargs="?", default=DEFAULT_CONFIG)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--restart", type=Path)
     parser.add_argument("--max-steps", type=int)

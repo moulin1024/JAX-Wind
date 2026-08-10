@@ -5,7 +5,7 @@
 The intended dependency graph points downward only:
 
 ```text
-effects / applications / benchmarks
+applications / effects  <-  data-only cases
                 |
 interpreter: unified JAX z-slab
                 |
@@ -19,7 +19,8 @@ semantic field, grid, ownership, and phase types
 ```
 
 Semantic layers MUST NOT import JAX, filesystem libraries, launchers, plotting,
-or benchmark configuration. Physics MUST NOT select a process topology.
+applications, or case configuration. Physics MUST NOT select a process
+topology.
 Interpreters MAY depend on the semantic layers and backend libraries.
 
 JAX is therefore a target interpreter, not the domain model. The z-slab
@@ -39,9 +40,12 @@ SHOULD separate these responsibilities:
 - `integrators`: higher-order construction of transitions from vector fields;
 - `interpreters`: the unified JAX z-slab lowering and its private kernels;
 - `openfast`: format parsing and conversion into JAX-Wind turbine models;
-- `effects`: config, launch, checkpoint, logging, and postprocessing adapters;
+- `effects`: generic checkpoint persistence adapters;
 - `solver`: public composition of fixed numerical transitions;
-- `benchmarks`: concrete cases, effects, and comparison criteria.
+- top-level `applications/`: schema loading, solver materialization,
+  initialization, diagnostics, and effects;
+- top-level `cases/`: configuration and input data with optional reference
+  comparison data, and no Python code.
 
 A single universal `Params` record is prohibited. Each morphism receives the
 smallest immutable environment product that describes its dependencies.
@@ -56,8 +60,12 @@ without exposing backend details through the public API:
   and backend mapping;
 - OpenFAST model modules own compatibility policy and turbine construction;
   the shared parser owns tokenization and typed field extraction;
-- benchmark modules own configuration, initialization, diagnostics, and output;
-- the package does not dispatch benchmark names or own a case registry;
+- applications own configuration interpretation, initialization, diagnostics,
+  and output;
+- ABL stability is derived from physical scalar coupling, stratification, and
+  surface transfer; it is not an application, solver, or case selector;
+- case directories contain data only;
+- the package does not dispatch case names or own a case registry;
 - private implementation modules are not compatibility surfaces. Cross-package
   users import from the package facade or documented public module.
 
@@ -143,7 +151,8 @@ Tests are organized by meaning rather than source file:
 - **discrete physics tests**: conservation, symmetry, manufactured solutions;
 - **interpretation tests**: reference/local/distributed commuting diagrams;
 - **restart tests**: uninterrupted versus serialized continuation;
-- **benchmark tests**: nondimensional profiles and spectra with stated error;
+- **reference-case tests**: nondimensional profiles and spectra with stated
+  error;
 - **performance tests**: memory ownership, communication volume, synchronized
   kernel time, and scaling.
 

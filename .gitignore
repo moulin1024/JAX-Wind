@@ -52,11 +52,11 @@ __pycache__/
 *.vtr
 *.vts
 
-# Repository-local experiments and generated benchmark output
+# Repository-local experiments and generated case output
 /benchmark_results/
 /legacy/artifacts/
 /tmp/
-/benchmark/**/results/
-/benchmark/**/outputs/
-/benchmark/NeutralLogLawAMD/
+/cases/**/results/
+/cases/**/outputs/
+/cases/NeutralLogLawAMD/
 /*_gpu/

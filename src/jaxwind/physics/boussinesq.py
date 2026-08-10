@@ -191,6 +191,10 @@ class BoussinesqVectorFieldResult:
 
 
 class BoussinesqAlgebra(Protocol):
+    def fused_boussinesq_tendency(
+        self, fields: BoussinesqFields, model: BoussinesqModel
+    ) -> BoussinesqTendency: ...
+
     def boussinesq_context(self, fields: BoussinesqFields) -> Any: ...
 
     def momentum_context(self, context: Any) -> Any: ...
@@ -263,11 +267,10 @@ class BoussinesqVectorField:
         )
 
     def __call__(self, evaluation: Any) -> BoussinesqVectorFieldResult:
-        contributions = self.evaluate_contributions(evaluation)
         return BoussinesqVectorFieldResult(
-            BoussinesqTendency(
-                self.algebra.combine_tendencies(contributions.momentum_values()),
-                self.algebra.combine_scalar_tendencies(contributions.scalar_values()),
+            self.algebra.fused_boussinesq_tendency(
+                evaluation.velocity,
+                self.model,
             ),
             BoussinesqDiagnostic(evaluation.time),
         )

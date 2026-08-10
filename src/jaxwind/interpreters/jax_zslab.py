@@ -163,6 +163,7 @@ class _FlowKernels:
     sgs: Callable
     sgs_vertical_flux: Callable
     sgs_tke_transfer: Callable
+    fused_boussinesq: Callable
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,6 +196,7 @@ class JaxZSlabInterpreter(ZSlabLasdMixin, ZSlabFlowMixin):
 
     decomposition: EqualZSlab
     addressable_shards: tuple[int, ...]
+    frozen_zero_scalar: bool
     projection: _ProjectionKernels
     flow: _FlowKernels
     lasd: _LasdKernels
@@ -781,12 +783,15 @@ def build_zslab_interpreter(
     axis_name: str = "jaxwind_z",
     porte_agel_wall_correction: bool = True,
     nonlinear_padding_ratio: float = 1.5,
+    frozen_zero_scalar: bool = False,
 ) -> JaxZSlabInterpreter:
     """Build the sole production interpreter.
 
     A one-shard decomposition is the ordinary single-process case and defaults
     to its only addressable shard. Multi-shard decompositions use the same
     interpreter and require the caller's addressable global shard indices.
+    ``frozen_zero_scalar`` is reserved for runs whose passive scalar and scalar
+    boundary fluxes remain identically zero for the full integration.
     """
 
     from ._jax_zslab_factory import (
@@ -799,4 +804,5 @@ def build_zslab_interpreter(
         axis_name=axis_name,
         porte_agel_wall_correction=porte_agel_wall_correction,
         nonlinear_padding_ratio=nonlinear_padding_ratio,
+        frozen_zero_scalar=frozen_zero_scalar,
     )

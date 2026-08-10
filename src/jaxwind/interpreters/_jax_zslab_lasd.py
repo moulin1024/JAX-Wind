@@ -40,13 +40,18 @@ from jaxwind.domain import (
 )
 from jaxwind.operators import VelocityVector
 from jaxwind.physics.dry_flow import (
+    ConservativeAdvection,
+    CoriolisGeostrophic,
     FilteredNeutralLogWall,
+    KinematicPressureGradient,
     NeutralLogWall,
+    NoRotation,
     StaticSmagorinsky,
 )
 from jaxwind.physics.boussinesq import (
     BoussinesqFields,
     BoussinesqModel,
+    BoussinesqTendency,
     ConservativeScalarAdvection,
     LinearBoussinesqBuoyancy,
     NoBuoyancy,
@@ -363,6 +368,165 @@ class ZSlabLasdMixin:
         context: ZSlabBoussinesqContext,
     ) -> ZSlabDryFlowContext:
         return context.momentum
+
+    def fused_boussinesq_tendency(
+        self,
+        fields: BoussinesqFields,
+        model: BoussinesqModel,
+        *,
+        wall_acceleration: tuple[Any, Any] | None = None,
+        scalar_surface_source: Any | None = None,
+    ) -> BoussinesqTendency:
+        """Evaluate the supported Boussinesq model through the mandatory fused RHS."""
+        if (wall_acceleration is None) != (scalar_surface_source is None):
+            raise ValueError(
+                "imposed wall acceleration and scalar source must be supplied together"
+            )
+        use_imposed_sources = wall_acceleration is not None
+        if wall_acceleration is not None and len(wall_acceleration) != 2:
+            raise ValueError("wall acceleration must contain x and y components")
+        momentum_model = model.momentum
+        wall = momentum_model.wall
+        common = (
+            isinstance(momentum_model.advection, ConservativeAdvection)
+            and isinstance(momentum_model.pressure_gradient, KinematicPressureGradient)
+            and isinstance(wall, (NeutralLogWall, FilteredNeutralLogWall))
+            and isinstance(
+                momentum_model.rotation,
+                (NoRotation, CoriolisGeostrophic),
+            )
+            and isinstance(model.scalar_advection, ConservativeScalarAdvection)
+            and (
+                isinstance(model.buoyancy, NoBuoyancy)
+                or (
+                    use_imposed_sources
+                    and isinstance(model.buoyancy, LinearBoussinesqBuoyancy)
+                )
+            )
+            and isinstance(model.rayleigh_damping, NoRayleighDamping)
+            and isinstance(model.scalar_boundary, ScalarFluxBoundary)
+        )
+        sgs = momentum_model.sgs
+        lasd = isinstance(sgs, LagrangianScaleDependentDynamic) and isinstance(
+            model.scalar_sgs, LagrangianScaleDependentScalarFlux
+        )
+        frozen_model = self.frozen_zero_scalar and lasd
+        if not common or not lasd:
+            raise TypeError(
+                "Boussinesq solve requires the fused conservative LASD model "
+                "with a neutral log wall, supported rotation, scalar flux "
+                "boundary, and no standalone Rayleigh damping"
+            )
+        if use_imposed_sources and frozen_model:
+            raise ValueError("imposed stable sources require an active scalar")
+
+        velocity = fields.velocity
+        self._validate_velocity_cell(velocity.x, XVelocity)
+        self._validate_velocity_cell(velocity.y, YVelocity)
+        self._validate_field(velocity.z.owned, ZFace)
+        if velocity.z.owned.quantity is not VerticalVelocity:
+            raise TypeError("dry-flow vertical velocity requires VerticalVelocity")
+        if not (
+            velocity.x.phase is Projected
+            and velocity.y.phase is Projected
+            and velocity.z.owned.phase is Projected
+        ):
+            raise TypeError("dry-flow context requires projected velocity")
+        scalar = fields.potential_temperature
+        self._validate_field(scalar, Cell)
+        if scalar.quantity not in (
+            PotentialTemperaturePerturbation,
+            PassiveScalarConcentration,
+        ):
+            raise TypeError("Boussinesq context requires a supported scalar quantity")
+        if scalar.phase is not Accepted:
+            raise TypeError("Boussinesq context requires accepted scalar state")
+        if frozen_model and (
+            scalar.quantity is not PassiveScalarConcentration
+            or model.scalar_boundary.lower_flux != 0.0
+            or model.scalar_boundary.upper_flux != 0.0
+        ):
+            raise ValueError(
+                "frozen zero scalar fusion requires a passive scalar and zero fluxes"
+            )
+
+        reference_height = 0.5 * self.decomposition.grid.dz
+        if wall.roughness_length >= reference_height:
+            raise ValueError("wall roughness must be below the first cell centre")
+        drag = (
+            wall.von_karman / math.log(reference_height / wall.roughness_length)
+        ) ** 2
+        filtered = isinstance(wall, FilteredNeutralLogWall)
+        wall_filter_width = (
+            wall.filter_grid_ratio * wall.test_filter_ratio if filtered else 1.0
+        )
+        rotation = momentum_model.rotation
+        rotation_arguments = (
+            (
+                rotation.coriolis_parameter,
+                rotation.geostrophic_x_velocity,
+                rotation.geostrophic_y_velocity,
+                rotation.horizontal_coriolis_parameter,
+            )
+            if isinstance(rotation, CoriolisGeostrophic)
+            else (0.0, 0.0, 0.0, 0.0)
+        )
+        common_arguments = (
+            velocity.x.payload,
+            velocity.y.payload,
+            velocity.z.owned.payload,
+            velocity.z.lower_boundary,
+            scalar.payload,
+        )
+        forcing_arguments = (
+            momentum_model.pressure_gradient.x_acceleration,
+            momentum_model.pressure_gradient.y_acceleration,
+            *rotation_arguments,
+            drag,
+            filtered,
+            wall_filter_width,
+        )
+        closure = fields.closure
+        if not isinstance(closure, LasdClosureMemory):
+            raise TypeError("LASD fusion requires initialized closure memory")
+        x, y, z, scalar_payload = self.flow.fused_boussinesq(
+            *common_arguments,
+            closure.momentum.coefficient.payload,
+            closure.scalar.coefficient.payload,
+            *forcing_arguments,
+            sgs.minimum_coefficient,
+            sgs.maximum_coefficient,
+            model.scalar_sgs.minimum_coefficient,
+            model.scalar_sgs.maximum_coefficient,
+            model.scalar_boundary.lower_flux,
+            model.scalar_boundary.upper_flux,
+            model.scalar_sgs.stability_buoyancy_coefficient,
+            model.scalar_sgs.stability_beta,
+            model.scalar_sgs.stability_power,
+            *(wall_acceleration or (0.0, 0.0)),
+            scalar_surface_source if scalar_surface_source is not None else 0.0,
+            (
+                model.buoyancy.acceleration_per_temperature
+                if isinstance(model.buoyancy, LinearBoussinesqBuoyancy)
+                else 0.0
+            ),
+            use_imposed_sources,
+        )
+        scalar_quantity = (
+            PotentialTemperatureTendency
+            if scalar.quantity is PotentialTemperaturePerturbation
+            else PassiveScalarTendency
+        )
+        return BoussinesqTendency(
+            self._dry_tendency(x, y, z),
+            AddressableField(
+                scalar_quantity,
+                Cell,
+                self._expected_regions(Cell),
+                Evaluated,
+                scalar_payload.astype(scalar.payload.dtype),
+            ),
+        )
 
     def _scalar_tendency(
         self,

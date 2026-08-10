@@ -1,0 +1,39 @@
+[case]
+name = "andren1994_lasd_40x40x40"
+citation = "Andrén et al. (1994), Q.J.R. Meteorol. Soc. 120, 1457-1484"
+initial_profile = "reference/initial_profiles.csv"
+reference_results = "reference/reference_results.json"
+seed = 1994
+
+[domain]
+cells = [40, 40, 40]
+lengths_m = [4000.0, 2000.0, 1500.0]
+
+[flow]
+geostrophic_velocity_m_s = [10.0, 0.0]
+coriolis_s = [1.0e-4, 1.0e-4]
+roughness_length_m = 0.1
+
+[passive_scalar]
+surface_flux_kg_m2_s = 1.0e-3
+
+[time]
+dt_seconds = 0.8
+duration_seconds = 100000.0
+statistics_start_seconds = 70000.0
+statistics_every_seconds = 240.0
+log_every_seconds = 480.0
+checkpoint_every_seconds = 4800.0
+
+[numerics]
+lasd_update_interval_steps = 5
+dtype = "float32"
+pressure_method = "spike"
+thomas_chunk = 20
+cfl_warning = 0.25
+cfl_abort = 1.0
+trajectory_cfl_abort = 1.0
+nonlinear_padding_ratio = 1.5
+
+[output]
+directory = "outputs/andren1994_lasd_40x40x40"

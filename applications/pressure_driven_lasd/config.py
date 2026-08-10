@@ -1,4 +1,4 @@
-"""Case-owned configuration for the pressure-driven neutral ABL benchmark."""
+"""Configuration schema for pressure-driven neutral-ABL case data."""
 
 from __future__ import annotations
 

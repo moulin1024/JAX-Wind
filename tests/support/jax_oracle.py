@@ -40,7 +40,11 @@ from jaxwind.domain import (
     ZFace,
 )
 from jaxwind.operators import PressureGradient, VelocityVector
-from jaxwind.physics.boussinesq import BoussinesqFields
+from jaxwind.physics.boussinesq import (
+    BoussinesqFields,
+    BoussinesqModel,
+    BoussinesqTendency,
+)
 
 from .jax_oracle_core import (
     MAX_ORACLE_CELLS,
@@ -194,6 +198,55 @@ class JaxOracleProjection(OracleLasdMixin, OracleFlowMixin):
             _horizontal_derivative(scalar.payload, grid=grid, axis="y"),
             _cell_gradient_on_full_faces(scalar.payload, grid.dz),
         )
+
+    def fused_boussinesq_tendency(
+        self,
+        fields: BoussinesqFields,
+        model: BoussinesqModel,
+    ) -> BoussinesqTendency:
+        """Emulate the fused semantic result in the independent test oracle."""
+        context = self.boussinesq_context(fields)
+        momentum = self.momentum_context(context)
+        momentum_tendency = self.combine_tendencies(
+            (
+                self.advection_tendency(
+                    momentum,
+                    model.momentum.advection,
+                    model.momentum.wall,
+                ),
+                self.pressure_gradient_tendency(
+                    momentum,
+                    model.momentum.pressure_gradient,
+                ),
+                self.wall_stress_tendency(momentum, model.momentum.wall),
+                self.sgs_tendency(
+                    momentum,
+                    model.momentum.sgs,
+                    model.momentum.wall,
+                ),
+                self.coriolis_geostrophic_tendency(
+                    momentum,
+                    model.momentum.rotation,
+                ),
+                self.buoyancy_tendency(context, model.buoyancy),
+                self.rayleigh_damping_tendency(
+                    context,
+                    model.rayleigh_damping,
+                ),
+            )
+        )
+        scalar_tendency = self.combine_scalar_tendencies(
+            (
+                self.scalar_advection_tendency(context, model.scalar_advection),
+                self.scalar_sgs_tendency(
+                    context,
+                    model.momentum.sgs,
+                    model.scalar_sgs,
+                    model.scalar_boundary,
+                ),
+            )
+        )
+        return BoussinesqTendency(momentum_tendency, scalar_tendency)
 
     def velocity_divergence(self, velocity: VelocityVector) -> Field:
         x_ownership = _require_velocity_component(velocity.x, XVelocity)

@@ -5,13 +5,13 @@ from pathlib import Path
 
 import pytest
 
-from benchmark.PressureDrivenLASD.case import main
-from benchmark.PressureDrivenLASD.config import load_case
-from benchmark.PressureDrivenLASD.reporting import write_log_law_svg
+from applications.pressure_driven_lasd.config import load_case
+from applications.pressure_driven_lasd.evaluate import main
+from applications.pressure_driven_lasd.reporting import write_log_law_svg
 
 
 ROOT = Path(__file__).resolve().parents[2]
-CASE_DIR = ROOT / "benchmark" / "PressureDrivenLASD"
+CASE_DIR = ROOT / "cases" / "PressureDrivenLASD"
 CONFIG = CASE_DIR / "config.toml"
 
 
@@ -24,9 +24,9 @@ def _write_profile(path: Path) -> None:
         writer.writerow((900.0, 13.5))
 
 
-def test_benchmark_owns_a_direct_solver_case() -> None:
+def test_case_is_data_only_configuration() -> None:
     assert CONFIG.is_file()
-    assert (CASE_DIR / "case.py").is_file()
+    assert not tuple(CASE_DIR.rglob("*.py"))
 
     case = load_case(CONFIG)
     assert case.output.sample_start_hours == pytest.approx(
@@ -38,7 +38,7 @@ def test_benchmark_owns_a_direct_solver_case() -> None:
 
 
 def test_case_resolves_its_configuration(capsys) -> None:
-    assert main(["--config", str(CONFIG), "--dry-run"]) == 0
+    assert main([str(CONFIG), "--dry-run"]) == 0
     output = capsys.readouterr().out
     assert 'case = "pressure_driven_lasd_64x64x64"' in output
     assert 'closure = "lagrangian-scale-dependent-dynamic"' in output

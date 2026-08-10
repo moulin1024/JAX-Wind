@@ -1,4 +1,4 @@
-"""Pressure-driven neutral atmospheric-boundary-layer benchmark."""
+"""Pressure-driven neutral atmospheric-boundary-layer case."""
 
 from .config import CaseConfig, load_case
 

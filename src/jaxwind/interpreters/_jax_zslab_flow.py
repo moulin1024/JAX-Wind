@@ -152,9 +152,9 @@ class ZSlabFlowMixin:
     ):
         """Return signed SGS transfer from resolved TKE at owned cell centres.
 
-        Forward transfer to unresolved scales is negative, matching the sign used
-        by Andrén et al. (1994) Fig. 11. Horizontal nonlinear products use the
-        interpreter's padded path and the first cell uses the configured log wall.
+        Forward transfer to unresolved scales is negative. Horizontal nonlinear
+        products use the interpreter's padded path and the first cell uses the
+        configured log wall.
         """
         wall_gradient_factor = self._diagnostic_wall_gradient_factor(wall)
         if isinstance(config, (StaticSmagorinsky, LagrangianScaleDependentDynamic)):
