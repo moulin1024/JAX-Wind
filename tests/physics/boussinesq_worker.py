@@ -35,7 +35,6 @@ from jaxwind.interpreters.jax_zslab import (  # noqa: E402
 )
 from jaxwind.operators import VelocityVector  # noqa: E402
 from jaxwind.physics import (  # noqa: E402
-    AnisotropicMinimumDissipation,
     BoussinesqFields,
     ConservativeScalarAdvection,
     ConcurrentPrecursorFringe,
@@ -197,26 +196,6 @@ def main() -> int:
         jnp.max(jnp.abs(actual_total.payload - expected_total.payload.reshape(shape)))
     )
     errors["dtype_preserved"] = actual_total.payload.dtype == dtype
-
-    amd_momentum_sgs = AnisotropicMinimumDissipation()
-    expected_amd_scalar = reference.scalar_sgs_tendency(
-        reference_context,
-        amd_momentum_sgs,
-        scalar_sgs,
-    )
-    actual_amd_scalar = production.scalar_sgs_tendency(
-        production_context,
-        amd_momentum_sgs,
-        scalar_sgs,
-    )
-    errors["amd_scalar_sgs"] = float(
-        jnp.max(
-            jnp.abs(
-                actual_amd_scalar.payload
-                - expected_amd_scalar.payload.reshape(shape)
-            )
-        )
-    )
 
     momentum_lasd = LagrangianScaleDependentDynamic(update_interval=2)
     scalar_lasd = LagrangianScaleDependentScalarFlux()

@@ -1,10 +1,8 @@
 # Pressure-driven LASD benchmark
 
-This benchmark runs the same pressure-driven neutral ABL case selected by
-`runners/pressure_driven_warmup/config_mgm.toml`, changing only the SGS model
-from MGM to the Lagrangian scale-dependent dynamic (LASD) closure. Domain,
-resolution, timestep, duration, pressure forcing, wall filtering, and the
-configured Porté-Agel correction remain identical to the MGM case.
+This benchmark runs the pressure-driven neutral ABL case selected by
+`runners/pressure_driven_warmup/config.toml` with the Lagrangian
+scale-dependent dynamic (LASD) closure.
 
 Run it on a GPU node from the repository root with:
 
@@ -25,4 +23,4 @@ JAX_PLATFORMS=cpu python -m benchmark.PressureDrivenLASD --allow-cpu
 ```
 
 `--dt`, `--hours`, `--max-steps`, `--restart`, `--output`, and `--plot-only`
-match the MGM benchmark options.
+are also available for development runs and checkpoint continuation.

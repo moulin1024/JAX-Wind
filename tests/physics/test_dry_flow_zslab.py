@@ -52,11 +52,6 @@ class DryFlowZSlabCommutingTests(unittest.TestCase):
                     "wall_filtered",
                     "sgs",
                     "sgs_vertical_flux",
-                    "mgm",
-                    "mgm_log_wall",
-                    "mgm_vertical_flux",
-                    "amd",
-                    "amd_vertical_flux",
                     "coriolis_geostrophic",
                     "combined",
                 ):

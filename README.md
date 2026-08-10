@@ -31,8 +31,7 @@ implementations directly testable.
 - conservative dry-flow and scalar transport with horizontal three-halves
   padding dealiasing;
 - neutral log-law walls, pressure-gradient forcing, Coriolis forcing, static
-  Smagorinsky, modulated gradient model (MGM), and Lagrangian scale-dependent
-  dynamic (LASD) closures;
+  Smagorinsky, and Lagrangian scale-dependent dynamic (LASD) closures;
 - Boussinesq buoyancy, prescribed scalar fluxes, and optional upper-level
   Rayleigh damping;
 - actuator-disk and rigid blade-element actuator-line forcing, including an
@@ -247,8 +246,7 @@ the production-module size guard are described in
 The repository includes research workflows for:
 
 - the one-command pressure-driven neutral
-  [MGM](benchmark/PressureDrivenMGM/README.md) and
-  [LASD](benchmark/PressureDrivenLASD/README.md) benchmarks, including automatic
+  [LASD](benchmark/PressureDrivenLASD/README.md) benchmark, including automatic
   restart and log-law velocity-profile plots;
 - the [Andrén et al. (1994) neutral Ekman
   intercomparison](benchmark/Andren1994/README.md);

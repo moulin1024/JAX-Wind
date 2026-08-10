@@ -29,7 +29,6 @@ from .lasd import (
     ScalarLasdMemory,
 )
 from .dry_flow import (
-    AnisotropicMinimumDissipation,
     ConservativeAdvection,
     CoriolisGeostrophic,
     DryFlowContributions,
@@ -39,7 +38,6 @@ from .dry_flow import (
     DryFlowVectorFieldResult,
     FilteredNeutralLogWall,
     KinematicPressureGradient,
-    ModulatedGradientModel,
     NeutralLogWall,
     NoRotation,
     RotationalAdvection,
@@ -63,7 +61,6 @@ from .wind_tunnel import (
 )
 
 __all__ = [
-    "AnisotropicMinimumDissipation",
     "BoussinesqContributions",
     "BoussinesqDiagnostic",
     "BoussinesqFields",
@@ -95,7 +92,6 @@ __all__ = [
     "LasdClosureMemory",
     "LasdDiagnosticFields",
     "MomentumLasdMemory",
-    "ModulatedGradientModel",
     "NeutralLogWall",
     "NoActuatorDisk",
     "NoActuatorLine",

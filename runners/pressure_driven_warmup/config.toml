@@ -33,11 +33,6 @@ timescale_coefficient = 1.5
 initial_coefficient = 0.03
 minimum_coefficient = 1.0e-6
 maximum_coefficient = 0.81
-dissipation_coefficient = 3.0
-fallback_coefficient = 0.1
-gradient_norm_epsilon_s2 = 1.0e-12
-kinematic_viscosity_m2_s = 1.5e-5
-scalar_turbulent_prandtl = 0.4
 
 [time]
 integrator = "ab2"

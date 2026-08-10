@@ -22,7 +22,6 @@ def parse_args() -> argparse.Namespace:
             "digitized data, and overlay the result on the paper figures."
         )
     )
-    parser.add_argument("--sgs", choices=("mgm", "lasd", "amd"), default="lasd")
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument(
         "--quick",
@@ -65,12 +64,12 @@ def main() -> None:
         else ROOT
         / "benchmark_results"
         / (
-            f"Nieuwstadt1993_{args.sgs}_quick"
+            "Nieuwstadt1993_lasd_quick"
             if args.quick
-            else f"Nieuwstadt1993_{args.sgs}_{args.nx}x{args.ny}x{args.nz}"
+            else f"Nieuwstadt1993_lasd_{args.nx}x{args.ny}x{args.nz}"
         )
     ).resolve()
-    model_label = args.sgs.upper()
+    model_label = "LASD"
     display_grid = (8, 8, 8) if args.quick else (args.nx, args.ny, args.nz)
     run_label = args.run_label or (
         f"JAX-Wind {model_label} "
@@ -104,8 +103,6 @@ def main() -> None:
         solve_command = [
             sys.executable,
             str(BENCHMARK_DIR / "run_new.py"),
-            "--sgs",
-            args.sgs,
             "--output-dir",
             str(output_dir),
             "--nx",
@@ -172,7 +169,7 @@ def main() -> None:
                 str(output_dir),
                 "--output",
                 str(
-                    output_dir / f"nieuwstadt1993_{args.sgs}_complete_overlay.png"
+                    output_dir / "nieuwstadt1993_lasd_complete_overlay.png"
                 ),
                 "--legend-label",
                 legend_label,

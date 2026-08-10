@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run Andrén et al. (1994) with MGM, LASD, or AMD SGS closure."""
+"""Run Andrén et al. (1994) with the LASD SGS closure."""
 
 from __future__ import annotations
 
@@ -61,7 +61,6 @@ from jaxwind.integrators import (  # noqa: E402
 from jaxwind.interpreters.jax_zslab import build_zslab_interpreter  # noqa: E402
 from jaxwind.operators import project  # noqa: E402
 from jaxwind.physics import (  # noqa: E402
-    AnisotropicMinimumDissipation,
     BoussinesqFields,
     BoussinesqModel,
     BoussinesqVectorField,
@@ -70,17 +69,14 @@ from jaxwind.physics import (  # noqa: E402
     CoriolisGeostrophic,
     DiagnosticLasdConstants,
     DryFlowModel,
-    IdentityClosureEvent,
     KinematicPressureGradient,
     LagrangianScaleDependentDynamic,
     LagrangianScaleDependentScalarFlux,
     LasdAcceptedStepEvent,
-    ModulatedGradientModel,
     NeutralLogWall,
     NoBuoyancy,
     NoRayleighDamping,
     ScalarFluxBoundary,
-    StaticSmagorinskyScalarFlux,
 )
 from jaxwind.pressure import build_spectral_fd_pressure_adapter  # noqa: E402
 from jaxwind.runners._toml import dumps as toml_dumps  # noqa: E402
@@ -95,7 +91,6 @@ NONLINEAR_PADDING_RATIO = 1.5
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--sgs", choices=("mgm", "lasd", "amd"), default="lasd")
     parser.add_argument("--nx", type=int, default=40)
     parser.add_argument("--ny", type=int, default=40)
     parser.add_argument("--nz", type=int, default=40)
@@ -129,7 +124,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     elif args.hours is None:
         args.hours = andren.CANONICAL_HOURS
     if args.output is None:
-        name = f"{args.sgs}_quick" if args.quick else f"{args.sgs}_40x40x40"
+        name = "lasd_quick" if args.quick else "lasd_40x40x40"
         args.output = HERE / "results" / name
     if min(args.nx, args.ny, args.nz) <= 1:
         parser.error("all grid dimensions must exceed one")
@@ -141,8 +136,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error("LASD update interval must be positive")
     if args.thomas_chunk <= 0:
         parser.error("Thomas chunk must be positive")
-    if args.fig13_budget and args.sgs != "lasd":
-        parser.error("--fig13-budget is currently defined only for LASD")
     return args
 
 
@@ -229,64 +222,44 @@ def instantaneous_diagnostics(
     ustar = math.sqrt(math.hypot(float(jnp.mean(tau_x)), float(jnp.mean(tau_y))))
 
     context = algebra.boussinesq_context(fields)
-    if args.sgs == "lasd":
-        diagnostic = algebra.lasd_diagnostic_fields(
-            context,
-            model.momentum.sgs,
-            model.scalar_sgs,
-            model.scalar_boundary,
-            constants=ANDREN_DIAGNOSTIC_CONSTANTS,
-            wall=model.momentum.wall,
-        )
-        sgs_tke = diagnostic.sgs_tke * mechanical_scales.velocity**2
-        scalar_variance_numerator = (
-            diagnostic.scalar_variance_numerator
-            * scalar_scales.concentration**2
-            * mechanical_scales.velocity
-        )
-        momentum_diffusivity = (
-            diagnostic.momentum_diffusivity * mechanical_scales.kinematic_viscosity
-        )
-        scalar_diffusivity = (
-            diagnostic.scalar_diffusivity * mechanical_scales.kinematic_viscosity
-        )
-        scalar_flux_upper = scalar_scales.from_execution_concentration_flux(
-            diagnostic.scalar_flux_z
-        )
-        lower_scalar_flux = jnp.concatenate(
-            (
-                jnp.full_like(
-                    scalar_flux_upper[:, :1],
-                    SURFACE_SCALAR_FLUX / AIR_DENSITY,
-                ),
-                scalar_flux_upper[:, :-1],
+    diagnostic = algebra.lasd_diagnostic_fields(
+        context,
+        model.momentum.sgs,
+        model.scalar_sgs,
+        model.scalar_boundary,
+        constants=ANDREN_DIAGNOSTIC_CONSTANTS,
+        wall=model.momentum.wall,
+    )
+    sgs_tke = diagnostic.sgs_tke * mechanical_scales.velocity**2
+    scalar_variance_numerator = (
+        diagnostic.scalar_variance_numerator
+        * scalar_scales.concentration**2
+        * mechanical_scales.velocity
+    )
+    momentum_diffusivity = (
+        diagnostic.momentum_diffusivity * mechanical_scales.kinematic_viscosity
+    )
+    scalar_diffusivity = (
+        diagnostic.scalar_diffusivity * mechanical_scales.kinematic_viscosity
+    )
+    scalar_flux_upper = scalar_scales.from_execution_concentration_flux(
+        diagnostic.scalar_flux_z
+    )
+    lower_scalar_flux = jnp.concatenate(
+        (
+            jnp.full_like(
+                scalar_flux_upper[:, :1],
+                SURFACE_SCALAR_FLUX / AIR_DENSITY,
             ),
-            axis=1,
-        )
-        sgs_scalar_flux = 0.5 * (lower_scalar_flux + scalar_flux_upper)
-        momentum_coefficient = _plane_profile(
-            fields.closure.momentum.coefficient.payload
-        )
-        scalar_coefficient = _plane_profile(fields.closure.scalar.coefficient.payload)
-    else:
-        momentum_diagnostic = algebra.momentum_sgs_diagnostic_fields(
-            context.momentum,
-            model.momentum.sgs,
-            dissipation_coefficient=(
-                ANDREN_DIAGNOSTIC_CONSTANTS.sgs_dissipation_coefficient
-            ),
-            wall=model.momentum.wall,
-        )
-        sgs_tke = momentum_diagnostic.sgs_tke * mechanical_scales.velocity**2
-        scalar_variance_numerator = jnp.zeros_like(scalar)
-        momentum_diffusivity = (
-            momentum_diagnostic.momentum_diffusivity
-            * mechanical_scales.kinematic_viscosity
-        )
-        scalar_diffusivity = jnp.zeros_like(scalar)
-        sgs_scalar_flux = jnp.zeros_like(scalar)
-        momentum_coefficient = np.zeros(physical_grid.nz)
-        scalar_coefficient = np.zeros(physical_grid.nz)
+            scalar_flux_upper[:, :-1],
+        ),
+        axis=1,
+    )
+    sgs_scalar_flux = 0.5 * (lower_scalar_flux + scalar_flux_upper)
+    momentum_coefficient = _plane_profile(
+        fields.closure.momentum.coefficient.payload
+    )
+    scalar_coefficient = _plane_profile(fields.closure.scalar.coefficient.payload)
 
     resolved_tke_sgs_transfer = algebra.momentum_sgs_tke_transfer(
         context.momentum,
@@ -369,7 +342,7 @@ def instantaneous_diagnostics(
         "surface_uw_m2_s2": float(jnp.mean(tau_x)),
         "surface_vw_m2_s2": float(jnp.mean(tau_y)),
         "cfl": cfl,
-        "lasd_cfl": cfl * args.lasd_update_interval if args.sgs == "lasd" else 0.0,
+        "lasd_cfl": cfl * args.lasd_update_interval,
         "max_divergence": float(
             jnp.max(jnp.abs(divergence)) * mechanical_scales.inverse_time
         ),
@@ -602,7 +575,7 @@ def _write_profiles(output: Path, averaged: dict, statistics_ustar: float) -> No
 def run(args: argparse.Namespace) -> dict:
     args.output.mkdir(parents=True, exist_ok=True)
     if jax.device_count() != 1:
-        raise RuntimeError("the Andrén SGS runner currently requires one JAX device")
+        raise RuntimeError("the Andrén LASD runner currently requires one JAX device")
     dtype = getattr(jnp, args.dtype)
     physical_grid = UniformGrid(args.nx, args.ny, args.nz, 4000.0, 2000.0, 1500.0)
     mechanical_scales = ScaleSystem(1500.0, 10.0)
@@ -626,30 +599,11 @@ def run(args: argparse.Namespace) -> dict:
         method=args.method,
         thomas_chunk=args.thomas_chunk,
     )
-    if args.sgs == "lasd":
-        momentum_sgs = LagrangianScaleDependentDynamic(
-            filter_grid_ratio=1.5,
-            update_interval=args.lasd_update_interval,
-        )
-        scalar_sgs = LagrangianScaleDependentScalarFlux()
-    elif args.sgs == "mgm":
-        momentum_sgs = ModulatedGradientModel(
-            filter_grid_ratio=1.5,
-            dissipation_coefficient=1.0,
-            fallback_coefficient=0.1,
-            gradient_norm_epsilon=(
-                mechanical_scales.to_execution_inverse_time_squared(
-                    2.4674011002723396e-12
-                )
-            ),
-            kinematic_viscosity=(
-                mechanical_scales.to_execution_kinematic_viscosity(1.5e-5)
-            ),
-        )
-        scalar_sgs = StaticSmagorinskyScalarFlux(turbulent_prandtl=0.4)
-    else:
-        momentum_sgs = AnisotropicMinimumDissipation()
-        scalar_sgs = StaticSmagorinskyScalarFlux(turbulent_prandtl=0.4)
+    momentum_sgs = LagrangianScaleDependentDynamic(
+        filter_grid_ratio=1.5,
+        update_interval=args.lasd_update_interval,
+    )
+    scalar_sgs = LagrangianScaleDependentScalarFlux()
     scalar_boundary = ScalarFluxBoundary(
         scalar_scales.to_execution_concentration_flux(
             SURFACE_SCALAR_FLUX / AIR_DENSITY
@@ -676,35 +630,16 @@ def run(args: argparse.Namespace) -> dict:
         scalar_boundary,
     )
     config = AB2Config(mechanical_scales.to_execution_time(args.dt))
-    scalar_fingerprint = (
-        scalar_sgs.fingerprint
-        if isinstance(scalar_sgs, LagrangianScaleDependentScalarFlux)
-        else f"static-smagorinsky-scalar|pr={scalar_sgs.turbulent_prandtl.hex()}"
-    )
-    closure_fingerprint = (
-        momentum_sgs.fingerprint + "|" + scalar_fingerprint
-        if args.sgs == "lasd"
-        else None
-    )
-    momentum_energy_diagnostic_fingerprint = (
-        momentum_sgs.fingerprint + "|sgs-energy=model-native-gradient-contraction"
-        if args.sgs == "mgm"
-        else (
-            momentum_sgs.fingerprint
-            + "|sgs-energy=local-equilibrium-modeled-production"
-            + f"|ce={ANDREN_DIAGNOSTIC_CONSTANTS.sgs_dissipation_coefficient.hex()}"
-            + "|production-wall=neutral-log"
-            if args.sgs == "amd"
-            else ANDREN_DIAGNOSTIC_CONSTANTS.fingerprint
-        )
-    )
+    scalar_fingerprint = scalar_sgs.fingerprint
+    closure_fingerprint = momentum_sgs.fingerprint + "|" + scalar_fingerprint
+    momentum_energy_diagnostic_fingerprint = ANDREN_DIAGNOSTIC_CONSTANTS.fingerprint
     physics_fingerprint = (
         momentum_sgs.fingerprint
         + "|"
         + scalar_fingerprint
         + "|advection=conservative"
         + "|dealiasing=three-halves-padding"
-        + ("|coefficient-padding=bounded" if args.sgs == "lasd" else "")
+        + "|coefficient-padding=bounded"
     )
     scale_fingerprint = scalar_scales.fingerprint
     if args.restart is None:
@@ -733,8 +668,7 @@ def run(args: argparse.Namespace) -> dict:
             ),
         )
         fields = BoussinesqFields(projected.velocity, scalar)
-        if args.sgs == "lasd":
-            fields = algebra.initialize_lasd_closure(fields, model)
+        fields = algebra.initialize_lasd_closure(fields, model)
         state = cold_start_boussinesq(
             fields,
             clock=AcceptedClock(0.0, 0),
@@ -766,11 +700,7 @@ def run(args: argparse.Namespace) -> dict:
         budget_times, budget_samples = [], []
 
     vector_field = BoussinesqVectorField(algebra, model)
-    closure_event = (
-        LasdAcceptedStepEvent(algebra, model, config.dt)
-        if args.sgs == "lasd"
-        else IdentityClosureEvent()
-    )
+    closure_event = LasdAcceptedStepEvent(algebra, model, config.dt)
     target_steps = int(round(args.hours * 3600.0 / args.dt))
     requested_steps = target_steps - state.clock.step
     if requested_steps <= 0:
@@ -837,7 +767,7 @@ def run(args: argparse.Namespace) -> dict:
                     stacklevel=1,
                 )
                 warned_cfl = True
-            if args.sgs == "lasd" and history["lasd_cfl"] >= 1.0 and not warned_lasd:
+            if history["lasd_cfl"] >= 1.0 and not warned_lasd:
                 warnings.warn(
                     f"LASD trajectory CFL {history['lasd_cfl']:.3f} is not below one",
                     stacklevel=1,
@@ -913,11 +843,11 @@ def run(args: argparse.Namespace) -> dict:
         "schema": "jaxwind.andren1994.sgs-comparison.v1",
         "case": {
             "citation": "Andren et al. (1994)",
-            "sgs_model": args.sgs,
+            "sgs_model": "lasd",
             "passive_scalar_surface_flux_kg_m2_s": SURFACE_SCALAR_FLUX,
             "air_density_kg_m3": AIR_DENSITY,
             "diagnostic_sgs_energy": True,
-            "diagnostic_sgs_scalar_variance": args.sgs == "lasd",
+            "diagnostic_sgs_scalar_variance": True,
         },
         "grid": {
             "nx": args.nx,
@@ -938,20 +868,11 @@ def run(args: argparse.Namespace) -> dict:
             "neutral_log_wall_roughness_m": 0.1,
             "neutral_log_wall_von_karman": 0.4,
             "sgs_energy_kind": (
-                "model-native MGM gradient-contraction diagnostic"
-                if args.sgs == "mgm"
-                else (
-                    "local-equilibrium AMD diagnostic from modeled production "
-                    "with log-wall shear"
-                    if args.sgs == "amd"
-                    else "diagnostic local equilibrium with log-wall shear, not prognostic"
-                )
+                "diagnostic local equilibrium with log-wall shear, not prognostic"
             ),
             "sgs_scalar_variance_kind": (
                 "horizontal-budget diagnostic of full q_i grad_i c with "
                 "flux-consistent wall gradient"
-                if args.sgs == "lasd"
-                else "not available"
             ),
             "resolved_tke_sgs_transfer_kind": (
                 "signed tau_ij*d_j(u_i), negative for forward transfer; "

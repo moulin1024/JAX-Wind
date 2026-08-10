@@ -125,14 +125,11 @@ class ThermalConfig:
 @dataclass(frozen=True, slots=True)
 class SgsConfig:
     model: str
-    scalar_turbulent_prandtl: float
     lasd_update_interval: int
 
     def __post_init__(self) -> None:
-        if self.model not in ("amd", "lasd"):
-            raise ConfigError("GABLS1 sgs.model must be 'amd' or 'lasd'")
-        if self.scalar_turbulent_prandtl <= 0.0:
-            raise ConfigError("scalar turbulent Prandtl number must be positive")
+        if self.model != "lasd":
+            raise ConfigError("GABLS1 sgs.model must be 'lasd'")
         if self.lasd_update_interval <= 0:
             raise ConfigError("LASD update interval must be positive")
 
@@ -254,7 +251,6 @@ class CaseConfig:
             },
             "sgs": {
                 "model": self.sgs.model,
-                "scalar_turbulent_prandtl": self.sgs.scalar_turbulent_prandtl,
                 "lasd_update_interval": self.sgs.lasd_update_interval,
             },
             "time": {
@@ -322,7 +318,6 @@ def load_case(path: str | Path) -> CaseConfig:
         ),
         SgsConfig(
             _string(sgs, "model"),
-            _number(sgs, "scalar_turbulent_prandtl"),
             _integer(sgs, "lasd_update_interval"),
         ),
         TimeConfig(

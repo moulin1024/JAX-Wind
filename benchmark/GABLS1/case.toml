@@ -1,5 +1,5 @@
 [case]
-name = "GABLS1-AMD-32"
+name = "GABLS1-LASD-32"
 runner = "gabls1"
 
 [domain]
@@ -29,8 +29,7 @@ thermal_roughness_length_m = 0.1
 gravity_m_s2 = 9.81
 
 [sgs]
-model = "amd"
-scalar_turbulent_prandtl = 0.4
+model = "lasd"
 lasd_update_interval = 5
 
 [time]
@@ -45,7 +44,7 @@ seed = 0
 cfl_warning = 0.9
 
 [output]
-directory = "benchmark_results/gabls1_amd_32cubed"
+directory = "benchmark_results/gabls1_lasd_32cubed"
 sample_every_steps = 240
 log_every_steps = 1200
 checkpoint_every_steps = 12000

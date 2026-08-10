@@ -34,12 +34,10 @@ from jaxwind.domain import (
 )
 from jaxwind.operators import VelocityVector
 from jaxwind.physics.dry_flow import (
-    AnisotropicMinimumDissipation,
     ConservativeAdvection,
     CoriolisGeostrophic,
     FilteredNeutralLogWall,
     KinematicPressureGradient,
-    ModulatedGradientModel,
     NeutralLogWall,
     NoRotation,
     RotationalAdvection,
@@ -256,20 +254,13 @@ class OracleFlowMixin:
     def sgs_tendency(
         self,
         context: OracleDryFlowContext,
-        config: (
-            StaticSmagorinsky
-            | AnisotropicMinimumDissipation
-            | ModulatedGradientModel
-            | LagrangianScaleDependentDynamic
-        ),
+        config: StaticSmagorinsky | LagrangianScaleDependentDynamic,
         wall: NeutralLogWall | FilteredNeutralLogWall | None = None,
     ) -> VelocityVector:
         if not isinstance(
             config,
             (
                 StaticSmagorinsky,
-                AnisotropicMinimumDissipation,
-                ModulatedGradientModel,
                 LagrangianScaleDependentDynamic,
             ),
         ):
@@ -295,80 +286,41 @@ class OracleFlowMixin:
             dwdx_on_faces=_pad_horizontal(context.dwdx_on_faces, grid=grid),
             dwdy_on_faces=_pad_horizontal(context.dwdy_on_faces, grid=grid),
         )
-        if isinstance(config, ModulatedGradientModel):
-            dudz_at_cells = context.dudz_at_cells
-            dvdz_at_cells = context.dvdz_at_cells
-            if wall is not None:
-                wall_gradient = self._wall_gradient(context, wall)
-                dudz_at_cells = dudz_at_cells.at[0].set(wall_gradient[0])
-                dvdz_at_cells = dvdz_at_cells.at[0].set(wall_gradient[1])
-            padded_stresses = self._mgm_stress(
-                padded_context.dudx,
-                padded_context.dudy,
-                _pad_horizontal(dudz_at_cells, grid=grid),
-                padded_context.dvdx,
-                padded_context.dvdy,
-                _pad_horizontal(dvdz_at_cells, grid=grid),
-                padded_context.dwdx_at_cells,
-                padded_context.dwdy_at_cells,
-                -(padded_context.dudx + padded_context.dvdy),
-                grid,
-                config,
+        delta = (grid.dx * grid.dy * grid.dz) ** (1.0 / 3.0)
+        magnitude = _strain_magnitude(
+            padded_context.dudx,
+            padded_context.dudy,
+            padded_context.dudz_at_cells,
+            padded_context.dvdx,
+            padded_context.dvdy,
+            padded_context.dvdz_at_cells,
+            padded_context.dwdx_at_cells,
+            padded_context.dwdy_at_cells,
+            padded_context.dwdz,
+        )
+        coefficient = _pad_horizontal(
+            self._momentum_sgs_coefficient(context, config), grid=grid
+        )
+        if isinstance(config, LagrangianScaleDependentDynamic):
+            coefficient = jnp.clip(
+                coefficient,
+                config.minimum_coefficient,
+                config.maximum_coefficient,
             )
-            txx, txy, _txz, tyy, _tyz, tzz = tuple(
-                _truncate_padded(value, grid=grid) for value in padded_stresses
-            )
-        elif isinstance(config, AnisotropicMinimumDissipation):
-            eddy_viscosity = self._amd_eddy_viscosity(padded_context)
-            txx = _truncate_padded(
-                -2.0 * eddy_viscosity * padded_context.dudx, grid=grid
-            )
-            txy = _truncate_padded(
-                -eddy_viscosity * (padded_context.dudy + padded_context.dvdx),
-                grid=grid,
-            )
-            tyy = _truncate_padded(
-                -2.0 * eddy_viscosity * padded_context.dvdy, grid=grid
-            )
-            tzz = _truncate_padded(
-                -2.0 * eddy_viscosity * padded_context.dwdz, grid=grid
-            )
-        else:
-            delta = (grid.dx * grid.dy * grid.dz) ** (1.0 / 3.0)
-            magnitude = _strain_magnitude(
-                padded_context.dudx,
-                padded_context.dudy,
-                padded_context.dudz_at_cells,
-                padded_context.dvdx,
-                padded_context.dvdy,
-                padded_context.dvdz_at_cells,
-                padded_context.dwdx_at_cells,
-                padded_context.dwdy_at_cells,
-                padded_context.dwdz,
-            )
-            coefficient = _pad_horizontal(
-                self._momentum_sgs_coefficient(context, config), grid=grid
-            )
-            if isinstance(config, LagrangianScaleDependentDynamic):
-                coefficient = jnp.clip(
-                    coefficient,
-                    config.minimum_coefficient,
-                    config.maximum_coefficient,
-                )
-            eddy_viscosity = coefficient * delta**2 * magnitude
-            txx = _truncate_padded(
-                -2.0 * eddy_viscosity * padded_context.dudx, grid=grid
-            )
-            txy = _truncate_padded(
-                -eddy_viscosity * (padded_context.dudy + padded_context.dvdx),
-                grid=grid,
-            )
-            tyy = _truncate_padded(
-                -2.0 * eddy_viscosity * padded_context.dvdy, grid=grid
-            )
-            tzz = _truncate_padded(
-                -2.0 * eddy_viscosity * padded_context.dwdz, grid=grid
-            )
+        eddy_viscosity = coefficient * delta**2 * magnitude
+        txx = _truncate_padded(
+            -2.0 * eddy_viscosity * padded_context.dudx, grid=grid
+        )
+        txy = _truncate_padded(
+            -eddy_viscosity * (padded_context.dudy + padded_context.dvdx),
+            grid=grid,
+        )
+        tyy = _truncate_padded(
+            -2.0 * eddy_viscosity * padded_context.dvdy, grid=grid
+        )
+        tzz = _truncate_padded(
+            -2.0 * eddy_viscosity * padded_context.dwdz, grid=grid
+        )
         txz, tyz = self.sgs_vertical_flux(context, config)
         x = -(
             _horizontal_derivative(txx, grid=grid, axis="x")
@@ -391,20 +343,13 @@ class OracleFlowMixin:
     def sgs_vertical_flux(
         self,
         context: OracleDryFlowContext,
-        config: (
-            StaticSmagorinsky
-            | AnisotropicMinimumDissipation
-            | ModulatedGradientModel
-            | LagrangianScaleDependentDynamic
-        ),
+        config: StaticSmagorinsky | LagrangianScaleDependentDynamic,
     ) -> tuple[Any, Any]:
         """Return filtered SGS xz and yz stresses on full vertical faces."""
         if not isinstance(
             config,
             (
                 StaticSmagorinsky,
-                AnisotropicMinimumDissipation,
-                ModulatedGradientModel,
                 LagrangianScaleDependentDynamic,
             ),
         ):
@@ -426,281 +371,43 @@ class OracleFlowMixin:
             dwdx_on_faces=_pad_horizontal(context.dwdx_on_faces, grid=grid),
             dwdy_on_faces=_pad_horizontal(context.dwdy_on_faces, grid=grid),
         )
-        if isinstance(config, ModulatedGradientModel):
-            padded_stresses = self._mgm_stress(
-                _cell_to_full_faces(padded_context.dudx),
-                _cell_to_full_faces(padded_context.dudy),
-                padded_context.dudz_on_faces,
-                _cell_to_full_faces(padded_context.dvdx),
-                _cell_to_full_faces(padded_context.dvdy),
-                padded_context.dvdz_on_faces,
-                padded_context.dwdx_on_faces,
-                padded_context.dwdy_on_faces,
-                _cell_to_full_faces(padded_context.dwdz),
-                grid,
-                config,
+        delta = (grid.dx * grid.dy * grid.dz) ** (1.0 / 3.0)
+        face_magnitude = _strain_magnitude(
+            _cell_to_full_faces(padded_context.dudx),
+            _cell_to_full_faces(padded_context.dudy),
+            padded_context.dudz_on_faces,
+            _cell_to_full_faces(padded_context.dvdx),
+            _cell_to_full_faces(padded_context.dvdy),
+            padded_context.dvdz_on_faces,
+            padded_context.dwdx_on_faces,
+            padded_context.dwdy_on_faces,
+            _cell_to_full_faces(padded_context.dwdz),
+        )
+        coefficient = _pad_horizontal(
+            self._momentum_sgs_coefficient(context, config), grid=grid
+        )
+        if isinstance(config, LagrangianScaleDependentDynamic):
+            coefficient = jnp.clip(
+                coefficient,
+                config.minimum_coefficient,
+                config.maximum_coefficient,
             )
-            txz = _truncate_padded(padded_stresses[2], grid=grid)
-            tyz = _truncate_padded(padded_stresses[4], grid=grid)
-        elif isinstance(config, AnisotropicMinimumDissipation):
-            viscosity_on_faces = _cell_to_full_faces(
-                self._amd_eddy_viscosity(padded_context)
-            )
-            txz = _truncate_padded(
-                -viscosity_on_faces
-                * (padded_context.dudz_on_faces + padded_context.dwdx_on_faces),
-                grid=grid,
-            )
-            tyz = _truncate_padded(
-                -viscosity_on_faces
-                * (padded_context.dvdz_on_faces + padded_context.dwdy_on_faces),
-                grid=grid,
-            )
-        else:
-            delta = (grid.dx * grid.dy * grid.dz) ** (1.0 / 3.0)
-            face_magnitude = _strain_magnitude(
-                _cell_to_full_faces(padded_context.dudx),
-                _cell_to_full_faces(padded_context.dudy),
-                padded_context.dudz_on_faces,
-                _cell_to_full_faces(padded_context.dvdx),
-                _cell_to_full_faces(padded_context.dvdy),
-                padded_context.dvdz_on_faces,
-                padded_context.dwdx_on_faces,
-                padded_context.dwdy_on_faces,
-                _cell_to_full_faces(padded_context.dwdz),
-            )
-            coefficient = _pad_horizontal(
-                self._momentum_sgs_coefficient(context, config), grid=grid
-            )
-            if isinstance(config, LagrangianScaleDependentDynamic):
-                coefficient = jnp.clip(
-                    coefficient,
-                    config.minimum_coefficient,
-                    config.maximum_coefficient,
-                )
-            viscosity_on_faces = (
-                _cell_to_full_faces(coefficient) * delta**2 * face_magnitude
-            )
-            txz = _truncate_padded(
-                -viscosity_on_faces
-                * (padded_context.dudz_on_faces + padded_context.dwdx_on_faces),
-                grid=grid,
-            )
-            tyz = _truncate_padded(
-                -viscosity_on_faces
-                * (padded_context.dvdz_on_faces + padded_context.dwdy_on_faces),
-                grid=grid,
-            )
+        viscosity_on_faces = (
+            _cell_to_full_faces(coefficient) * delta**2 * face_magnitude
+        )
+        txz = _truncate_padded(
+            -viscosity_on_faces
+            * (padded_context.dudz_on_faces + padded_context.dwdx_on_faces),
+            grid=grid,
+        )
+        tyz = _truncate_padded(
+            -viscosity_on_faces
+            * (padded_context.dvdz_on_faces + padded_context.dwdy_on_faces),
+            grid=grid,
+        )
         txz = txz.at[0].set(0.0).at[-1].set(0.0)
         tyz = tyz.at[0].set(0.0).at[-1].set(0.0)
         return txz, tyz
-
-    @staticmethod
-    def _amd_eddy_viscosity(context: OracleDryFlowContext):
-        """Independent full-domain transcription of legacy staggered AMD."""
-        grid = context.velocity.x.ownership.grid
-        lower_dudz, upper_dudz = (
-            context.dudz_on_faces[:-1],
-            context.dudz_on_faces[1:],
-        )
-        lower_dvdz, upper_dvdz = (
-            context.dvdz_on_faces[:-1],
-            context.dvdz_on_faces[1:],
-        )
-        lower_dwdx, upper_dwdx = (
-            context.dwdx_on_faces[:-1],
-            context.dwdx_on_faces[1:],
-        )
-        lower_dwdy, upper_dwdy = (
-            context.dwdy_on_faces[:-1],
-            context.dwdy_on_faces[1:],
-        )
-
-        def mean_product(lower_a, upper_a, lower_b, upper_b):
-            return 0.5 * (lower_a * lower_b + upper_a * upper_b)
-
-        s11 = context.dudx
-        s22 = context.dvdy
-        s33 = context.dwdz
-        s12 = 0.5 * (context.dudy + context.dvdx)
-        lower_s13 = 0.5 * (lower_dudz + lower_dwdx)
-        upper_s13 = 0.5 * (upper_dudz + upper_dwdx)
-        lower_s23 = 0.5 * (lower_dvdz + lower_dwdy)
-        upper_s23 = 0.5 * (upper_dvdz + upper_dwdy)
-
-        def horizontal(ud, vd, lower_wd, upper_wd):
-            w2 = mean_product(lower_wd, upper_wd, lower_wd, upper_wd)
-            w_s13 = mean_product(lower_wd, upper_wd, lower_s13, upper_s13)
-            w_s23 = mean_product(lower_wd, upper_wd, lower_s23, upper_s23)
-            return (
-                s11 * ud**2
-                + s22 * vd**2
-                + s33 * w2
-                + 2.0 * s12 * ud * vd
-                + 2.0 * ud * w_s13
-                + 2.0 * vd * w_s23
-            )
-
-        horizontal_x = horizontal(
-            context.dudx,
-            context.dvdx,
-            lower_dwdx,
-            upper_dwdx,
-        )
-        horizontal_y = horizontal(
-            context.dudy,
-            context.dvdy,
-            lower_dwdy,
-            upper_dwdy,
-        )
-        vertical = (
-            s11 * mean_product(lower_dudz, upper_dudz, lower_dudz, upper_dudz)
-            + s22 * mean_product(lower_dvdz, upper_dvdz, lower_dvdz, upper_dvdz)
-            + s33**3
-            + 2.0
-            * s12
-            * mean_product(lower_dudz, upper_dudz, lower_dvdz, upper_dvdz)
-            + 2.0
-            * s33
-            * mean_product(lower_dudz, upper_dudz, lower_s13, upper_s13)
-            + 2.0
-            * s33
-            * mean_product(lower_dvdz, upper_dvdz, lower_s23, upper_s23)
-        )
-        numerator = -(
-            (grid.dx**2 / 12.0) * horizontal_x
-            + (grid.dy**2 / 12.0) * horizontal_y
-            + (grid.dz**2 / 3.0) * vertical
-        )
-        denominator = (
-            context.dudx**2
-            + context.dvdx**2
-            + mean_product(lower_dwdx, upper_dwdx, lower_dwdx, upper_dwdx)
-            + context.dudy**2
-            + context.dvdy**2
-            + mean_product(lower_dwdy, upper_dwdy, lower_dwdy, upper_dwdy)
-            + mean_product(lower_dudz, upper_dudz, lower_dudz, upper_dudz)
-            + mean_product(lower_dvdz, upper_dvdz, lower_dvdz, upper_dvdz)
-            + context.dwdz**2
-        )
-        valid = (
-            (denominator > 0.0)
-            & jnp.isfinite(numerator)
-            & jnp.isfinite(denominator)
-        )
-        return jnp.where(
-            valid,
-            jnp.maximum(numerator, 0.0) / jnp.where(valid, denominator, 1.0),
-            0.0,
-        )
-
-    @staticmethod
-    def _mgm_stress(
-        dudx,
-        dudy,
-        dudz,
-        dvdx,
-        dvdy,
-        dvdz,
-        dwdx,
-        dwdy,
-        dwdz,
-        grid,
-        config: ModulatedGradientModel,
-    ):
-        s11, s22, s33 = dudx, dvdy, dwdz
-        s12 = 0.5 * (dudy + dvdx)
-        s13 = 0.5 * (dudz + dwdx)
-        s23 = 0.5 * (dvdz + dwdy)
-        y_weight = (grid.dy / grid.dx) ** 2
-        z_weight = (grid.dz / (grid.dx * config.filter_grid_ratio)) ** 2
-        g11 = dudx**2 + y_weight * dudy**2 + z_weight * dudz**2
-        g22 = dvdx**2 + y_weight * dvdy**2 + z_weight * dvdz**2
-        g33 = dwdx**2 + y_weight * dwdy**2 + z_weight * dwdz**2
-        g12 = dudx * dvdx + y_weight * dudy * dvdy + z_weight * dudz * dvdz
-        g13 = dudx * dwdx + y_weight * dudy * dwdy + z_weight * dudz * dwdz
-        g23 = dvdx * dwdx + y_weight * dvdy * dwdy + z_weight * dvdz * dwdz
-        gkk = g11 + g22 + g33
-        valid = gkk > config.gradient_norm_epsilon
-        safe_gkk = jnp.where(valid, gkk, 1.0)
-        raw_contraction = (
-            g11 * s11
-            + g22 * s22
-            + g33 * s33
-            + 2.0 * (g12 * s12 + g13 * s13 + g23 * s23)
-        )
-        transfer = jnp.where(valid, -raw_contraction / safe_gkk, 0.0)
-        transfer_moment = transfer**3
-        forward = valid & (raw_contraction <= 0.0)
-        valid_count = jnp.sum(valid, axis=(-2, -1))
-        forward_count = jnp.sum(forward, axis=(-2, -1))
-        conditional_mean = jnp.sum(
-            jnp.where(forward, transfer_moment, 0.0), axis=(-2, -1)
-        ) / jnp.maximum(forward_count, 1)
-        unconditional_mean = jnp.sum(
-            jnp.where(valid, transfer_moment, 0.0), axis=(-2, -1)
-        ) / jnp.maximum(valid_count, 1)
-        absolute_mean = jnp.sum(
-            jnp.where(valid, jnp.abs(transfer_moment), 0.0), axis=(-2, -1)
-        ) / jnp.maximum(valid_count, 1)
-        denominator_floor = jnp.finfo(gkk.dtype).eps * jnp.maximum(
-            absolute_mean,
-            jnp.finfo(gkk.dtype).tiny,
-        )
-        coefficient_squared = conditional_mean / jnp.where(
-            unconditional_mean > 0.0,
-            unconditional_mean,
-            1.0,
-        )
-        usable = (
-            (valid_count > 0)
-            & (forward_count > 0)
-            & (unconditional_mean > denominator_floor)
-            & jnp.isfinite(coefficient_squared)
-            & (coefficient_squared > 0.0)
-        )
-        diagnosed_coefficient = jnp.sqrt(jnp.where(usable, coefficient_squared, 1.0))[
-            :, None, None
-        ]
-        contraction = jnp.minimum(raw_contraction, 0.0)
-        delta = (
-            config.filter_grid_ratio
-            * grid.dx
-            * config.filter_grid_ratio
-            * grid.dy
-            * grid.dz
-        ) ** (1.0 / 3.0)
-        ce = config.dissipation_coefficient * diagnosed_coefficient
-        ksgs = (2.0 * delta / ce) ** 2 * (contraction / safe_gkk) ** 2
-        modulation = 2.0 * ksgs / safe_gkk
-        magnitude = _strain_magnitude(
-            dudx,
-            dudy,
-            dudz,
-            dvdx,
-            dvdy,
-            dvdz,
-            dwdx,
-            dwdy,
-            dwdz,
-        )
-        fallback = -2.0 * (
-            config.fallback_coefficient**2 * delta**2 * magnitude
-            + config.kinematic_viscosity
-        )
-
-        def component(gradient, strain):
-            modeled = modulation * gradient - 2.0 * config.kinematic_viscosity * strain
-            return jnp.where(valid, modeled, fallback * strain)
-
-        return (
-            component(g11, s11),
-            component(g12, s12),
-            component(g13, s13),
-            component(g22, s22),
-            component(g23, s23),
-            component(g33, s33),
-        )
 
     @staticmethod
     def _momentum_sgs_coefficient(

@@ -15,6 +15,7 @@ import warnings
 import numpy as np
 
 from .config import CaseConfig
+from .profiles import ProfileStatistics, plot_profiles, write_profiles
 
 
 HERE = Path(__file__).resolve().parent
@@ -41,58 +42,6 @@ def _configure_pressure_source() -> None:
     )
     if str(pressure_source) not in sys.path:
         sys.path.insert(0, str(pressure_source))
-
-
-class ProfileStatistics:
-    """Restartable host accumulation of cell and native-face profiles."""
-
-    CELL_NAMES = ("u", "v", "w", "theta", "u2", "v2", "w2", "theta2")
-    FACE_NAMES = (
-        "uw_resolved",
-        "vw_resolved",
-        "uw_sgs",
-        "vw_sgs",
-        "wtheta_resolved",
-        "wtheta_sgs",
-    )
-
-    def __init__(self, nz: int) -> None:
-        self.count = 0
-        self.sums = {
-            **{name: np.zeros(nz, dtype=np.float64) for name in self.CELL_NAMES},
-            **{
-                name: np.zeros(nz + 1, dtype=np.float64)
-                for name in self.FACE_NAMES
-            },
-        }
-
-    def sample(self, values: dict[str, np.ndarray]) -> None:
-        for name in self.sums:
-            self.sums[name] += np.asarray(values[name], dtype=np.float64)
-        self.count += 1
-
-    def save(self, path: Path) -> None:
-        temporary = path.with_name(f".{path.name}.tmp-{os.getpid()}")
-        with temporary.open("wb") as stream:
-            np.savez(stream, count=np.asarray(self.count), **self.sums)
-        os.replace(temporary, path)
-
-    @classmethod
-    def load(cls, path: Path, nz: int) -> "ProfileStatistics":
-        result = cls(nz)
-        with np.load(path, allow_pickle=False) as archive:
-            result.count = int(archive["count"])
-            for name, template in result.sums.items():
-                value = np.asarray(archive[name], dtype=np.float64)
-                if value.shape != template.shape:
-                    raise ValueError("GABLS1 statistics shape does not match grid")
-                result.sums[name] = value.copy()
-        return result
-
-    def means(self) -> dict[str, np.ndarray]:
-        if self.count == 0:
-            raise RuntimeError("no GABLS1 statistics samples were collected")
-        return {name: value / self.count for name, value in self.sums.items()}
 
 
 def _initial_fields(
@@ -150,7 +99,7 @@ def _initial_fields(
     # Integrate in coordinates translating with the geostrophic wind.  This is
     # the exact Galilean form of the periodic GABLS1 equations and prevents the
     # fixed-step AB2 method from needlessly advecting the grid-scale thermal
-    # seed at 8 m/s before turbulence and AMD dissipation have developed.
+    # seed at 8 m/s before turbulence and SGS dissipation have developed.
     u = jnp.zeros(shape, dtype=dtype)
     v = jnp.zeros(shape, dtype=dtype)
     w = jnp.zeros(shape, dtype=dtype)
@@ -467,40 +416,24 @@ def _snapshot(
         jnp=jnp,
     )
     context = algebra.boussinesq_context(state.fields)
-    if case.sgs.model == "lasd":
-        lasd_diagnostic = algebra.lasd_diagnostic_fields(
-            context,
-            model.momentum.sgs,
-            model.scalar_sgs,
-            model.scalar_boundary,
+    lasd_diagnostic = algebra.lasd_diagnostic_fields(
+        context,
+        model.momentum.sgs,
+        model.scalar_sgs,
+        model.scalar_boundary,
+    )
+    maximum_eddy_viscosity = float(
+        jax.device_get(
+            jnp.max(lasd_diagnostic.momentum_diffusivity)
+            * mechanical_scales.kinematic_viscosity
         )
-        maximum_eddy_viscosity = float(
-            jax.device_get(
-                jnp.max(lasd_diagnostic.momentum_diffusivity)
-                * mechanical_scales.kinematic_viscosity
-            )
+    )
+    maximum_scalar_diffusivity = float(
+        jax.device_get(
+            jnp.max(lasd_diagnostic.scalar_diffusivity)
+            * mechanical_scales.kinematic_viscosity
         )
-        maximum_scalar_diffusivity = float(
-            jax.device_get(
-                jnp.max(lasd_diagnostic.scalar_diffusivity)
-                * mechanical_scales.kinematic_viscosity
-            )
-        )
-    else:
-        momentum_diagnostic = algebra.momentum_sgs_diagnostic_fields(
-            context.momentum,
-            model.momentum.sgs,
-            wall=model.momentum.wall,
-        )
-        maximum_eddy_viscosity = float(
-            jax.device_get(
-                jnp.max(momentum_diagnostic.momentum_diffusivity)
-                * mechanical_scales.kinematic_viscosity
-            )
-        )
-        maximum_scalar_diffusivity = (
-            maximum_eddy_viscosity / case.sgs.scalar_turbulent_prandtl
-        )
+    )
     diffusive_cfl = (
         2.0
         * case.time.dt_seconds
@@ -525,8 +458,6 @@ def _snapshot(
                 )
             )
         )
-        if case.sgs.model == "lasd"
-        else 0.0
     )
     txz, tyz = algebra.sgs_vertical_flux(
         context.momentum, model.momentum.sgs
@@ -609,117 +540,6 @@ def _snapshot(
     return values, diagnostics
 
 
-def _write_profiles(output_dir: Path, case: CaseConfig, statistics: ProfileStatistics):
-    fields = statistics.means()
-    z = (np.arange(case.domain.nz) + 0.5) * case.domain.dz_m
-    z_faces = np.arange(case.domain.nz + 1) * case.domain.dz_m
-    variances = {
-        name: np.maximum(fields[f"{name}2"] - fields[name] ** 2, 0.0)
-        for name in ("u", "v", "w", "theta")
-    }
-    with (output_dir / "profiles.csv").open("w", newline="") as stream:
-        writer = csv.writer(stream)
-        writer.writerow(
-            (
-                "z_m",
-                "mean_u_m_s",
-                "mean_v_m_s",
-                "mean_w_m_s",
-                "mean_potential_temperature_k",
-                "u_variance_m2_s2",
-                "v_variance_m2_s2",
-                "w_variance_m2_s2",
-                "temperature_variance_k2",
-                "resolved_tke_m2_s2",
-            )
-        )
-        writer.writerows(
-            zip(
-                z,
-                fields["u"],
-                fields["v"],
-                fields["w"],
-                fields["theta"],
-                variances["u"],
-                variances["v"],
-                variances["w"],
-                variances["theta"],
-                0.5 * (variances["u"] + variances["v"] + variances["w"]),
-                strict=True,
-            )
-        )
-    with (output_dir / "flux_profiles.csv").open("w", newline="") as stream:
-        writer = csv.writer(stream)
-        writer.writerow(
-            (
-                "z_face_m",
-                "uw_resolved_m2_s2",
-                "uw_sgs_m2_s2",
-                "uw_total_m2_s2",
-                "vw_resolved_m2_s2",
-                "vw_sgs_m2_s2",
-                "vw_total_m2_s2",
-                "wtheta_resolved_k_m_s",
-                "wtheta_sgs_k_m_s",
-                "wtheta_total_k_m_s",
-            )
-        )
-        writer.writerows(
-            zip(
-                z_faces,
-                fields["uw_resolved"],
-                fields["uw_sgs"],
-                fields["uw_resolved"] + fields["uw_sgs"],
-                fields["vw_resolved"],
-                fields["vw_sgs"],
-                fields["vw_resolved"] + fields["vw_sgs"],
-                fields["wtheta_resolved"],
-                fields["wtheta_sgs"],
-                fields["wtheta_resolved"] + fields["wtheta_sgs"],
-                strict=True,
-            )
-        )
-
-
-def _plot_profiles(output_dir: Path, case: CaseConfig) -> None:
-    os.environ.setdefault("MPLBACKEND", "Agg")
-    mpl_cache = output_dir / ".matplotlib"
-    mpl_cache.mkdir(parents=True, exist_ok=True)
-    os.environ.setdefault("MPLCONFIGDIR", str(mpl_cache))
-    import matplotlib.pyplot as plt
-
-    profiles = np.genfromtxt(output_dir / "profiles.csv", delimiter=",", names=True)
-    fluxes = np.genfromtxt(
-        output_dir / "flux_profiles.csv", delimiter=",", names=True
-    )
-    fig, axes = plt.subplots(2, 3, figsize=(12, 8))
-    z = profiles["z_m"]
-    axes[0, 0].plot(profiles["mean_u_m_s"], z, label="u")
-    axes[0, 0].plot(profiles["mean_v_m_s"], z, label="v")
-    axes[0, 0].set_xlabel("mean velocity [m/s]")
-    axes[0, 0].legend()
-    axes[0, 1].plot(profiles["mean_potential_temperature_k"], z)
-    axes[0, 1].set_xlabel("potential temperature [K]")
-    axes[0, 2].plot(profiles["resolved_tke_m2_s2"], z)
-    axes[0, 2].set_xlabel("resolved TKE [m2/s2]")
-    zf = fluxes["z_face_m"]
-    axes[1, 0].plot(fluxes["uw_total_m2_s2"], zf, label="uw")
-    axes[1, 0].plot(fluxes["vw_total_m2_s2"], zf, label="vw")
-    axes[1, 0].set_xlabel("total momentum flux [m2/s2]")
-    axes[1, 0].legend()
-    axes[1, 1].plot(fluxes["wtheta_total_k_m_s"], zf)
-    axes[1, 1].set_xlabel("total heat flux [K m/s]")
-    axes[1, 2].plot(profiles["w_variance_m2_s2"], z)
-    axes[1, 2].set_xlabel("vertical velocity variance [m2/s2]")
-    for axis in axes.ravel():
-        axis.set_ylabel("z [m]")
-        axis.grid(True, alpha=0.3)
-    fig.suptitle(f"GABLS1 {case.sgs.model.upper()}, hours 8--9 mean")
-    fig.tight_layout()
-    fig.savefig(output_dir / "gabls1_profiles.png", dpi=180)
-    plt.close(fig)
-
-
 def run_case(
     case: CaseConfig,
     *,
@@ -754,13 +574,11 @@ def run_case(
     from jaxwind.integrators import AB2Config, cold_start_boussinesq, step_boussinesq
     from jaxwind.interpreters.jax_zslab import build_zslab_interpreter
     from jaxwind.physics import (
-        AnisotropicMinimumDissipation,
         BoussinesqModel,
         ConservativeAdvection,
         ConservativeScalarAdvection,
         CoriolisGeostrophic,
         DryFlowModel,
-        IdentityClosureEvent,
         KinematicPressureGradient,
         LagrangianScaleDependentDynamic,
         LagrangianScaleDependentScalarFlux,
@@ -769,7 +587,6 @@ def run_case(
         NeutralLogWall,
         NoRayleighDamping,
         ScalarFluxBoundary,
-        StaticSmagorinskyScalarFlux,
     )
     from jaxwind.pressure import build_spectral_fd_pressure_adapter
 
@@ -820,26 +637,18 @@ def run_case(
         gravity=case.thermal.gravity_m_s2,
         reference_potential_temperature=case.thermal.reference_temperature_k,
     )
-    if case.sgs.model == "lasd":
-        momentum_sgs = LagrangianScaleDependentDynamic(
-            filter_grid_ratio=1.5,
-            update_interval=case.sgs.lasd_update_interval,
-        )
-        scalar_sgs = LagrangianScaleDependentScalarFlux(
-            # The dynamic scalar coefficient already responds to the resolved
-            # stratification. Applying the additional Richardson multiplier
-            # collapses near-wall mixing and drives an unphysical regime flip.
-            stability_buoyancy_coefficient=(
-                LASD_SCALAR_STABILITY_BUOYANCY_COEFFICIENT
-            ),
-            stability_beta=30.0,
-            stability_power=2.0,
-        )
-    else:
-        momentum_sgs = AnisotropicMinimumDissipation()
-        scalar_sgs = StaticSmagorinskyScalarFlux(
-            turbulent_prandtl=case.sgs.scalar_turbulent_prandtl
-        )
+    momentum_sgs = LagrangianScaleDependentDynamic(
+        filter_grid_ratio=1.5,
+        update_interval=case.sgs.lasd_update_interval,
+    )
+    scalar_sgs = LagrangianScaleDependentScalarFlux(
+        # The dynamic scalar coefficient already responds to the resolved
+        # stratification. Applying the additional Richardson multiplier
+        # collapses near-wall mixing and drives an unphysical regime flip.
+        stability_buoyancy_coefficient=LASD_SCALAR_STABILITY_BUOYANCY_COEFFICIENT,
+        stability_beta=30.0,
+        stability_power=2.0,
+    )
     model = BoussinesqModel(
         DryFlowModel(
             ConservativeAdvection(),
@@ -874,14 +683,7 @@ def run_case(
     physics_fingerprint = (
         momentum_sgs.fingerprint
         + "|"
-        + (
-            scalar_sgs.fingerprint
-            if case.sgs.model == "lasd"
-            else (
-                "static-smagorinsky-scalar|pr="
-                + scalar_sgs.turbulent_prandtl.hex()
-            )
-        )
+        + scalar_sgs.fingerprint
         + "|gabls1-most=businger-dyer-plane-v3"
         + "|frame=geostrophic-translating-v1"
         + "|advection=conservative|dealiasing=three-halves-padding"
@@ -889,11 +691,7 @@ def run_case(
     checkpoint_layout = ZSlabCheckpointLayout(
         decomposition, (0,), jnp.asarray
     )
-    closure_fingerprint = (
-        momentum_sgs.fingerprint + "|" + scalar_sgs.fingerprint
-        if case.sgs.model == "lasd"
-        else None
-    )
+    closure_fingerprint = momentum_sgs.fingerprint + "|" + scalar_sgs.fingerprint
     if restart is None:
         fields = _initial_fields(
             jax=jax,
@@ -907,8 +705,7 @@ def run_case(
             pressure_solver=pressure_solver,
             config=config,
         )
-        if case.sgs.model == "lasd":
-            fields = algebra.initialize_lasd_closure(fields, model)
+        fields = algebra.initialize_lasd_closure(fields, model)
         state = cold_start_boussinesq(
             fields, clock=AcceptedClock(0.0, 0), config=config
         )
@@ -941,11 +738,7 @@ def run_case(
         jax=jax,
         jnp=jnp,
     )
-    closure_event = (
-        LasdAcceptedStepEvent(algebra, model, config.dt)
-        if case.sgs.model == "lasd"
-        else IdentityClosureEvent()
-    )
+    closure_event = LasdAcceptedStepEvent(algebra, model, config.dt)
 
     history_path = output_dir / "time_series.csv"
     append_history = restart is not None and history_path.exists()
@@ -972,9 +765,7 @@ def run_case(
     initial_step = state.clock.step
     timing_warmup_steps = min(
         steps_to_run,
-        2 * case.sgs.lasd_update_interval
-        if case.sgs.model == "lasd"
-        else 2,
+        2 * case.sgs.lasd_update_interval,
     )
     timing_warmup_elapsed: float | None = None
     timing_end_step = max(timing_warmup_steps, steps_to_run - 1)
@@ -1111,8 +902,8 @@ def run_case(
             physics_fingerprint=physics_fingerprint,
         )
     if statistics.count:
-        _write_profiles(output_dir, case, statistics)
-        _plot_profiles(output_dir, case)
+        write_profiles(output_dir, case, statistics)
+        plot_profiles(output_dir, case)
     if state.clock.step == case.time.steps:
         save_boussinesq_checkpoint(
             output_dir / "checkpoint_final.npz",
@@ -1138,12 +929,8 @@ def run_case(
         "schema": "jaxwind.gabls1.semantic-sgs.v1",
         "case": case.resolved(),
         "physics": {
-            "momentum_sgs": case.sgs.model.upper(),
-            "scalar_sgs": (
-                "LASD dynamic scalar flux"
-                if case.sgs.model == "lasd"
-                else "AMD-coupled static scalar flux"
-            ),
+            "momentum_sgs": "LASD",
+            "scalar_sgs": "LASD dynamic scalar flux",
             "surface": "plane-mean Businger-Dyer Monin-Obukhov similarity",
             "reference_frame": "geostrophic translating frame",
             "momentum_advection": "conservative",

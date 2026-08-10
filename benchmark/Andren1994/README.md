@@ -14,14 +14,10 @@ default one-second step follows the Andrén--Moeng entry in the paper's runtime
 table. Float32 and the communication-reducing SPIKE pressure method are used by
 default.
 
-Run the three SGS choices through the same conservative, 3/2-padded path:
+Run LASD through the conservative, 3/2-padded path:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 python benchmark/Andren1994/run_lasd.py --sgs mgm \
-  --output benchmark/Andren1994/results/mgm_40x40x40_total_tke
-CUDA_VISIBLE_DEVICES=0 python benchmark/Andren1994/run_lasd.py --sgs amd \
-  --output benchmark/Andren1994/results/amd_40x40x40_total_tke
-CUDA_VISIBLE_DEVICES=0 python benchmark/Andren1994/run_lasd.py --sgs lasd \
+CUDA_VISIBLE_DEVICES=0 python benchmark/Andren1994/run_lasd.py \
   --output benchmark/Andren1994/results/lasd_40x40x40_total_tke
 ```
 
@@ -31,21 +27,18 @@ five-step LASD update interval so the total-CFL warning target (`0.2`) and the
 one-halo trajectory target (`CFL × interval < 1`) remain credible. These are
 warnings, not solution clips.
 
-Figure 2 uses resolved plus diagnostic SGS kinetic energy for all three
-models. MGM exports the kinetic energy already diagnosed by its
-gradient-contraction closure. AMD reconstructs SGS energy from its modeled
-production with the same local-equilibrium dissipation coefficient (`Ce=0.93`)
-and neutral log-wall shear correction used by LASD. These diagnostics do not
-feed back into momentum and therefore do not alter the resolved trajectory.
+Figure 2 uses resolved plus diagnostic SGS kinetic energy. The LASD diagnostic
+uses a local-equilibrium dissipation coefficient (`Ce=0.93`) and neutral
+log-wall shear correction. It does not feed back into momentum and therefore
+does not alter the resolved trajectory.
 
 The focused pre-run check is intentionally small:
 
 ```bash
 PYTHONPATH=src python -m pytest -q \
-  tests/interpreters/test_fused_neutral_sgs.py::FusedNeutralSgsTests::test_mgm_and_amd_diagnose_nonnegative_sgs_energy \
-  benchmark/Andren1994/tests/test_case.py::test_three_sgs_models_share_three_halves_padding
-python benchmark/Andren1994/run_lasd.py --quick --sgs mgm --output /tmp/andren-mgm
-python benchmark/Andren1994/run_lasd.py --quick --sgs amd --output /tmp/andren-amd
+  tests/interpreters/test_fused_neutral_sgs.py::FusedNeutralSgsTests::test_lasd_diagnoses_negative_resolved_tke_transfer \
+  benchmark/Andren1994/tests/test_case.py::test_lasd_uses_three_halves_padding
+python benchmark/Andren1994/run_lasd.py --quick --output /tmp/andren-lasd
 ```
 
 This checks the diagnostic kernels, common numerics, and serialized nonzero
@@ -100,7 +93,7 @@ across restart. `profiles.csv` retains resolved, diagnostic SGS, and total
 velocity/scalar variance and flux, while `spectra.csv` contains x spectra at
 the level nearest `zf/u*=0.1`. New histories also retain both component surface
 stresses required by the paper's Fig. 3 stationarity measures `Cu` and `Cv`.
-Each SGS model also samples the signed resolved-TKE transfer
+The LASD model also samples the signed resolved-TKE transfer
 `tau_ij*d_j(u_i)` required by Fig. 11. Forward transfer is negative. The
 dimensional and `f*u*^2`-normalized profiles are written to `profiles.csv`, and
 the paper-overlay command adds `fig11_jaxwind_overlay.png` when that column is

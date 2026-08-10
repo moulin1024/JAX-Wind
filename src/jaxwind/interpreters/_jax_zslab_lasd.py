@@ -40,12 +40,10 @@ from jaxwind.domain import (
 )
 from jaxwind.operators import VelocityVector
 from jaxwind.physics.dry_flow import (
-    AnisotropicMinimumDissipation,
     ConservativeAdvection,
     CoriolisGeostrophic,
     FilteredNeutralLogWall,
     KinematicPressureGradient,
-    ModulatedGradientModel,
     NeutralLogWall,
     NoRotation,
     StaticSmagorinsky,
@@ -379,7 +377,7 @@ class ZSlabLasdMixin:
         wall_acceleration: tuple[Any, Any] | None = None,
         scalar_surface_source: Any | None = None,
     ) -> BoussinesqTendency | None:
-        """Use one mapped executable for compatible SGS models."""
+        """Use one mapped executable for the LASD Boussinesq model."""
         if (wall_acceleration is None) != (scalar_surface_source is None):
             raise ValueError(
                 "imposed wall acceleration and scalar source must be supplied together"
@@ -409,19 +407,11 @@ class ZSlabLasdMixin:
             and isinstance(model.scalar_boundary, ScalarFluxBoundary)
         )
         sgs = momentum_model.sgs
-        mgm = isinstance(sgs, ModulatedGradientModel) and isinstance(
-            model.scalar_sgs, StaticSmagorinskyScalarFlux
-        )
-        amd = isinstance(sgs, AnisotropicMinimumDissipation) and isinstance(
-            model.scalar_sgs, StaticSmagorinskyScalarFlux
-        )
         lasd = isinstance(sgs, LagrangianScaleDependentDynamic) and isinstance(
             model.scalar_sgs, LagrangianScaleDependentScalarFlux
         )
-        frozen_model = self.frozen_zero_scalar and (mgm or amd or lasd)
-        if not common or not (mgm or amd or lasd):
-            return None
-        if use_imposed_sources and not lasd:
+        frozen_model = self.frozen_zero_scalar and lasd
+        if not common or not lasd:
             return None
         if use_imposed_sources and frozen_model:
             raise ValueError("imposed stable sources require an active scalar")
@@ -492,61 +482,32 @@ class ZSlabLasdMixin:
             filtered,
             wall_filter_width,
         )
-        if mgm:
-            x, y, z, scalar_payload = self._fused_mgm_boussinesq(
-                *common_arguments,
-                *forcing_arguments,
-                sgs.filter_grid_ratio,
-                sgs.dissipation_coefficient,
-                sgs.fallback_coefficient,
-                sgs.gradient_norm_epsilon,
-                sgs.kinematic_viscosity,
-                True,
-                wall.roughness_length,
-                wall.von_karman,
-                sgs.fallback_coefficient**2 / model.scalar_sgs.turbulent_prandtl,
-                model.scalar_boundary.lower_flux,
-                model.scalar_boundary.upper_flux,
-            )
-        elif amd:
-            x, y, z, scalar_payload = self._fused_amd_boussinesq(
-                *common_arguments,
-                *forcing_arguments,
-                model.scalar_sgs.turbulent_prandtl,
-                model.scalar_boundary.lower_flux,
-                model.scalar_boundary.upper_flux,
-            )
-        else:
-            closure = fields.closure
-            if not isinstance(closure, LasdClosureMemory):
-                raise TypeError("LASD fusion requires initialized closure memory")
-            x, y, z, scalar_payload = self._fused_lasd_boussinesq(
-                *common_arguments,
-                closure.momentum.coefficient.payload,
-                closure.scalar.coefficient.payload,
-                *forcing_arguments,
-                sgs.minimum_coefficient,
-                sgs.maximum_coefficient,
-                model.scalar_sgs.minimum_coefficient,
-                model.scalar_sgs.maximum_coefficient,
-                model.scalar_boundary.lower_flux,
-                model.scalar_boundary.upper_flux,
-                model.scalar_sgs.stability_buoyancy_coefficient,
-                model.scalar_sgs.stability_beta,
-                model.scalar_sgs.stability_power,
-                *(wall_acceleration or (0.0, 0.0)),
-                (
-                    scalar_surface_source
-                    if scalar_surface_source is not None
-                    else 0.0
-                ),
-                (
-                    model.buoyancy.acceleration_per_temperature
-                    if isinstance(model.buoyancy, LinearBoussinesqBuoyancy)
-                    else 0.0
-                ),
-                use_imposed_sources,
-            )
+        closure = fields.closure
+        if not isinstance(closure, LasdClosureMemory):
+            raise TypeError("LASD fusion requires initialized closure memory")
+        x, y, z, scalar_payload = self._fused_lasd_boussinesq(
+            *common_arguments,
+            closure.momentum.coefficient.payload,
+            closure.scalar.coefficient.payload,
+            *forcing_arguments,
+            sgs.minimum_coefficient,
+            sgs.maximum_coefficient,
+            model.scalar_sgs.minimum_coefficient,
+            model.scalar_sgs.maximum_coefficient,
+            model.scalar_boundary.lower_flux,
+            model.scalar_boundary.upper_flux,
+            model.scalar_sgs.stability_buoyancy_coefficient,
+            model.scalar_sgs.stability_beta,
+            model.scalar_sgs.stability_power,
+            *(wall_acceleration or (0.0, 0.0)),
+            scalar_surface_source if scalar_surface_source is not None else 0.0,
+            (
+                model.buoyancy.acceleration_per_temperature
+                if isinstance(model.buoyancy, LinearBoussinesqBuoyancy)
+                else 0.0
+            ),
+            use_imposed_sources,
+        )
         scalar_quantity = (
             PotentialTemperatureTendency
             if scalar.quantity is PotentialTemperaturePerturbation
@@ -648,49 +609,23 @@ class ZSlabLasdMixin:
     def scalar_sgs_tendency(
         self,
         context: ZSlabBoussinesqContext,
-        momentum_config: (
-            StaticSmagorinsky
-            | AnisotropicMinimumDissipation
-            | ModulatedGradientModel
-            | LagrangianScaleDependentDynamic
-        ),
+        momentum_config: StaticSmagorinsky | LagrangianScaleDependentDynamic,
         config: StaticSmagorinskyScalarFlux | LagrangianScaleDependentScalarFlux,
         boundary: ScalarFluxBoundary = ScalarFluxBoundary(),
     ) -> AddressableField:
-        amd = isinstance(
-            momentum_config,
-            AnisotropicMinimumDissipation,
-        ) and isinstance(config, StaticSmagorinskyScalarFlux)
-        static = isinstance(
-            momentum_config,
-            (StaticSmagorinsky, ModulatedGradientModel),
-        ) and isinstance(config, StaticSmagorinskyScalarFlux)
+        static = isinstance(momentum_config, StaticSmagorinsky) and isinstance(
+            config, StaticSmagorinskyScalarFlux
+        )
         dynamic = isinstance(
             momentum_config,
             LagrangianScaleDependentDynamic,
         ) and isinstance(config, LagrangianScaleDependentScalarFlux)
-        if not (amd or static or dynamic):
+        if not (static or dynamic):
             raise TypeError("unsupported or inconsistent scalar SGS choice")
-        if amd:
-            return self._scalar_tendency(
-                context,
-                self._scalar_amd(
-                    context.arrays,
-                    context.momentum.arrays,
-                    config.turbulent_prandtl,
-                    boundary.lower_flux,
-                    boundary.upper_flux,
-                ),
-            )
         if static:
-            momentum_coefficient = (
-                momentum_config.coefficient
-                if isinstance(momentum_config, StaticSmagorinsky)
-                else momentum_config.fallback_coefficient
-            )
             coefficient = jnp.full_like(
                 context.arrays.theta,
-                momentum_coefficient**2 / config.turbulent_prandtl,
+                momentum_config.coefficient**2 / config.turbulent_prandtl,
             )
             coefficient_bounds = (0.0, math.inf)
         else:

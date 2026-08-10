@@ -56,7 +56,7 @@ def test_quick_mode_is_explicitly_noncanonical() -> None:
     assert solver.average_start_hours == 0.0
 
 
-def test_lasd_fifth_model_uses_safe_trajectory_cadence() -> None:
+def test_lasd_model_uses_safe_trajectory_cadence() -> None:
     args = run_lasd.parse_args([])
     assert (args.nx, args.ny, args.nz) == (40, 40, 40)
     assert args.dt == 0.8
@@ -65,12 +65,10 @@ def test_lasd_fifth_model_uses_safe_trajectory_cadence() -> None:
     assert math.isclose(args.hours * 3600.0 * run.F_CORIOLIS, 10.0)
 
 
-def test_three_sgs_models_share_three_halves_padding() -> None:
+def test_lasd_uses_three_halves_padding() -> None:
     assert run_lasd.NONLINEAR_PADDING_RATIO == 1.5
-    for model in ("mgm", "lasd", "amd"):
-        args = run_lasd.parse_args(["--quick", "--sgs", model])
-        assert args.sgs == model
-        assert args.output.name == f"{model}_quick"
+    args = run_lasd.parse_args(["--quick"])
+    assert args.output.name == "lasd_quick"
 
 
 def test_profile_variance_excludes_temporal_plane_mean_drift() -> None:

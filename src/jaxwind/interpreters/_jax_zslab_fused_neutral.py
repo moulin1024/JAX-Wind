@@ -1,4 +1,4 @@
-"""Fused neutral AMD and LASD Boussinesq right-hand sides."""
+"""Fused LASD Boussinesq right-hand side."""
 
 from __future__ import annotations
 
@@ -14,7 +14,6 @@ def build_fused_neutral_boussinesq_kernels(
     scalar_context_local,
     scalar_advection_from_padded_momentum_local,
     scalar_sgs_from_padded_momentum_gradients_local,
-    scalar_amd_local,
     buoyancy_local,
     pad_horizontal_local,
     truncate_padded_local,
@@ -22,7 +21,6 @@ def build_fused_neutral_boussinesq_kernels(
     dry_flow_context_local,
     dry_advection_from_padded_local,
     padded_momentum_gradients_local,
-    dry_amd_from_padded_gradients_local,
     dry_sgs_from_padded_gradients_local,
 ):
     if not isinstance(frozen_zero_scalar, bool):
@@ -132,75 +130,6 @@ def build_fused_neutral_boussinesq_kernels(
             jnp.where(momentum.upper_is_physical, 0.0, coriolis_z[-1])
         )
         return x, y, tendency[2] + coriolis_z
-
-    def fused_amd_local(
-        u,
-        v,
-        w_upper,
-        lower_boundary,
-        theta,
-        pressure_x,
-        pressure_y,
-        coriolis_parameter,
-        geostrophic_x_velocity,
-        geostrophic_y_velocity,
-        horizontal_coriolis_parameter,
-        wall_drag,
-        wall_filtered,
-        wall_filter_width,
-        turbulent_prandtl,
-        lower_scalar_flux,
-        upper_scalar_flux,
-    ):
-        (
-            momentum,
-            advection,
-            wall,
-            cell_gradients,
-            face_gradients,
-            padded_momentum,
-            padded_lower,
-        ) = shared_momentum_local(
-            u,
-            v,
-            w_upper,
-            lower_boundary,
-            wall_drag,
-            wall_filtered,
-            wall_filter_width,
-        )
-        sgs = dry_amd_from_padded_gradients_local(
-            momentum,
-            cell_gradients,
-            face_gradients,
-        )
-        momentum_tendency = add_coriolis_local(
-            combine_local(advection, wall, sgs, pressure_x, pressure_y),
-            momentum,
-            coriolis_parameter,
-            geostrophic_x_velocity,
-            geostrophic_y_velocity,
-            horizontal_coriolis_parameter,
-        )
-        scalar_tendency = jnp.zeros_like(theta)
-        if not frozen_zero_scalar:
-            scalar = scalar_context_local(theta)
-            scalar_tendency = scalar_advection_from_padded_momentum_local(
-                scalar,
-                padded_momentum,
-                padded_lower,
-            )
-            scalar_tendency = scalar_tendency + scalar_amd_local(
-                scalar,
-                momentum,
-                turbulent_prandtl,
-                lower_scalar_flux,
-                upper_scalar_flux,
-            )
-        return (
-            *momentum_tendency,
-            scalar_tendency,
-        )
 
     def fused_lasd_local(
         u,
@@ -319,4 +248,4 @@ def build_fused_neutral_boussinesq_kernels(
             scalar_tendency,
         )
 
-    return fused_amd_local, fused_lasd_local
+    return fused_lasd_local

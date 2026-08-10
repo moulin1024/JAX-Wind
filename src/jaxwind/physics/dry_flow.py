@@ -20,7 +20,7 @@ class ConservativeAdvection:
 
 @dataclass(frozen=True, slots=True)
 class RotationalAdvection:
-    """Rotational ``omega x u`` form used by the neutral-ABL MGM reference."""
+    """Rotational ``omega x u`` advection on the staggered velocity layout."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,65 +90,6 @@ class StaticSmagorinsky:
 
 
 @dataclass(frozen=True, slots=True)
-class AnisotropicMinimumDissipation:
-    """Local staggered anisotropic minimum-dissipation momentum closure.
-
-    This is the neutral, unaveraged AMD formulation used by the legacy solver,
-    with pseudo-spectral horizontal and second-order vertical Poincare lengths.
-    """
-
-    @property
-    def fingerprint(self) -> str:
-        return "jaxwind.amd.momentum.v1"
-
-
-@dataclass(frozen=True, slots=True)
-class ModulatedGradientModel:
-    """Memoryless Lu--Porte-Agel MGM momentum closure.
-
-    The model uses horizontally enlarged filter widths, diagnoses SGS kinetic
-    energy from the local gradient-tensor contraction, clips backscatter, and
-    diagnoses its dissipation coefficient from conditional and unconditional
-    horizontal-plane transfer moments. ``dissipation_coefficient`` is an
-    optional multiplier on that diagnosed coefficient; one reproduces the
-    neutral-ABL demo. Degenerate tensor norms fall back to static Smagorinsky.
-    """
-
-    filter_grid_ratio: float = 1.5
-    dissipation_coefficient: float = 1.0
-    fallback_coefficient: float = 0.1
-    gradient_norm_epsilon: float = 1.0e-6
-    kinematic_viscosity: float = 0.0
-
-    def __post_init__(self) -> None:
-        positive = (
-            self.filter_grid_ratio,
-            self.dissipation_coefficient,
-            self.gradient_norm_epsilon,
-        )
-        if not all(math.isfinite(value) and value > 0.0 for value in positive):
-            raise ValueError(
-                "MGM filter, dissipation, and norm scales must be positive"
-            )
-        nonnegative = (self.fallback_coefficient, self.kinematic_viscosity)
-        if not all(math.isfinite(value) and value >= 0.0 for value in nonnegative):
-            raise ValueError(
-                "MGM fallback coefficient and viscosity must be nonnegative"
-            )
-
-    @property
-    def fingerprint(self) -> str:
-        return (
-            "jaxwind.mgm.momentum.v2"
-            f"|fgr={self.filter_grid_ratio.hex()}"
-            f"|ce={self.dissipation_coefficient.hex()}"
-            f"|fallback={self.fallback_coefficient.hex()}"
-            f"|epsilon={self.gradient_norm_epsilon.hex()}"
-            f"|nu={self.kinematic_viscosity.hex()}"
-        )
-
-
-@dataclass(frozen=True, slots=True)
 class NoRotation:
     """Explicit additive identity for non-rotating dry flow."""
 
@@ -182,12 +123,7 @@ class DryFlowModel:
     advection: ConservativeAdvection | RotationalAdvection
     pressure_gradient: KinematicPressureGradient
     wall: NeutralLogWall | FilteredNeutralLogWall
-    sgs: (
-        StaticSmagorinsky
-        | AnisotropicMinimumDissipation
-        | ModulatedGradientModel
-        | LagrangianScaleDependentDynamic
-    )
+    sgs: StaticSmagorinsky | LagrangianScaleDependentDynamic
     rotation: NoRotation | CoriolisGeostrophic = NoRotation()
 
     def __post_init__(self) -> None:
@@ -207,8 +143,6 @@ class DryFlowModel:
                 self.sgs,
                 (
                     StaticSmagorinsky,
-                    AnisotropicMinimumDissipation,
-                    ModulatedGradientModel,
                     LagrangianScaleDependentDynamic,
                 ),
                 "SGS",

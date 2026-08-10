@@ -605,8 +605,6 @@ def main() -> None:
     sgs_model = str(summary.get("case", {}).get("sgs_model", "unknown"))
     model_label = {
         "lasd": "LASD",
-        "mgm": "MGM",
-        "amd": "AMD",
         "static-smagorinsky": "static Smagorinsky",
         "static_smagorinsky": "static Smagorinsky",
     }.get(sgs_model.lower(), sgs_model.upper())

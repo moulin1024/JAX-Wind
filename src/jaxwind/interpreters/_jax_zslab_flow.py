@@ -19,12 +19,10 @@ from jaxwind.domain import (
 )
 from jaxwind.operators import VelocityVector
 from jaxwind.physics.dry_flow import (
-    AnisotropicMinimumDissipation,
     ConservativeAdvection,
     CoriolisGeostrophic,
     FilteredNeutralLogWall,
     KinematicPressureGradient,
-    ModulatedGradientModel,
     NeutralLogWall,
     NoRotation,
     RotationalAdvection,
@@ -115,23 +113,9 @@ class ZSlabFlowMixin:
     def sgs_tendency(
         self,
         context: ZSlabDryFlowContext,
-        config: (
-            StaticSmagorinsky
-            | AnisotropicMinimumDissipation
-            | ModulatedGradientModel
-            | LagrangianScaleDependentDynamic
-        ),
+        config: StaticSmagorinsky | LagrangianScaleDependentDynamic,
         wall: NeutralLogWall | FilteredNeutralLogWall | None = None,
     ) -> VelocityVector:
-        if isinstance(config, ModulatedGradientModel):
-            x, y, z = self._dry_mgm(
-                context.arrays,
-                *self._mgm_parameters(config),
-                *self._wall_gradient_parameters(wall),
-            )
-            return self._dry_tendency(x, y, z)
-        if isinstance(config, AnisotropicMinimumDissipation):
-            return self._dry_tendency(*self._dry_amd(context.arrays))
         if not isinstance(
             config,
             (StaticSmagorinsky, LagrangianScaleDependentDynamic),
@@ -145,21 +129,9 @@ class ZSlabFlowMixin:
     def sgs_vertical_flux(
         self,
         context: ZSlabDryFlowContext,
-        config: (
-            StaticSmagorinsky
-            | AnisotropicMinimumDissipation
-            | ModulatedGradientModel
-            | LagrangianScaleDependentDynamic
-        ),
+        config: StaticSmagorinsky | LagrangianScaleDependentDynamic,
     ) -> tuple[Any, Any]:
         """Return filtered addressable SGS xz and yz upper-face stresses."""
-        if isinstance(config, ModulatedGradientModel):
-            return self._dry_mgm_vertical_flux(
-                context.arrays,
-                *self._mgm_parameters(config),
-            )
-        if isinstance(config, AnisotropicMinimumDissipation):
-            return self._dry_amd_vertical_flux(context.arrays)
         if not isinstance(
             config,
             (StaticSmagorinsky, LagrangianScaleDependentDynamic),
@@ -171,45 +143,10 @@ class ZSlabFlowMixin:
             *self._momentum_sgs_coefficient_bounds(config),
         )
 
-    def momentum_sgs_diagnostic_fields(
-        self,
-        context: ZSlabDryFlowContext,
-        config: AnisotropicMinimumDissipation | ModulatedGradientModel,
-        *,
-        dissipation_coefficient: float = 0.93,
-        wall: NeutralLogWall | FilteredNeutralLogWall | None = None,
-    ):
-        """Diagnose owned-cell SGS energy without changing closure dynamics."""
-        from .jax_zslab import MomentumSgsDiagnosticFields
-
-        if not math.isfinite(dissipation_coefficient) or dissipation_coefficient <= 0:
-            raise ValueError("diagnostic SGS dissipation coefficient must be positive")
-        if isinstance(config, ModulatedGradientModel):
-            sgs_tke = self._mgm_sgs_tke(
-                context.arrays,
-                *self._mgm_parameters(config),
-                *self._wall_gradient_parameters(wall),
-            )
-            return MomentumSgsDiagnosticFields(jnp.zeros_like(sgs_tke), sgs_tke)
-        if isinstance(config, AnisotropicMinimumDissipation):
-            wall_gradient_factor = self._diagnostic_wall_gradient_factor(wall)
-            viscosity, sgs_tke = self._amd_diagnostics(
-                context.arrays,
-                dissipation_coefficient,
-                wall_gradient_factor,
-            )
-            return MomentumSgsDiagnosticFields(viscosity, sgs_tke)
-        raise TypeError("SGS energy diagnostics require MGM or AMD momentum")
-
     def momentum_sgs_tke_transfer(
         self,
         context: ZSlabDryFlowContext,
-        config: (
-            StaticSmagorinsky
-            | AnisotropicMinimumDissipation
-            | ModulatedGradientModel
-            | LagrangianScaleDependentDynamic
-        ),
+        config: StaticSmagorinsky | LagrangianScaleDependentDynamic,
         *,
         wall: NeutralLogWall | FilteredNeutralLogWall | None = None,
     ):
@@ -219,18 +156,7 @@ class ZSlabFlowMixin:
         by Andrén et al. (1994) Fig. 11. Horizontal nonlinear products use the
         interpreter's padded path and the first cell uses the configured log wall.
         """
-        if isinstance(config, ModulatedGradientModel):
-            return self._mgm_tke_transfer(
-                context.arrays,
-                *self._mgm_parameters(config),
-                *self._wall_gradient_parameters(wall),
-            )
         wall_gradient_factor = self._diagnostic_wall_gradient_factor(wall)
-        if isinstance(config, AnisotropicMinimumDissipation):
-            return self._amd_tke_transfer(
-                context.arrays,
-                wall_gradient_factor,
-            )
         if isinstance(config, (StaticSmagorinsky, LagrangianScaleDependentDynamic)):
             return self._dry_sgs_tke_transfer(
                 context.arrays,
@@ -260,16 +186,6 @@ class ZSlabFlowMixin:
             return 0.0, math.inf
         return config.minimum_coefficient, config.maximum_coefficient
 
-    @staticmethod
-    def _mgm_parameters(config: ModulatedGradientModel) -> tuple[float, ...]:
-        return (
-            config.filter_grid_ratio,
-            config.dissipation_coefficient,
-            config.fallback_coefficient,
-            config.gradient_norm_epsilon,
-            config.kinematic_viscosity,
-        )
-
     def _wall_gradient_parameters(
         self,
         wall: NeutralLogWall | FilteredNeutralLogWall | None,
@@ -277,7 +193,7 @@ class ZSlabFlowMixin:
         if wall is None:
             return False, 0.25 * self.decomposition.grid.dz, 0.4, False, 1.0
         if not isinstance(wall, (NeutralLogWall, FilteredNeutralLogWall)):
-            raise TypeError("MGM wall-gradient choice is unsupported")
+            raise TypeError("wall-gradient choice is unsupported")
         filtered = isinstance(wall, FilteredNeutralLogWall)
         width = wall.filter_grid_ratio * wall.test_filter_ratio if filtered else 1.0
         return True, wall.roughness_length, wall.von_karman, filtered, width

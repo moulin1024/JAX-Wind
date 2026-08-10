@@ -20,7 +20,6 @@ from jaxwind.runners.pressure_driven_warmup import ConfigError, load_case
 ROOT = Path(__file__).resolve().parents[2]
 CASE_DIR = ROOT / "runners" / "pressure_driven_warmup"
 CONFIG = CASE_DIR / "config.toml"
-MGM_CONFIG = CASE_DIR / "config_mgm.toml"
 
 
 def _cli_environment() -> dict[str, str]:
@@ -84,54 +83,22 @@ def test_dry_run_prints_the_resolved_plan_without_loading_jax() -> None:
     assert "jax" not in completed.stderr.lower()
 
 
-def test_mgm_case_exposes_the_demo_aligned_model_without_lasd_memory() -> None:
-    case = load_case(MGM_CONFIG)
-    assert case.wall.porte_agel_correction
-    assert case.sgs.model == "mgm"
-    assert case.sgs.filter_grid_ratio == 1.5
-    assert case.sgs.dissipation_coefficient == 1.0
-    assert case.sgs.fallback_coefficient == 0.1
-    assert case.sgs.gradient_norm_epsilon_s2 == pytest.approx(2.4674011002723396e-12)
-    assert case.sgs.kinematic_viscosity_m2_s == pytest.approx(1.5e-5)
-    assert case.estimated_lasd_trajectory_cfl == 0.0
-    resolved = case.resolved()
-    assert resolved["wall"]["porte_agel_correction"] is True
-    assert resolved["sgs"]["model"] == "mgm"
-    assert "update_interval_steps" not in resolved["sgs"]
-
-
-def test_mgm_dry_run_selects_the_alternate_case() -> None:
-    completed = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "jaxwind",
-            str(CASE_DIR),
-            "--config",
-            str(MGM_CONFIG),
-            "--dry-run",
-        ],
-        cwd=ROOT,
-        env=_cli_environment(),
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    resolved = tomllib.loads(completed.stdout)
-    assert resolved["case"] == "pressure_driven_mgm_64x64x64"
-    assert resolved["wall"]["porte_agel_correction"] is True
-    assert resolved["sgs"]["model"] == "mgm"
-    assert "jax" not in completed.stderr.lower()
-
-
 def test_legacy_case_without_explicit_porte_agel_flag_keeps_correction(
     tmp_path: Path,
 ) -> None:
     legacy = tmp_path / "legacy_config.toml"
     legacy.write_text(
-        MGM_CONFIG.read_text().replace("porte_agel_correction = true\n", "")
+        CONFIG.read_text().replace("porte_agel_correction = true\n", "")
     )
     assert load_case(legacy).wall.porte_agel_correction
+
+
+@pytest.mark.parametrize("model", ("mgm", "amd"))
+def test_config_rejects_removed_sgs_models(tmp_path: Path, model: str) -> None:
+    invalid = tmp_path / "invalid.toml"
+    invalid.write_text(CONFIG.read_text().replace('model = "lasd"', f'model = "{model}"'))
+    with pytest.raises(ConfigError, match="must be 'lasd'"):
+        load_case(invalid)
 
 
 def test_cli_runs_a_declarative_case_directory_without_run_py(

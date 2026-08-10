@@ -123,13 +123,6 @@ class ZSlabBoussinesqContext:
     arrays: ZSlabScalarArrays
 
 
-class MomentumSgsDiagnosticFields(NamedTuple):
-    """Owned-cell diagnostic fields for a momentum SGS closure."""
-
-    momentum_diffusivity: Any
-    sgs_tke: Any
-
-
 class ActuatorLineDiagnostic(NamedTuple):
     """Replicated per-element aerodynamic data from a z-slab evaluation."""
 
@@ -174,16 +167,6 @@ class JaxZSlabInterpreter(ZSlabLasdMixin, ZSlabFlowMixin):
     _dry_sgs: Callable
     _dry_sgs_vertical_flux: Callable
     _dry_sgs_tke_transfer: Callable
-    _dry_amd: Callable
-    _dry_amd_vertical_flux: Callable
-    _amd_diagnostics: Callable
-    _amd_tke_transfer: Callable
-    _dry_mgm: Callable
-    _dry_mgm_vertical_flux: Callable
-    _mgm_sgs_tke: Callable
-    _mgm_tke_transfer: Callable
-    _fused_mgm_boussinesq: Callable
-    _fused_amd_boussinesq: Callable
     _fused_lasd_boussinesq: Callable
     _lasd_accumulate: Callable
     _lasd_accumulate_velocity: Callable
@@ -192,7 +175,6 @@ class JaxZSlabInterpreter(ZSlabLasdMixin, ZSlabFlowMixin):
     _scalar_context: Callable
     _scalar_advection: Callable
     _scalar_sgs: Callable
-    _scalar_amd: Callable
     _buoyancy: Callable
     _rayleigh_damping: Callable
 

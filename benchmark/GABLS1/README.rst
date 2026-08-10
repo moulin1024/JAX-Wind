@@ -4,8 +4,8 @@ GABLS1 stable-boundary-layer benchmark
 The canonical case is a 32 x 32 x 32, 400 m cubed GABLS1 domain integrated
 for nine hours with statistics over hours 8--9.  It uses the current semantic
 JAX-Wind solver: conservative momentum and potential-temperature transport,
-horizontal three-halves padding, selectable AMD or LASD momentum/scalar SGS
-closure, linear Boussinesq buoyancy, spectral/FD pressure projection, and a
+horizontal three-halves padding, LASD momentum/scalar SGS closure, linear
+Boussinesq buoyancy, spectral/FD pressure projection, and a
 plane-mean coupled
 Businger--Dyer Monin--Obukhov surface law with a 0.25 K/h cooling rate.
 
@@ -13,11 +13,6 @@ Run on one GPU from the repository root::
 
   CUDA_VISIBLE_DEVICES=0 JAX_PLATFORMS=cuda PYTHONPATH=src \
   python -m jaxwind benchmark/GABLS1/case.toml
-
-Run the LASD variant with the same grid, numerics, and forcing::
-
-  CUDA_VISIBLE_DEVICES=0 JAX_PLATFORMS=cuda PYTHONPATH=src \
-  python -m jaxwind benchmark/GABLS1/case_lasd.toml
 
 Validate the resolved configuration without importing JAX::
 

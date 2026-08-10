@@ -374,8 +374,7 @@ def main(argv: list[str] | None = None) -> int:
         from benchmark.NeutralEkman import run as neutral_runner
     except ModuleNotFoundError as exc:
         raise RuntimeError(
-            "the legacy static-Smagorinsky runner is unavailable; use run_lasd.py "
-            "with --sgs mgm, --sgs lasd, or --sgs amd"
+            "the legacy static-Smagorinsky runner is unavailable; use run_lasd.py"
         ) from exc
     args = parse_args(argv)
     solver_args = solver_namespace(args)

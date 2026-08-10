@@ -16,18 +16,16 @@ from ._jax_zslab_wind import (
     build_wind_tunnel_kernel,
 )
 from ._jax_zslab_lasd_kernels import build_lasd_kernels
-from ._jax_zslab_amd import build_amd_kernels
 from ._jax_zslab_conservative import build_conservative_advection_kernels
 from ._jax_zslab_fused_common import build_padded_momentum_gradients_kernel
-from ._jax_zslab_fused_mgm import build_fused_mgm_boussinesq_kernel
 from ._jax_zslab_fused_neutral import build_fused_neutral_boussinesq_kernels
+from ._jax_zslab_rotational import build_rotational_advection_kernel
 from .jax_zslab import (
     JaxZSlabInterpreter,
     PackedHaloArrays,
     ZSlabDryFlowArrays,
     ZSlabScalarArrays,
 )
-from ._jax_zslab_mgm import build_mgm_kernels
 from ._jax_zslab_smag import build_smagorinsky_kernels
 from ._jax_zslab_spectral import build_horizontal_spectral_kernels
 from ._jax_zslab_sources import (
@@ -630,92 +628,30 @@ def build_zslab_interpreter(
         ),
     )
 
-    (
-        dry_rotational_advection_local,
-        dry_mgm_local,
-        dry_mgm_vertical_flux_local,
-        dry_mgm_from_padded_gradients_local,
-        dry_mgm_sgs_tke_local,
-        dry_mgm_tke_transfer_local,
-    ) = build_mgm_kernels(
+    dry_rotational_advection_local = build_rotational_advection_kernel(
         grid=grid,
         axis_name=axis_name,
-        exchange_local=exchange_local,
         wall_filter_local=wall_filter_local,
-        strain_magnitude_local=strain_magnitude_local,
-        pad_horizontal_local=pad_horizontal_local,
-        truncate_padded_spectrum_local=truncate_padded_spectrum_local,
-        horizontal_spectral_flux_divergence_local=(
-            horizontal_spectral_flux_divergence_local
-        ),
-        horizontal_flux_divergence_local=horizontal_flux_divergence_local,
     )
-    fused_mgm_boussinesq_local = build_fused_mgm_boussinesq_kernel(
+    fused_lasd_boussinesq_local = build_fused_neutral_boussinesq_kernels(
         grid=grid,
         axis_name=axis_name,
         frozen_zero_scalar=frozen_zero_scalar,
-        exchange_local=exchange_local,
-        strain_magnitude_local=strain_magnitude_local,
+        scalar_context_local=scalar_context_local,
+        scalar_advection_from_padded_momentum_local=(
+            scalar_advection_from_padded_momentum_local
+        ),
+        scalar_sgs_from_padded_momentum_gradients_local=(
+            scalar_sgs_from_padded_momentum_gradients_local
+        ),
+        buoyancy_local=buoyancy_local,
         pad_horizontal_local=pad_horizontal_local,
-        truncate_padded_spectrum_local=truncate_padded_spectrum_local,
         truncate_padded_local=truncate_padded_local,
-        padded_horizontal_gradient_pair_local=spectral.padded_gradient_pair,
-        horizontal_spectral_flux_divergence_local=(
-            horizontal_spectral_flux_divergence_local
-        ),
-        padded_horizontal_flux_divergence_local=(
-            padded_horizontal_flux_divergence_local
-        ),
         wall_filter_local=wall_filter_local,
         dry_flow_context_local=dry_flow_context_local,
-        scalar_context_local=scalar_context_local,
         dry_advection_from_padded_local=dry_advection_from_padded_local,
         padded_momentum_gradients_local=padded_momentum_gradients_local,
-        dry_mgm_from_padded_gradients_local=(dry_mgm_from_padded_gradients_local),
-    )
-    (
-        dry_amd_local,
-        dry_amd_vertical_flux_local,
-        scalar_amd_local,
-        dry_amd_from_padded_gradients_local,
-        amd_diagnostics_local,
-        amd_tke_transfer_local,
-    ) = build_amd_kernels(
-        grid=grid,
-        axis_name=axis_name,
-        exchange_local=exchange_local,
-        strain_magnitude_local=strain_magnitude_local,
-        pad_horizontal_local=pad_horizontal_local,
-        truncate_padded_local=truncate_padded_local,
-        horizontal_derivative_local=horizontal_derivative_local,
-    )
-    fused_amd_boussinesq_local, fused_lasd_boussinesq_local = (
-        build_fused_neutral_boussinesq_kernels(
-            grid=grid,
-            axis_name=axis_name,
-            frozen_zero_scalar=frozen_zero_scalar,
-            scalar_context_local=scalar_context_local,
-            scalar_advection_from_padded_momentum_local=(
-                scalar_advection_from_padded_momentum_local
-            ),
-            scalar_sgs_from_padded_momentum_gradients_local=(
-                scalar_sgs_from_padded_momentum_gradients_local
-            ),
-            scalar_amd_local=scalar_amd_local,
-            buoyancy_local=buoyancy_local,
-            pad_horizontal_local=pad_horizontal_local,
-            truncate_padded_local=truncate_padded_local,
-            wall_filter_local=wall_filter_local,
-            dry_flow_context_local=dry_flow_context_local,
-            dry_advection_from_padded_local=dry_advection_from_padded_local,
-            padded_momentum_gradients_local=padded_momentum_gradients_local,
-            dry_amd_from_padded_gradients_local=(
-                dry_amd_from_padded_gradients_local
-            ),
-            dry_sgs_from_padded_gradients_local=(
-                dry_sgs_from_padded_gradients_local
-            ),
-        )
+        dry_sgs_from_padded_gradients_local=dry_sgs_from_padded_gradients_local,
     )
 
     def horizontal_divergence_local(x_velocity, y_velocity):
@@ -894,40 +830,6 @@ def build_zslab_interpreter(
         dry_sgs_tke_transfer_local,
         in_axes=(0, 0, None, None, None),
     )
-    dry_amd = mapped(dry_amd_local)
-    dry_amd_vertical_flux = mapped(dry_amd_vertical_flux_local)
-    amd_diagnostics = mapped(
-        amd_diagnostics_local,
-        in_axes=(0, None, None),
-    )
-    amd_tke_transfer = mapped(
-        amd_tke_transfer_local,
-        in_axes=(0, None),
-    )
-    dry_mgm = mapped(
-        dry_mgm_local,
-        in_axes=(0,) + (None,) * 10,
-    )
-    dry_mgm_vertical_flux = mapped(
-        dry_mgm_vertical_flux_local,
-        in_axes=(0, None, None, None, None, None),
-    )
-    mgm_sgs_tke = mapped(
-        dry_mgm_sgs_tke_local,
-        in_axes=(0,) + (None,) * 10,
-    )
-    mgm_tke_transfer = mapped(
-        dry_mgm_tke_transfer_local,
-        in_axes=(0,) + (None,) * 10,
-    )
-    fused_mgm_boussinesq = mapped(
-        fused_mgm_boussinesq_local,
-        in_axes=(0, 0, 0, None, 0) + (None,) * 20,
-    )
-    fused_amd_boussinesq = mapped(
-        fused_amd_boussinesq_local,
-        in_axes=(0, 0, 0, None, 0) + (None,) * 12,
-    )
     fused_lasd_boussinesq = mapped(
         fused_lasd_boussinesq_local,
         in_axes=(0, 0, 0, None, 0, 0, 0) + (None,) * 23,
@@ -996,10 +898,6 @@ def build_zslab_interpreter(
         scalar_sgs_local,
         in_axes=(0, 0, 0) + (None,) * 7,
     )
-    scalar_amd = mapped(
-        scalar_amd_local,
-        in_axes=(0, 0, None, None, None),
-    )
     buoyancy = mapped(buoyancy_local, in_axes=(0, None))
     rayleigh_damping = mapped(
         rayleigh_damping_local,
@@ -1030,16 +928,6 @@ def build_zslab_interpreter(
         dry_sgs,
         dry_sgs_vertical_flux,
         dry_sgs_tke_transfer,
-        dry_amd,
-        dry_amd_vertical_flux,
-        amd_diagnostics,
-        amd_tke_transfer,
-        dry_mgm,
-        dry_mgm_vertical_flux,
-        mgm_sgs_tke,
-        mgm_tke_transfer,
-        fused_mgm_boussinesq,
-        fused_amd_boussinesq,
         fused_lasd_boussinesq,
         lasd_accumulate,
         lasd_accumulate_velocity,
@@ -1048,7 +936,6 @@ def build_zslab_interpreter(
         scalar_context,
         scalar_advection,
         scalar_sgs,
-        scalar_amd,
         buoyancy,
         rayleigh_damping,
     )

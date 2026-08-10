@@ -31,7 +31,6 @@ from jaxwind.interpreters.jax_zslab import (  # noqa: E402
 )
 from jaxwind.operators import VelocityVector  # noqa: E402
 from jaxwind.physics import (  # noqa: E402
-    AnisotropicMinimumDissipation,
     BoussinesqFields,
     BoussinesqModel,
     BoussinesqVectorField,
@@ -44,11 +43,9 @@ from jaxwind.physics import (  # noqa: E402
     LagrangianScaleDependentDynamic,
     LagrangianScaleDependentScalarFlux,
     LinearBoussinesqBuoyancy,
-    ModulatedGradientModel,
     NoBuoyancy,
     NoRotation,
     ScalarFluxBoundary,
-    StaticSmagorinskyScalarFlux,
 )
 
 
@@ -143,22 +140,6 @@ class FusedNeutralSgsTests(unittest.TestCase):
                 3.0e-12,
             )
 
-    def test_amd_fused_rhs_matches_individual_contributions(self) -> None:
-        self.assert_fused_matches_contributions(
-            BoussinesqModel(
-                DryFlowModel(
-                    ConservativeAdvection(),
-                    KinematicPressureGradient(0.002, -0.001),
-                    FilteredNeutralLogWall(0.01),
-                    AnisotropicMinimumDissipation(),
-                    NoRotation(),
-                ),
-                ConservativeScalarAdvection(),
-                StaticSmagorinskyScalarFlux(0.4),
-                NoBuoyancy(),
-            )
-        )
-
     def test_lasd_fused_rhs_matches_individual_contributions(self) -> None:
         self.assert_fused_matches_contributions(
             BoussinesqModel(
@@ -173,25 +154,6 @@ class FusedNeutralSgsTests(unittest.TestCase):
                 LagrangianScaleDependentScalarFlux(),
                 NoBuoyancy(),
             )
-        )
-
-    def test_amd_active_scalar_coriolis_fusion_matches_contributions(self) -> None:
-        self.assert_fused_matches_contributions(
-            BoussinesqModel(
-                DryFlowModel(
-                    ConservativeAdvection(),
-                    KinematicPressureGradient(0.002, -0.001),
-                    FilteredNeutralLogWall(0.01),
-                    AnisotropicMinimumDissipation(),
-                    CoriolisGeostrophic(0.03, 1.2, -0.2, 0.01),
-                ),
-                ConservativeScalarAdvection(),
-                StaticSmagorinskyScalarFlux(0.4),
-                NoBuoyancy(),
-                scalar_boundary=ScalarFluxBoundary(0.002, -0.001),
-            ),
-            fields=self.active_fields,
-            frozen_zero_scalar=False,
         )
 
     def test_lasd_active_scalar_coriolis_fusion_matches_contributions(self) -> None:
@@ -214,23 +176,35 @@ class FusedNeutralSgsTests(unittest.TestCase):
         )
 
     def test_lasd_stable_sources_fusion_matches_individual_terms(self) -> None:
+        self.assert_stable_sources_fusion_matches_individual_terms(
+            LagrangianScaleDependentDynamic(update_interval=4),
+            LagrangianScaleDependentScalarFlux(),
+        )
+
+    def assert_stable_sources_fusion_matches_individual_terms(
+        self,
+        momentum_sgs,
+        scalar_sgs,
+    ) -> None:
         model = BoussinesqModel(
             DryFlowModel(
                 ConservativeAdvection(),
                 KinematicPressureGradient(0.002, -0.001),
                 FilteredNeutralLogWall(0.01),
-                LagrangianScaleDependentDynamic(update_interval=4),
+                momentum_sgs,
                 CoriolisGeostrophic(0.03, 1.2, -0.2, 0.01),
             ),
             ConservativeScalarAdvection(),
-            LagrangianScaleDependentScalarFlux(),
+            scalar_sgs,
             LinearBoussinesqBuoyancy(0.025),
         )
         algebra = build_zslab_interpreter(
             self.decomposition,
             frozen_zero_scalar=False,
         )
-        fields = algebra.initialize_lasd_closure(self.active_fields, model)
+        fields = self.active_fields
+        if isinstance(momentum_sgs, LagrangianScaleDependentDynamic):
+            fields = algebra.initialize_lasd_closure(fields, model)
         evaluation = Evaluation(fields, AcceptedClock(0.0, 0), None)
         contributions = BoussinesqVectorField(
             algebra,
@@ -280,47 +254,6 @@ class FusedNeutralSgsTests(unittest.TestCase):
                 float(jnp.max(jnp.abs(expected - fused_payload))),
                 3.0e-12,
             )
-
-    def test_mgm_and_amd_diagnose_nonnegative_sgs_energy(self) -> None:
-        algebra = build_zslab_interpreter(self.decomposition)
-        context = algebra.boussinesq_context(self.fields).momentum
-        wall = FilteredNeutralLogWall(0.01)
-        models = (
-            ModulatedGradientModel(gradient_norm_epsilon=1.0e-12),
-            AnisotropicMinimumDissipation(),
-        )
-        diagnostics = (
-            algebra.momentum_sgs_diagnostic_fields(
-                context,
-                models[0],
-                wall=wall,
-            ),
-            algebra.momentum_sgs_diagnostic_fields(
-                context,
-                models[1],
-                wall=wall,
-            ),
-        )
-        for model, diagnostic in zip(models, diagnostics, strict=True):
-            self.assertEqual(diagnostic.sgs_tke.shape, (1, 4, 8, 8))
-            self.assertTrue(bool(jnp.all(jnp.isfinite(diagnostic.sgs_tke))))
-            self.assertTrue(bool(jnp.all(diagnostic.sgs_tke >= 0.0)))
-            self.assertGreater(float(jnp.max(diagnostic.sgs_tke)), 0.0)
-            transfer = algebra.momentum_sgs_tke_transfer(
-                context,
-                model,
-                wall=wall,
-            )
-            self.assertEqual(transfer.shape, diagnostic.sgs_tke.shape)
-            self.assertTrue(bool(jnp.all(jnp.isfinite(transfer))))
-            self.assertLess(float(jnp.min(transfer)), 0.0)
-            self.assertTrue(
-                bool(jnp.all(jnp.mean(transfer, axis=(-2, -1)) <= 1.0e-12))
-            )
-        self.assertGreater(
-            float(jnp.max(diagnostics[1].momentum_diffusivity)),
-            0.0,
-        )
 
     def test_lasd_diagnoses_negative_resolved_tke_transfer(self) -> None:
         wall = FilteredNeutralLogWall(0.01)

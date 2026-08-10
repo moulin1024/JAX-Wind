@@ -71,7 +71,6 @@ from jaxwind.interpreters.jax_zslab import (  # noqa: E402
 )
 from jaxwind.operators import VelocityVector, project  # noqa: E402
 from jaxwind.physics import (  # noqa: E402
-    AnisotropicMinimumDissipation,
     BoussinesqFields,
     BoussinesqModel,
     BoussinesqVectorField,
@@ -79,18 +78,15 @@ from jaxwind.physics import (  # noqa: E402
     ConservativeScalarAdvection,
     DiagnosticLasdConstants,
     DryFlowModel,
-    IdentityClosureEvent,
     KinematicPressureGradient,
     LagrangianScaleDependentDynamic,
     LagrangianScaleDependentScalarFlux,
     LasdAcceptedStepEvent,
     LinearBoussinesqBuoyancy,
-    ModulatedGradientModel,
     NeutralLogWall,
     NoRayleighDamping,
     NoRotation,
     ScalarFluxBoundary,
-    StaticSmagorinskyScalarFlux,
 )
 from jaxwind.pressure import build_spectral_fd_pressure_adapter  # noqa: E402
 from jaxwind.runners._toml import dumps as toml_dumps  # noqa: E402
@@ -124,7 +120,6 @@ WSTAR0, THETA_STAR0, TSTAR0 = convective_scales(ZI0)
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--sgs", choices=("mgm", "lasd", "amd"), default="lasd")
     parser.add_argument("--nx", type=int, default=40)
     parser.add_argument("--ny", type=int, default=40)
     parser.add_argument("--nz", type=int, default=48)
@@ -155,7 +150,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     if args.output_dir is None:
         suffix = "quick" if args.quick else f"{args.nx}x{args.ny}x{args.nz}"
         args.output_dir = (
-            ROOT / "benchmark_results" / f"Nieuwstadt1993_{args.sgs}_{suffix}"
+            ROOT / "benchmark_results" / f"Nieuwstadt1993_lasd_{suffix}"
         )
     if args.max_steps is not None:
         args.steps = args.max_steps
@@ -317,91 +312,53 @@ def snapshot_statistics(
     pp = pressure_physical - p_mean[None, None]
 
     context = algebra.boussinesq_context(state.fields)
-    if isinstance(model.momentum.sgs, LagrangianScaleDependentDynamic):
-        diagnostic = algebra.lasd_diagnostic_fields(
-            context,
-            model.momentum.sgs,
-            model.scalar_sgs,
-            model.scalar_boundary,
-            constants=NIEUWSTADT_DIAGNOSTIC_CONSTANTS,
-            wall=model.momentum.wall,
+    diagnostic = algebra.lasd_diagnostic_fields(
+        context,
+        model.momentum.sgs,
+        model.scalar_sgs,
+        model.scalar_boundary,
+        constants=NIEUWSTADT_DIAGNOSTIC_CONSTANTS,
+        wall=model.momentum.wall,
+    )
+    if not bool(jnp.all(jnp.isfinite(diagnostic.scalar_variance))):
+        debug = {}
+        for name in (
+            "momentum_diffusivity",
+            "scalar_diffusivity",
+            "scalar_flux_x",
+            "scalar_flux_y",
+            "scalar_flux_z",
+            "sgs_tke",
+            "scalar_variance_numerator",
+            "scalar_variance",
+        ):
+            values = getattr(diagnostic, name)
+            finite = jnp.isfinite(values)
+            debug[name] = {
+                "nonfinite": int(values.size - jnp.count_nonzero(finite)),
+                "finite_min": float(jnp.min(jnp.where(finite, values, jnp.inf))),
+                "finite_max": float(jnp.max(jnp.where(finite, values, -jnp.inf))),
+            }
+        raise FloatingPointError(
+            "non-finite new-stack LASD scalar-variance diagnostic: "
+            + json.dumps(debug, sort_keys=True)
         )
-        if not bool(jnp.all(jnp.isfinite(diagnostic.scalar_variance))):
-            debug = {}
-            for name in (
-                "momentum_diffusivity",
-                "scalar_diffusivity",
-                "scalar_flux_x",
-                "scalar_flux_y",
-                "scalar_flux_z",
-                "sgs_tke",
-                "scalar_variance_numerator",
-                "scalar_variance",
-            ):
-                values = getattr(diagnostic, name)
-                finite = jnp.isfinite(values)
-                debug[name] = {
-                    "nonfinite": int(values.size - jnp.count_nonzero(finite)),
-                    "finite_min": float(jnp.min(jnp.where(finite, values, jnp.inf))),
-                    "finite_max": float(jnp.max(jnp.where(finite, values, -jnp.inf))),
-                }
-            raise FloatingPointError(
-                "non-finite new-stack LASD scalar-variance diagnostic: "
-                + json.dumps(debug, sort_keys=True)
-            )
-        e_sgs_field = diagnostic.sgs_tke * mechanical_scales.velocity**2
-        theta_var_sgs_field = (
-            diagnostic.scalar_variance
-            * thermal_scales.potential_temperature_difference**2
-        )
-        upper_scalar_flux = thermal_scales.from_execution_temperature_flux(
-            diagnostic.scalar_flux_z
-        )
-        lower_scalar_flux = jnp.concatenate(
-            (
-                jnp.full_like(upper_scalar_flux[:, :1], SURFACE_THETA_FLUX),
-                upper_scalar_flux[:, :-1],
-            ),
-            axis=1,
-        )
-        sgs_heat_flux = _plane_profile(
-            0.5 * (lower_scalar_flux + upper_scalar_flux)
-        )
-    else:
-        momentum_diagnostic = algebra.momentum_sgs_diagnostic_fields(
-            context.momentum,
-            model.momentum.sgs,
-            dissipation_coefficient=SGS_DISSIPATION_COEFFICIENT,
-            wall=model.momentum.wall,
-        )
-        e_sgs_field = momentum_diagnostic.sgs_tke * mechanical_scales.velocity**2
-        theta_var_sgs_field = jnp.zeros_like(theta_jax)
-
-        # Recover the horizontally averaged upper-face SGS heat flux from the
-        # conservative scalar SGS tendency: d<theta>/dt = -d<q_sgs>/dz.
-        # This is exact for the plane mean and works for both AMD and MGM without
-        # pretending that their static scalar closures have LASD memory.
-        scalar_sgs_tendency = algebra.scalar_sgs_tendency(
-            context,
-            model.momentum.sgs,
-            model.scalar_sgs,
-            model.scalar_boundary,
-        ).payload
-        plane_tendency = jnp.mean(scalar_sgs_tendency, axis=(0, 2, 3))
-        execution_dz = physical_grid.dz / mechanical_scales.length
-        upper_flux_execution = (
-            model.scalar_boundary.lower_flux
-            - execution_dz * jnp.cumsum(plane_tendency)
-        )
-        upper_flux = thermal_scales.from_execution_temperature_flux(
-            upper_flux_execution
-        )
-        lower_flux = jnp.concatenate(
-            (jnp.asarray((SURFACE_THETA_FLUX,), dtype=upper_flux.dtype), upper_flux[:-1])
-        )
-        sgs_heat_flux = np.asarray(
-            jax.device_get(0.5 * (lower_flux + upper_flux)), dtype=np.float64
-        )
+    e_sgs_field = diagnostic.sgs_tke * mechanical_scales.velocity**2
+    theta_var_sgs_field = (
+        diagnostic.scalar_variance
+        * thermal_scales.potential_temperature_difference**2
+    )
+    upper_scalar_flux = thermal_scales.from_execution_temperature_flux(
+        diagnostic.scalar_flux_z
+    )
+    lower_scalar_flux = jnp.concatenate(
+        (
+            jnp.full_like(upper_scalar_flux[:, :1], SURFACE_THETA_FLUX),
+            upper_scalar_flux[:, :-1],
+        ),
+        axis=1,
+    )
+    sgs_heat_flux = _plane_profile(0.5 * (lower_scalar_flux + upper_scalar_flux))
     e_sgs = _plane_profile(e_sgs_field)
     theta_var_sgs = _plane_profile(theta_var_sgs_field)
 
@@ -779,7 +736,7 @@ def save_outputs(
         "schema": "jaxwind.nieuwstadt1993.sgs-comparison.v1",
         "case": {
             "citation": "Nieuwstadt et al. (1993)",
-            "sgs_model": args.sgs,
+            "sgs_model": "lasd",
             "surface_potential_temperature_flux_k_m_s": SURFACE_THETA_FLUX,
         },
         "grid": {
@@ -795,13 +752,9 @@ def save_outputs(
             "scalar_advection": "conservative",
             "dealiasing": "three-halves-padding",
             "nonlinear_padding_ratio": NONLINEAR_PADDING_RATIO,
-            "scalar_sgs": (
-                "Lagrangian scale-dependent dynamic"
-                if args.sgs == "lasd"
-                else "static Smagorinsky, Pr_t=0.4"
-            ),
+            "scalar_sgs": "Lagrangian scale-dependent dynamic",
             "diagnostic_sgs_energy": True,
-            "diagnostic_sgs_scalar_variance": args.sgs == "lasd",
+            "diagnostic_sgs_scalar_variance": True,
         },
         "statistics": summary,
     }
@@ -841,11 +794,7 @@ def save_outputs(
                 "scalar_advection": "conservative",
                 "dealiasing": "three-halves-padding",
                 "nonlinear_padding_ratio": NONLINEAR_PADDING_RATIO,
-                "scalar_stability_correction": (
-                    {"beta": 30.0, "power": 2.0}
-                    if args.sgs == "lasd"
-                    else "not applicable"
-                ),
+                "scalar_stability_correction": {"beta": 30.0, "power": 2.0},
             }
         )
     )
@@ -882,34 +831,15 @@ def run(args: argparse.Namespace) -> dict[str, float]:
         gravity=GRAVITY,
         reference_potential_temperature=THETA0,
     )
-    if args.sgs == "lasd":
-        momentum_sgs = LagrangianScaleDependentDynamic(
-            filter_grid_ratio=1.5,
-            update_interval=args.lasd_update_interval,
-        )
-        scalar_sgs = LagrangianScaleDependentScalarFlux(
-            stability_buoyancy_coefficient=buoyancy_coefficient,
-            stability_beta=30.0,
-            stability_power=2.0,
-        )
-    elif args.sgs == "mgm":
-        momentum_sgs = ModulatedGradientModel(
-            filter_grid_ratio=1.5,
-            dissipation_coefficient=1.0,
-            fallback_coefficient=0.1,
-            gradient_norm_epsilon=(
-                mechanical_scales.to_execution_inverse_time_squared(
-                    2.4674011002723396e-12
-                )
-            ),
-            kinematic_viscosity=(
-                mechanical_scales.to_execution_kinematic_viscosity(1.5e-5)
-            ),
-        )
-        scalar_sgs = StaticSmagorinskyScalarFlux(turbulent_prandtl=0.4)
-    else:
-        momentum_sgs = AnisotropicMinimumDissipation()
-        scalar_sgs = StaticSmagorinskyScalarFlux(turbulent_prandtl=0.4)
+    momentum_sgs = LagrangianScaleDependentDynamic(
+        filter_grid_ratio=1.5,
+        update_interval=args.lasd_update_interval,
+    )
+    scalar_sgs = LagrangianScaleDependentScalarFlux(
+        stability_buoyancy_coefficient=buoyancy_coefficient,
+        stability_beta=30.0,
+        stability_power=2.0,
+    )
     model = BoussinesqModel(
         DryFlowModel(
             ConservativeAdvection(),
@@ -938,19 +868,14 @@ def run(args: argparse.Namespace) -> dict[str, float]:
         pressure_solver=pressure_solver,
         config=config,
     )
-    if args.sgs == "lasd":
-        fields = algebra.initialize_lasd_closure(fields, model)
+    fields = algebra.initialize_lasd_closure(fields, model)
     state = cold_start_boussinesq(
         fields,
         clock=AcceptedClock(0.0, 0),
         config=config,
     )
     vector_field = BoussinesqVectorField(algebra, model)
-    closure_event = (
-        LasdAcceptedStepEvent(algebra, model, config.dt)
-        if args.sgs == "lasd"
-        else IdentityClosureEvent()
-    )
+    closure_event = LasdAcceptedStepEvent(algebra, model, config.dt)
     maximum_mode = math.sqrt(2.0) * math.pi * max(args.nx, args.ny) * ZI0 / 6400.0
     spectrum_edges = np.linspace(0.0, maximum_mode, args.nx // 2 + 2)
     time_rows: list[dict] = []
@@ -993,11 +918,7 @@ def run(args: argparse.Namespace) -> dict[str, float]:
                     )
                 )
             )
-            lasd_cfl = (
-                directional_cfl * args.lasd_update_interval
-                if args.sgs == "lasd"
-                else 0.0
-            )
+            lasd_cfl = directional_cfl * args.lasd_update_interval
             divergence_si = float(
                 jnp.max(jnp.abs(divergence)) * mechanical_scales.inverse_time
             )
@@ -1037,7 +958,7 @@ def run(args: argparse.Namespace) -> dict[str, float]:
                     f"non-finite diagnostic at accepted step {state.clock.step}: "
                     + ", ".join(nonfinite)
                 )
-            if args.sgs == "lasd" and lasd_cfl >= 1.0:
+            if lasd_cfl >= 1.0:
                 warnings.warn(
                     f"LASD trajectory CFL {lasd_cfl:.3f} is not below one",
                     stacklevel=1,
