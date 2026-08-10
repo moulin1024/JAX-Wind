@@ -1,26 +1,27 @@
 # Pressure-driven LASD benchmark
 
-This benchmark runs the pressure-driven neutral ABL case selected by
-`runners/pressure_driven_warmup/config.toml` with the Lagrangian
-scale-dependent dynamic (LASD) closure.
+This directory is a pure declarative case. Its `config.toml` selects the
+package-owned pressure-driven runner and the Lagrangian scale-dependent
+dynamic (LASD) closure; it contains no benchmark-specific execution code.
 
 Run it on a GPU node from the repository root with:
 
 ```bash
-python -m benchmark.PressureDrivenLASD
+jaxwind benchmark/PressureDrivenLASD/config.toml
 ```
 
-Results default to `outputs/pressure_driven_lasd_gpu/`. The benchmark checks
-for a GPU, automatically resumes its own checkpoint, records `run.log`, and
-generates `loglaw_velocity_profile.svg` over the final 20% of simulated time.
-The pressure-solver submodule must be initialized once with
+Results default to `outputs/pressure_driven_lasd_64x64x64_gpu/`. The uniform
+case runner writes restartable checkpoints, resolved configuration, profiles,
+history, summary, and `loglaw_velocity_profile.svg` over the final 20% of
+simulated time. The pressure-solver submodule must be initialized once with
 `git submodule update --init --recursive`.
 
-For a CPU run, explicitly select the CPU backend and permit it:
+Validate the complete resolved configuration without importing JAX:
 
 ```bash
-JAX_PLATFORMS=cpu python -m benchmark.PressureDrivenLASD --allow-cpu
+jaxwind benchmark/PressureDrivenLASD/config.toml --dry-run
 ```
 
-`--dt`, `--hours`, `--max-steps`, `--restart`, `--output`, and `--plot-only`
-are also available for development runs and checkpoint continuation.
+Smoke variants and continuations are separate TOML configurations. Set their
+`time`, `output.directory`, and optional `execution.restart_checkpoint`
+entries in the file before launching it; the CLI does not override case data.

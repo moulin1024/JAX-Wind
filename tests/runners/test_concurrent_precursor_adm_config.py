@@ -69,7 +69,7 @@ def test_dtu_smoke_case_reuses_the_warmup_and_derives_adm_parameters() -> None:
 
 def test_dtu_smoke_case_dry_run_does_not_import_jax() -> None:
     completed = subprocess.run(
-        [sys.executable, "-m", "jaxwind", str(CASE_DIR), "--dry-run"],
+        [sys.executable, "-m", "jaxwind", str(CONFIG), "--dry-run"],
         cwd=ROOT,
         env=_cli_environment(),
         check=True,

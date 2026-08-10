@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import json
 import math
+from pathlib import Path
 
 import numpy as np
 
-from benchmark.Andren1994 import fig13_budget, run, run_lasd
 from benchmark.Andren1994.overlay_paper_figures import (
     FIGURES,
     FIGURE13_AXES,
@@ -18,23 +18,47 @@ from benchmark.Andren1994.overlay_paper_figures import (
     _momentum_stationarity,
     _pixels,
 )
+from jaxwind.runners import load_case
+from jaxwind.cli import main
+from jaxwind.runners.abl import andren1994
+from jaxwind.runners.abl import andren1994_budget as fig13_budget
+from jaxwind.runners.abl import andren1994_initial
+
+
+ROOT = Path(__file__).resolve().parents[3]
+CASE_DIR = ROOT / "benchmark" / "Andren1994"
+CONFIG = CASE_DIR / "config.toml"
 
 
 def test_canonical_configuration_matches_paper_time_and_grid() -> None:
-    args = run.parse_args([])
-    solver = run.solver_namespace(args)
-    assert (solver.nx, solver.ny, solver.nz) == (40, 40, 40)
-    assert (solver.lx, solver.ly, solver.lz) == (4000.0, 2000.0, 1500.0)
-    assert math.isclose(solver.hours * 3600.0 * solver.coriolis, 10.0)
-    assert math.isclose(solver.average_start_hours * 3600.0 * solver.coriolis, 7.0)
-    assert math.isclose(solver.average_window_hours * 3600.0 * solver.coriolis, 3.0)
-    assert solver.horizontal_coriolis == solver.coriolis
-    assert solver.roughness == 0.1
-    assert solver.smagorinsky == 0.17
+    configured = load_case(CONFIG)
+    case = configured.configuration
+    assert configured.runner_name == "abl"
+    assert case.workflow == "warmup"
+    assert (case.domain.nx, case.domain.ny, case.domain.nz) == (40, 40, 40)
+    assert (case.domain.lx_m, case.domain.ly_m, case.domain.lz_m) == (
+        4000.0,
+        2000.0,
+        1500.0,
+    )
+    assert math.isclose(
+        case.time.duration_hours * 3600.0 * case.flow.coriolis_s,
+        10.0,
+    )
+    assert math.isclose(
+        case.time.sample_start_hours * 3600.0 * case.flow.coriolis_s,
+        7.0,
+    )
+    assert case.benchmark.horizontal_coriolis_s == case.flow.coriolis_s
+    assert case.flow.roughness_length_m == 0.1
+    assert case.sgs.model == "lasd"
 
 
 def test_table_a1_and_reference_envelope_are_complete() -> None:
-    table = run.paper_initial_profiles()
+    case = load_case(CONFIG).configuration
+    table = andren1994_initial.load_initial_profiles(
+        case.benchmark.initial_profiles
+    )
     assert len(table) == 40
     assert table["z_m"][0] == 18.75
     assert table["z_m"][-1] == 1481.25
@@ -42,33 +66,38 @@ def test_table_a1_and_reference_envelope_are_complete() -> None:
     assert table["v_m_s"][3] == 2.84
     assert table["tke_m2_s2"][0] == 0.365
     assert table["tke_m2_s2"][21] == 0.0
-    reference = json.loads(run.REFERENCE_RESULTS.read_text())
+    reference = json.loads(case.benchmark.reference_results.read_text())
     ratios = tuple(reference["ustar_over_ug"].values())
     assert min(ratios) == 0.0402
     assert max(ratios) == 0.0448
 
 
-def test_quick_mode_is_explicitly_noncanonical() -> None:
-    args = run.parse_args(["--quick"])
-    solver = run.solver_namespace(args)
-    assert (solver.nx, solver.ny, solver.nz) == (8, 8, 8)
-    assert solver.hours * 3600.0 / solver.dt == 8.0
-    assert solver.average_start_hours == 0.0
+def test_benchmark_case_is_pure_configuration() -> None:
+    assert CONFIG.is_file()
+    assert not (CASE_DIR / "run.py").exists()
+    assert not (CASE_DIR / "run_lasd.py").exists()
+    assert not (CASE_DIR / "fig13_budget.py").exists()
+
+
+def test_uniform_cli_dry_run_resolves_andren_configuration(capsys) -> None:
+    assert main([str(CONFIG), "--dry-run"]) == 0
+    resolved = capsys.readouterr().out
+    assert 'runner = "abl"' in resolved
+    assert 'workflow = "warmup"' in resolved
+    assert 'name = "andren1994"' in resolved
+    assert 'model = "lasd"' in resolved
 
 
 def test_lasd_model_uses_safe_trajectory_cadence() -> None:
-    args = run_lasd.parse_args([])
-    assert (args.nx, args.ny, args.nz) == (40, 40, 40)
-    assert args.dt == 0.8
-    assert args.lasd_update_interval == 5
-    assert args.thomas_chunk == 20
-    assert math.isclose(args.hours * 3600.0 * run.F_CORIOLIS, 10.0)
+    case = load_case(CONFIG).configuration
+    assert case.time.dt_seconds == 0.8
+    assert case.sgs.update_interval_steps == 5
+    assert case.benchmark.thomas_chunk == 20
+    assert case.estimated_lasd_trajectory_cfl == 0.8
 
 
 def test_lasd_uses_three_halves_padding() -> None:
-    assert run_lasd.NONLINEAR_PADDING_RATIO == 1.5
-    args = run_lasd.parse_args(["--quick"])
-    assert args.output.name == "lasd_quick"
+    assert andren1994.NONLINEAR_PADDING_RATIO == 1.5
 
 
 def test_profile_variance_excludes_temporal_plane_mean_drift() -> None:
@@ -79,7 +108,7 @@ def test_profile_variance_excludes_temporal_plane_mean_drift() -> None:
         }
         for mean in (0.0, 10.0, 20.0)
     ]
-    averaged = run_lasd._average_profile_samples(samples)
+    averaged = andren1994._average_profile_samples(samples)
     assert np.allclose(averaged["resolved_scalar_variance"], 2.0)
     contaminated = averaged["scalar2"] - averaged["scalar"] ** 2
     assert contaminated[0] > 60.0
@@ -94,10 +123,10 @@ def test_statistics_restart_accepts_new_fig11_profile(tmp_path) -> None:
             "resolved_tke_sgs_transfer": np.asarray([-5.0, -2.0]),
         },
     ]
-    run_lasd._write_statistics_state(path, [1.0, 2.0], samples)
-    _, loaded = run_lasd._load_statistics_state(path)
+    andren1994._write_statistics_state(path, [1.0, 2.0], samples)
+    _, loaded = andren1994._load_statistics_state(path)
     assert np.all(np.isnan(loaded[0]["resolved_tke_sgs_transfer"]))
-    averaged = run_lasd._average_profile_samples(loaded)
+    averaged = andren1994._average_profile_samples(loaded)
     assert np.allclose(averaged["resolved_tke_sgs_transfer"], [-5.0, -2.0])
 
 
@@ -112,7 +141,7 @@ def test_fig13_budget_normalization_and_tendency_are_explicit() -> None:
     budget = fig13_budget.averaged_budget(
         [10.0, 13.0], [first, second], ustar=0.4, dz=10.0
     )
-    scale = run.F_CORIOLIS * 1.0e-3
+    scale = andren1994_initial.F_CORIOLIS * 1.0e-3
     assert np.allclose(budget["tendency"], np.asarray([1.0, 2.0]) / scale)
     assert np.allclose(budget["production"], 1.0 / scale)
     assert np.allclose(

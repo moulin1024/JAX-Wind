@@ -1,0 +1,77 @@
+[case]
+runner = "abl"
+workflow = "warmup"
+name = "andren1994_lasd_40x40x40"
+
+[domain]
+nx = 40
+ny = 40
+nz = 40
+lx_m = 4000.0
+ly_m = 2000.0
+lz_m = 1500.0
+
+[flow]
+momentum_forcing = "geostrophic"
+geostrophic_u_m_s = 10.0
+geostrophic_v_m_s = 0.0
+coriolis_s = 1.0e-4
+initial_velocity_profile = "andren1994_table"
+
+[wall]
+model = "neutral_log"
+roughness_length_m = 0.1
+thermal_roughness_length_m = 0.1
+von_karman = 0.4
+filter_grid_ratio = 1.5
+test_filter_ratio = 2.0
+porte_agel_correction = true
+
+[thermal]
+boundary_condition = "none"
+initial_temperature_k = 300.0
+reference_temperature_k = 300.0
+
+[sgs]
+model = "lasd"
+update_interval_steps = 5
+filter_grid_ratio = 1.5
+test_filter_ratio = 2.0
+timescale_coefficient = 1.5
+initial_coefficient = 0.03
+minimum_coefficient = 1.0e-6
+maximum_coefficient = 0.81
+
+[time]
+integrator = "ab2"
+dt_seconds = 0.8
+duration_hours = 27.77777777777778
+
+[numerics]
+dtype = "float32"
+pressure_method = "spike"
+seed = 1994
+cfl_abort = 1.0
+cfl_warning = 0.25
+lasd_trajectory_cfl_abort = 1.0
+
+[output]
+directory = "benchmark/Andren1994/results/lasd_40x40x40"
+sample_start_hours = 19.444444444444443
+sample_every_steps = 300
+log_every_steps = 600
+checkpoint_every_steps = 6000
+
+[benchmark]
+name = "andren1994"
+initial_profiles = "reference/initial_profiles.csv"
+reference_results = "reference/reference_results.json"
+horizontal_coriolis_s = 1.0e-4
+passive_scalar_surface_flux_kg_m2_s = 1.0e-3
+air_density_kg_m3 = 1.0
+passive_scalar_reference_kg_m3 = 1.0
+thomas_chunk = 20
+fig13_budget = false
+
+[execution]
+overwrite = false

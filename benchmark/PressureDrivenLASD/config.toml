@@ -1,6 +1,6 @@
 [case]
 runner = "pressure_driven_warmup"
-name = "pressure_driven_warmup_64x64x64"
+name = "pressure_driven_lasd_64x64x64"
 
 [domain]
 nx = 64
@@ -47,7 +47,7 @@ cfl_abort = 0.5
 lasd_trajectory_cfl_abort = 1.0
 
 [output]
-directory = "outputs/pressure_driven_warmup_64x64x64"
+directory = "outputs/pressure_driven_lasd_64x64x64_gpu"
 log_every_steps = 1000
 sample_start_hours = 8.0
 sample_every_steps = 100

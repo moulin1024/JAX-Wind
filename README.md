@@ -83,15 +83,21 @@ Project-specific environment variables use the `JAXWIND_` prefix.
 ## Runner workflows
 
 Case-oriented application shells live under [`runners`](runners/README.md).
-The first workflow is a configurable [pressure-driven neutral
-warmup](runners/pressure_driven_warmup/README.md) with LASD, AB2, checkpointed
-restart, and restart-continuous profile statistics.
+Runnable validation benchmarks use the same declarative case interface under
+[`benchmark`](benchmark/README.md); benchmark directories contain TOML while
+their execution logic remains package-owned.
+The shared [`abl`](runners/README.md#abl-workflow-family) runner's warmup
+workflow builds neutral, stable, or convective ABL states from pure TOML
+configurations. Stability is inferred from the thermal boundary and its
+forcing; it is never selected with a categorical `regime` option. All cases
+use LASD, AB2, checkpointed restart, restart-continuous profile statistics,
+and one downstream-compatible checkpoint manifest.
 
-Validate its supplied `2048 × 1024 × 1024 m`, `128 × 64 × 256`, 10-hour case
-without allocating a JAX state:
+Validate the supplied `6283 × 6283 × 1000 m`, `64 × 64 × 64`, 10-hour neutral
+case without allocating a JAX state:
 
 ```bash
-jaxwind runners/pressure_driven_warmup --dry-run
+jaxwind runners/abl_warmup_neutral/config.toml --dry-run
 ```
 
 ### OpenFAST rigid actuator line
@@ -256,10 +262,11 @@ The repository includes research workflows for:
   case](benchmark/LinPorteAgel2019/README.md), including precursor,
   actuator-disk, and fringe-coupling studies.
 
-Benchmark scripts are case-specific research workflows rather than a stable
-command-line interface. Read the corresponding case documentation before
-running them; canonical cases can require long integrations, accelerator
-hardware, plotting dependencies, and developed restart files.
+Executable benchmark cases use the same configuration-driven `jaxwind`
+interface as application runners. Python files retained beside reference data
+are offline analysis utilities. Read each case's documentation before running
+it; canonical integrations can still require accelerator hardware and long
+wall-clock times.
 
 ## Design and development
 

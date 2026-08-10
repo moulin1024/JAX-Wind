@@ -13,7 +13,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from benchmark.Andren1994 import run as andren
+from .andren1994_initial import F_CORIOLIS
 from jaxwind.integrators import Evaluation
 from jaxwind.physics import DiagnosticLasdConstants
 
@@ -180,23 +180,28 @@ def averaged_budget(
     *,
     ustar: float,
     dz: float,
+    coriolis: float = F_CORIOLIS,
+    surface_scalar_flux: float = 1.0e-3,
 ) -> dict[str, np.ndarray]:
     if len(samples) < 2:
         raise ValueError("Fig. 13 tendency requires at least two budget samples")
     elapsed = float(times[-1] - times[0])
     if elapsed <= 0.0:
         raise ValueError("Fig. 13 sample times must be strictly increasing")
-    result = {name: np.mean([sample[name] for sample in samples], axis=0) for name in TERMS}
+    result = {
+        name: np.mean([sample[name] for sample in samples], axis=0)
+        for name in TERMS
+    }
     result["tendency"] = (
         samples[-1]["resolved_flux"] - samples[0]["resolved_flux"]
     ) / elapsed
     rhs = sum((result[name] for name in TERMS), np.zeros_like(result["tendency"]))
     result["closure_residual"] = result["tendency"] - rhs
-    scale = andren.F_CORIOLIS * (1.0e-3 / ustar) * ustar
+    scale = coriolis * surface_scalar_flux
     for name in TERMS + ("tendency", "closure_residual"):
         result[name] = result[name] / scale
     z = (np.arange(result["tendency"].size) + 0.5) * dz
-    result["height"] = z * andren.F_CORIOLIS / ustar
+    result["height"] = z * coriolis / ustar
     return result
 
 

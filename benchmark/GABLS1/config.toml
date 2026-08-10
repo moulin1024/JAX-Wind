@@ -48,3 +48,6 @@ directory = "benchmark_results/gabls1_lasd_32cubed"
 sample_every_steps = 240
 log_every_steps = 1200
 checkpoint_every_steps = 12000
+
+[execution]
+overwrite = false

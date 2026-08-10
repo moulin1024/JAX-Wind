@@ -80,7 +80,8 @@ def run_case(
     summary_path = output_dir / "summary.json"
     if summary_path.exists() and not overwrite:
         raise FileExistsError(
-            f"{summary_path} exists; use --overwrite for a fresh smoke run"
+            f"{summary_path} exists; set execution.overwrite = true "
+            "in the TOML configuration"
         )
     (output_dir / "resolved_config.toml").write_text(
         case.resolved_toml()

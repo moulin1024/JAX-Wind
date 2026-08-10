@@ -27,20 +27,14 @@ plane-normalized to the tabulated TKE before the compatible projection.
 
 ## Present model correspondence
 
-The static JAX-Wind case uses horizontal pseudo-spectral derivatives, vertical
-second-order differences, AB2, a neutral log wall, and a static Smagorinsky
-coefficient `Cs = 0.17`. This most closely follows the deterministic
-Mason--Brown SGS coefficient while retaining Moeng-like horizontal numerics.
-It is therefore compared with the published multi-code envelope, not claimed
-to reproduce one named code exactly. The published prognostic-SGS-energy and
-passive-scalar diagnostics are not fabricated for a static Smagorinsky model.
-
-The second active comparison uses independent Lagrangian-averaged
-scale-dependent dynamic coefficients for momentum and scalar flux. It is an
-external fifth SGS model, not one of the paper codes. Since LASD does not
-predict the isotropic SGS stress or scalar variance, those contributions are
-diagnosed from a labeled local production--dissipation balance; resolved,
-diagnostic SGS, and total curves remain separate.
+The active JAX-Wind configuration uses horizontal pseudo-spectral derivatives,
+vertical second-order differences, AB2, a neutral log wall, and independent
+Lagrangian-averaged scale-dependent dynamic coefficients for momentum and
+scalar flux. LASD is an external comparison model, not one of the paper's four
+codes. Since it does not predict the isotropic SGS stress or scalar variance,
+those contributions are diagnosed from a labeled local
+production--dissipation balance; resolved, diagnostic SGS, and total curves
+remain separate.
 
 ## Numeric reference values
 

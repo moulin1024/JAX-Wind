@@ -172,7 +172,15 @@ def plot_profiles(output_dir: Path, case: CaseConfig) -> None:
     for axis in axes.ravel():
         axis.set_ylabel("z [m]")
         axis.grid(True, alpha=0.3)
-    fig.suptitle(f"GABLS1 {case.sgs.model.upper()}, hours 8--9 mean")
+    label = (
+        f"ABL {getattr(case, 'stability', 'stable')}"
+        if case.runner == "abl"
+        else "GABLS1"
+    )
+    fig.suptitle(f"{label} {case.sgs.model.upper()} profiles")
     fig.tight_layout()
-    fig.savefig(output_dir / "gabls1_profiles.png", dpi=180)
+    filename = (
+        "abl_profiles.png" if case.runner == "abl" else "gabls1_profiles.png"
+    )
+    fig.savefig(output_dir / filename, dpi=180)
     plt.close(fig)

@@ -68,7 +68,7 @@ def test_direct_alm_case_has_requested_grid_and_centered_turbine() -> None:
 
 def test_direct_alm_dry_run_validates_without_importing_jax() -> None:
     completed = subprocess.run(
-        [sys.executable, "-m", "jaxwind", str(CASE_DIR), "--dry-run"],
+        [sys.executable, "-m", "jaxwind", str(CONFIG), "--dry-run"],
         cwd=ROOT,
         env=_cli_environment(),
         check=True,

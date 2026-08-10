@@ -12,17 +12,14 @@ Businger--Dyer Monin--Obukhov surface law with a 0.25 K/h cooling rate.
 Run on one GPU from the repository root::
 
   CUDA_VISIBLE_DEVICES=0 JAX_PLATFORMS=cuda PYTHONPATH=src \
-  python -m jaxwind benchmark/GABLS1/case.toml
+  python -m jaxwind benchmark/GABLS1/config.toml
 
 Validate the resolved configuration without importing JAX::
 
-  PYTHONPATH=src python -m jaxwind benchmark/GABLS1/case.toml --dry-run
+  PYTHONPATH=src python -m jaxwind benchmark/GABLS1/config.toml --dry-run
 
-For an end-to-end smoke run on the canonical grid::
-
-  JAX_PLATFORMS=cpu PYTHONPATH=src python -m jaxwind \
-  benchmark/GABLS1/case.toml --max-steps 4 \
-  --output-dir /tmp/gabls1-smoke --overwrite
+Short smoke runs use a separate TOML file with their duration and output
+directory declared in the configuration.  The CLI does not override them.
 
 The runner writes restartable checkpoints and statistics, ``profiles.csv``,
 ``flux_profiles.csv``, ``time_series.csv``, ``summary.json``, the resolved

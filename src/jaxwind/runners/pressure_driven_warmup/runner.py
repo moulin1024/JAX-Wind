@@ -14,6 +14,7 @@ from typing import Any
 import numpy as np
 
 from .config import CaseConfig
+from .log_law import write_log_law_svg
 
 
 HERE = Path(__file__).resolve().parent
@@ -370,7 +371,8 @@ def run_case(
     statistics_path = output_dir / "statistics_latest.npz"
     if restart is None and latest_checkpoint.exists() and not overwrite:
         raise FileExistsError(
-            f"{latest_checkpoint} already exists; use --restart or --overwrite"
+            f"{latest_checkpoint} already exists; configure "
+            "execution.restart_checkpoint or execution.overwrite"
         )
     if restart is not None and not restart.exists():
         raise FileNotFoundError(restart)
@@ -625,7 +627,20 @@ def run_case(
         )
         statistics.save(statistics_path)
     if statistics.count:
-        _write_profiles(output_dir / "profiles.csv", case, statistics)
+        profile_path = output_dir / "profiles.csv"
+        _write_profiles(profile_path, case, statistics)
+        write_log_law_svg(
+            profile_path,
+            output_dir / "loglaw_velocity_profile.svg",
+            friction_velocity_m_s=case.flow.friction_velocity_m_s,
+            roughness_length_m=case.flow.roughness_length_m,
+            von_karman=case.flow.von_karman,
+            model_label=case.sgs.model.upper(),
+            statistics_label=(
+                f"{case.output.sample_start_hours:g}--"
+                f"{case.time.duration_hours:g} h"
+            ),
+        )
     if state.clock.step == case.time.steps:
         save_boussinesq_checkpoint(
             output_dir / "checkpoint_final.npz",
@@ -656,5 +671,6 @@ def run_case(
         },
     }
     (output_dir / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
-    print(json.dumps(summary, indent=2), flush=True)
+    if case.runner != "abl":
+        print(json.dumps(summary, indent=2), flush=True)
     return summary

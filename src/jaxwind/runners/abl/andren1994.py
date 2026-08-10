@@ -1,32 +1,18 @@
-#!/usr/bin/env python3
-"""Run Andrén et al. (1994) with the LASD SGS closure."""
+"""Package-owned Andrén et al. (1994) LASD warmup implementation."""
 
 from __future__ import annotations
 
-import argparse
 import csv
 import json
 import math
-import os
 from pathlib import Path
-import sys
 import time
+from types import SimpleNamespace
 import warnings
 
 import numpy as np
 
 
-ROOT = Path(__file__).resolve().parents[2]
-SOURCE = ROOT / "src"
-PRESSURE_SOURCE = Path(
-    os.environ.get("JAXWIND_SPECTRAL_FD_SOURCE", ROOT.parent / "bw1000_benchmark")
-)
-for source in (ROOT, SOURCE, PRESSURE_SOURCE):
-    if source.exists() and str(source) not in sys.path:
-        sys.path.insert(0, str(source))
-
-from benchmark.Andren1994 import run as andren  # noqa: E402
-from benchmark.Andren1994 import fig13_budget  # noqa: E402
 import jax  # noqa: E402
 
 jax.config.update("jax_enable_x64", True)
@@ -79,64 +65,13 @@ from jaxwind.physics import (  # noqa: E402
     ScalarFluxBoundary,
 )
 from jaxwind.pressure import build_spectral_fd_pressure_adapter  # noqa: E402
-from jaxwind.runners._toml import dumps as toml_dumps  # noqa: E402
+from . import andren1994_budget as fig13_budget  # noqa: E402
+from . import andren1994_initial as andren  # noqa: E402
+from .config import CaseConfig  # noqa: E402
 
 
-HERE = Path(__file__).resolve().parent
-SURFACE_SCALAR_FLUX = 1.0e-3
-AIR_DENSITY = 1.0
 ANDREN_DIAGNOSTIC_CONSTANTS = DiagnosticLasdConstants(horizontal_homogeneous_wall=True)
 NONLINEAR_PADDING_RATIO = 1.5
-
-
-def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--nx", type=int, default=40)
-    parser.add_argument("--ny", type=int, default=40)
-    parser.add_argument("--nz", type=int, default=40)
-    parser.add_argument("--dt", type=float, default=0.8)
-    parser.add_argument("--hours", type=float)
-    parser.add_argument("--dtype", choices=("float32", "float64"), default="float32")
-    parser.add_argument("--seed", type=int, default=1994)
-    parser.add_argument("--sample-every", type=int, default=300)
-    parser.add_argument("--log-every", type=int, default=600)
-    parser.add_argument("--checkpoint-every", type=int, default=6000)
-    parser.add_argument("--lasd-update-interval", type=int, default=5)
-    parser.add_argument("--max-cfl-warning", type=float, default=0.25)
-    parser.add_argument("--method", choices=("transpose", "spike"), default="spike")
-    parser.add_argument("--thomas-chunk", type=int, default=20)
-    parser.add_argument("--restart", type=Path)
-    parser.add_argument("--output", type=Path)
-    parser.add_argument("--quick", action="store_true")
-    parser.add_argument(
-        "--fig13-budget",
-        action="store_true",
-        help="sample the complete resolved scalar-flux budget used by paper Fig. 13",
-    )
-    args = parser.parse_args(argv)
-    if args.quick:
-        args.nx = args.ny = args.nz = 8
-        args.dt = 0.25
-        args.hours = 8.0 * args.dt / 3600.0
-        args.sample_every = 1
-        args.log_every = 4
-        args.checkpoint_every = 4
-    elif args.hours is None:
-        args.hours = andren.CANONICAL_HOURS
-    if args.output is None:
-        name = "lasd_quick" if args.quick else "lasd_40x40x40"
-        args.output = HERE / "results" / name
-    if min(args.nx, args.ny, args.nz) <= 1:
-        parser.error("all grid dimensions must exceed one")
-    if args.dt <= 0.0 or args.hours <= 0.0:
-        parser.error("dt and hours must be positive")
-    if min(args.sample_every, args.log_every, args.checkpoint_every) <= 0:
-        parser.error("sampling, logging, and checkpoint intervals must be positive")
-    if args.lasd_update_interval <= 0:
-        parser.error("LASD update interval must be positive")
-    if args.thomas_chunk <= 0:
-        parser.error("Thomas chunk must be positive")
-    return args
 
 
 def _write_csv(path: Path, rows: list[dict]) -> None:
@@ -249,7 +184,7 @@ def instantaneous_diagnostics(
         (
             jnp.full_like(
                 scalar_flux_upper[:, :1],
-                SURFACE_SCALAR_FLUX / AIR_DENSITY,
+                args.surface_scalar_flux / args.air_density,
             ),
             scalar_flux_upper[:, :-1],
         ),
@@ -296,7 +231,7 @@ def instantaneous_diagnostics(
         )
     )
     z = (np.arange(physical_grid.nz) + 0.5) * physical_grid.dz
-    target_level = int(np.argmin(np.abs(z * andren.F_CORIOLIS / ustar - 0.1)))
+    target_level = int(np.argmin(np.abs(z * args.coriolis / ustar - 0.1)))
     modes = np.arange(physical_grid.nx // 2 + 1, dtype=np.float64)
     profiles = {
         "u": mean_u,
@@ -365,11 +300,16 @@ def _write_statistics_state(
     names = tuple(dict.fromkeys(name for sample in samples for name in sample))
     arrays = {}
     for name in names:
-        template = np.asarray(next(sample[name] for sample in samples if name in sample))
+        template = np.asarray(
+            next(sample[name] for sample in samples if name in sample)
+        )
         dtype = np.result_type(template.dtype, np.float32)
         missing = np.full(template.shape, np.nan, dtype=dtype)
         arrays[name] = np.stack(
-            [np.asarray(sample[name]) if name in sample else missing for sample in samples]
+            [
+                np.asarray(sample[name]) if name in sample else missing
+                for sample in samples
+            ]
         )
     np.savez(path, profile_times=np.asarray(times), **arrays)
 
@@ -411,14 +351,14 @@ def _save_progress(
     budget_samples=None,
 ):
     save_boussinesq_checkpoint(
-        args.output / "checkpoint.npz",
+        args.output / "checkpoint_latest.npz",
         state,
         scale_fingerprint=scale_fingerprint,
         physics_fingerprint=physics_fingerprint,
     )
     _write_csv(args.output / "history.csv", history_rows)
     _write_statistics_state(
-        args.output / "statistics_samples.npz",
+        args.output / "statistics_latest.npz",
         profile_times,
         profile_samples,
     )
@@ -464,8 +404,15 @@ def _average_profile_samples(samples: list[dict]) -> dict:
     return averaged
 
 
-def _write_profiles(output: Path, averaged: dict, statistics_ustar: float) -> None:
-    z = (np.arange(averaged["u"].size) + 0.5) * (1500.0 / averaged["u"].size)
+def _write_profiles(
+    output: Path,
+    averaged: dict,
+    statistics_ustar: float,
+    args,
+) -> None:
+    z = (np.arange(averaged["u"].size) + 0.5) * (
+        args.lz / averaged["u"].size
+    )
     u = averaged["u"]
     v = averaged["v"]
     w = averaged["w"]
@@ -477,8 +424,8 @@ def _write_profiles(output: Path, averaged: dict, statistics_ustar: float) -> No
     resolved_tke = 0.5 * (
         resolved_u_variance + resolved_v_variance + resolved_w_variance
     )
-    cstar = (SURFACE_SCALAR_FLUX / AIR_DENSITY) / statistics_ustar
-    height = z * andren.F_CORIOLIS / statistics_ustar
+    cstar = (args.surface_scalar_flux / args.air_density) / statistics_ustar
+    height = z * args.coriolis / statistics_ustar
     scalar_gradient = np.gradient(averaged["scalar"], z)
     phi_c = -0.4 * z * scalar_gradient / cstar
     phi_c[0] = 1.0
@@ -512,7 +459,7 @@ def _write_profiles(output: Path, averaged: dict, statistics_ustar: float) -> No
         "resolved_tke_sgs_transfer_over_f_ustar2": averaged[
             "resolved_tke_sgs_transfer"
         ]
-        / (andren.F_CORIOLIS * ustar2),
+        / (args.coriolis * ustar2),
         "resolved_uw_over_ustar2": averaged["resolved_uw"] / ustar2,
         "resolved_vw_over_ustar2": averaged["resolved_vw"] / ustar2,
         "sgs_uw_over_ustar2": averaged["sgs_uw"] / ustar2,
@@ -552,9 +499,9 @@ def _write_profiles(output: Path, averaged: dict, statistics_ustar: float) -> No
 
     modes = averaged["spectrum_mode"]
     selected = modes > 0.0
-    k = 2.0 * np.pi * modes[selected] / 4000.0
+    k = 2.0 * np.pi * modes[selected] / args.lx
     spectrum_columns = {
-        "k_ustar_over_f": k * statistics_ustar / andren.F_CORIOLIS,
+        "k_ustar_over_f": k * statistics_ustar / args.coriolis,
         "kEu_over_ustar2": modes[selected] * averaged["spectrum_u"][selected] / ustar2,
         "kEv_over_ustar2": modes[selected] * averaged["spectrum_v"][selected] / ustar2,
         "kEw_over_ustar2": modes[selected] * averaged["spectrum_w"][selected] / ustar2,
@@ -572,14 +519,24 @@ def _write_profiles(output: Path, averaged: dict, statistics_ustar: float) -> No
     )
 
 
-def run(args: argparse.Namespace) -> dict:
+def _run(args) -> dict:
     args.output.mkdir(parents=True, exist_ok=True)
     if jax.device_count() != 1:
         raise RuntimeError("the Andrén LASD runner currently requires one JAX device")
     dtype = getattr(jnp, args.dtype)
-    physical_grid = UniformGrid(args.nx, args.ny, args.nz, 4000.0, 2000.0, 1500.0)
-    mechanical_scales = ScaleSystem(1500.0, 10.0)
-    scalar_scales = PassiveScalarScaleSystem(mechanical_scales, 1.0)
+    physical_grid = UniformGrid(
+        args.nx,
+        args.ny,
+        args.nz,
+        args.lx,
+        args.ly,
+        args.lz,
+    )
+    mechanical_scales = ScaleSystem(args.lz, args.geostrophic_speed)
+    scalar_scales = PassiveScalarScaleSystem(
+        mechanical_scales,
+        args.scalar_reference,
+    )
     grid = mechanical_scales.to_execution_grid(physical_grid)
     decomposition = EqualZSlab(
         grid,
@@ -600,13 +557,13 @@ def run(args: argparse.Namespace) -> dict:
         thomas_chunk=args.thomas_chunk,
     )
     momentum_sgs = LagrangianScaleDependentDynamic(
-        filter_grid_ratio=1.5,
+        filter_grid_ratio=args.filter_grid_ratio,
         update_interval=args.lasd_update_interval,
     )
     scalar_sgs = LagrangianScaleDependentScalarFlux()
     scalar_boundary = ScalarFluxBoundary(
         scalar_scales.to_execution_concentration_flux(
-            SURFACE_SCALAR_FLUX / AIR_DENSITY
+            args.surface_scalar_flux / args.air_density
         ),
         0.0,
     )
@@ -614,13 +571,18 @@ def run(args: argparse.Namespace) -> dict:
         DryFlowModel(
             ConservativeAdvection(),
             KinematicPressureGradient(0.0, 0.0),
-            NeutralLogWall(mechanical_scales.to_execution_length(0.1), 0.4),
+            NeutralLogWall(
+                mechanical_scales.to_execution_length(args.roughness),
+                args.von_karman,
+            ),
             momentum_sgs,
             CoriolisGeostrophic(
-                mechanical_scales.to_execution_inverse_time(andren.F_CORIOLIS),
-                1.0,
-                0.0,
-                mechanical_scales.to_execution_inverse_time(andren.F_CORIOLIS),
+                mechanical_scales.to_execution_inverse_time(args.coriolis),
+                args.geostrophic_u_fraction,
+                args.geostrophic_v_fraction,
+                mechanical_scales.to_execution_inverse_time(
+                    args.horizontal_coriolis
+                ),
             ),
         ),
         ConservativeScalarAdvection(),
@@ -643,12 +605,13 @@ def run(args: argparse.Namespace) -> dict:
     )
     scale_fingerprint = scalar_scales.fingerprint
     if args.restart is None:
-        candidate = andren.andren_initial_velocity(
+        candidate = andren.initial_velocity(
             physical_grid,
             decomposition,
             mechanical_scales,
             dtype,
-            args,
+            profiles_path=args.initial_profiles,
+            seed=args.seed,
         )
         projected = project(
             candidate,
@@ -688,9 +651,10 @@ def run(args: argparse.Namespace) -> dict:
         )
         source = args.restart.parent
         history_rows = _read_history(source / "history.csv")
-        profile_times, profile_samples = _load_statistics_state(
-            source / "statistics_samples.npz"
-        )
+        statistics_path = source / "statistics_latest.npz"
+        if not statistics_path.exists():
+            statistics_path = source / "statistics_samples.npz"
+        profile_times, profile_samples = _load_statistics_state(statistics_path)
 
     if args.fig13_budget and args.restart is not None:
         budget_times, budget_samples = fig13_budget.load_samples(
@@ -701,8 +665,10 @@ def run(args: argparse.Namespace) -> dict:
 
     vector_field = BoussinesqVectorField(algebra, model)
     closure_event = LasdAcceptedStepEvent(algebra, model, config.dt)
-    target_steps = int(round(args.hours * 3600.0 / args.dt))
+    target_steps = args.target_steps
     requested_steps = target_steps - state.clock.step
+    if args.max_steps is not None:
+        requested_steps = min(requested_steps, args.max_steps)
     if requested_steps <= 0:
         raise ValueError("target time does not exceed the checkpoint time")
     warned_cfl = False
@@ -792,7 +758,7 @@ def run(args: argparse.Namespace) -> dict:
                 print(
                     f"step={state.clock.step} "
                     f"t={latest['time_seconds'] / 3600.0:.3f} h "
-                    f"tf={latest['time_seconds'] * andren.F_CORIOLIS:.3f} "
+                    f"tf={latest['time_seconds'] * args.coriolis:.3f} "
                     f"u*={latest['ustar']:.4f} CFL={latest['cfl']:.3f} "
                     f"trajectory-CFL={latest['lasd_cfl']:.3f} "
                     f"elapsed={time.perf_counter() - started:.1f} s",
@@ -801,12 +767,16 @@ def run(args: argparse.Namespace) -> dict:
     if last_result is None:
         raise RuntimeError("benchmark executed no steps")
 
+    if state.clock.step == args.target_steps:
+        save_boussinesq_checkpoint(
+            args.output / "checkpoint_final.npz",
+            state,
+            scale_fingerprint=scale_fingerprint,
+            physics_fingerprint=physics_fingerprint,
+        )
+
     final_time = mechanical_scales.from_execution_time(state.clock.time)
-    averaging_start = (
-        0.0
-        if args.quick
-        else max(7.0 / andren.F_CORIOLIS, final_time - 3.0 / andren.F_CORIOLIS)
-    )
+    averaging_start = args.sample_start_seconds
     selected = [
         sample
         for sample_time, sample in zip(profile_times, profile_samples, strict=True)
@@ -819,23 +789,30 @@ def run(args: argparse.Namespace) -> dict:
         row for row in history_rows if row["time_seconds"] >= averaging_start
     ] or [history_rows[-1]]
     statistics_ustar = float(np.mean([row["ustar"] for row in selected_history]))
-    _write_profiles(args.output, averaged, statistics_ustar)
+    _write_profiles(args.output, averaged, statistics_ustar, args)
     if args.fig13_budget:
         budget = fig13_budget.averaged_budget(
             budget_times,
             budget_samples,
             ustar=statistics_ustar,
             dz=physical_grid.dz,
+            coriolis=args.coriolis,
+            surface_scalar_flux=args.surface_scalar_flux,
         )
         fig13_budget.write_profile(args.output / "fig13_budget_profiles.csv", budget)
     elapsed = time.perf_counter() - started
-    reference = json.loads(andren.REFERENCE_RESULTS.read_text())
+    reference = json.loads(args.reference_results.read_text())
     published = np.asarray(tuple(reference["ustar_over_ug"].values()))
-    ratio = statistics_ustar / andren.GEOSTROPHIC_SPEED
-    cstar = (SURFACE_SCALAR_FLUX / AIR_DENSITY) / statistics_ustar
+    ratio = statistics_ustar / args.geostrophic_speed
+    canonical_complete = (
+        state.clock.step == args.target_steps
+        and (args.nx, args.ny, args.nz) == (40, 40, 40)
+        and math.isclose(args.target_steps * args.dt * args.coriolis, 10.0)
+    )
+    cstar = (args.surface_scalar_flux / args.air_density) / statistics_ustar
     normalized_sgs_scalar_variance = averaged["sgs_scalar_variance"] / cstar**2
     normalized_integrated_total_tke = (
-        andren.F_CORIOLIS
+        args.coriolis
         * np.asarray([row["integrated_total_tke_m3_s2"] for row in selected_history])
         / statistics_ustar**3
     )
@@ -844,8 +821,8 @@ def run(args: argparse.Namespace) -> dict:
         "case": {
             "citation": "Andren et al. (1994)",
             "sgs_model": "lasd",
-            "passive_scalar_surface_flux_kg_m2_s": SURFACE_SCALAR_FLUX,
-            "air_density_kg_m3": AIR_DENSITY,
+            "passive_scalar_surface_flux_kg_m2_s": args.surface_scalar_flux,
+            "air_density_kg_m3": args.air_density,
             "diagnostic_sgs_energy": True,
             "diagnostic_sgs_scalar_variance": True,
         },
@@ -853,9 +830,9 @@ def run(args: argparse.Namespace) -> dict:
             "nx": args.nx,
             "ny": args.ny,
             "nz": args.nz,
-            "lx": 4000.0,
-            "ly": 2000.0,
-            "lz": 1500.0,
+            "lx": args.lx,
+            "ly": args.ly,
+            "lz": args.lz,
         },
         "physics": {
             "momentum_sgs": momentum_sgs.fingerprint,
@@ -864,9 +841,9 @@ def run(args: argparse.Namespace) -> dict:
             "dealiasing": "three-halves-padding",
             "nonlinear_padding_ratio": NONLINEAR_PADDING_RATIO,
             "physics_fingerprint": physics_fingerprint,
-            "surface_scalar_flux": SURFACE_SCALAR_FLUX,
-            "neutral_log_wall_roughness_m": 0.1,
-            "neutral_log_wall_von_karman": 0.4,
+            "surface_scalar_flux": args.surface_scalar_flux,
+            "neutral_log_wall_roughness_m": args.roughness,
+            "neutral_log_wall_von_karman": args.von_karman,
             "sgs_energy_kind": (
                 "diagnostic local equilibrium with log-wall shear, not prognostic"
             ),
@@ -882,20 +859,29 @@ def run(args: argparse.Namespace) -> dict:
         },
         "runtime": {
             "dtype": args.dtype,
-            "dt": args.dt,
-            "completed_hours": final_time / 3600.0,
-            "accepted_steps": state.clock.step,
+            "dt_seconds": args.dt,
+            "final_time_hours": final_time / 3600.0,
+            "final_step": state.clock.step,
+            "initial_step": initial_step,
+            "steps_run": state.clock.step - initial_step,
+            "reached_final_time": state.clock.step == args.target_steps,
+            "cfl": history_rows[-1]["cfl"],
+            "lasd_trajectory_cfl": history_rows[-1]["lasd_cfl"],
             "elapsed_seconds": elapsed,
             "steps_per_second": (state.clock.step - initial_step) / elapsed,
             "samples_averaged": len(selected),
         },
         "comparison": {
+            "canonical_configuration_complete": canonical_complete,
+            "reference_acceptance_evaluated": canonical_complete,
             "statistics_ustar_m_s": statistics_ustar,
             "ustar_over_ug": ratio,
             "published_ustar_over_ug_min": float(published.min()),
             "published_ustar_over_ug_max": float(published.max()),
-            "inside_published_envelope": bool(
-                published.min() <= ratio <= published.max()
+            "inside_published_envelope": (
+                bool(published.min() <= ratio <= published.max())
+                if canonical_complete
+                else None
             ),
             "mean_normalized_integrated_total_tke": float(
                 np.mean(normalized_integrated_total_tke)
@@ -924,24 +910,78 @@ def run(args: argparse.Namespace) -> dict:
     (args.output / "summary.json").write_text(
         json.dumps(summary, indent=2, sort_keys=True) + "\n"
     )
-    (args.output / "resolved_config.toml").write_text(
-        toml_dumps(
-            vars(args)
-            | {
-                "output": str(args.output),
-                "restart": None if args.restart is None else str(args.restart),
-            }
-        )
-    )
     return summary
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = parse_args(argv)
-    summary = run(args)
-    print(json.dumps(summary, indent=2, sort_keys=True))
-    return 0
+def run_case(
+    case: CaseConfig,
+    *,
+    output_dir: Path,
+    restart: Path | None,
+    max_steps: int | None,
+    overwrite: bool,
+) -> dict:
+    """Run the configured Andrén benchmark through the shared ABL contract."""
 
-
-if __name__ == "__main__":
-    raise SystemExit(main())
+    benchmark = case.benchmark
+    if benchmark is None or benchmark.name != "andren1994":
+        raise ValueError("Andrén runner requires benchmark.name = 'andren1994'")
+    if (
+        restart is None
+        and output_dir.exists()
+        and any(output_dir.iterdir())
+        and not overwrite
+    ):
+        raise FileExistsError(
+            f"output directory is not empty: {output_dir}; set "
+            "execution.overwrite = true in the TOML configuration"
+        )
+    output_dir.mkdir(parents=True, exist_ok=True)
+    geostrophic_speed = math.hypot(
+        case.flow.geostrophic_u_m_s,
+        case.flow.geostrophic_v_m_s,
+    )
+    args = SimpleNamespace(
+        nx=case.domain.nx,
+        ny=case.domain.ny,
+        nz=case.domain.nz,
+        lx=case.domain.lx_m,
+        ly=case.domain.ly_m,
+        lz=case.domain.lz_m,
+        dt=case.time.dt_seconds,
+        target_steps=case.time.steps,
+        sample_start_seconds=case.time.sample_start_hours * 3600.0,
+        dtype=case.numerics.dtype,
+        seed=case.numerics.seed,
+        sample_every=case.output.sample_every_steps,
+        log_every=case.output.log_every_steps,
+        checkpoint_every=case.output.checkpoint_every_steps,
+        lasd_update_interval=case.sgs.update_interval_steps,
+        filter_grid_ratio=case.sgs.filter_grid_ratio,
+        max_cfl_warning=case.numerics.cfl_warning,
+        method=case.numerics.pressure_method,
+        thomas_chunk=benchmark.thomas_chunk,
+        restart=restart,
+        output=output_dir,
+        max_steps=max_steps,
+        fig13_budget=benchmark.fig13_budget,
+        surface_scalar_flux=(
+            benchmark.passive_scalar_surface_flux_kg_m2_s
+        ),
+        air_density=benchmark.air_density_kg_m3,
+        scalar_reference=benchmark.passive_scalar_reference_kg_m3,
+        initial_profiles=benchmark.initial_profiles,
+        reference_results=benchmark.reference_results,
+        roughness=case.flow.roughness_length_m,
+        von_karman=case.flow.von_karman,
+        coriolis=case.flow.coriolis_s,
+        horizontal_coriolis=benchmark.horizontal_coriolis_s,
+        geostrophic_speed=geostrophic_speed,
+        geostrophic_u_fraction=(
+            case.flow.geostrophic_u_m_s / geostrophic_speed
+        ),
+        geostrophic_v_fraction=(
+            case.flow.geostrophic_v_m_s / geostrophic_speed
+        ),
+    )
+    return _run(args)

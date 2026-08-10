@@ -43,3 +43,6 @@ smoothing_width_m = 4.0
 directory = "outputs/nrel5mw_direct_aeroelastic_alm_128x128x512_smoke"
 log_every_steps = 10
 flow_slice_every_steps = 2
+
+[execution]
+overwrite = false

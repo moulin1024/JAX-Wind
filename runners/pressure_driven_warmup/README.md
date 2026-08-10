@@ -27,21 +27,21 @@ complete GPU run plus the neutral log-law velocity plot, use the one-command
 benchmark from the repository root:
 
 ```bash
-python -m benchmark.PressureDrivenLASD
+jaxwind benchmark/PressureDrivenLASD/config.toml
 ```
 
 Validate the case without importing JAX:
 
 ```bash
-jaxwind runners/pressure_driven_warmup --dry-run
+jaxwind runners/pressure_driven_warmup/config.toml --dry-run
 ```
 
 Run it from the initial condition:
 
 ```bash
-jaxwind runners/pressure_driven_warmup
+jaxwind runners/pressure_driven_warmup/config.toml
 ```
 
-Use `--restart PATH` to continue from a checkpoint. Use `--overwrite` when an
-existing output directory may be replaced. Runtime products are written under
-`outputs/pressure_driven_warmup_64x64x64/`.
+Configure `execution.restart_checkpoint` to continue from a checkpoint and
+`execution.overwrite = true` to replace existing products. Runtime products
+are written under `outputs/pressure_driven_warmup_64x64x64/`.

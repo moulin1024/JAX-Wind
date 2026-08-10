@@ -15,7 +15,13 @@ import warnings
 import numpy as np
 
 from .config import CaseConfig
+from .most import MoninObukhovWallLaw
 from .profiles import ProfileStatistics, plot_profiles, write_profiles
+from .surface import is_fixed_surface_flux as _is_fixed_surface_flux
+from .surface import physical_arrays as _physical_arrays
+from .surface import stability as _stability
+from .surface import surface_fluxes as _surface_fluxes
+from .surface import velocity_scale as _velocity_scale
 
 
 HERE = Path(__file__).resolve().parent
@@ -102,7 +108,21 @@ def _initial_fields(
     # seed at 8 m/s before turbulence and SGS dissipation have developed.
     u = jnp.zeros(shape, dtype=dtype)
     v = jnp.zeros(shape, dtype=dtype)
-    w = jnp.zeros(shape, dtype=dtype)
+    if _is_fixed_surface_flux(case) and case.thermal.perturbation_amplitude_k:
+        z_face = (jnp.arange(case.domain.nz, dtype=dtype) + 1.0) * case.domain.dz_m
+        taper = jnp.maximum(
+            1.0 - z_face / max(case.thermal.inversion_height_m, case.domain.dz_m),
+            0.0,
+        )
+        normalized_noise = noise / case.thermal.perturbation_amplitude_k
+        w = (
+            0.1
+            * _velocity_scale(case)
+            * normalized_noise
+            * taper[None, :, None, None]
+        )
+    else:
+        w = jnp.zeros(shape, dtype=dtype)
     cell_regions = decomposition.regions(Cell)
     face_regions = decomposition.regions(ZFace)
     candidate = VelocityVector(
@@ -148,68 +168,6 @@ def _initial_fields(
         ),
     )
     return BoussinesqFields(velocity, scalar)
-
-
-def _physical_arrays(fields, case, mechanical_scales, thermal_scales, jnp):
-    velocity = fields.velocity
-    u = case.flow.geostrophic_u_m_s + mechanical_scales.from_execution_velocity(
-        velocity.x.payload[0]
-    )
-    v = case.flow.geostrophic_v_m_s + mechanical_scales.from_execution_velocity(
-        velocity.y.payload[0]
-    )
-    w_upper = mechanical_scales.from_execution_velocity(
-        velocity.z.owned.payload[0]
-    )
-    w_lower = jnp.concatenate((jnp.zeros_like(w_upper[:1]), w_upper[:-1]), axis=0)
-    w = 0.5 * (w_lower + w_upper)
-    theta = case.thermal.initial_temperature_k + (
-        thermal_scales.from_execution_potential_temperature(
-            fields.potential_temperature.payload[0]
-        )
-    )
-    return u, v, w, w_upper, theta
-
-
-def _surface_fluxes(
-    fields,
-    execution_time,
-    *,
-    case,
-    mechanical_scales,
-    thermal_scales,
-    wall_law,
-    jnp,
-):
-    u, v, _w, _w_upper, theta = _physical_arrays(
-        fields, case, mechanical_scales, thermal_scales, jnp
-    )
-    physical_time = mechanical_scales.from_execution_time(execution_time)
-    surface_temperature = (
-        case.thermal.initial_temperature_k
-        + case.thermal.surface_cooling_k_s * physical_time
-    )
-    # GABLS1 is horizontally homogeneous.  Diagnose one surface-layer state
-    # from the first-level plane mean so that the prescribed random initial
-    # perturbations cannot create grid-scale alternating stable/unstable wall
-    # fluxes.  The plane mean may briefly cross the prescribed surface
-    # temperature during spin-up, in which case the bounded unstable MOST
-    # branch supplies the restoring heat flux.
-    first_level_shape = u[0].shape
-    mean_u = jnp.mean(u[0])
-    mean_v = jnp.mean(v[0])
-    mean_theta = jnp.mean(theta[0])
-    mean_fluxes = wall_law.surface_fluxes(
-        mean_u,
-        mean_v,
-        mean_theta,
-        surface_temperature,
-        0.5 * case.domain.dz_m,
-    )
-    fluxes = type(mean_fluxes)(
-        *(jnp.broadcast_to(value, first_level_shape) for value in mean_fluxes)
-    )
-    return fluxes, surface_temperature
 
 
 def _stable_vector_field(
@@ -477,9 +435,17 @@ def _snapshot(
         model.scalar_sgs,
         model.scalar_boundary,
     ).payload
-    surface_source = jnp.zeros_like(standard_scalar_tendency).at[:, 0].set(
-        thermal_scales.to_execution_temperature_tendency(
-            fluxes.heat_flux / case.domain.dz_m
+    fixed_flux = (
+        getattr(case.thermal, "boundary_condition", "")
+        == "fixed_surface_flux"
+    )
+    surface_source = jnp.where(
+        fixed_flux,
+        jnp.zeros_like(standard_scalar_tendency),
+        jnp.zeros_like(standard_scalar_tendency).at[:, 0].set(
+            thermal_scales.to_execution_temperature_tendency(
+                fluxes.heat_flux / case.domain.dz_m
+            )
         )
     )
     total_plane_tendency = jnp.mean(
@@ -575,6 +541,7 @@ def run_case(
     from jaxwind.interpreters.jax_zslab import build_zslab_interpreter
     from jaxwind.physics import (
         BoussinesqModel,
+        BoussinesqVectorField,
         ConservativeAdvection,
         ConservativeScalarAdvection,
         CoriolisGeostrophic,
@@ -585,21 +552,23 @@ def run_case(
         LasdAcceptedStepEvent,
         LinearBoussinesqBuoyancy,
         NeutralLogWall,
+        NoRotation,
         NoRayleighDamping,
         ScalarFluxBoundary,
     )
     from jaxwind.pressure import build_spectral_fd_pressure_adapter
 
-    from .most import MoninObukhovWallLaw
-
     if jax.device_count() != 1:
-        raise RuntimeError("the GABLS1 runner currently requires one JAX device")
+        raise RuntimeError(
+            "the stratified ABL runner currently requires one JAX device"
+        )
     output_dir.mkdir(parents=True, exist_ok=True)
     checkpoint_path = output_dir / "checkpoint_latest.npz"
     statistics_path = output_dir / "statistics_latest.npz"
     if restart is None and checkpoint_path.exists() and not overwrite:
         raise FileExistsError(
-            f"{checkpoint_path} exists; use --restart or --overwrite"
+            f"{checkpoint_path} exists; configure "
+            "execution.restart_checkpoint or execution.overwrite"
         )
     if restart is not None and not restart.exists():
         raise FileNotFoundError(restart)
@@ -613,7 +582,7 @@ def run_case(
         case.domain.ly_m,
         case.domain.lz_m,
     )
-    mechanical_scales = ScaleSystem(case.domain.lz_m, case.flow.geostrophic_u_m_s)
+    mechanical_scales = ScaleSystem(case.domain.lz_m, _velocity_scale(case))
     thermal_scales = BoussinesqScaleSystem(mechanical_scales, 1.0)
     grid = mechanical_scales.to_execution_grid(physical_grid)
     decomposition = EqualZSlab(
@@ -641,13 +610,37 @@ def run_case(
         filter_grid_ratio=1.5,
         update_interval=case.sgs.lasd_update_interval,
     )
+    scalar_stability = (
+        buoyancy_coefficient
+        if _is_fixed_surface_flux(case)
+        else LASD_SCALAR_STABILITY_BUOYANCY_COEFFICIENT
+    )
     scalar_sgs = LagrangianScaleDependentScalarFlux(
         # The dynamic scalar coefficient already responds to the resolved
         # stratification. Applying the additional Richardson multiplier
-        # collapses near-wall mixing and drives an unphysical regime flip.
-        stability_buoyancy_coefficient=LASD_SCALAR_STABILITY_BUOYANCY_COEFFICIENT,
+        # collapses near-wall mixing and can reverse the diagnosed stability.
+        stability_buoyancy_coefficient=scalar_stability,
         stability_beta=30.0,
         stability_power=2.0,
+    )
+    rotation = (
+        NoRotation()
+        if _is_fixed_surface_flux(case)
+        else CoriolisGeostrophic(
+            mechanical_scales.to_execution_inverse_time(case.flow.coriolis_s),
+            0.0,
+            0.0,
+        )
+    )
+    scalar_boundary = (
+        ScalarFluxBoundary(
+            thermal_scales.to_execution_temperature_flux(
+                case.thermal.surface_heat_flux_k_m_s
+            ),
+            0.0,
+        )
+        if _is_fixed_surface_flux(case)
+        else ScalarFluxBoundary()
     )
     model = BoussinesqModel(
         DryFlowModel(
@@ -660,17 +653,13 @@ def run_case(
                 case.flow.von_karman,
             ),
             momentum_sgs,
-            CoriolisGeostrophic(
-                mechanical_scales.to_execution_inverse_time(case.flow.coriolis_s),
-                0.0,
-                0.0,
-            ),
+            rotation,
         ),
         ConservativeScalarAdvection(),
         scalar_sgs,
         LinearBoussinesqBuoyancy(buoyancy_coefficient),
         NoRayleighDamping(),
-        ScalarFluxBoundary(),
+        scalar_boundary,
     )
     wall_law = MoninObukhovWallLaw(
         case.flow.roughness_length_m,
@@ -680,12 +669,30 @@ def run_case(
         von_karman=case.flow.von_karman,
     )
     config = AB2Config(mechanical_scales.to_execution_time(case.time.dt_seconds))
+    fixed_surface_flux = _is_fixed_surface_flux(case)
+    surface_fingerprint = (
+        "fixed-heat-flux-neutral-wall-v1"
+        if fixed_surface_flux
+        else "businger-dyer-plane-prescribed-temperature-v3"
+    )
+    frame_fingerprint = (
+        "stationary-v1"
+        if fixed_surface_flux
+        else "geostrophic-translating-v1"
+    )
     physics_fingerprint = (
         momentum_sgs.fingerprint
         + "|"
         + scalar_sgs.fingerprint
-        + "|gabls1-most=businger-dyer-plane-v3"
-        + "|frame=geostrophic-translating-v1"
+        + f"|surface={surface_fingerprint}"
+        + f"|stability={_stability(case)}"
+        + "|thermal-boundary="
+        + getattr(
+            case.thermal,
+            "boundary_condition",
+            "prescribed_surface_temperature",
+        )
+        + f"|frame={frame_fingerprint}"
         + "|advection=conservative|dealiasing=three-halves-padding"
     )
     checkpoint_layout = ZSlabCheckpointLayout(
@@ -726,21 +733,26 @@ def run_case(
         )
     remaining = case.time.steps - state.clock.step
     if remaining < 0:
-        raise ValueError("restart is beyond the configured GABLS1 final time")
+        raise ValueError("restart is beyond the configured ABL final time")
     steps_to_run = remaining if max_steps is None else min(remaining, max_steps)
-    vector_field = _stable_vector_field(
-        algebra=algebra,
-        model=model,
-        case=case,
-        mechanical_scales=mechanical_scales,
-        thermal_scales=thermal_scales,
-        wall_law=wall_law,
-        jax=jax,
-        jnp=jnp,
+    vector_field = (
+        BoussinesqVectorField(algebra, model)
+        if fixed_surface_flux
+        else _stable_vector_field(
+            algebra=algebra,
+            model=model,
+            case=case,
+            mechanical_scales=mechanical_scales,
+            thermal_scales=thermal_scales,
+            wall_law=wall_law,
+            jax=jax,
+            jnp=jnp,
+        )
     )
     closure_event = LasdAcceptedStepEvent(algebra, model, config.dt)
 
-    history_path = output_dir / "time_series.csv"
+    history_name = "history.csv" if case.runner == "abl" else "time_series.csv"
+    history_path = output_dir / history_name
     append_history = restart is not None and history_path.exists()
     history_stream = history_path.open("a" if append_history else "w", newline="")
     history_fields = (
@@ -854,7 +866,7 @@ def run_case(
                 }
                 if cfl >= case.numerics.cfl_warning:
                     warnings.warn(
-                        f"GABLS1 CFL {cfl:.3f} exceeds configured warning "
+                        f"ABL CFL {cfl:.3f} exceeds configured warning "
                         f"{case.numerics.cfl_warning:.3f}",
                         stacklevel=1,
                     )
@@ -926,13 +938,24 @@ def run_case(
         post_warmup_steps / post_warmup_elapsed if post_warmup_elapsed else None
     )
     summary = {
-        "schema": "jaxwind.gabls1.semantic-sgs.v1",
+        "schema": (
+            "jaxwind.abl-warmup.v1"
+            if case.runner == "abl"
+            else "jaxwind.gabls1.v1"
+        ),
         "case": case.resolved(),
         "physics": {
             "momentum_sgs": "LASD",
             "scalar_sgs": "LASD dynamic scalar flux",
-            "surface": "plane-mean Businger-Dyer Monin-Obukhov similarity",
-            "reference_frame": "geostrophic translating frame",
+            "stability": _stability(case),
+            "surface": surface_fingerprint,
+            "reference_frame": (
+                (
+                    "stationary"
+                    if fixed_surface_flux
+                    else "geostrophic translating"
+                )
+            ),
             "momentum_advection": "conservative",
             "scalar_advection": "conservative",
             "dealiasing": "three-halves-padding",
@@ -966,5 +989,6 @@ def run_case(
     (output_dir / "summary.json").write_text(
         json.dumps(summary, indent=2, sort_keys=True) + "\n"
     )
-    print(json.dumps(summary, indent=2, sort_keys=True), flush=True)
+    if case.runner != "abl":
+        print(json.dumps(summary, indent=2, sort_keys=True), flush=True)
     return summary

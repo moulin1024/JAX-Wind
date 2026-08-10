@@ -202,7 +202,7 @@ def run_case(
     ):
         raise FileExistsError(
             f"{output_dir} already contains paired checkpoints; "
-            "use --restart or --overwrite"
+            "configure execution.restart_checkpoint or execution.overwrite"
         )
     if (
         restart is None
@@ -213,7 +213,7 @@ def run_case(
     ):
         raise FileExistsError(
             f"{fields_dir} already contains field samples; "
-            "use --restart or --overwrite"
+            "configure execution.restart_checkpoint or execution.overwrite"
         )
     if not case.warmup.checkpoint.is_file():
         raise FileNotFoundError(case.warmup.checkpoint)
@@ -388,7 +388,10 @@ def run_case(
     else:
         restart_dir = restart
         if not restart_dir.is_dir():
-            raise ValueError("--restart must name a paired checkpoint directory")
+            raise ValueError(
+                "execution.restart_checkpoint must name a paired "
+                "checkpoint directory"
+            )
         precursor = load_boussinesq_checkpoint(
             restart_dir / "precursor_checkpoint_latest.npz",
             layout=checkpoint_layout,

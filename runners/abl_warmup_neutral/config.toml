@@ -1,6 +1,7 @@
 [case]
-runner = "pressure_driven_warmup"
-name = "pressure_driven_warmup_64x64x64"
+runner = "abl"
+workflow = "warmup"
+name = "abl_warmup_neutral_64x64x64"
 
 [domain]
 nx = 64
@@ -11,18 +12,26 @@ ly_m = 6283.185307179586
 lz_m = 1000.0
 
 [flow]
+momentum_forcing = "pressure_gradient"
 friction_velocity_m_s = 0.4
-roughness_length_m = 0.001
 forcing_height_m = 1000.0
-von_karman = 0.4
+initial_velocity_profile = "log_law"
 initial_perturbation_rms_m_s = 0.1
 initial_correlation_length_m = 32.0
 
 [wall]
 model = "filtered_neutral_log"
+roughness_length_m = 0.001
+thermal_roughness_length_m = 0.001
+von_karman = 0.4
 filter_grid_ratio = 1.5
 test_filter_ratio = 2.0
 porte_agel_correction = true
+
+[thermal]
+boundary_condition = "none"
+initial_temperature_k = 300.0
+reference_temperature_k = 300.0
 
 [sgs]
 model = "lasd"
@@ -44,13 +53,14 @@ dtype = "float32"
 pressure_method = "spike"
 seed = 2025
 cfl_abort = 0.5
+cfl_warning = 0.4
 lasd_trajectory_cfl_abort = 1.0
 
 [output]
-directory = "outputs/pressure_driven_warmup_64x64x64"
-log_every_steps = 1000
+directory = "outputs/abl_warmup_neutral_64x64x64"
 sample_start_hours = 8.0
 sample_every_steps = 100
+log_every_steps = 1000
 checkpoint_every_steps = 36000
 
 [execution]

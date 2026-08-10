@@ -393,7 +393,13 @@ def _figure3_data(results: Path) -> dict[str, np.ndarray | str] | None:
         stress_kind = "wall-stress direction reconstructed from first-cell mean wind"
 
     summary = json.loads((results / "summary.json").read_text())
-    dz = float(summary["grid"]["lz"]) / u.shape[1]
+    grid = summary.get("grid")
+    if grid is None:
+        grid = summary["configuration"]["domain"]
+        lz = grid["lz_m"]
+    else:
+        lz = grid["lz"]
+    dz = float(lz) / u.shape[1]
     cu, cv = _momentum_stationarity(u, v, surface_uw, surface_vw, dz=dz)
     return {
         "tf": times * 1.0e-4,
@@ -596,13 +602,20 @@ def main() -> None:
     output = args.output or args.results / "paper_overlays"
     output.mkdir(parents=True, exist_ok=True)
     summary = json.loads((args.results / "summary.json").read_text())
-    statistics_ustar = summary["comparison"]["statistics_ustar_m_s"]
+    benchmark = summary.get("benchmark")
+    comparison = (
+        benchmark["comparison"] if benchmark is not None else summary["comparison"]
+    )
+    statistics_ustar = comparison["statistics_ustar_m_s"]
     history = _history_data(args.results, statistics_ustar)
     figure3_data = _figure3_data(args.results)
     profile = _profile_data(args.results, statistics_ustar)
     spectra = _spectra_data(args.results)
     budget = _budget_data(args.results)
-    sgs_model = str(summary.get("case", {}).get("sgs_model", "unknown"))
+    if benchmark is not None:
+        sgs_model = str(summary["configuration"]["sgs"]["model"])
+    else:
+        sgs_model = str(summary.get("case", {}).get("sgs_model", "unknown"))
     model_label = {
         "lasd": "LASD",
         "static-smagorinsky": "static Smagorinsky",

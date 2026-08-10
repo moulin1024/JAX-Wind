@@ -27,13 +27,13 @@ not complete OpenFAST/ElastoDyn or BeamDyn parity.
 Validate without importing JAX:
 
 ```bash
-jaxwind runners/nrel5mw_direct_alm_smoke --dry-run
+jaxwind runners/nrel5mw_direct_alm_smoke/config.toml --dry-run
 ```
 
 Run the smoke animation:
 
 ```bash
-jaxwind runners/nrel5mw_direct_alm_smoke --overwrite
+jaxwind runners/nrel5mw_direct_alm_smoke/config.toml
 ```
 
 This runner writes resolved configuration, flow and structural history,

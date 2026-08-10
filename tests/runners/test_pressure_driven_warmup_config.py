@@ -67,7 +67,7 @@ def test_dry_run_prints_the_resolved_plan_without_loading_jax() -> None:
             sys.executable,
             "-m",
             "jaxwind",
-            str(CASE_DIR),
+            str(CONFIG),
             "--dry-run",
         ],
         cwd=ROOT,
@@ -101,7 +101,7 @@ def test_config_rejects_removed_sgs_models(tmp_path: Path, model: str) -> None:
         load_case(invalid)
 
 
-def test_cli_runs_a_declarative_case_directory_without_run_py(
+def test_cli_reads_a_declarative_toml_without_run_py(
     tmp_path: Path,
 ) -> None:
     case_dir = tmp_path / "copied_case"
@@ -109,7 +109,13 @@ def test_cli_runs_a_declarative_case_directory_without_run_py(
     (case_dir / "config.toml").write_text(CONFIG.read_text())
 
     completed = subprocess.run(
-        [sys.executable, "-m", "jaxwind", str(case_dir), "--dry-run"],
+        [
+            sys.executable,
+            "-m",
+            "jaxwind",
+            str(case_dir / "config.toml"),
+            "--dry-run",
+        ],
         cwd=ROOT,
         env=_cli_environment(),
         check=True,

@@ -10,7 +10,7 @@ from jaxwind.runners.gabls1 import ConfigError, load_case
 
 
 ROOT = Path(__file__).resolve().parents[2]
-CONFIG = ROOT / "benchmark" / "GABLS1" / "case.toml"
+CONFIG = ROOT / "benchmark" / "GABLS1" / "config.toml"
 
 
 def test_canonical_gabls1_case_is_complete() -> None:

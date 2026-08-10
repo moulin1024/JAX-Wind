@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import csv
-import os
 from pathlib import Path
-import subprocess
-import sys
 
 import pytest
 
-from benchmark.PressureDrivenLASD import run as lasd_run
-from jaxwind.runners.pressure_driven_warmup import load_case
+from jaxwind.cli import main
+from jaxwind.runners import load_case
+from jaxwind.runners.pressure_driven_warmup.log_law import write_log_law_svg
+
+
+ROOT = Path(__file__).resolve().parents[2]
+CASE_DIR = ROOT / "benchmark" / "PressureDrivenLASD"
+CONFIG = CASE_DIR / "config.toml"
 
 
 def _write_profile(path: Path) -> None:
@@ -21,66 +24,43 @@ def _write_profile(path: Path) -> None:
         writer.writerow((900.0, 13.5))
 
 
-def test_default_entrypoint_uses_the_lasd_case() -> None:
-    args = lasd_run._arguments([])
-    case = load_case(lasd_run.CONFIG, statistics_fraction=0.2)
+def test_benchmark_is_a_pure_declarative_case() -> None:
+    assert CONFIG.is_file()
+    assert not tuple(CASE_DIR.glob("*.py"))
+
+    configured = load_case(CASE_DIR)
+    case = configured.configuration
+    assert configured.runner_name == "pressure_driven_warmup"
+    assert configured.config_path == CONFIG
     assert case.sgs.model == "lasd"
     assert case.output.sample_start_hours == pytest.approx(
         0.8 * case.time.duration_hours
     )
-    assert args.max_steps is None
-    assert not args.allow_cpu
-
-
-def test_entrypoint_finds_src_checkout_without_an_editable_install() -> None:
-    environment = os.environ.copy()
-    environment.pop("PYTHONPATH", None)
-    completed = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            (
-                "import importlib.util; "
-                "from benchmark.PressureDrivenLASD.run import ROOT, SOURCE; "
-                "spec = importlib.util.find_spec('jaxwind'); "
-                "assert SOURCE == ROOT / 'src'; "
-                "assert spec is not None and str(spec.origin).startswith(str(SOURCE))"
-            ),
-        ],
-        cwd=lasd_run.ROOT,
-        env=environment,
-        check=True,
-        capture_output=True,
-        text=True,
+    assert configured.output_directory == Path(
+        "outputs/pressure_driven_lasd_64x64x64_gpu"
     )
-    assert completed.stderr == ""
 
 
-def test_log_law_plot_is_dependency_free_svg(tmp_path: Path) -> None:
+def test_uniform_cli_resolves_benchmark_configuration(capsys) -> None:
+    assert main([str(CONFIG), "--dry-run"]) == 0
+    output = capsys.readouterr().out
+    assert 'runner = "pressure_driven_warmup"' in output
+    assert 'model = "lasd"' in output
+    assert 'case = "pressure_driven_lasd_64x64x64"' in output
+
+
+def test_log_law_plot_is_a_runner_owned_dependency_free_svg(tmp_path: Path) -> None:
     profile = tmp_path / "profiles.csv"
     figure = tmp_path / "loglaw.svg"
     _write_profile(profile)
-    lasd_run.write_log_law_svg(
+    write_log_law_svg(
         profile,
         figure,
         friction_velocity_m_s=0.4,
         roughness_length_m=0.001,
         von_karman=0.4,
+        statistics_label="final 20%",
     )
     text = figure.read_text()
     assert text.startswith('<svg xmlns="http://www.w3.org/2000/svg"')
     assert "LASD mean, final 20%" in text
-
-
-def test_lasd_entrypoint_uses_the_lasd_output(monkeypatch) -> None:
-    captured = {}
-
-    def fake_run_benchmark(argv, **options):
-        captured["argv"] = argv
-        captured.update(options)
-        return 7
-
-    monkeypatch.setattr(lasd_run, "run_benchmark", fake_run_benchmark)
-    assert lasd_run.main(["--allow-cpu"]) == 7
-    assert captured["argv"] == ["--allow-cpu"]
-    assert captured["default_output"] == lasd_run.DEFAULT_OUTPUT
