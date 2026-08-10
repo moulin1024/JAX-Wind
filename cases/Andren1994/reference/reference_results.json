@@ -11,6 +11,12 @@
     "nieuwstadt": 0.0402,
     "schumann_graf": 0.0425
   },
+  "metrics": {
+    "surface_friction_velocity_ratio": {
+      "minimum": 0.0402,
+      "maximum": 0.0448
+    }
+  },
   "normalized_integrated_total_tke_plateau": 0.7,
   "normalized_top_height_approximate": 0.35,
   "spectrum_peak_k_ustar_over_f": {

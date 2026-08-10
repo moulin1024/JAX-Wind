@@ -232,14 +232,14 @@ def build_fused_neutral_boussinesq_kernels(
                     stability_power,
                 )
             )
-        if use_imposed_sources:
-            bottom = lax.axis_index(axis_name) == 0
             momentum_tendency = (
                 momentum_tendency[0],
                 momentum_tendency[1],
                 momentum_tendency[2]
                 + buoyancy_local(scalar, buoyancy_coefficient),
             )
+        if use_imposed_sources:
+            bottom = lax.axis_index(axis_name) == 0
             scalar_tendency = scalar_tendency.at[0].add(
                 jnp.where(bottom, imposed_scalar_source, 0.0)
             )

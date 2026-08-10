@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from pathlib import Path
 
-from jaxwind.domain import PassiveScalarScaleSystem, ScaleSystem, UniformGrid
+from jaxwind.domain import ScaleSystem, UniformGrid
 from jaxwind.integrators import AB2Config
 from jaxwind.physics import BoussinesqModel
 
@@ -28,8 +29,8 @@ class PressureProjection:
 
 
 @dataclass(frozen=True, slots=True)
-class TabulatedVelocityTKE:
-    """Horizontally homogeneous means and isotropic TKE perturbations."""
+class TabulatedBoussinesqState:
+    """Tabulated means and perturbation amplitudes for every evolved field."""
 
     path: Path
     seed: int
@@ -37,6 +38,91 @@ class TabulatedVelocityTKE:
     def __post_init__(self) -> None:
         if self.seed < 0:
             raise ValueError("initial-condition seed must be nonnegative")
+
+
+@dataclass(frozen=True, slots=True)
+class ScalarScaleSystem:
+    """Unit-aware scalar scale independent of its buoyancy coupling."""
+
+    mechanical: ScaleSystem
+    magnitude: float
+    quantity: str
+    reference_value: float = 0.0
+    version: str = "jaxwind.application-scalar-scales.v1"
+
+    def __post_init__(self) -> None:
+        if not math.isfinite(self.magnitude) or self.magnitude <= 0.0:
+            raise ValueError("scalar scale must be finite and positive")
+        if self.quantity not in (
+            "passive_concentration",
+            "potential_temperature",
+        ):
+            raise ValueError("unsupported scalar quantity")
+        if not math.isfinite(self.reference_value):
+            raise ValueError("scalar reference value must be finite")
+
+    @property
+    def fingerprint(self) -> str:
+        return (
+            f"{self.version}|mechanical={self.mechanical.fingerprint}"
+            f"|magnitude={float(self.magnitude).hex()}"
+            f"|quantity={self.quantity}"
+            f"|reference={float(self.reference_value).hex()}"
+        )
+
+    @property
+    def field_quantity(self):
+        from jaxwind.domain import (
+            PassiveScalarConcentration,
+            PotentialTemperaturePerturbation,
+        )
+
+        return (
+            PotentialTemperaturePerturbation
+            if self.quantity == "potential_temperature"
+            else PassiveScalarConcentration
+        )
+
+    def to_execution_scalar(self, value):
+        return (value - self.reference_value) / self.magnitude
+
+    def from_execution_scalar(self, value):
+        return value * self.magnitude + self.reference_value
+
+    def to_execution_flux(self, value):
+        return value / (self.magnitude * self.mechanical.velocity)
+
+    def from_execution_flux(self, value):
+        return value * self.magnitude * self.mechanical.velocity
+
+    def to_execution_buoyancy_coefficient(self, value: float) -> float:
+        if not math.isfinite(value):
+            raise ValueError("buoyancy acceleration per scalar must be finite")
+        return value * self.magnitude / self.mechanical.acceleration
+
+    def from_execution_buoyancy_coefficient(self, value: float) -> float:
+        return value * self.mechanical.acceleration / self.magnitude
+
+
+@dataclass(frozen=True, slots=True)
+class DiagnosticReference:
+    """Case-data normalization for generic profiles, spectra, and bulk metrics."""
+
+    length_m: float
+    velocity_m_s: float
+    scalar: float
+    inversion_search_max_height_m: float
+    spectrum_heights_m: tuple[float, ...]
+
+    def __post_init__(self) -> None:
+        if min(self.length_m, self.velocity_m_s, self.scalar) <= 0.0:
+            raise ValueError("diagnostic scales must be positive")
+        if self.inversion_search_max_height_m <= 0.0:
+            raise ValueError("inversion search height must be positive")
+        if not self.spectrum_heights_m or any(
+            value <= 0.0 for value in self.spectrum_heights_m
+        ):
+            raise ValueError("spectrum heights must be positive")
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,10 +152,11 @@ class BoussinesqCase:
     citation: str
     physical_grid: UniformGrid
     mechanical_scales: ScaleSystem
-    scalar_scales: PassiveScalarScaleSystem
+    scalar_scales: ScalarScaleSystem
     model: BoussinesqModel
     integrator: AB2Config
-    initial_condition: TabulatedVelocityTKE
+    initial_condition: TabulatedBoussinesqState
+    diagnostic_reference: DiagnosticReference
     reference_results: Path
     pressure: PressureProjection
     output: OutputSchedule
@@ -108,7 +195,9 @@ class BoussinesqCase:
 
 __all__ = [
     "BoussinesqCase",
+    "DiagnosticReference",
     "OutputSchedule",
     "PressureProjection",
-    "TabulatedVelocityTKE",
+    "ScalarScaleSystem",
+    "TabulatedBoussinesqState",
 ]

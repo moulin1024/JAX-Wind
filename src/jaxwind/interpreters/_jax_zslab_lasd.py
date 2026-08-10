@@ -396,12 +396,9 @@ class ZSlabLasdMixin:
                 (NoRotation, CoriolisGeostrophic),
             )
             and isinstance(model.scalar_advection, ConservativeScalarAdvection)
-            and (
-                isinstance(model.buoyancy, NoBuoyancy)
-                or (
-                    use_imposed_sources
-                    and isinstance(model.buoyancy, LinearBoussinesqBuoyancy)
-                )
+            and isinstance(
+                model.buoyancy,
+                (NoBuoyancy, LinearBoussinesqBuoyancy),
             )
             and isinstance(model.rayleigh_damping, NoRayleighDamping)
             and isinstance(model.scalar_boundary, ScalarFluxBoundary)
@@ -419,6 +416,8 @@ class ZSlabLasdMixin:
             )
         if use_imposed_sources and frozen_model:
             raise ValueError("imposed stable sources require an active scalar")
+        if frozen_model and isinstance(model.buoyancy, LinearBoussinesqBuoyancy):
+            raise ValueError("Boussinesq buoyancy requires an active scalar")
 
         velocity = fields.velocity
         self._validate_velocity_cell(velocity.x, XVelocity)

@@ -14,4 +14,6 @@ python -m applications.pressure_driven_lasd \
   cases/PressureDrivenLASD/config.toml --dry-run
 python -m applications.abl \
   cases/Andren1994/config.toml --dry-run
+python -m applications.abl \
+  cases/Nieuwstadt1993/config.toml --dry-run
 ```

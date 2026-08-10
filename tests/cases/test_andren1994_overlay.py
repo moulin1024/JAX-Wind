@@ -67,11 +67,13 @@ def test_overlay_uses_active_profile_and_summary_outputs(tmp_path: Path) -> None
             {
                 "physics": {
                     "geostrophic_velocity_m_s": [10.0, 0.0],
-                    "passive_scalar_surface_flux_kg_m2_s": scalar_flux,
+                    "scalar_surface_flux": scalar_flux,
                     "coriolis_vertical_s": 1.0e-4,
                 },
                 "runtime": {"ustar_m_s": ustar},
-                "comparison": {"ustar_over_ug": ustar / 10.0},
+                "diagnostic_metrics": {
+                    "surface_friction_velocity_ratio": ustar / 10.0
+                },
             }
         )
     )

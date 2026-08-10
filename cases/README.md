@@ -9,6 +9,8 @@ and output effects.
   neutral ABL case.
 - [`Andren1994`](Andren1994/README.md) is a neutral ABL case with literature
   reference data for comparison.
+- [`Nieuwstadt1993`](Nieuwstadt1993/README.md) is a shear-free, buoyancy-driven
+  ABL case using the same application schema and solver transition.
 
 Select the appropriate application explicitly and pass the case TOML:
 
@@ -17,6 +19,8 @@ python -m applications.pressure_driven_lasd \
   cases/PressureDrivenLASD/config.toml --dry-run
 python -m applications.abl \
   cases/Andren1994/config.toml --dry-run
+python -m applications.abl \
+  cases/Nieuwstadt1993/config.toml --dry-run
 ```
 
 JAX-Wind does not contain case names, a registry, or a universal case schema.

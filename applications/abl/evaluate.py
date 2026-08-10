@@ -16,7 +16,6 @@ import numpy as np
 
 from applications.boussinesq import BoussinesqCase
 from applications.initial_conditions import build_initial_fields
-from applications.abl.config import derive_abl_stability
 
 
 SOURCE_ROOT = Path(__file__).resolve().parents[2]
@@ -47,6 +46,14 @@ class ProfileStatistics:
         "resolved_tke_sgs_transfer",
         "momentum_diffusivity",
         "scalar_diffusivity",
+        "sgs_scalar_variance",
+        "pressure_variance",
+        "w_third_moment",
+        "updraft_fraction",
+        "updraft_w",
+        "updraft_scalar_excess",
+        "resolved_energy_vertical_transport",
+        "pressure_vertical_transport",
     )
 
     SPECTRUM_NAMES = (
@@ -56,6 +63,10 @@ class ProfileStatistics:
         "w",
         "scalar",
         "height_m",
+        "radial_wavenumber_reference",
+        "radial_horizontal",
+        "radial_w",
+        "radial_scalar",
     )
 
     def __init__(self, nz: int) -> None:
@@ -232,8 +243,14 @@ def resolved(case: BoussinesqCase) -> dict[str, Any]:
     momentum = case.model.momentum
     rotation = momentum.rotation
     wall = momentum.wall
-    scalar_flux = case.scalar_scales.from_execution_concentration_flux(
+    scalar_flux = case.scalar_scales.from_execution_flux(
         case.model.scalar_boundary.lower_flux
+    )
+    rotation_values = _rotation_values(case)
+    buoyancy_coefficient = (
+        case.scalar_scales.from_execution_buoyancy_coefficient(
+            case.model.buoyancy.acceleration_per_temperature
+        )
     )
     return {
         "case": case.name,
@@ -244,7 +261,6 @@ def resolved(case: BoussinesqCase) -> dict[str, Any]:
             "spacing_m": [grid.dx, grid.dy, grid.dz],
         },
         "physics": {
-            "stability": derive_abl_stability(case),
             "advection": type(momentum.advection).__name__,
             "pressure_gradient": type(momentum.pressure_gradient).__name__,
             "wall": type(wall).__name__,
@@ -254,25 +270,16 @@ def resolved(case: BoussinesqCase) -> dict[str, Any]:
             "momentum_sgs": type(momentum.sgs).__name__,
             "scalar_sgs": type(case.model.scalar_sgs).__name__,
             "rotation": type(rotation).__name__,
-            "coriolis_vertical_s": (
-                case.mechanical_scales.from_execution_inverse_time(
-                    rotation.coriolis_parameter
-                )
-            ),
-            "coriolis_horizontal_s": (
-                case.mechanical_scales.from_execution_inverse_time(
-                    rotation.horizontal_coriolis_parameter
-                )
-            ),
+            "coriolis_vertical_s": rotation_values[0],
+            "coriolis_horizontal_s": rotation_values[1],
             "geostrophic_velocity_m_s": [
-                case.mechanical_scales.from_execution_velocity(
-                    rotation.geostrophic_x_velocity
-                ),
-                case.mechanical_scales.from_execution_velocity(
-                    rotation.geostrophic_y_velocity
-                ),
+                rotation_values[2],
+                rotation_values[3],
             ],
-            "passive_scalar_surface_flux_kg_m2_s": scalar_flux,
+            "scalar_quantity": case.scalar_scales.quantity,
+            "scalar_reference_value": case.scalar_scales.reference_value,
+            "scalar_surface_flux": scalar_flux,
+            "buoyancy_acceleration_per_scalar": buoyancy_coefficient,
         },
         "time": {
             "method": "AB2",
@@ -290,6 +297,17 @@ def resolved(case: BoussinesqCase) -> dict[str, Any]:
             "thomas_chunk": case.pressure.thomas_chunk,
             "nonlinear_padding_ratio": case.nonlinear_padding_ratio,
         },
+        "diagnostic_reference": {
+            "length_m": case.diagnostic_reference.length_m,
+            "velocity_m_s": case.diagnostic_reference.velocity_m_s,
+            "scalar": case.diagnostic_reference.scalar,
+            "inversion_search_max_height_m": (
+                case.diagnostic_reference.inversion_search_max_height_m
+            ),
+            "spectrum_heights_m": list(
+                case.diagnostic_reference.spectrum_heights_m
+            ),
+        },
         "output": {
             "directory": str(case.output.directory),
             "sample_every_steps": case.output.sample_every_steps,
@@ -299,15 +317,45 @@ def resolved(case: BoussinesqCase) -> dict[str, Any]:
     }
 
 
+def _rotation_values(case: BoussinesqCase) -> tuple[float, float, float, float]:
+    """Return dimensional rotation/forcing values, including their zero limit."""
+
+    rotation = case.model.momentum.rotation
+    vertical = getattr(rotation, "coriolis_parameter", 0.0)
+    horizontal = getattr(rotation, "horizontal_coriolis_parameter", 0.0)
+    geostrophic_x = getattr(rotation, "geostrophic_x_velocity", 0.0)
+    geostrophic_y = getattr(rotation, "geostrophic_y_velocity", 0.0)
+    return (
+        case.mechanical_scales.from_execution_inverse_time(vertical),
+        case.mechanical_scales.from_execution_inverse_time(horizontal),
+        case.mechanical_scales.from_execution_velocity(geostrophic_x),
+        case.mechanical_scales.from_execution_velocity(geostrophic_y),
+    )
+
+
 def _physics_fingerprints(case: BoussinesqCase) -> tuple[str, str]:
     momentum = case.model.momentum.sgs
     scalar = case.model.scalar_sgs
     closure = momentum.fingerprint + "|" + scalar.fingerprint
+    flow = case.model.momentum
+    rotation = flow.rotation
+    wall = flow.wall
+    buoyancy = case.model.buoyancy
+    scalar_boundary = case.model.scalar_boundary
     physics = (
-        closure
-        + f"|advection={type(case.model.momentum.advection).__name__}"
-        + f"|wall={type(case.model.momentum.wall).__name__}"
-        + f"|rotation={type(case.model.momentum.rotation).__name__}"
+        "jaxwind.application-boussinesq-physics.v2"
+        + f"|closure={closure}"
+        + f"|advection={type(flow.advection).__name__}"
+        + f"|pressure-x={flow.pressure_gradient.x_acceleration.hex()}"
+        + f"|pressure-y={flow.pressure_gradient.y_acceleration.hex()}"
+        + f"|wall={type(wall).__name__}"
+        + f":{wall.roughness_length.hex()}:{wall.von_karman.hex()}"
+        + f"|rotation={type(rotation).__name__}:{rotation!r}"
+        + f"|buoyancy={type(buoyancy).__name__}"
+        + f":{buoyancy.acceleration_per_temperature.hex()}"
+        + f"|scalar-boundary={scalar_boundary.lower_flux.hex()}"
+        + f":{scalar_boundary.upper_flux.hex()}"
+        + f"|rayleigh={case.model.rayleigh_damping!r}"
         + f"|padding={case.nonlinear_padding_ratio.hex()}"
     )
     return closure, physics
@@ -331,7 +379,7 @@ def _physical_fields(state, case: BoussinesqCase, jnp):
     ).reshape(shape)
     lower = jnp.concatenate((jnp.zeros_like(w_upper[:1]), w_upper[:-1]), axis=0)
     w = 0.5 * (lower + w_upper)
-    scalar = case.scalar_scales.from_execution_concentration(
+    scalar = case.scalar_scales.from_execution_scalar(
         state.fields.potential_temperature.payload
     ).reshape(shape)
     return u, v, w, w_upper, scalar
@@ -373,8 +421,35 @@ def _x_spectrum(values: np.ndarray, level: int) -> np.ndarray:
     return energy * factors
 
 
+def _radial_spectrum(
+    values: np.ndarray,
+    *,
+    dx: float,
+    dy: float,
+    edges: np.ndarray,
+) -> np.ndarray:
+    """Return a variance-conserving horizontal radial spectrum."""
+
+    ny, nx = values.shape
+    signal = values - np.mean(values)
+    transformed = np.fft.fft2(signal) / (nx * ny)
+    energy = np.abs(transformed) ** 2
+    kx = 2.0 * np.pi * np.fft.fftfreq(nx, d=dx)
+    ky = 2.0 * np.pi * np.fft.fftfreq(ny, d=dy)
+    radius = np.sqrt(kx[None, :] ** 2 + ky[:, None] ** 2)
+    bins = np.digitize(radius.ravel(), edges) - 1
+    valid = (bins >= 0) & (bins < edges.size - 1)
+    result = np.bincount(
+        bins[valid],
+        weights=energy.ravel()[valid],
+        minlength=edges.size - 1,
+    )
+    return result[: edges.size - 1]
+
+
 def _diagnostic_observables(
     state,
+    pressure,
     case: BoussinesqCase,
     algebra,
     jax,
@@ -415,10 +490,13 @@ def _diagnostic_observables(
     scalar_diffusivity = diagnostic.scalar_diffusivity.reshape(shape) * (
         case.mechanical_scales.kinematic_viscosity
     )
-    scalar_flux_upper = case.scalar_scales.from_execution_concentration_flux(
+    sgs_scalar_variance = diagnostic.scalar_variance.reshape(shape) * (
+        case.scalar_scales.magnitude**2
+    )
+    scalar_flux_upper = case.scalar_scales.from_execution_flux(
         diagnostic.scalar_flux_z.reshape(shape)
     )
-    surface_scalar_flux = case.scalar_scales.from_execution_concentration_flux(
+    surface_scalar_flux = case.scalar_scales.from_execution_flux(
         case.model.scalar_boundary.lower_flux
     )
     lower_scalar_flux = jnp.concatenate(
@@ -429,6 +507,37 @@ def _diagnostic_observables(
         axis=0,
     )
     sgs_scalar_flux = 0.5 * (lower_scalar_flux + scalar_flux_upper)
+
+    pressure_physical = (
+        pressure.payload.reshape(shape)
+        * case.mechanical_scales.kinematic_pressure
+    )
+    pressure_fluctuation = pressure_physical - jnp.mean(
+        pressure_physical, axis=(-2, -1), keepdims=True
+    )
+    w_face = case.mechanical_scales.from_execution_velocity(
+        state.fields.velocity.z.owned.payload
+    ).reshape(shape)
+    scalar_face = (
+        context.arrays.theta_upper.reshape(shape)
+        * case.scalar_scales.magnitude
+    )
+    w_face_fluctuation = w_face - jnp.mean(
+        w_face, axis=(-2, -1), keepdims=True
+    )
+    scalar_face_fluctuation = scalar_face - jnp.mean(
+        scalar_face, axis=(-2, -1), keepdims=True
+    )
+    resolved_scalar_flux_upper = jnp.mean(
+        w_face_fluctuation * scalar_face_fluctuation,
+        axis=(-2, -1),
+    )
+    resolved_scalar_flux = 0.5 * jnp.concatenate(
+        (
+            resolved_scalar_flux_upper[:1],
+            resolved_scalar_flux_upper[:-1] + resolved_scalar_flux_upper[1:],
+        )
+    )
 
     resolved_tke_sgs_transfer = algebra.momentum_sgs_tke_transfer(
         context.momentum,
@@ -462,10 +571,27 @@ def _diagnostic_observables(
         )
     )
     sgs_tke_profile = profile(sgs_tke)
+    updraft = w_fluctuation > 0.0
+    updraft_count = jnp.sum(updraft, axis=(-2, -1))
+    safe_updraft_count = jnp.maximum(updraft_count, 1)
+    updraft_fraction = updraft_count / float(
+        case.physical_grid.nx * case.physical_grid.ny
+    )
+    updraft_w = jnp.sum(jnp.where(updraft, w_fluctuation, 0.0), axis=(-2, -1)) / (
+        safe_updraft_count
+    )
+    updraft_scalar_excess = jnp.sum(
+        jnp.where(updraft, scalar_fluctuation, 0.0), axis=(-2, -1)
+    ) / safe_updraft_count
+    resolved_energy = 0.5 * (
+        u_fluctuation**2 + v_fluctuation**2 + w_fluctuation**2
+    )
     diagnostics = {
         "resolved_uw": profile(u_fluctuation * w_fluctuation),
         "resolved_vw": profile(v_fluctuation * w_fluctuation),
-        "resolved_wc": profile(w_fluctuation * scalar_fluctuation),
+        "resolved_wc": np.asarray(
+            jax.device_get(resolved_scalar_flux), dtype=np.float64
+        ),
         "sgs_tke": sgs_tke_profile,
         "sgs_uw": profile(0.5 * (lower_txz + txz_upper)),
         "sgs_vw": profile(0.5 * (lower_tyz + tyz_upper)),
@@ -473,6 +599,22 @@ def _diagnostic_observables(
         "resolved_tke_sgs_transfer": profile(resolved_tke_sgs_transfer),
         "momentum_diffusivity": profile(momentum_diffusivity),
         "scalar_diffusivity": profile(scalar_diffusivity),
+        "sgs_scalar_variance": profile(sgs_scalar_variance),
+        "pressure_variance": profile(pressure_fluctuation**2),
+        "w_third_moment": profile(w_fluctuation**3),
+        "updraft_fraction": np.asarray(
+            jax.device_get(updraft_fraction), dtype=np.float64
+        ),
+        "updraft_w": np.asarray(jax.device_get(updraft_w), dtype=np.float64),
+        "updraft_scalar_excess": np.asarray(
+            jax.device_get(updraft_scalar_excess), dtype=np.float64
+        ),
+        "resolved_energy_vertical_transport": profile(
+            w_fluctuation * resolved_energy
+        ),
+        "pressure_vertical_transport": profile(
+            pressure_fluctuation * w_fluctuation
+        ),
     }
 
     mean_u_host, mean_v_host = jax.device_get((mean_u, mean_v))
@@ -480,15 +622,8 @@ def _diagnostic_observables(
     mean_v_host = np.asarray(mean_v_host, dtype=np.float64)
     surface_uw = float(jnp.mean(tau_x))
     surface_vw = float(jnp.mean(tau_y))
-    rotation = case.model.momentum.rotation
-    coriolis = case.mechanical_scales.from_execution_inverse_time(
-        rotation.coriolis_parameter
-    )
-    geostrophic_u = case.mechanical_scales.from_execution_velocity(
-        rotation.geostrophic_x_velocity
-    )
-    geostrophic_v = case.mechanical_scales.from_execution_velocity(
-        rotation.geostrophic_y_velocity
+    coriolis, _horizontal_coriolis, geostrophic_u, geostrophic_v = (
+        _rotation_values(case)
     )
     integrated_u_deficit = np.sum(mean_u_host - geostrophic_u) * (
         case.physical_grid.dz
@@ -532,15 +667,53 @@ def _diagnostic_observables(
         z = (
             np.arange(case.physical_grid.nz, dtype=np.float64) + 0.5
         ) * case.physical_grid.dz
-        target = int(np.argmin(np.abs(z * coriolis / ustar - 0.1)))
+        targets = np.asarray(
+            [
+                int(np.argmin(np.abs(z - height)))
+                for height in case.diagnostic_reference.spectrum_heights_m
+            ],
+            dtype=np.int64,
+        )
         modes = np.arange(case.physical_grid.nx // 2 + 1, dtype=np.float64)
+        radial_edges = np.linspace(
+            0.0,
+            np.hypot(
+                np.pi / case.physical_grid.dx,
+                np.pi / case.physical_grid.dy,
+            ),
+            modes.size + 1,
+        )
+        radial_wavenumber = 0.5 * (radial_edges[:-1] + radial_edges[1:])
+        radial = {
+            name: np.stack(
+                [
+                    _radial_spectrum(
+                        fields[name][level],
+                        dx=case.physical_grid.dx,
+                        dy=case.physical_grid.dy,
+                        edges=radial_edges,
+                    )
+                    for level in targets
+                ]
+            )
+            for name in ("u", "v", "w", "scalar")
+        }
         spectra = {
-            "mode": modes,
-            "u": _x_spectrum(fields["u"], target),
-            "v": _x_spectrum(fields["v"], target),
-            "w": _x_spectrum(fields["w"], target),
-            "scalar": _x_spectrum(fields["scalar"], target),
-            "height_m": np.full_like(modes, z[target]),
+            "mode": np.broadcast_to(modes, (targets.size, modes.size)),
+            "u": np.stack([_x_spectrum(fields["u"], level) for level in targets]),
+            "v": np.stack([_x_spectrum(fields["v"], level) for level in targets]),
+            "w": np.stack([_x_spectrum(fields["w"], level) for level in targets]),
+            "scalar": np.stack(
+                [_x_spectrum(fields["scalar"], level) for level in targets]
+            ),
+            "height_m": np.broadcast_to(z[targets, None], (targets.size, modes.size)),
+            "radial_wavenumber_reference": np.broadcast_to(
+                radial_wavenumber[None] * case.diagnostic_reference.length_m,
+                (targets.size, modes.size),
+            ),
+            "radial_horizontal": radial["u"] + radial["v"],
+            "radial_w": radial["w"],
+            "radial_scalar": radial["scalar"],
         }
     return fields, history, diagnostics, spectra
 
@@ -579,20 +752,21 @@ def _write_profiles(
         + fields["w_variance"]
     )
     ustar = statistics.mean_ustar
-    coriolis = case.mechanical_scales.from_execution_inverse_time(
-        case.model.momentum.rotation.coriolis_parameter
-    )
+    coriolis = _rotation_values(case)[0]
     columns = {
         "z_m": z,
         "z_f_over_ustar": z * coriolis / ustar,
+        "z_over_reference_length": z / case.diagnostic_reference.length_m,
         "mean_u_m_s": fields["u"],
         "mean_v_m_s": fields["v"],
         "mean_w_m_s": fields["w"],
+        "mean_scalar": fields["scalar"],
         "mean_scalar_kg_m3": fields["scalar"],
         "resolved_u_variance_m2_s2": fields["u_variance"],
         "resolved_v_variance_m2_s2": fields["v_variance"],
         "resolved_w_variance_m2_s2": fields["w_variance"],
         "resolved_tke_m2_s2": resolved_tke,
+        "resolved_scalar_variance": fields["scalar_variance"],
         "resolved_scalar_variance_kg2_m6": fields["scalar_variance"],
     }
     if statistics.diagnostic_count:
@@ -608,11 +782,26 @@ def _write_profiles(
                 "resolved_wc_kg_m2_s": fields["resolved_wc"],
                 "sgs_wc_kg_m2_s": fields["sgs_wc"],
                 "total_wc_kg_m2_s": fields["resolved_wc"] + fields["sgs_wc"],
+                "resolved_scalar_flux": fields["resolved_wc"],
+                "sgs_scalar_flux": fields["sgs_wc"],
+                "total_scalar_flux": fields["resolved_wc"] + fields["sgs_wc"],
                 "resolved_tke_sgs_transfer_m2_s3": fields[
                     "resolved_tke_sgs_transfer"
                 ],
                 "momentum_diffusivity_m2_s": fields["momentum_diffusivity"],
                 "scalar_diffusivity_m2_s": fields["scalar_diffusivity"],
+                "sgs_scalar_variance": fields["sgs_scalar_variance"],
+                "pressure_variance_m4_s4": fields["pressure_variance"],
+                "w_third_moment_m3_s3": fields["w_third_moment"],
+                "updraft_fraction": fields["updraft_fraction"],
+                "updraft_w_m_s": fields["updraft_w"],
+                "updraft_scalar_excess": fields["updraft_scalar_excess"],
+                "resolved_energy_vertical_transport_m3_s3": fields[
+                    "resolved_energy_vertical_transport"
+                ],
+                "pressure_vertical_transport_m3_s3": fields[
+                    "pressure_vertical_transport"
+                ],
             }
         )
     np.savetxt(
@@ -633,16 +822,19 @@ def _write_spectra(
     selected = spectra["mode"] > 0.0
     modes = spectra["mode"][selected]
     ustar = statistics.mean_ustar
-    coriolis = case.mechanical_scales.from_execution_inverse_time(
-        case.model.momentum.rotation.coriolis_parameter
-    )
-    scalar_flux = case.scalar_scales.from_execution_concentration_flux(
+    coriolis = _rotation_values(case)[0]
+    scalar_flux = case.scalar_scales.from_execution_flux(
         case.model.scalar_boundary.lower_flux
     )
     concentration_scale = scalar_flux / ustar
     wavenumber = 2.0 * np.pi * modes / case.physical_grid.lx
     columns = {
-        "k_ustar_over_f": wavenumber * ustar / coriolis,
+        "k_reference_length": wavenumber * case.diagnostic_reference.length_m,
+        "k_ustar_over_f": (
+            wavenumber * ustar / coriolis
+            if coriolis != 0.0
+            else np.full(modes.shape, np.nan)
+        ),
         "kEu_over_ustar2": modes * spectra["u"][selected] / ustar**2,
         "kEv_over_ustar2": modes * spectra["v"][selected] / ustar**2,
         "kEw_over_ustar2": modes * spectra["w"][selected] / ustar**2,
@@ -660,6 +852,121 @@ def _write_spectra(
         header=",".join(columns),
         comments="",
     )
+
+
+def _write_radial_spectra(
+    path: Path,
+    statistics: ProfileStatistics,
+) -> None:
+    spectra = statistics.spectra()
+    selected = spectra["radial_wavenumber_reference"] > 0.0
+    columns = {
+        "wavenumber_reference_length": spectra[
+            "radial_wavenumber_reference"
+        ][selected],
+        "horizontal_energy": spectra["radial_horizontal"][selected],
+        "vertical_energy": spectra["radial_w"][selected],
+        "scalar_energy": spectra["radial_scalar"][selected],
+        "sample_height_m": spectra["height_m"][selected],
+    }
+    np.savetxt(
+        path,
+        np.column_stack(tuple(columns.values())),
+        delimiter=",",
+        header=",".join(columns),
+        comments="",
+    )
+
+
+def _bulk_metrics(
+    case: BoussinesqCase,
+    statistics: ProfileStatistics,
+) -> dict[str, float]:
+    """Compute normalization-driven metrics without identifying a case."""
+
+    if statistics.count == 0:
+        return {}
+    metrics = {
+        "surface_friction_velocity_ratio": (
+            statistics.mean_ustar / case.diagnostic_reference.velocity_m_s
+        )
+    }
+    if statistics.diagnostic_count == 0:
+        return metrics
+    profiles = statistics.profiles()
+    z = (
+        np.arange(case.physical_grid.nz, dtype=np.float64) + 0.5
+    ) * case.physical_grid.dz
+    search = z <= case.diagnostic_reference.inversion_search_max_height_m
+    if not np.any(search):
+        return metrics
+    total_flux = profiles["resolved_wc"] + profiles["sgs_wc"]
+    selected_indices = np.flatnonzero(search)
+    inversion_index = selected_indices[np.argmin(total_flux[search])]
+    boundary_height = float(z[inversion_index])
+    surface_flux = case.scalar_scales.from_execution_flux(
+        case.model.scalar_boundary.lower_flux
+    )
+    buoyancy_coefficient = (
+        case.scalar_scales.from_execution_buoyancy_coefficient(
+            case.model.buoyancy.acceleration_per_temperature
+        )
+    )
+    buoyancy_velocity = float(
+        np.cbrt(buoyancy_coefficient * surface_flux * boundary_height)
+    )
+    metrics.update(
+        {
+            "boundary_layer_height_m": boundary_height,
+            "boundary_layer_height_ratio": (
+                boundary_height / case.diagnostic_reference.length_m
+            ),
+            "buoyancy_velocity_ratio": (
+                buoyancy_velocity / case.diagnostic_reference.velocity_m_s
+            ),
+            "entrainment_flux_ratio": (
+                -float(total_flux[inversion_index]) / surface_flux
+                if surface_flux != 0.0
+                else math.nan
+            ),
+        }
+    )
+    return metrics
+
+
+def _compare_metrics(
+    measured: dict[str, float],
+    reference: dict[str, Any],
+    *,
+    evaluate_acceptance: bool,
+) -> dict[str, Any]:
+    comparisons: dict[str, Any] = {}
+    for name, bounds in reference.get("metrics", {}).items():
+        value = measured.get(name)
+        if "target" in bounds:
+            lower = float(bounds["target"]) - float(bounds["tolerance"])
+            upper = float(bounds["target"]) + float(bounds["tolerance"])
+        else:
+            lower = float(bounds["minimum"])
+            upper = float(bounds["maximum"])
+        comparisons[name] = {
+            "value": value,
+            "minimum": lower,
+            "maximum": upper,
+            "accepted": (
+                lower <= value <= upper
+                if evaluate_acceptance and value is not None
+                else None
+            ),
+        }
+    accepted = [item["accepted"] for item in comparisons.values()]
+    return {
+        "metrics": comparisons,
+        "reference_acceptance_evaluated": evaluate_acceptance,
+        "all_reference_metrics_accepted": (
+            all(accepted) if evaluate_acceptance and accepted else None
+        ),
+    }
 
 
 def evaluate(
@@ -837,9 +1144,6 @@ def evaluate(
     history_stream.flush()
 
     latest_diagnostic: dict[str, float] = {}
-    coriolis = case.mechanical_scales.from_execution_inverse_time(
-        case.model.momentum.rotation.coriolis_parameter
-    )
     warned_cfl = False
     started = time.perf_counter()
     try:
@@ -870,6 +1174,7 @@ def evaluate(
                     paper_spectra,
                 ) = _diagnostic_observables(
                     state,
+                    result.diagnostic.projection.pressure,
                     case,
                     algebra,
                     jax,
@@ -928,7 +1233,8 @@ def evaluate(
                 history_stream.flush()
                 print(
                     f"step={accepted_step}/{case.steps} "
-                    f"tf={accepted_step * case.dt_seconds * coriolis:.3f} "
+                    "t*="
+                    f"{accepted_step * case.dt_seconds * case.diagnostic_reference.velocity_m_s / case.diagnostic_reference.length_m:.3f} "
                     f"CFL={latest_diagnostic['maximum_cfl']:.3f} "
                     f"u*={latest_diagnostic['ustar_m_s']:.4f} m/s",
                     flush=True,
@@ -961,6 +1267,7 @@ def evaluate(
         _write_profiles(output_dir / "profiles.csv", case, statistics)
     if statistics.spectrum_count:
         _write_spectra(output_dir / "spectra.csv", case, statistics)
+        _write_radial_spectra(output_dir / "radial_spectra.csv", statistics)
     if state.clock.step == case.steps:
         save_boussinesq_checkpoint(
             output_dir / "checkpoint_final.npz",
@@ -969,22 +1276,10 @@ def evaluate(
             physics_fingerprint=physics_fingerprint,
         )
 
-    geostrophic_speed = math.hypot(
-        case.mechanical_scales.from_execution_velocity(
-            case.model.momentum.rotation.geostrophic_x_velocity
-        ),
-        case.mechanical_scales.from_execution_velocity(
-            case.model.momentum.rotation.geostrophic_y_velocity
-        ),
-    )
-    ustar = (
-        statistics.mean_ustar
-        if statistics.count
-        else latest_diagnostic.get("ustar_m_s")
-    )
     reference = json.loads(case.reference_results.read_text())
-    published = tuple(reference["ustar_over_ug"].values())
     complete = state.clock.step == case.steps
+    measured_metrics = _bulk_metrics(case, statistics)
+    elapsed_seconds = time.perf_counter() - started
     summary = {
         **resolved(case),
         "runtime": {
@@ -992,6 +1287,10 @@ def evaluate(
             "restart": None if restart is None else str(restart),
             "initial_step": initial_step,
             "steps_run": steps_to_run,
+            "elapsed_seconds": elapsed_seconds,
+            "steps_per_second": (
+                steps_to_run / elapsed_seconds if steps_to_run else None
+            ),
             "final_step": state.clock.step,
             "final_time_hours": state.clock.step * case.dt_seconds / 3600.0,
             "profile_samples": statistics.count,
@@ -1000,17 +1299,12 @@ def evaluate(
             "reached_final_time": complete,
             **latest_diagnostic,
         },
-        "comparison": {
-            "ustar_over_ug": None if ustar is None else ustar / geostrophic_speed,
-            "published_ustar_over_ug_min": min(published),
-            "published_ustar_over_ug_max": max(published),
-            "reference_acceptance_evaluated": complete,
-            "inside_published_envelope": (
-                min(published) <= ustar / geostrophic_speed <= max(published)
-                if complete and ustar is not None
-                else None
-            ),
-        },
+        "diagnostic_metrics": measured_metrics,
+        "comparison": _compare_metrics(
+            measured_metrics,
+            reference,
+            evaluate_acceptance=complete,
+        ),
     }
     (output_dir / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     print(json.dumps(summary, indent=2), flush=True)

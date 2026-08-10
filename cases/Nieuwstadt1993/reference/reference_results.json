@@ -1,0 +1,20 @@
+{
+  "source": {
+    "citation": "Nieuwstadt, Mason, Moeng & Schumann (1993), Large-Eddy Simulation of the Convective Boundary Layer",
+    "doi": "10.1007/978-3-642-77674-8_24"
+  },
+  "metrics": {
+    "boundary_layer_height_ratio": {
+      "target": 1.0312,
+      "tolerance": 0.020
+    },
+    "buoyancy_velocity_ratio": {
+      "target": 1.010,
+      "tolerance": 0.015
+    },
+    "entrainment_flux_ratio": {
+      "target": 0.106,
+      "tolerance": 0.030
+    }
+  }
+}

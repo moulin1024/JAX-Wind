@@ -224,7 +224,11 @@ def _normalization(results: Path) -> tuple[float, float, float]:
     physics = summary["physics"]
     geostrophic = physics["geostrophic_velocity_m_s"]
     geostrophic_speed = math.hypot(float(geostrophic[0]), float(geostrophic[1]))
-    ratio = summary["comparison"].get("ustar_over_ug")
+    ratio = summary.get("diagnostic_metrics", {}).get(
+        "surface_friction_velocity_ratio"
+    )
+    if ratio is None:
+        ratio = summary.get("comparison", {}).get("ustar_over_ug")
     if ratio is None:
         ustar = summary["runtime"].get("ustar_m_s")
         if ustar is None:
@@ -232,7 +236,12 @@ def _normalization(results: Path) -> tuple[float, float, float]:
         friction_velocity = float(ustar)
     else:
         friction_velocity = float(ratio) * geostrophic_speed
-    scalar_flux = float(physics["passive_scalar_surface_flux_kg_m2_s"])
+    scalar_flux = float(
+        physics.get(
+            "scalar_surface_flux",
+            physics.get("passive_scalar_surface_flux_kg_m2_s"),
+        )
+    )
     coriolis = float(physics.get("coriolis_vertical_s", 1.0e-4))
     return friction_velocity, scalar_flux, coriolis
 

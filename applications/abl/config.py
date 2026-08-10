@@ -1,4 +1,4 @@
-"""ABL composition from physical case data."""
+"""Uniform ABL composition from physical case data."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - Python 3.10 fallback
     import tomli as tomllib
 
-from jaxwind.domain import PassiveScalarScaleSystem, ScaleSystem, UniformGrid
+from jaxwind.domain import ScaleSystem, UniformGrid
 from jaxwind.integrators import AB2Config
 from jaxwind.physics import (
     BoussinesqModel,
@@ -22,17 +22,20 @@ from jaxwind.physics import (
     KinematicPressureGradient,
     LagrangianScaleDependentDynamic,
     LagrangianScaleDependentScalarFlux,
+    LinearBoussinesqBuoyancy,
     NeutralLogWall,
-    NoBuoyancy,
     NoRayleighDamping,
+    NoRotation,
     ScalarFluxBoundary,
 )
 
 from applications.boussinesq import (
     BoussinesqCase,
+    DiagnosticReference,
     OutputSchedule,
     PressureProjection,
-    TabulatedVelocityTKE,
+    ScalarScaleSystem,
+    TabulatedBoussinesqState,
 )
 
 
@@ -80,13 +83,14 @@ def _numbers(
     table: dict[str, Any],
     key: str,
     *,
-    length: int,
+    length: int | None = None,
 ) -> tuple[float, ...]:
     value = table[key]
-    if not isinstance(value, list) or len(value) != length:
-        raise ValueError(f"{key} must contain {length} numbers")
+    if not isinstance(value, list) or (length is not None and len(value) != length):
+        count = "a list of" if length is None else str(length)
+        raise ValueError(f"{key} must contain {count} numbers")
     temporary = {str(index): item for index, item in enumerate(value)}
-    return tuple(_number(temporary, str(index)) for index in range(length))
+    return tuple(_number(temporary, str(index)) for index in range(len(value)))
 
 
 def _integers(
@@ -102,125 +106,123 @@ def _integers(
     return tuple(_integer(temporary, str(index)) for index in range(length))
 
 
-def _steps(seconds: float, dt_seconds: float, *, name: str) -> int:
-    if not math.isfinite(seconds) or seconds < 0.0:
-        raise ValueError(f"{name} must be finite and nonnegative")
-    raw = seconds / dt_seconds
-    result = round(raw)
-    if not math.isclose(raw, result, rel_tol=0.0, abs_tol=1.0e-9):
-        raise ValueError(f"{name} must contain an integer number of steps")
-    return result
-
-
 def compose_abl(
     *,
     name: str,
     citation: str,
     cells: tuple[int, int, int],
     lengths_m: tuple[float, float, float],
+    length_scale_m: float,
+    velocity_scale_m_s: float,
+    scalar_scale: float,
+    scalar_quantity: str,
+    scalar_reference_value: float,
+    scalar_surface_flux: float,
+    buoyancy_acceleration_per_scalar: float,
+    pressure_acceleration_m_s2: tuple[float, float],
     geostrophic_velocity_m_s: tuple[float, float],
     coriolis_s: tuple[float, float],
     roughness_length_m: float,
-    passive_scalar_surface_flux_kg_m2_s: float,
-    initial_condition: TabulatedVelocityTKE,
+    von_karman: float,
+    initial_condition: TabulatedBoussinesqState,
     reference_results: str | Path,
     dt_seconds: float,
-    duration_seconds: float,
-    statistics_start_seconds: float,
-    output_directory: str | Path | None = None,
-    statistics_every_seconds: float = 240.0,
-    log_every_seconds: float = 480.0,
-    checkpoint_every_seconds: float = 4800.0,
-    air_density_kg_m3: float = 1.0,
-    scalar_reference_kg_m3: float = 1.0,
-    von_karman: float = 0.4,
-    lasd_update_interval_steps: int = 5,
-    dtype: str = "float32",
-    pressure_method: str = "spike",
-    thomas_chunk: int = 20,
-    cfl_warning: float = 0.25,
-    cfl_abort: float = 1.0,
-    trajectory_cfl_abort: float = 1.0,
-    nonlinear_padding_ratio: float = 1.5,
+    steps: int,
+    filter_grid_ratio: float,
+    test_filter_ratio: float,
+    lasd_update_interval_steps: int,
+    lasd_timescale_coefficient: float,
+    momentum_initial_coefficient: float,
+    momentum_minimum_coefficient: float,
+    momentum_maximum_coefficient: float,
+    scalar_initial_coefficient: float,
+    scalar_minimum_coefficient: float,
+    scalar_maximum_coefficient: float,
+    stratification_beta: float,
+    stratification_power: float,
+    output_directory: str | Path,
+    sample_start_step: int,
+    sample_every_steps: int,
+    log_every_steps: int,
+    checkpoint_every_steps: int,
+    diagnostic_reference: DiagnosticReference,
+    dtype: str,
+    pressure_method: str,
+    thomas_chunk: int,
+    cfl_warning: float,
+    cfl_abort: float,
+    trajectory_cfl_abort: float,
+    nonlinear_padding_ratio: float,
 ) -> BoussinesqCase:
-    """Compose a geostrophic ABL case from canonical SI inputs.
-
-    This function performs no execution and never inspects ``name``. It owns
-    the application-level numerical composition and lowers dimensional
-    parameters to the generic solver's execution units. The scalar described
-    by this schema is explicitly passive, so it cannot impose thermal
-    stability on the flow.
-    """
-
-    if not math.isfinite(dt_seconds) or dt_seconds <= 0.0:
-        raise ValueError("time step must be finite and positive")
-    if not math.isfinite(air_density_kg_m3) or air_density_kg_m3 <= 0.0:
-        raise ValueError("air density must be finite and positive")
-    if not math.isfinite(passive_scalar_surface_flux_kg_m2_s):
-        raise ValueError("passive-scalar surface flux must be finite")
-    if not all(math.isfinite(value) for value in coriolis_s):
-        raise ValueError("Coriolis parameters must be finite")
-    vertical_coriolis, horizontal_coriolis = coriolis_s
-    if vertical_coriolis == 0.0:
-        raise ValueError("geostrophic ABL requires nonzero rotation")
+    """Lower one set of physical inputs without classifying the flow regime."""
 
     grid = UniformGrid(*cells, *lengths_m)
-    geostrophic_speed = math.hypot(*geostrophic_velocity_m_s)
-    if geostrophic_speed <= 0.0:
-        raise ValueError("geostrophic velocity must be nonzero")
-    mechanical_scales = ScaleSystem(grid.lz, geostrophic_speed)
-    scalar_scales = PassiveScalarScaleSystem(
+    mechanical_scales = ScaleSystem(length_scale_m, velocity_scale_m_s)
+    scalar_scales = ScalarScaleSystem(
         mechanical_scales,
-        scalar_reference_kg_m3,
+        scalar_scale,
+        scalar_quantity,
+        scalar_reference_value,
     )
-    momentum_lasd = LagrangianScaleDependentDynamic(
-        filter_grid_ratio=1.5,
-        test_filter_ratio=2.0,
+    vertical_coriolis, horizontal_coriolis = coriolis_s
+    if vertical_coriolis == 0.0:
+        if horizontal_coriolis != 0.0:
+            raise ValueError("horizontal Coriolis requires vertical Coriolis")
+        rotation = NoRotation()
+    else:
+        rotation = CoriolisGeostrophic(
+            mechanical_scales.to_execution_inverse_time(vertical_coriolis),
+            mechanical_scales.to_execution_velocity(geostrophic_velocity_m_s[0]),
+            mechanical_scales.to_execution_velocity(geostrophic_velocity_m_s[1]),
+            mechanical_scales.to_execution_inverse_time(horizontal_coriolis),
+        )
+    buoyancy_coefficient = scalar_scales.to_execution_buoyancy_coefficient(
+        buoyancy_acceleration_per_scalar
+    )
+    momentum_sgs = LagrangianScaleDependentDynamic(
+        filter_grid_ratio=filter_grid_ratio,
+        test_filter_ratio=test_filter_ratio,
         update_interval=lasd_update_interval_steps,
-        timescale_coefficient=1.5,
-        initial_coefficient=0.03,
-        minimum_coefficient=1.0e-6,
-        maximum_coefficient=0.81,
+        timescale_coefficient=lasd_timescale_coefficient,
+        initial_coefficient=momentum_initial_coefficient,
+        minimum_coefficient=momentum_minimum_coefficient,
+        maximum_coefficient=momentum_maximum_coefficient,
     )
-    scalar_lasd = LagrangianScaleDependentScalarFlux()
+    scalar_sgs = LagrangianScaleDependentScalarFlux(
+        initial_coefficient=scalar_initial_coefficient,
+        minimum_coefficient=scalar_minimum_coefficient,
+        maximum_coefficient=scalar_maximum_coefficient,
+        stability_buoyancy_coefficient=buoyancy_coefficient,
+        stability_beta=stratification_beta,
+        stability_power=stratification_power,
+    )
     model = BoussinesqModel(
         momentum=DryFlowModel(
             advection=ConservativeAdvection(),
-            pressure_gradient=KinematicPressureGradient(0.0, 0.0),
+            pressure_gradient=KinematicPressureGradient(
+                mechanical_scales.to_execution_acceleration(
+                    pressure_acceleration_m_s2[0]
+                ),
+                mechanical_scales.to_execution_acceleration(
+                    pressure_acceleration_m_s2[1]
+                ),
+            ),
             wall=NeutralLogWall(
                 mechanical_scales.to_execution_length(roughness_length_m),
                 von_karman=von_karman,
             ),
-            sgs=momentum_lasd,
-            rotation=CoriolisGeostrophic(
-                mechanical_scales.to_execution_inverse_time(vertical_coriolis),
-                mechanical_scales.to_execution_velocity(
-                    geostrophic_velocity_m_s[0]
-                ),
-                mechanical_scales.to_execution_velocity(
-                    geostrophic_velocity_m_s[1]
-                ),
-                mechanical_scales.to_execution_inverse_time(horizontal_coriolis),
-            ),
+            sgs=momentum_sgs,
+            rotation=rotation,
         ),
         scalar_advection=ConservativeScalarAdvection(),
-        scalar_sgs=scalar_lasd,
-        buoyancy=NoBuoyancy(),
+        scalar_sgs=scalar_sgs,
+        buoyancy=LinearBoussinesqBuoyancy(buoyancy_coefficient),
         rayleigh_damping=NoRayleighDamping(),
         scalar_boundary=ScalarFluxBoundary(
-            scalar_scales.to_execution_concentration_flux(
-                passive_scalar_surface_flux_kg_m2_s / air_density_kg_m3
-            ),
+            scalar_scales.to_execution_flux(scalar_surface_flux),
             0.0,
         ),
     )
-    steps = _steps(duration_seconds, dt_seconds, name="duration")
-    statistics_start_step = _steps(
-        statistics_start_seconds,
-        dt_seconds,
-        name="statistics start",
-    )
-    output = Path(output_directory or Path("outputs") / name)
     return BoussinesqCase(
         name=name,
         citation=citation,
@@ -228,30 +230,17 @@ def compose_abl(
         mechanical_scales=mechanical_scales,
         scalar_scales=scalar_scales,
         model=model,
-        integrator=AB2Config(
-            mechanical_scales.to_execution_time(dt_seconds)
-        ),
+        integrator=AB2Config(mechanical_scales.to_execution_time(dt_seconds)),
         initial_condition=initial_condition,
+        diagnostic_reference=diagnostic_reference,
         reference_results=Path(reference_results),
         pressure=PressureProjection(dtype, pressure_method, thomas_chunk),
         output=OutputSchedule(
-            directory=output,
-            sample_start_step=statistics_start_step,
-            sample_every_steps=_steps(
-                statistics_every_seconds,
-                dt_seconds,
-                name="statistics interval",
-            ),
-            log_every_steps=_steps(
-                log_every_seconds,
-                dt_seconds,
-                name="log interval",
-            ),
-            checkpoint_every_steps=_steps(
-                checkpoint_every_seconds,
-                dt_seconds,
-                name="checkpoint interval",
-            ),
+            directory=Path(output_directory),
+            sample_start_step=sample_start_step,
+            sample_every_steps=sample_every_steps,
+            log_every_steps=log_every_steps,
+            checkpoint_every_steps=checkpoint_every_steps,
         ),
         steps=steps,
         cfl_warning=cfl_warning,
@@ -262,7 +251,7 @@ def compose_abl(
 
 
 def load_abl(path: str | Path) -> BoussinesqCase:
-    """Load the fixed ABL schema and compose its generic components."""
+    """Load the one fixed ABL schema and compose generic solver components."""
 
     source = Path(path)
     with source.open("rb") as stream:
@@ -270,10 +259,13 @@ def load_abl(path: str | Path) -> BoussinesqCase:
     expected_tables = {
         "case",
         "domain",
+        "scales",
         "flow",
-        "passive_scalar",
+        "scalar",
         "time",
+        "sgs",
         "numerics",
+        "diagnostics",
         "output",
     }
     if set(document) != expected_tables:
@@ -288,10 +280,13 @@ def load_abl(path: str | Path) -> BoussinesqCase:
 
     case = _table(document, "case")
     domain = _table(document, "domain")
+    scales = _table(document, "scales")
     flow = _table(document, "flow")
-    passive_scalar = _table(document, "passive_scalar")
+    scalar = _table(document, "scalar")
     time = _table(document, "time")
+    sgs = _table(document, "sgs")
     numerics = _table(document, "numerics")
+    diagnostics = _table(document, "diagnostics")
     output = _table(document, "output")
     _keys(
         case,
@@ -299,36 +294,50 @@ def load_abl(path: str | Path) -> BoussinesqCase:
         name="case",
     )
     _keys(domain, {"cells", "lengths_m"}, name="domain")
+    _keys(scales, {"length_m", "velocity_m_s", "scalar"}, name="scales")
     _keys(
         flow,
         {
+            "pressure_acceleration_m_s2",
             "geostrophic_velocity_m_s",
             "coriolis_s",
             "roughness_length_m",
+            "von_karman",
         },
         name="flow",
     )
     _keys(
-        passive_scalar,
-        {"surface_flux_kg_m2_s"},
-        name="passive_scalar",
-    )
-    _keys(
-        time,
+        scalar,
         {
-            "dt_seconds",
-            "duration_seconds",
-            "statistics_start_seconds",
-            "statistics_every_seconds",
-            "log_every_seconds",
-            "checkpoint_every_seconds",
+            "quantity",
+            "reference_value",
+            "surface_flux",
+            "buoyancy_acceleration_per_unit",
         },
-        name="time",
+        name="scalar",
+    )
+    _keys(time, {"dt_seconds", "steps"}, name="time")
+    _keys(
+        sgs,
+        {
+            "filter_grid_ratio",
+            "test_filter_ratio",
+            "update_interval_steps",
+            "timescale_coefficient",
+            "momentum_initial_coefficient",
+            "momentum_minimum_coefficient",
+            "momentum_maximum_coefficient",
+            "scalar_initial_coefficient",
+            "scalar_minimum_coefficient",
+            "scalar_maximum_coefficient",
+            "stratification_beta",
+            "stratification_power",
+        },
+        name="sgs",
     )
     _keys(
         numerics,
         {
-            "lasd_update_interval_steps",
             "dtype",
             "pressure_method",
             "thomas_chunk",
@@ -339,39 +348,93 @@ def load_abl(path: str | Path) -> BoussinesqCase:
         },
         name="numerics",
     )
+    _keys(
+        diagnostics,
+        {
+            "sample_start_step",
+            "sample_every_steps",
+            "log_every_steps",
+            "checkpoint_every_steps",
+            "reference_length_m",
+            "reference_velocity_m_s",
+            "reference_scalar",
+            "inversion_search_max_height_m",
+            "spectrum_heights_m",
+        },
+        name="diagnostics",
+    )
     _keys(output, {"directory"}, name="output")
 
     cells = _integers(domain, "cells", length=3)
     lengths = _numbers(domain, "lengths_m", length=3)
+    pressure_acceleration = _numbers(
+        flow, "pressure_acceleration_m_s2", length=2
+    )
     geostrophic = _numbers(flow, "geostrophic_velocity_m_s", length=2)
     coriolis = _numbers(flow, "coriolis_s", length=2)
+    spectrum_heights = _numbers(diagnostics, "spectrum_heights_m")
     return compose_abl(
         name=_string(case, "name"),
         citation=_string(case, "citation"),
         cells=(cells[0], cells[1], cells[2]),
         lengths_m=(lengths[0], lengths[1], lengths[2]),
+        length_scale_m=_number(scales, "length_m"),
+        velocity_scale_m_s=_number(scales, "velocity_m_s"),
+        scalar_scale=_number(scales, "scalar"),
+        scalar_quantity=_string(scalar, "quantity"),
+        scalar_reference_value=_number(scalar, "reference_value"),
+        scalar_surface_flux=_number(scalar, "surface_flux"),
+        buoyancy_acceleration_per_scalar=_number(
+            scalar, "buoyancy_acceleration_per_unit"
+        ),
+        pressure_acceleration_m_s2=(
+            pressure_acceleration[0],
+            pressure_acceleration[1],
+        ),
         geostrophic_velocity_m_s=(geostrophic[0], geostrophic[1]),
         coriolis_s=(coriolis[0], coriolis[1]),
         roughness_length_m=_number(flow, "roughness_length_m"),
-        passive_scalar_surface_flux_kg_m2_s=_number(
-            passive_scalar,
-            "surface_flux_kg_m2_s",
-        ),
-        initial_condition=TabulatedVelocityTKE(
+        von_karman=_number(flow, "von_karman"),
+        initial_condition=TabulatedBoussinesqState(
             source.parent / _string(case, "initial_profile"),
             seed=_integer(case, "seed"),
         ),
         reference_results=source.parent / _string(case, "reference_results"),
         dt_seconds=_number(time, "dt_seconds"),
-        duration_seconds=_number(time, "duration_seconds"),
-        statistics_start_seconds=_number(time, "statistics_start_seconds"),
+        steps=_integer(time, "steps"),
+        filter_grid_ratio=_number(sgs, "filter_grid_ratio"),
+        test_filter_ratio=_number(sgs, "test_filter_ratio"),
+        lasd_update_interval_steps=_integer(sgs, "update_interval_steps"),
+        lasd_timescale_coefficient=_number(sgs, "timescale_coefficient"),
+        momentum_initial_coefficient=_number(
+            sgs, "momentum_initial_coefficient"
+        ),
+        momentum_minimum_coefficient=_number(
+            sgs, "momentum_minimum_coefficient"
+        ),
+        momentum_maximum_coefficient=_number(
+            sgs, "momentum_maximum_coefficient"
+        ),
+        scalar_initial_coefficient=_number(sgs, "scalar_initial_coefficient"),
+        scalar_minimum_coefficient=_number(sgs, "scalar_minimum_coefficient"),
+        scalar_maximum_coefficient=_number(sgs, "scalar_maximum_coefficient"),
+        stratification_beta=_number(sgs, "stratification_beta"),
+        stratification_power=_number(sgs, "stratification_power"),
         output_directory=_string(output, "directory"),
-        statistics_every_seconds=_number(time, "statistics_every_seconds"),
-        log_every_seconds=_number(time, "log_every_seconds"),
-        checkpoint_every_seconds=_number(time, "checkpoint_every_seconds"),
-        lasd_update_interval_steps=_integer(
-            numerics,
-            "lasd_update_interval_steps",
+        sample_start_step=_integer(diagnostics, "sample_start_step"),
+        sample_every_steps=_integer(diagnostics, "sample_every_steps"),
+        log_every_steps=_integer(diagnostics, "log_every_steps"),
+        checkpoint_every_steps=_integer(
+            diagnostics, "checkpoint_every_steps"
+        ),
+        diagnostic_reference=DiagnosticReference(
+            length_m=_number(diagnostics, "reference_length_m"),
+            velocity_m_s=_number(diagnostics, "reference_velocity_m_s"),
+            scalar=_number(diagnostics, "reference_scalar"),
+            inversion_search_max_height_m=_number(
+                diagnostics, "inversion_search_max_height_m"
+            ),
+            spectrum_heights_m=tuple(spectrum_heights),
         ),
         dtype=_string(numerics, "dtype"),
         pressure_method=_string(numerics, "pressure_method"),
@@ -383,31 +446,4 @@ def load_abl(path: str | Path) -> BoussinesqCase:
     )
 
 
-def derive_abl_stability(case: BoussinesqCase) -> str:
-    """Derive the surface-forcing regime from the composed physical model.
-
-    This value is diagnostic only. It never selects a solver or application.
-    Passive scalars have no buoyancy feedback and therefore imply the neutral
-    limit. Thermally active models are classified by their lower-boundary
-    buoyancy flux.
-    """
-
-    from jaxwind.physics import LinearBoussinesqBuoyancy
-
-    buoyancy = case.model.buoyancy
-    if isinstance(buoyancy, NoBuoyancy):
-        return "neutral"
-    if not isinstance(buoyancy, LinearBoussinesqBuoyancy):
-        raise TypeError("unsupported ABL buoyancy law")
-    buoyancy_flux = (
-        buoyancy.acceleration_per_temperature
-        * case.model.scalar_boundary.lower_flux
-    )
-    if buoyancy_flux > 0.0:
-        return "convective"
-    if buoyancy_flux < 0.0:
-        return "stable"
-    return "stratification-controlled"
-
-
-__all__ = ["compose_abl", "derive_abl_stability", "load_abl"]
+__all__ = ["compose_abl", "load_abl"]

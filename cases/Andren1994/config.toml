@@ -9,24 +9,43 @@ seed = 1994
 cells = [40, 40, 40]
 lengths_m = [4000.0, 2000.0, 1500.0]
 
+[scales]
+length_m = 1500.0
+velocity_m_s = 10.0
+scalar = 1.0
+
 [flow]
+pressure_acceleration_m_s2 = [0.0, 0.0]
 geostrophic_velocity_m_s = [10.0, 0.0]
 coriolis_s = [1.0e-4, 1.0e-4]
 roughness_length_m = 0.1
+von_karman = 0.4
 
-[passive_scalar]
-surface_flux_kg_m2_s = 1.0e-3
+[scalar]
+quantity = "passive_concentration"
+reference_value = 0.0
+surface_flux = 1.0e-3
+buoyancy_acceleration_per_unit = 0.0
 
 [time]
 dt_seconds = 0.8
-duration_seconds = 100000.0
-statistics_start_seconds = 70000.0
-statistics_every_seconds = 240.0
-log_every_seconds = 480.0
-checkpoint_every_seconds = 4800.0
+steps = 125000
+
+[sgs]
+filter_grid_ratio = 1.5
+test_filter_ratio = 2.0
+update_interval_steps = 5
+timescale_coefficient = 1.5
+momentum_initial_coefficient = 0.03
+momentum_minimum_coefficient = 1.0e-6
+momentum_maximum_coefficient = 0.81
+scalar_initial_coefficient = 0.03
+scalar_minimum_coefficient = 0.0
+scalar_maximum_coefficient = 1.0
+stratification_beta = 30.0
+stratification_power = 2.0
 
 [numerics]
-lasd_update_interval_steps = 5
 dtype = "float32"
 pressure_method = "spike"
 thomas_chunk = 20
@@ -34,6 +53,17 @@ cfl_warning = 0.25
 cfl_abort = 1.0
 trajectory_cfl_abort = 1.0
 nonlinear_padding_ratio = 1.5
+
+[diagnostics]
+sample_start_step = 87500
+sample_every_steps = 300
+log_every_steps = 600
+checkpoint_every_steps = 6000
+reference_length_m = 1500.0
+reference_velocity_m_s = 10.0
+reference_scalar = 1.0
+inversion_search_max_height_m = 1500.0
+spectrum_heights_m = [393.75]
 
 [output]
 directory = "outputs/andren1994_lasd_40x40x40"

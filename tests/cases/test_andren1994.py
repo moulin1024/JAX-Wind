@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import math
-from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -10,7 +9,7 @@ import pytest
 
 from applications.initial_conditions import load_initial_profile
 from applications.abl.__main__ import main
-from applications.abl.config import derive_abl_stability, load_abl
+from applications.abl.config import load_abl
 from applications.abl.evaluate import ProfileStatistics
 from jaxwind.physics import (
     ConservativeAdvection,
@@ -19,7 +18,6 @@ from jaxwind.physics import (
     LagrangianScaleDependentScalarFlux,
     LinearBoussinesqBuoyancy,
     NeutralLogWall,
-    ScalarFluxBoundary,
 )
 
 
@@ -84,24 +82,10 @@ def test_case_composes_generic_physics_objects() -> None:
     assert isinstance(momentum.sgs, LagrangianScaleDependentDynamic)
     assert isinstance(momentum.rotation, CoriolisGeostrophic)
     assert isinstance(CASE.model.scalar_sgs, LagrangianScaleDependentScalarFlux)
+    assert isinstance(CASE.model.buoyancy, LinearBoussinesqBuoyancy)
+    assert CASE.model.buoyancy.acceleration_per_temperature == 0.0
     assert momentum.sgs.update_interval == 5
     assert CASE.nonlinear_padding_ratio == 1.5
-
-
-def test_stability_is_derived_from_physical_coupling() -> None:
-    assert derive_abl_stability(CASE) == "neutral"
-
-    active_model = replace(
-        CASE.model,
-        buoyancy=LinearBoussinesqBuoyancy(1.0),
-        scalar_boundary=ScalarFluxBoundary(0.1, 0.0),
-    )
-    assert derive_abl_stability(replace(CASE, model=active_model)) == "convective"
-    cooled_model = replace(
-        active_model,
-        scalar_boundary=ScalarFluxBoundary(-0.1, 0.0),
-    )
-    assert derive_abl_stability(replace(CASE, model=cooled_model)) == "stable"
 
 
 def test_canonical_grid_and_time_match_andren1994() -> None:
@@ -139,7 +123,7 @@ def test_table_a1_and_reference_envelope_are_active_case_inputs() -> None:
     assert table["z_m"][-1] == 1481.25
     assert table["u_m_s"][12] == 10.71
     assert table["v_m_s"][3] == 2.84
-    assert table["tke_m2_s2"][0] == 0.365
+    assert 1.5 * table["u_rms_m_s"][0] ** 2 == pytest.approx(0.365)
     assert min(ratios) == 0.0402
     assert max(ratios) == 0.0448
 
@@ -153,7 +137,7 @@ def test_dry_run_resolves_python_composition_without_jax(capsys) -> None:
     assert result["physics"]["momentum_sgs"] == (
         "LagrangianScaleDependentDynamic"
     )
-    assert result["physics"]["stability"] == "neutral"
+    assert result["physics"]["buoyancy_acceleration_per_scalar"] == 0.0
     assert result["physics"]["coriolis_vertical_s"] == pytest.approx(1.0e-4)
 
 

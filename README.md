@@ -5,10 +5,11 @@ layers and wind-energy flows. The package owns numerical meaning and state
 transitions; directories under `cases/` contain data only, while
 `applications/` owns configuration interpretation, diagnostics, and effects.
 
-The active cases are a pressure-driven neutral atmospheric boundary layer and
-the Andrén et al. (1994) neutral ABL intercomparison. Both use conservative
-momentum transport, Lagrangian scale-dependent dynamic (LASD) closure, AB2
-integration, and compatible spectral/finite-difference pressure projection.
+The active cases are a pressure-driven atmospheric boundary layer and the
+Andrén et al. (1994) and Nieuwstadt et al. (1993) intercomparisons. They use
+conservative momentum transport, Lagrangian scale-dependent dynamic (LASD)
+closure, AB2 integration, and compatible spectral/finite-difference pressure
+projection.
 
 ## Install
 
@@ -67,6 +68,17 @@ python -m applications.abl \
   cases/Andren1994/config.toml --max-steps 10 --overwrite
 ```
 
+Nieuwstadt uses that same ABL command and schema. Its scalar profile, surface
+flux, and buoyancy coupling are ordinary physical inputs to the shared solver:
+
+```bash
+python -m applications.abl \
+  cases/Nieuwstadt1993/config.toml --dry-run
+JAX_PLATFORMS=cuda XLA_PYTHON_CLIENT_PREALLOCATE=false \
+  python -m applications.abl cases/Nieuwstadt1993/config.toml
+python tools/overlay_nieuwstadt1993.py
+```
+
 ## Solver boundary
 
 `build_solver` closes one accepted transition over a model, numerical algebra,
@@ -106,6 +118,7 @@ their configuration values.
 | `applications` | Case schemas, initialization, diagnostics, and effects |
 | `cases/PressureDrivenLASD` | Pressure-driven configuration data |
 | `cases/Andren1994` | Andrén configuration and reference data |
+| `cases/Nieuwstadt1993` | Nieuwstadt configuration and reference data |
 
 The interpreter retains the established equal-z-slab implementation so its
 one-device and distributed results continue to share the same numerical path.

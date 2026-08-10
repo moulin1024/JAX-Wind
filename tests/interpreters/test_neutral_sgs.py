@@ -195,6 +195,27 @@ class FusedNeutralSgsTests(unittest.TestCase):
             frozen_zero_scalar=False,
         )
 
+    def test_lasd_convective_buoyancy_fusion_matches_contributions(self) -> None:
+        self.assert_fused_matches_contributions(
+            BoussinesqModel(
+                DryFlowModel(
+                    ConservativeAdvection(),
+                    KinematicPressureGradient(0.0),
+                    FilteredNeutralLogWall(0.01),
+                    LagrangianScaleDependentDynamic(update_interval=4),
+                    NoRotation(),
+                ),
+                ConservativeScalarAdvection(),
+                LagrangianScaleDependentScalarFlux(
+                    stability_buoyancy_coefficient=0.025,
+                ),
+                LinearBoussinesqBuoyancy(0.025),
+                scalar_boundary=ScalarFluxBoundary(0.002, 0.0),
+            ),
+            fields=self.active_fields,
+            frozen_zero_scalar=False,
+        )
+
     def test_lasd_stable_sources_fusion_matches_individual_terms(self) -> None:
         self.assert_stable_sources_fusion_matches_individual_terms(
             LagrangianScaleDependentDynamic(update_interval=4),
