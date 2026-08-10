@@ -20,6 +20,7 @@ from .config import CaseConfig
 HERE = Path(__file__).resolve().parent
 CHECKOUT_ROOT = HERE.parents[3]
 PADDING_RATIO = 1.5
+LASD_SCALAR_STABILITY_BUOYANCY_COEFFICIENT = 0.0
 
 
 def _configure_pressure_source() -> None:
@@ -825,7 +826,12 @@ def run_case(
             update_interval=case.sgs.lasd_update_interval,
         )
         scalar_sgs = LagrangianScaleDependentScalarFlux(
-            stability_buoyancy_coefficient=buoyancy_coefficient,
+            # The dynamic scalar coefficient already responds to the resolved
+            # stratification. Applying the additional Richardson multiplier
+            # collapses near-wall mixing and drives an unphysical regime flip.
+            stability_buoyancy_coefficient=(
+                LASD_SCALAR_STABILITY_BUOYANCY_COEFFICIENT
+            ),
             stability_beta=30.0,
             stability_power=2.0,
         )

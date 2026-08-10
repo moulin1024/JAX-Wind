@@ -41,9 +41,14 @@ def test_gabls1_rejects_non_amd_sgs(tmp_path: Path) -> None:
 
 
 def test_gabls1_lasd_case_selects_dynamic_closure() -> None:
+    from jaxwind.runners.gabls1.runner import (
+        LASD_SCALAR_STABILITY_BUOYANCY_COEFFICIENT,
+    )
+
     case = load_case(LASD_CONFIG)
     assert case.sgs.model == "lasd"
     assert case.sgs.lasd_update_interval == 5
+    assert LASD_SCALAR_STABILITY_BUOYANCY_COEFFICIENT == 0.0
 
 
 def test_most_neutral_and_stable_flux_signs() -> None:
