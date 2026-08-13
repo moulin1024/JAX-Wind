@@ -261,7 +261,10 @@ def _diagnostics(state, divergence, case: CaseConfig, scales, jnp) -> dict[str, 
         "cfl_y": cfl_y,
         "cfl_z": cfl_z,
         "maximum_cfl": maximum_cfl,
-        "lasd_trajectory_cfl": maximum_cfl * case.sgs.update_interval_steps,
+        # Horizontal departure interpolation is periodic and supports travel over
+        # multiple cells.  The z-slab interpolation has one neighboring plane,
+        # so its trajectory limit applies only to vertical displacement.
+        "lasd_trajectory_cfl": cfl_z * case.sgs.update_interval_steps,
         "stress_equivalent_ustar_m_s": float(
             jnp.sqrt(jnp.mean(local_ustar * local_ustar))
         ),

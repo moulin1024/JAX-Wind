@@ -74,6 +74,8 @@ class ProfileStatistics:
         self.diagnostic_count = 0
         self.spectrum_count = 0
         self.ustar_sum = 0.0
+        self.surface_scalar_flux_count = 0
+        self.surface_scalar_flux_sum = 0.0
         self.sums = {name: np.zeros(nz, dtype=np.float64) for name in self.NAMES}
         self.diagnostic_sums = {
             name: np.zeros(nz, dtype=np.float64)
@@ -89,6 +91,7 @@ class ProfileStatistics:
         scalar: np.ndarray,
         *,
         ustar: float,
+        surface_scalar_flux: float | None = None,
         diagnostics: dict[str, np.ndarray] | None = None,
         spectra: dict[str, np.ndarray] | None = None,
     ) -> None:
@@ -101,6 +104,9 @@ class ProfileStatistics:
                 axis=(-2, -1),
             )
         self.ustar_sum += ustar
+        if surface_scalar_flux is not None:
+            self.surface_scalar_flux_sum += surface_scalar_flux
+            self.surface_scalar_flux_count += 1
         self.count += 1
         if diagnostics is not None:
             missing = set(self.DIAGNOSTIC_NAMES) - set(diagnostics)
@@ -141,6 +147,10 @@ class ProfileStatistics:
                 diagnostic_count=np.asarray(self.diagnostic_count),
                 spectrum_count=np.asarray(self.spectrum_count),
                 ustar_sum=np.asarray(self.ustar_sum),
+                surface_scalar_flux_count=np.asarray(
+                    self.surface_scalar_flux_count
+                ),
+                surface_scalar_flux_sum=np.asarray(self.surface_scalar_flux_sum),
                 **self.sums,
                 **{
                     f"diagnostic_{name}": values
@@ -159,6 +169,16 @@ class ProfileStatistics:
         with np.load(path, allow_pickle=False) as archive:
             result.count = int(archive["count"])
             result.ustar_sum = float(archive["ustar_sum"])
+            result.surface_scalar_flux_count = (
+                int(archive["surface_scalar_flux_count"])
+                if "surface_scalar_flux_count" in archive
+                else 0
+            )
+            result.surface_scalar_flux_sum = (
+                float(archive["surface_scalar_flux_sum"])
+                if "surface_scalar_flux_sum" in archive
+                else 0.0
+            )
             for name in cls.NAMES:
                 values = np.asarray(archive[name], dtype=np.float64)
                 if values.shape != (nz,):
@@ -224,6 +244,12 @@ class ProfileStatistics:
             raise RuntimeError("no friction-velocity samples have been collected")
         return self.ustar_sum / self.count
 
+    @property
+    def mean_surface_scalar_flux(self) -> float:
+        if self.surface_scalar_flux_count == 0:
+            raise RuntimeError("no surface scalar-flux samples have been collected")
+        return self.surface_scalar_flux_sum / self.surface_scalar_flux_count
+
 
 def _configure_pressure_source() -> None:
     source = Path(
@@ -246,6 +272,7 @@ def resolved(case: BoussinesqCase) -> dict[str, Any]:
     scalar_flux = case.scalar_scales.from_execution_flux(
         case.model.scalar_boundary.lower_flux
     )
+    surface_transfer = case.model.surface_transfer
     rotation_values = _rotation_values(case)
     buoyancy_coefficient = (
         case.scalar_scales.from_execution_buoyancy_coefficient(
@@ -279,6 +306,28 @@ def resolved(case: BoussinesqCase) -> dict[str, Any]:
             "scalar_quantity": case.scalar_scales.quantity,
             "scalar_reference_value": case.scalar_scales.reference_value,
             "scalar_surface_flux": scalar_flux,
+            "surface_transfer": type(surface_transfer).__name__,
+            "surface_scalar_initial": (
+                case.scalar_scales.from_execution_scalar(
+                    surface_transfer.surface_scalar_initial
+                )
+                if hasattr(surface_transfer, "surface_scalar_initial")
+                else None
+            ),
+            "surface_scalar_rate_per_second": (
+                surface_transfer.surface_scalar_rate
+                * case.scalar_scales.magnitude
+                / case.mechanical_scales.time
+                if hasattr(surface_transfer, "surface_scalar_rate")
+                else None
+            ),
+            "surface_scalar_roughness_length_m": (
+                case.mechanical_scales.from_execution_length(
+                    surface_transfer.scalar_roughness_length
+                )
+                if hasattr(surface_transfer, "scalar_roughness_length")
+                else None
+            ),
             "buoyancy_acceleration_per_scalar": buoyancy_coefficient,
         },
         "time": {
@@ -296,6 +345,9 @@ def resolved(case: BoussinesqCase) -> dict[str, Any]:
             "pressure_method": case.pressure.method,
             "thomas_chunk": case.pressure.thomas_chunk,
             "nonlinear_padding_ratio": case.nonlinear_padding_ratio,
+            "advection_frame_velocity_m_s": list(
+                case.advection_frame_velocity_m_s
+            ),
         },
         "diagnostic_reference": {
             "length_m": case.diagnostic_reference.length_m,
@@ -328,8 +380,10 @@ def _rotation_values(case: BoussinesqCase) -> tuple[float, float, float, float]:
     return (
         case.mechanical_scales.from_execution_inverse_time(vertical),
         case.mechanical_scales.from_execution_inverse_time(horizontal),
-        case.mechanical_scales.from_execution_velocity(geostrophic_x),
-        case.mechanical_scales.from_execution_velocity(geostrophic_y),
+        case.mechanical_scales.from_execution_velocity(geostrophic_x)
+        + case.advection_frame_velocity_m_s[0],
+        case.mechanical_scales.from_execution_velocity(geostrophic_y)
+        + case.advection_frame_velocity_m_s[1],
     )
 
 
@@ -342,6 +396,7 @@ def _physics_fingerprints(case: BoussinesqCase) -> tuple[str, str]:
     wall = flow.wall
     buoyancy = case.model.buoyancy
     scalar_boundary = case.model.scalar_boundary
+    surface_transfer = case.model.surface_transfer
     physics = (
         "jaxwind.application-boussinesq-physics.v2"
         + f"|closure={closure}"
@@ -355,6 +410,7 @@ def _physics_fingerprints(case: BoussinesqCase) -> tuple[str, str]:
         + f":{buoyancy.acceleration_per_temperature.hex()}"
         + f"|scalar-boundary={scalar_boundary.lower_flux.hex()}"
         + f":{scalar_boundary.upper_flux.hex()}"
+        + f"|surface-transfer={surface_transfer!r}"
         + f"|rayleigh={case.model.rayleigh_damping!r}"
         + f"|padding={case.nonlinear_padding_ratio.hex()}"
     )
@@ -370,10 +426,10 @@ def _physical_fields(state, case: BoussinesqCase, jnp):
     velocity = state.fields.velocity
     u = case.mechanical_scales.from_execution_velocity(
         velocity.x.payload
-    ).reshape(shape)
+    ).reshape(shape) + case.advection_frame_velocity_m_s[0]
     v = case.mechanical_scales.from_execution_velocity(
         velocity.y.payload
-    ).reshape(shape)
+    ).reshape(shape) + case.advection_frame_velocity_m_s[1]
     w_upper = case.mechanical_scales.from_execution_velocity(
         velocity.z.owned.payload
     ).reshape(shape)
@@ -468,7 +524,47 @@ def _diagnostic_observables(
     v_fluctuation = v - mean_v[:, None, None]
     w_fluctuation = w - mean_w[:, None, None]
     scalar_fluctuation = scalar - mean_scalar[:, None, None]
-    tau_x, tau_y, ustar = _wall_stress(u, v, case, jnp)
+    surface_transfer = algebra.surface_transfer(
+        state.fields,
+        case.model,
+        state.clock,
+    )
+    if surface_transfer is None:
+        tau_x, tau_y, ustar = _wall_stress(u, v, case, jnp)
+        surface_scalar_flux = case.scalar_scales.from_execution_flux(
+            case.model.scalar_boundary.lower_flux
+        )
+        surface_scalar = math.nan
+        obukhov_length = math.nan
+    else:
+        tau_x_value = (
+            -surface_transfer.stress_x
+            * case.mechanical_scales.kinematic_pressure
+        )
+        tau_y_value = (
+            -surface_transfer.stress_y
+            * case.mechanical_scales.kinematic_pressure
+        )
+        tau_x = jnp.full_like(u[0], tau_x_value)
+        tau_y = jnp.full_like(v[0], tau_y_value)
+        ustar = float(
+            case.mechanical_scales.from_execution_velocity(
+                surface_transfer.friction_velocity
+            )
+        )
+        surface_scalar_flux = float(
+            case.scalar_scales.from_execution_flux(surface_transfer.scalar_flux)
+        )
+        surface_scalar = float(
+            case.scalar_scales.from_execution_scalar(
+                surface_transfer.surface_scalar
+            )
+        )
+        obukhov_length = float(
+            case.mechanical_scales.from_execution_length(
+                surface_transfer.obukhov_length
+            )
+        )
 
     context = algebra.boussinesq_context(state.fields)
     from jaxwind.physics import DiagnosticLasdConstants
@@ -495,9 +591,6 @@ def _diagnostic_observables(
     )
     scalar_flux_upper = case.scalar_scales.from_execution_flux(
         diagnostic.scalar_flux_z.reshape(shape)
-    )
-    surface_scalar_flux = case.scalar_scales.from_execution_flux(
-        case.model.scalar_boundary.lower_flux
     )
     lower_scalar_flux = jnp.concatenate(
         (
@@ -632,6 +725,10 @@ def _diagnostic_observables(
         case.physical_grid.dz
     )
     history = {
+        "ustar_m_s": ustar,
+        "surface_scalar": surface_scalar,
+        "surface_scalar_flux": surface_scalar_flux,
+        "obukhov_length_m": obukhov_length,
         "surface_uw_m2_s2": surface_uw,
         "surface_vw_m2_s2": surface_vw,
         "momentum_stationarity_cu": (
@@ -731,7 +828,10 @@ def _diagnostics(state, divergence, case: BoussinesqCase, jnp):
         "cfl_y": cfl_y,
         "cfl_z": cfl_z,
         "maximum_cfl": maximum_cfl,
-        "lasd_trajectory_cfl": maximum_cfl * update_interval,
+        # Horizontal departure interpolation is periodic and supports travel over
+        # multiple cells.  The z-slab interpolation has one neighboring plane,
+        # so its trajectory limit applies only to vertical displacement.
+        "lasd_trajectory_cfl": cfl_z * update_interval,
         "ustar_m_s": _friction_velocity(u, v, case, jnp),
         "maximum_execution_divergence": float(jnp.max(jnp.abs(divergence))),
     }
@@ -826,6 +926,8 @@ def _write_spectra(
     scalar_flux = case.scalar_scales.from_execution_flux(
         case.model.scalar_boundary.lower_flux
     )
+    if statistics.surface_scalar_flux_count:
+        scalar_flux = statistics.mean_surface_scalar_flux
     concentration_scale = scalar_flux / ustar
     wavenumber = 2.0 * np.pi * modes / case.physical_grid.lx
     columns = {
@@ -887,10 +989,13 @@ def _bulk_metrics(
     if statistics.count == 0:
         return {}
     metrics = {
+        "surface_friction_velocity_m_s": statistics.mean_ustar,
         "surface_friction_velocity_ratio": (
             statistics.mean_ustar / case.diagnostic_reference.velocity_m_s
         )
     }
+    if statistics.surface_scalar_flux_count:
+        metrics["surface_scalar_flux"] = statistics.mean_surface_scalar_flux
     if statistics.diagnostic_count == 0:
         return metrics
     profiles = statistics.profiles()
@@ -904,8 +1009,12 @@ def _bulk_metrics(
     selected_indices = np.flatnonzero(search)
     inversion_index = selected_indices[np.argmin(total_flux[search])]
     boundary_height = float(z[inversion_index])
-    surface_flux = case.scalar_scales.from_execution_flux(
-        case.model.scalar_boundary.lower_flux
+    surface_flux = (
+        statistics.mean_surface_scalar_flux
+        if statistics.surface_scalar_flux_count
+        else case.scalar_scales.from_execution_flux(
+            case.model.scalar_boundary.lower_flux
+        )
     )
     buoyancy_coefficient = (
         case.scalar_scales.from_execution_buoyancy_coefficient(
@@ -1120,6 +1229,9 @@ def evaluate(
         "lasd_trajectory_cfl",
         "ustar_m_s",
         "maximum_execution_divergence",
+        "surface_scalar",
+        "surface_scalar_flux",
+        "obukhov_length_m",
         "surface_uw_m2_s2",
         "surface_vw_m2_s2",
         "momentum_stationarity_cu",
@@ -1146,6 +1258,14 @@ def evaluate(
     latest_diagnostic: dict[str, float] = {}
     warned_cfl = False
     started = time.perf_counter()
+    timing_warmup_steps = min(
+        steps_to_run,
+        2 * case.model.momentum.sgs.update_interval,
+    )
+    timing_end_step = max(timing_warmup_steps, steps_to_run - 1)
+    timing_warmup_elapsed: float | None = None
+    timing_end_elapsed: float | None = None
+    solver_elapsed: float | None = None
     try:
         for local_step in range(1, steps_to_run + 1):
             next_step = state.clock.step + 1
@@ -1158,6 +1278,15 @@ def evaluate(
                 compute_projection_residual=should_log,
             )
             state = result.state
+            if local_step == timing_warmup_steps:
+                state.fields.velocity.x.payload.block_until_ready()
+                timing_warmup_elapsed = time.perf_counter() - started
+            if local_step == timing_end_step:
+                state.fields.velocity.x.payload.block_until_ready()
+                timing_end_elapsed = time.perf_counter() - started
+            if local_step == steps_to_run:
+                state.fields.velocity.x.payload.block_until_ready()
+                solver_elapsed = time.perf_counter() - started
             accepted_step = state.clock.step
             should_sample = (
                 accepted_step >= case.output.sample_start_step
@@ -1182,18 +1311,13 @@ def evaluate(
                     include_spectra=should_sample,
                 )
             if should_sample:
-                ustar = _friction_velocity(
-                    observed_fields["u"],
-                    observed_fields["v"],
-                    case,
-                    np,
-                )
                 statistics.sample(
                     observed_fields["u"],
                     observed_fields["v"],
                     observed_fields["w"],
                     observed_fields["scalar"],
-                    ustar=ustar,
+                    ustar=paper_history["ustar_m_s"],
+                    surface_scalar_flux=paper_history["surface_scalar_flux"],
                     diagnostics=paper_profiles,
                     spectra=paper_spectra,
                 )
@@ -1280,6 +1404,16 @@ def evaluate(
     complete = state.clock.step == case.steps
     measured_metrics = _bulk_metrics(case, statistics)
     elapsed_seconds = time.perf_counter() - started
+    post_warmup_steps = timing_end_step - timing_warmup_steps
+    post_warmup_elapsed = (
+        timing_end_elapsed - timing_warmup_elapsed
+        if (
+            timing_end_elapsed is not None
+            and timing_warmup_elapsed is not None
+            and post_warmup_steps
+        )
+        else None
+    )
     summary = {
         **resolved(case),
         "runtime": {
@@ -1290,6 +1424,18 @@ def evaluate(
             "elapsed_seconds": elapsed_seconds,
             "steps_per_second": (
                 steps_to_run / elapsed_seconds if steps_to_run else None
+            ),
+            "solver_elapsed_seconds": solver_elapsed,
+            "timing_warmup_steps": timing_warmup_steps,
+            "timing_warmup_elapsed_seconds": timing_warmup_elapsed,
+            "timing_end_step": timing_end_step,
+            "timing_end_elapsed_seconds": timing_end_elapsed,
+            "post_warmup_steps": post_warmup_steps,
+            "post_warmup_elapsed_seconds": post_warmup_elapsed,
+            "post_warmup_steps_per_second": (
+                post_warmup_steps / post_warmup_elapsed
+                if post_warmup_elapsed
+                else None
             ),
             "final_step": state.clock.step,
             "final_time_hours": state.clock.step * case.dt_seconds / 3600.0,

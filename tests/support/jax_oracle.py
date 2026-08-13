@@ -45,6 +45,7 @@ from jaxwind.physics.boussinesq import (
     BoussinesqModel,
     BoussinesqTendency,
 )
+from jaxwind.physics.surface_transfer import NoSurfaceTransfer
 
 from .jax_oracle_core import (
     MAX_ORACLE_CELLS,
@@ -203,8 +204,13 @@ class JaxOracleProjection(OracleLasdMixin, OracleFlowMixin):
         self,
         fields: BoussinesqFields,
         model: BoussinesqModel,
+        *,
+        wall_acceleration=None,
+        scalar_surface_source=None,
     ) -> BoussinesqTendency:
         """Emulate the fused semantic result in the independent test oracle."""
+        if wall_acceleration is not None or scalar_surface_source is not None:
+            raise TypeError("the tiny-grid oracle does not emulate imposed sources")
         context = self.boussinesq_context(fields)
         momentum = self.momentum_context(context)
         momentum_tendency = self.combine_tendencies(
@@ -247,6 +253,11 @@ class JaxOracleProjection(OracleLasdMixin, OracleFlowMixin):
             )
         )
         return BoussinesqTendency(momentum_tendency, scalar_tendency)
+
+    def surface_transfer(self, fields, model, clock):
+        if isinstance(model.surface_transfer, NoSurfaceTransfer):
+            return None
+        raise TypeError("the tiny-grid oracle does not emulate surface transfer")
 
     def velocity_divergence(self, velocity: VelocityVector) -> Field:
         x_ownership = _require_velocity_component(velocity.x, XVelocity)

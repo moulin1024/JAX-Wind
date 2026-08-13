@@ -105,6 +105,27 @@ class ScalarScaleSystem:
 
 
 @dataclass(frozen=True, slots=True)
+class SurfaceScalarEvolution:
+    """Physical scalar value prescribed at a rough surface over time."""
+
+    initial_value: float
+    rate_per_second: float
+    roughness_length_m: float
+
+    def __post_init__(self) -> None:
+        if not all(
+            math.isfinite(value)
+            for value in (self.initial_value, self.rate_per_second)
+        ):
+            raise ValueError("surface-scalar values must be finite")
+        if (
+            not math.isfinite(self.roughness_length_m)
+            or self.roughness_length_m <= 0.0
+        ):
+            raise ValueError("surface-scalar roughness must be finite and positive")
+
+
+@dataclass(frozen=True, slots=True)
 class DiagnosticReference:
     """Case-data normalization for generic profiles, spectra, and bulk metrics."""
 
@@ -164,6 +185,7 @@ class BoussinesqCase:
     cfl_warning: float
     cfl_abort: float
     trajectory_cfl_abort: float
+    advection_frame_velocity_m_s: tuple[float, float] = (0.0, 0.0)
     nonlinear_padding_ratio: float = 1.5
 
     def __post_init__(self) -> None:
@@ -179,6 +201,10 @@ class BoussinesqCase:
             raise ValueError("CFL limits are inconsistent")
         if self.trajectory_cfl_abort <= 0.0:
             raise ValueError("trajectory CFL limit must be positive")
+        if not all(
+            math.isfinite(value) for value in self.advection_frame_velocity_m_s
+        ):
+            raise ValueError("advection-frame velocity must be finite")
         if self.nonlinear_padding_ratio < 1.0:
             raise ValueError("nonlinear padding ratio cannot be below one")
 
@@ -199,5 +225,6 @@ __all__ = [
     "OutputSchedule",
     "PressureProjection",
     "ScalarScaleSystem",
+    "SurfaceScalarEvolution",
     "TabulatedBoussinesqState",
 ]

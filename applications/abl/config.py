@@ -23,6 +23,7 @@ from jaxwind.physics import (
     LagrangianScaleDependentDynamic,
     LagrangianScaleDependentScalarFlux,
     LinearBoussinesqBuoyancy,
+    MoninObukhovSurfaceTransfer,
     NeutralLogWall,
     NoRayleighDamping,
     NoRotation,
@@ -35,6 +36,7 @@ from applications.boussinesq import (
     OutputSchedule,
     PressureProjection,
     ScalarScaleSystem,
+    SurfaceScalarEvolution,
     TabulatedBoussinesqState,
 )
 
@@ -118,9 +120,11 @@ def compose_abl(
     scalar_quantity: str,
     scalar_reference_value: float,
     scalar_surface_flux: float,
+    surface_scalar: SurfaceScalarEvolution | None,
     buoyancy_acceleration_per_scalar: float,
     pressure_acceleration_m_s2: tuple[float, float],
     geostrophic_velocity_m_s: tuple[float, float],
+    advection_frame_velocity_m_s: tuple[float, float],
     coriolis_s: tuple[float, float],
     roughness_length_m: float,
     von_karman: float,
@@ -164,6 +168,14 @@ def compose_abl(
         scalar_quantity,
         scalar_reference_value,
     )
+    if any(advection_frame_velocity_m_s) and surface_scalar is None:
+        raise ValueError(
+            "a nonzero advection frame requires coupled surface transfer"
+        )
+    relative_geostrophic = (
+        geostrophic_velocity_m_s[0] - advection_frame_velocity_m_s[0],
+        geostrophic_velocity_m_s[1] - advection_frame_velocity_m_s[1],
+    )
     vertical_coriolis, horizontal_coriolis = coriolis_s
     if vertical_coriolis == 0.0:
         if horizontal_coriolis != 0.0:
@@ -172,8 +184,8 @@ def compose_abl(
     else:
         rotation = CoriolisGeostrophic(
             mechanical_scales.to_execution_inverse_time(vertical_coriolis),
-            mechanical_scales.to_execution_velocity(geostrophic_velocity_m_s[0]),
-            mechanical_scales.to_execution_velocity(geostrophic_velocity_m_s[1]),
+            mechanical_scales.to_execution_velocity(relative_geostrophic[0]),
+            mechanical_scales.to_execution_velocity(relative_geostrophic[1]),
             mechanical_scales.to_execution_inverse_time(horizontal_coriolis),
         )
     buoyancy_coefficient = scalar_scales.to_execution_buoyancy_coefficient(
@@ -195,6 +207,29 @@ def compose_abl(
         stability_buoyancy_coefficient=buoyancy_coefficient,
         stability_beta=stratification_beta,
         stability_power=stratification_power,
+    )
+    surface_transfer = (
+        MoninObukhovSurfaceTransfer(
+            scalar_roughness_length=mechanical_scales.to_execution_length(
+                surface_scalar.roughness_length_m
+            ),
+            surface_scalar_initial=scalar_scales.to_execution_scalar(
+                surface_scalar.initial_value
+            ),
+            surface_scalar_rate=(
+                surface_scalar.rate_per_second
+                * mechanical_scales.time
+                / scalar_scales.magnitude
+            ),
+            x_velocity_offset=mechanical_scales.to_execution_velocity(
+                advection_frame_velocity_m_s[0]
+            ),
+            y_velocity_offset=mechanical_scales.to_execution_velocity(
+                advection_frame_velocity_m_s[1]
+            ),
+        )
+        if surface_scalar is not None
+        else None
     )
     model = BoussinesqModel(
         momentum=DryFlowModel(
@@ -222,6 +257,7 @@ def compose_abl(
             scalar_scales.to_execution_flux(scalar_surface_flux),
             0.0,
         ),
+        **({"surface_transfer": surface_transfer} if surface_transfer else {}),
     )
     return BoussinesqCase(
         name=name,
@@ -246,6 +282,7 @@ def compose_abl(
         cfl_warning=cfl_warning,
         cfl_abort=cfl_abort,
         trajectory_cfl_abort=trajectory_cfl_abort,
+        advection_frame_velocity_m_s=advection_frame_velocity_m_s,
         nonlinear_padding_ratio=nonlinear_padding_ratio,
     )
 
@@ -268,9 +305,12 @@ def load_abl(path: str | Path) -> BoussinesqCase:
         "diagnostics",
         "output",
     }
-    if set(document) != expected_tables:
+    optional_tables = {"surface_scalar"}
+    if not expected_tables <= document.keys() or not document.keys() <= (
+        expected_tables | optional_tables
+    ):
         missing = expected_tables - document.keys()
-        unknown = document.keys() - expected_tables
+        unknown = document.keys() - expected_tables - optional_tables
         details = []
         if missing:
             details.append("missing tables: " + ", ".join(sorted(missing)))
@@ -288,6 +328,11 @@ def load_abl(path: str | Path) -> BoussinesqCase:
     numerics = _table(document, "numerics")
     diagnostics = _table(document, "diagnostics")
     output = _table(document, "output")
+    surface_scalar = (
+        _table(document, "surface_scalar")
+        if "surface_scalar" in document
+        else None
+    )
     _keys(
         case,
         {"name", "citation", "initial_profile", "reference_results", "seed"},
@@ -300,6 +345,7 @@ def load_abl(path: str | Path) -> BoussinesqCase:
         {
             "pressure_acceleration_m_s2",
             "geostrophic_velocity_m_s",
+            "advection_frame_velocity_m_s",
             "coriolis_s",
             "roughness_length_m",
             "von_karman",
@@ -364,6 +410,12 @@ def load_abl(path: str | Path) -> BoussinesqCase:
         name="diagnostics",
     )
     _keys(output, {"directory"}, name="output")
+    if surface_scalar is not None:
+        _keys(
+            surface_scalar,
+            {"initial_value", "rate_per_second", "roughness_length_m"},
+            name="surface_scalar",
+        )
 
     cells = _integers(domain, "cells", length=3)
     lengths = _numbers(domain, "lengths_m", length=3)
@@ -371,6 +423,9 @@ def load_abl(path: str | Path) -> BoussinesqCase:
         flow, "pressure_acceleration_m_s2", length=2
     )
     geostrophic = _numbers(flow, "geostrophic_velocity_m_s", length=2)
+    advection_frame = _numbers(
+        flow, "advection_frame_velocity_m_s", length=2
+    )
     coriolis = _numbers(flow, "coriolis_s", length=2)
     spectrum_heights = _numbers(diagnostics, "spectrum_heights_m")
     return compose_abl(
@@ -384,6 +439,17 @@ def load_abl(path: str | Path) -> BoussinesqCase:
         scalar_quantity=_string(scalar, "quantity"),
         scalar_reference_value=_number(scalar, "reference_value"),
         scalar_surface_flux=_number(scalar, "surface_flux"),
+        surface_scalar=(
+            SurfaceScalarEvolution(
+                initial_value=_number(surface_scalar, "initial_value"),
+                rate_per_second=_number(surface_scalar, "rate_per_second"),
+                roughness_length_m=_number(
+                    surface_scalar, "roughness_length_m"
+                ),
+            )
+            if surface_scalar is not None
+            else None
+        ),
         buoyancy_acceleration_per_scalar=_number(
             scalar, "buoyancy_acceleration_per_unit"
         ),
@@ -392,6 +458,10 @@ def load_abl(path: str | Path) -> BoussinesqCase:
             pressure_acceleration[1],
         ),
         geostrophic_velocity_m_s=(geostrophic[0], geostrophic[1]),
+        advection_frame_velocity_m_s=(
+            advection_frame[0],
+            advection_frame[1],
+        ),
         coriolis_s=(coriolis[0], coriolis[1]),
         roughness_length_m=_number(flow, "roughness_length_m"),
         von_karman=_number(flow, "von_karman"),

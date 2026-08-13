@@ -43,7 +43,12 @@ def test_cases_are_data_only_and_have_no_benchmark_namespace() -> None:
     assert (REPOSITORY_ROOT / "cases").is_dir()
     assert not (REPOSITORY_ROOT / "benchmark").exists()
     assert not tuple((REPOSITORY_ROOT / "cases").rglob("*.py"))
-    for name in ("PressureDrivenLASD", "Andren1994", "Nieuwstadt1993"):
+    for name in (
+        "PressureDrivenLASD",
+        "Andren1994",
+        "Nieuwstadt1993",
+        "GABLS1",
+    ):
         case = REPOSITORY_ROOT / "cases" / name
         assert (case / "config.toml").is_file()
 

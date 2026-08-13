@@ -29,6 +29,9 @@ from jaxwind.interpreters.jax_zslab import (  # noqa: E402
     ZFaceFieldContext,
     build_zslab_interpreter,
 )
+from jaxwind.interpreters._jax_zslab_surface import (  # noqa: E402
+    monin_obukhov_surface_transfer,
+)
 from jaxwind.operators import VelocityVector  # noqa: E402
 from jaxwind.physics import (  # noqa: E402
     BoussinesqFields,
@@ -43,6 +46,7 @@ from jaxwind.physics import (  # noqa: E402
     LagrangianScaleDependentDynamic,
     LagrangianScaleDependentScalarFlux,
     LinearBoussinesqBuoyancy,
+    MoninObukhovSurfaceTransfer,
     NoBuoyancy,
     NoRotation,
     ScalarFluxBoundary,
@@ -52,6 +56,9 @@ from jaxwind.physics import (  # noqa: E402
 
 
 class FusedNeutralSgsTests(unittest.TestCase):
+    def test_surface_transfer_remains_one_jit_lowerable_program(self) -> None:
+        self.assertTrue(callable(monin_obukhov_surface_transfer.lower))
+
     def setUp(self) -> None:
         grid = UniformGrid(8, 8, 4, 8.0, 8.0, 4.0)
         self.decomposition = EqualZSlab(
@@ -216,13 +223,13 @@ class FusedNeutralSgsTests(unittest.TestCase):
             frozen_zero_scalar=False,
         )
 
-    def test_lasd_stable_sources_fusion_matches_individual_terms(self) -> None:
-        self.assert_stable_sources_fusion_matches_individual_terms(
+    def test_lasd_coupled_surface_sources_match_individual_terms(self) -> None:
+        self.assert_coupled_surface_sources_match_individual_terms(
             LagrangianScaleDependentDynamic(update_interval=4),
             LagrangianScaleDependentScalarFlux(),
         )
 
-    def assert_stable_sources_fusion_matches_individual_terms(
+    def assert_coupled_surface_sources_match_individual_terms(
         self,
         momentum_sgs,
         scalar_sgs,
@@ -295,6 +302,51 @@ class FusedNeutralSgsTests(unittest.TestCase):
                 float(jnp.max(jnp.abs(expected - fused_payload))),
                 3.0e-12,
             )
+
+    def test_monin_obukhov_transfer_drives_the_uniform_fused_rhs(self) -> None:
+        model = BoussinesqModel(
+            DryFlowModel(
+                ConservativeAdvection(),
+                KinematicPressureGradient(0.0),
+                FilteredNeutralLogWall(0.01),
+                LagrangianScaleDependentDynamic(update_interval=4),
+                NoRotation(),
+            ),
+            ConservativeScalarAdvection(),
+            LagrangianScaleDependentScalarFlux(),
+            LinearBoussinesqBuoyancy(0.025),
+            surface_transfer=MoninObukhovSurfaceTransfer(
+                scalar_roughness_length=0.01,
+                surface_scalar_initial=-1.0,
+                surface_scalar_rate=-0.1,
+            ),
+        )
+        algebra = build_zslab_interpreter(
+            self.decomposition,
+            frozen_zero_scalar=False,
+        )
+        fields = algebra.initialize_lasd_closure(self.active_fields, model)
+        clock = AcceptedClock(0.5, 2)
+        transfer = algebra.surface_transfer(fields, model, clock)
+
+        self.assertIsNotNone(transfer)
+        self.assertGreater(float(transfer.stress_x), 0.0)
+        self.assertLess(float(transfer.scalar_flux), 0.0)
+        self.assertLess(float(transfer.wall_x_acceleration), 0.0)
+        self.assertLess(float(transfer.scalar_surface_source), 0.0)
+        result = BoussinesqVectorField(algebra, model)(
+            Evaluation(fields, clock, None)
+        )
+        self.assertTrue(
+            bool(jnp.all(jnp.isfinite(result.tendency.velocity.x.payload)))
+        )
+        self.assertTrue(
+            bool(
+                jnp.all(
+                    jnp.isfinite(result.tendency.potential_temperature.payload)
+                )
+            )
+        )
 
     def test_lasd_diagnoses_negative_resolved_tke_transfer(self) -> None:
         wall = FilteredNeutralLogWall(0.01)

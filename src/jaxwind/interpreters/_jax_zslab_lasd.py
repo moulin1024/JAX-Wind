@@ -60,6 +60,11 @@ from jaxwind.physics.boussinesq import (
     ScalarFluxBoundary,
     StaticSmagorinskyScalarFlux,
 )
+from jaxwind.physics.surface_transfer import (
+    MoninObukhovSurfaceTransfer,
+    NoSurfaceTransfer,
+    SurfaceTransferResult,
+)
 from jaxwind.physics.lasd import (
     DiagnosticLasdConstants,
     LagrangianScaleDependentDynamic,
@@ -71,6 +76,8 @@ from jaxwind.physics.lasd import (
     ScalarLasdMemory,
 )
 from jaxwind.physics.wind_tunnel import ConcurrentPrecursorFringe
+
+from ._jax_zslab_surface import monin_obukhov_surface_transfer
 
 if TYPE_CHECKING:
     from .jax_zslab import ZSlabBoussinesqContext, ZSlabDryFlowContext
@@ -369,6 +376,66 @@ class ZSlabLasdMixin:
     ) -> ZSlabDryFlowContext:
         return context.momentum
 
+    def surface_transfer(
+        self,
+        fields: BoussinesqFields,
+        model: BoussinesqModel,
+        clock: Any,
+    ) -> SurfaceTransferResult | None:
+        """Evaluate a coupled lower-boundary exchange law from plane means."""
+
+        config = model.surface_transfer
+        if isinstance(config, NoSurfaceTransfer):
+            return None
+        if not isinstance(config, MoninObukhovSurfaceTransfer):
+            raise TypeError("unsupported Boussinesq surface-transfer choice")
+        wall = model.momentum.wall
+        if not isinstance(wall, (NeutralLogWall, FilteredNeutralLogWall)):
+            raise TypeError("Monin-Obukhov transfer requires a logarithmic wall")
+        grid = self.decomposition.grid
+        measurement_height = 0.5 * grid.dz
+        if measurement_height <= max(
+            wall.roughness_length,
+            config.scalar_roughness_length,
+        ):
+            raise ValueError(
+                "surface-transfer height must exceed both roughness lengths"
+            )
+
+        bottom = (
+            self.addressable_shards.index(0)
+            if 0 in self.addressable_shards
+            else 0
+        )
+        buoyancy_coefficient = (
+            model.buoyancy.acceleration_per_temperature
+            if isinstance(model.buoyancy, LinearBoussinesqBuoyancy)
+            else 0.0
+        )
+        return monin_obukhov_surface_transfer(
+            fields.velocity.x.payload,
+            fields.velocity.y.payload,
+            fields.potential_temperature.payload,
+            clock.time,
+            grid.dz,
+            wall.roughness_length,
+            config.scalar_roughness_length,
+            config.surface_scalar_initial,
+            config.surface_scalar_rate,
+            config.x_velocity_offset,
+            config.y_velocity_offset,
+            buoyancy_coefficient,
+            wall.von_karman,
+            config.positive_zeta_momentum_slope,
+            config.positive_zeta_scalar_slope,
+            config.negative_zeta_momentum_coefficient,
+            config.negative_zeta_scalar_coefficient,
+            config.relaxation,
+            config.maximum_abs_zeta,
+            bottom=bottom,
+            iterations=config.iterations,
+        )
+
     def fused_boussinesq_tendency(
         self,
         fields: BoussinesqFields,
@@ -415,7 +482,7 @@ class ZSlabLasdMixin:
                 "boundary, and no standalone Rayleigh damping"
             )
         if use_imposed_sources and frozen_model:
-            raise ValueError("imposed stable sources require an active scalar")
+            raise ValueError("coupled surface sources require an active scalar")
         if frozen_model and isinstance(model.buoyancy, LinearBoussinesqBuoyancy):
             raise ValueError("Boussinesq buoyancy requires an active scalar")
 

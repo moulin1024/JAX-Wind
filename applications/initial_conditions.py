@@ -100,10 +100,11 @@ def build_initial_fields(
     u_noise = _unit_plane_noise(jax, jnp, keys[0], shape, dtype)
     v_noise = _unit_plane_noise(jax, jnp, keys[1], shape, dtype)
     coupled_noise = _unit_plane_noise(jax, jnp, keys[2], shape, dtype)
-    u = cell_profile("u_m_s")[None, :, None, None] + (
+    frame_u, frame_v = case.advection_frame_velocity_m_s
+    u = cell_profile("u_m_s")[None, :, None, None] - frame_u + (
         cell_profile("u_rms_m_s")[None, :, None, None] * u_noise
     )
-    v = cell_profile("v_m_s")[None, :, None, None] + (
+    v = cell_profile("v_m_s")[None, :, None, None] - frame_v + (
         cell_profile("v_rms_m_s")[None, :, None, None] * v_noise
     )
     w = jnp.asarray(table["w_upper_m_s"], dtype=dtype)[None, :, None, None] + (

@@ -12,6 +12,7 @@ from .lasd import (
     LagrangianScaleDependentScalarFlux,
     NoClosureMemory,
 )
+from .surface_transfer import MoninObukhovSurfaceTransfer, NoSurfaceTransfer
 
 
 V = TypeVar("V")
@@ -112,6 +113,9 @@ class BoussinesqModel:
         NoRayleighDamping()
     )
     scalar_boundary: ScalarFluxBoundary = ScalarFluxBoundary()
+    surface_transfer: NoSurfaceTransfer | MoninObukhovSurfaceTransfer = (
+        NoSurfaceTransfer()
+    )
 
     def __post_init__(self) -> None:
         expected = (
@@ -134,6 +138,18 @@ class BoussinesqModel:
             raise TypeError("Boussinesq Rayleigh damping has an unsupported choice")
         if not isinstance(self.scalar_boundary, ScalarFluxBoundary):
             raise TypeError("Boussinesq scalar boundary has an unsupported choice")
+        if not isinstance(
+            self.surface_transfer,
+            (NoSurfaceTransfer, MoninObukhovSurfaceTransfer),
+        ):
+            raise TypeError("Boussinesq surface transfer has an unsupported choice")
+        if (
+            isinstance(self.surface_transfer, MoninObukhovSurfaceTransfer)
+            and self.scalar_boundary.lower_flux != 0.0
+        ):
+            raise ValueError(
+                "coupled surface transfer requires zero prescribed lower scalar flux"
+            )
         momentum_lasd = isinstance(self.momentum.sgs, LagrangianScaleDependentDynamic)
         scalar_lasd = isinstance(self.scalar_sgs, LagrangianScaleDependentScalarFlux)
         if momentum_lasd != scalar_lasd:
@@ -192,8 +208,17 @@ class BoussinesqVectorFieldResult:
 
 class BoussinesqAlgebra(Protocol):
     def fused_boussinesq_tendency(
-        self, fields: BoussinesqFields, model: BoussinesqModel
+        self,
+        fields: BoussinesqFields,
+        model: BoussinesqModel,
+        *,
+        wall_acceleration: tuple[Any, Any] | None = None,
+        scalar_surface_source: Any | None = None,
     ) -> BoussinesqTendency: ...
+
+    def surface_transfer(
+        self, fields: BoussinesqFields, model: BoussinesqModel, clock: Any
+    ) -> Any: ...
 
     def boussinesq_context(self, fields: BoussinesqFields) -> Any: ...
 
@@ -267,10 +292,27 @@ class BoussinesqVectorField:
         )
 
     def __call__(self, evaluation: Any) -> BoussinesqVectorFieldResult:
+        surface = self.algebra.surface_transfer(
+            evaluation.velocity,
+            self.model,
+            evaluation.time,
+        )
+        imposed = (
+            {}
+            if surface is None
+            else {
+                "wall_acceleration": (
+                    surface.wall_x_acceleration,
+                    surface.wall_y_acceleration,
+                ),
+                "scalar_surface_source": surface.scalar_surface_source,
+            }
+        )
         return BoussinesqVectorFieldResult(
             self.algebra.fused_boussinesq_tendency(
                 evaluation.velocity,
                 self.model,
+                **imposed,
             ),
             BoussinesqDiagnostic(evaluation.time),
         )
