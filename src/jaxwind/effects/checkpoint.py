@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import math
 import os
 from pathlib import Path
 from typing import Any, Callable
@@ -156,7 +157,10 @@ def _state_metadata(
         "schema": schema,
         "representation": representation,
         "grid": _grid_metadata(grid),
-        "clock": {"time": state.clock.time, "step": state.clock.step},
+        "clock": {
+            "time": float(state.clock.time),
+            "step": int(state.clock.step),
+        },
         "integrator_fingerprint": state.integrator_fingerprint,
         "history": (
             "cold-start"
@@ -226,10 +230,33 @@ def _load_array(archive, name: str, factory: Callable) -> Any:
     return factory(np.array(archive[name], copy=True))
 
 
+def _load_distributed_array(
+    archive,
+    name: str,
+    layout: DistributedCheckpointLayout,
+    *,
+    reshard: bool,
+) -> Any:
+    values = np.array(archive[name], copy=True)
+    if reshard and values.ndim == 4:
+        grid = layout.decomposition.grid
+        expected = (
+            len(layout.addressable_partitions),
+            layout.decomposition.cells_per_partition,
+            grid.ny,
+            grid.nx,
+        )
+        if values.size != math.prod(expected):
+            raise ValueError("checkpoint payload cannot be reshaped to the load layout")
+        values = values.reshape(expected)
+    return layout.array_factory(values)
+
+
 def _validate_metadata(
     metadata: dict[str, Any],
     layout: CheckpointLayout,
     config: AB2Config,
+    allow_reshard: bool = False,
 ) -> str:
     if metadata.get("schema") != SCHEMA:
         raise ValueError("unsupported AB2 checkpoint schema")
@@ -254,7 +281,14 @@ def _validate_metadata(
             "addressable_shards",
             metadata.get("addressable_partitions", ()),
         )
-        if tuple(stored) != layout.addressable_partitions:
+        stored = tuple(stored)
+        full_destination = tuple(range(layout.decomposition.partition_count))
+        can_reshard = (
+            allow_reshard
+            and stored == (0,)
+            and layout.addressable_partitions == full_destination
+        )
+        if stored != layout.addressable_partitions and not can_reshard:
             raise ValueError("checkpoint partitions do not match the load layout")
     history = metadata.get("history")
     if history not in ("cold-start", "previous-tendency"):
@@ -295,7 +329,12 @@ def _reference_velocity(
 
 
 def _distributed_velocity(
-    archive, prefix: str, layout: DistributedCheckpointLayout, *, tendency: bool
+    archive,
+    prefix: str,
+    layout: DistributedCheckpointLayout,
+    *,
+    tendency: bool,
+    reshard: bool = False,
 ):
     from jaxwind.domain import VerticalFaceField
 
@@ -311,14 +350,18 @@ def _distributed_velocity(
             Cell,
             cell_regions,
             phase,
-            _load_array(archive, f"{prefix}_x", layout.array_factory),
+            _load_distributed_array(
+                archive, f"{prefix}_x", layout, reshard=reshard
+            ),
         ),
         AddressableField(
             YVelocityTendency if tendency else YVelocity,
             Cell,
             cell_regions,
             phase,
-            _load_array(archive, f"{prefix}_y", layout.array_factory),
+            _load_distributed_array(
+                archive, f"{prefix}_y", layout, reshard=reshard
+            ),
         ),
         VerticalFaceField(
             AddressableField(
@@ -326,7 +369,9 @@ def _distributed_velocity(
                 ZFace,
                 face_regions,
                 phase,
-                _load_array(archive, f"{prefix}_z", layout.array_factory),
+                _load_distributed_array(
+                    archive, f"{prefix}_z", layout, reshard=reshard
+                ),
             ),
             _load_array(
                 archive,
@@ -458,6 +503,7 @@ def _checkpoint_scalar(
     *,
     tendency: bool,
     scalar_quantity: str = "potential-temperature-perturbation",
+    reshard: bool = False,
 ):
     quantities = {
         "potential-temperature-perturbation": (
@@ -489,7 +535,7 @@ def _checkpoint_scalar(
         Cell,
         tuple(regions[index] for index in layout.addressable_partitions),
         phase,
-        _load_array(archive, name, layout.array_factory),
+        _load_distributed_array(archive, name, layout, reshard=reshard),
     )
 
 
@@ -498,6 +544,8 @@ def _checkpoint_closure_field(
     name: str,
     quantity: type,
     layout: CheckpointLayout,
+    *,
+    reshard: bool = False,
 ):
     if isinstance(layout, ReferenceCheckpointLayout):
         return Field(
@@ -513,7 +561,7 @@ def _checkpoint_closure_field(
         Cell,
         tuple(regions[index] for index in layout.addressable_partitions),
         Accepted,
-        _load_array(archive, name, layout.array_factory),
+        _load_distributed_array(archive, name, layout, reshard=reshard),
     )
 
 
@@ -521,6 +569,8 @@ def _checkpoint_closure(
     archive,
     metadata: dict[str, Any],
     layout: CheckpointLayout,
+    *,
+    reshard: bool = False,
 ) -> NoClosureMemory | LasdClosureMemory:
     closure_metadata = metadata.get("closure", {"kind": "none"})
     if closure_metadata.get("kind") == "none":
@@ -535,6 +585,7 @@ def _checkpoint_closure(
             f"closure_{storage_name}",
             quantity,
             layout,
+            reshard=reshard,
         )
     momentum = MomentumLasdMemory(
         *(
@@ -574,6 +625,7 @@ def load_boussinesq_checkpoint(
     scale_fingerprint: str | None = None,
     closure_fingerprint: str | None = None,
     physics_fingerprint: str | None = None,
+    allow_single_process_reshard: bool = False,
 ) -> AB2BoussinesqState:
     with np.load(Path(path), allow_pickle=False) as archive:
         metadata = json.loads(str(archive["metadata"]))
@@ -591,12 +643,27 @@ def load_boussinesq_checkpoint(
             raise ValueError("Boussinesq checkpoint physics fingerprint does not match")
         validation_metadata = dict(metadata)
         validation_metadata["schema"] = SCHEMA
-        history_tag = _validate_metadata(validation_metadata, layout, config)
+        history_tag = _validate_metadata(
+            validation_metadata,
+            layout,
+            config,
+            allow_reshard=allow_single_process_reshard,
+        )
         if isinstance(layout, ReferenceCheckpointLayout):
             velocity_loader = _reference_velocity
         else:
             velocity_loader = _distributed_velocity
-        velocity = velocity_loader(archive, "velocity", layout, tendency=False)
+        velocity = velocity_loader(
+            archive,
+            "velocity",
+            layout,
+            tendency=False,
+            **(
+                {"reshard": allow_single_process_reshard}
+                if isinstance(layout, DistributedCheckpointLayout)
+                else {}
+            ),
+        )
         scalar_quantity = metadata.get(
             "scalar_quantity",
             "potential-temperature-perturbation",
@@ -607,8 +674,14 @@ def load_boussinesq_checkpoint(
             layout,
             tendency=False,
             scalar_quantity=scalar_quantity,
+            reshard=allow_single_process_reshard,
         )
-        closure = _checkpoint_closure(archive, metadata, layout)
+        closure = _checkpoint_closure(
+            archive,
+            metadata,
+            layout,
+            reshard=allow_single_process_reshard,
+        )
         if (
             closure_fingerprint is not None
             and getattr(closure, "configuration_fingerprint", None)
@@ -625,6 +698,11 @@ def load_boussinesq_checkpoint(
                         "history_velocity",
                         layout,
                         tendency=True,
+                        **(
+                            {"reshard": allow_single_process_reshard}
+                            if isinstance(layout, DistributedCheckpointLayout)
+                            else {}
+                        ),
                     ),
                     _checkpoint_scalar(
                         archive,
@@ -632,6 +710,7 @@ def load_boussinesq_checkpoint(
                         layout,
                         tendency=True,
                         scalar_quantity=scalar_quantity,
+                        reshard=allow_single_process_reshard,
                     ),
                 )
             )

@@ -6,6 +6,7 @@ from dataclasses import replace
 import math
 from typing import TYPE_CHECKING, Any
 
+from jax import lax
 import jax.numpy as jnp
 
 from jaxwind._jax.fringe import plateau_fringe_mask
@@ -259,9 +260,10 @@ class ZSlabLasdMixin:
         old_s = closure.scalar
         interval = momentum_config.update_interval
         should_update = (clock.step + 1) % interval == 0
-        if should_update:
+
+        def accumulate_for_update(_operand):
             context = self.boussinesq_context(fields)
-            trajectory_x, trajectory_y, trajectory_z = self.lasd.accumulate(
+            return self.lasd.accumulate(
                 context.momentum.arrays.u,
                 context.momentum.arrays.v,
                 context.momentum.arrays.w_at_cells,
@@ -270,14 +272,15 @@ class ZSlabLasdMixin:
                 old_m.trajectory_z.payload,
                 interval,
             )
-        else:
+
+        def accumulate_for_transport(_operand):
             velocity = fields.velocity
             self._validate_velocity_cell(velocity.x, XVelocity)
             self._validate_velocity_cell(velocity.y, YVelocity)
             self._validate_field(velocity.z.owned, ZFace)
             if velocity.z.owned.quantity is not VerticalVelocity:
                 raise TypeError("LASD trajectory requires vertical velocity")
-            trajectory_x, trajectory_y, trajectory_z = self.lasd.accumulate_velocity(
+            return self.lasd.accumulate_velocity(
                 velocity.x.payload,
                 velocity.y.payload,
                 velocity.z.owned.payload,
@@ -287,12 +290,31 @@ class ZSlabLasdMixin:
                 old_m.trajectory_z.payload,
                 interval,
             )
+
+        if isinstance(should_update, bool):
+            trajectories = (
+                accumulate_for_update(None)
+                if should_update
+                else accumulate_for_transport(None)
+            )
+        else:
+            trajectories = lax.cond(
+                should_update,
+                accumulate_for_update,
+                accumulate_for_transport,
+                operand=None,
+            )
+        trajectory_x, trajectory_y, trajectory_z = trajectories
+
         field = lambda template, payload: self._addressable_closure_field(  # noqa: E731
             template,
             template.quantity,
             payload,
         )
-        if should_update:
+
+        def update_payloads(trajectories):
+            trajectory_x, trajectory_y, trajectory_z = trajectories
+            context = self.boussinesq_context(fields)
             results = self.lasd.update(
                 context.momentum.arrays,
                 context.arrays,
@@ -334,35 +356,85 @@ class ZSlabLasdMixin:
                 scalar_nn,
             ) = results
             zero = jnp.zeros_like(trajectory_x)
-            new_momentum = MomentumLasdMemory(
-                field(old_m.coefficient, momentum_coefficient),
-                field(old_m.lm, lm),
-                field(old_m.mm, mm),
-                field(old_m.qn, qn),
-                field(old_m.nn, nn),
-                field(old_m.trajectory_x, zero),
-                field(old_m.trajectory_y, zero),
-                field(old_m.trajectory_z, zero),
+            return (
+                momentum_coefficient,
+                lm,
+                mm,
+                qn,
+                nn,
+                zero,
+                zero,
+                zero,
+                scalar_coefficient,
+                scalar_lm,
+                scalar_mm,
+                scalar_qn,
+                scalar_nn,
             )
-            new_scalar = ScalarLasdMemory(
-                field(old_s.coefficient, scalar_coefficient),
-                field(old_s.lm, scalar_lm),
-                field(old_s.mm, scalar_mm),
-                field(old_s.qn, scalar_qn),
-                field(old_s.nn, scalar_nn),
+
+        def carry_payloads(trajectories):
+            trajectory_x, trajectory_y, trajectory_z = trajectories
+            return (
+                old_m.coefficient.payload,
+                old_m.lm.payload,
+                old_m.mm.payload,
+                old_m.qn.payload,
+                old_m.nn.payload,
+                trajectory_x,
+                trajectory_y,
+                trajectory_z,
+                old_s.coefficient.payload,
+                old_s.lm.payload,
+                old_s.mm.payload,
+                old_s.qn.payload,
+                old_s.nn.payload,
+            )
+
+        if isinstance(should_update, bool):
+            payloads = (
+                update_payloads(trajectories)
+                if should_update
+                else carry_payloads(trajectories)
             )
         else:
-            new_momentum = MomentumLasdMemory(
-                old_m.coefficient,
-                old_m.lm,
-                old_m.mm,
-                old_m.qn,
-                old_m.nn,
-                field(old_m.trajectory_x, trajectory_x),
-                field(old_m.trajectory_y, trajectory_y),
-                field(old_m.trajectory_z, trajectory_z),
+            payloads = lax.cond(
+                should_update,
+                update_payloads,
+                carry_payloads,
+                trajectories,
             )
-            new_scalar = old_s
+        (
+            momentum_coefficient,
+            lm,
+            mm,
+            qn,
+            nn,
+            trajectory_x,
+            trajectory_y,
+            trajectory_z,
+            scalar_coefficient,
+            scalar_lm,
+            scalar_mm,
+            scalar_qn,
+            scalar_nn,
+        ) = payloads
+        new_momentum = MomentumLasdMemory(
+            field(old_m.coefficient, momentum_coefficient),
+            field(old_m.lm, lm),
+            field(old_m.mm, mm),
+            field(old_m.qn, qn),
+            field(old_m.nn, nn),
+            field(old_m.trajectory_x, trajectory_x),
+            field(old_m.trajectory_y, trajectory_y),
+            field(old_m.trajectory_z, trajectory_z),
+        )
+        new_scalar = ScalarLasdMemory(
+            field(old_s.coefficient, scalar_coefficient),
+            field(old_s.lm, scalar_lm),
+            field(old_s.mm, scalar_mm),
+            field(old_s.qn, scalar_qn),
+            field(old_s.nn, scalar_nn),
+        )
         prepared = replace(
             fields,
             closure=LasdClosureMemory(new_momentum, new_scalar, fingerprint),

@@ -18,6 +18,7 @@ class Advance(Protocol[State, StepResult]):
         self,
         state: State,
         *,
+        environment: Any = None,
         compute_projection_residual: bool = True,
     ) -> StepResult: ...
 
@@ -32,11 +33,12 @@ def build_solver(
     closure_event: Any,
     environment: Any = None,
 ) -> Advance:
-    """Close one Boussinesq solver step over its fixed numerical environment."""
+    """Close one step with a default, per-call-overridable environment."""
 
     def advance(
         state: Any,
         *,
+        environment: Any = environment,
         compute_projection_residual: bool = True,
     ) -> Any:
         return step_boussinesq(

@@ -16,4 +16,10 @@ python -m applications.abl \
   cases/Andren1994/config.toml --dry-run
 python -m applications.abl \
   cases/Nieuwstadt1993/config.toml --dry-run
+python -m applications.windfarm_precursor --dry-run
 ```
+
+`windfarm_precursor` starts from a developed pressure-driven LASD checkpoint,
+records rank-local HDF5 inflow/outflow planes, and runs a second main domain
+whose downstream fringe replays the recorded inflow at the same accepted
+clock.

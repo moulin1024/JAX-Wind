@@ -4,7 +4,8 @@ from dataclasses import dataclass
 
 import pytest
 
-from jaxwind import solve
+import jaxwind.solver as solver_module
+from jaxwind import build_solver, solve
 
 
 @dataclass(frozen=True)
@@ -21,6 +22,30 @@ def test_solve_repeats_a_pure_transition() -> None:
 
     assert solve(1, steps=3, advance=advance) == 7
     assert seen == [False, False, False]
+
+
+def test_built_solver_accepts_a_dynamic_environment_override(monkeypatch) -> None:
+    seen = []
+
+    def step(state, **kwargs):
+        seen.append(kwargs["environment"])
+        return Result(state + 1)
+
+    monkeypatch.setattr(solver_module, "step_boussinesq", step)
+    advance = build_solver(
+        config=object(),
+        vector_field=object(),
+        normal_boundary=object(),
+        algebra=object(),
+        pressure_solver=object(),
+        closure_event=object(),
+        environment="default",
+    )
+
+    advance(0)
+    advance(1, environment="offline-plane")
+
+    assert seen == ["default", "offline-plane"]
 
 
 @pytest.mark.parametrize("steps", [-1, True, 1.5])

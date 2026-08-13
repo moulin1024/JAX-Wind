@@ -105,6 +105,62 @@ result = solver.advance(state)
 Checkpointing, diagnostic gathering, statistics, acceptance, timing, and
 reporting remain effects and never enter the physical transition.
 
+## Offline precursor sections
+
+A developed checkpoint can be advanced as a standalone precursor while its
+inflow and outflow planes are recorded in HDF5. The initial state must retain
+its previous AB2 tendency, so recording starts without an Euler cold-start
+step:
+
+```python
+from jaxwind.effects import PrecursorRecordingConfig, run_precursor
+
+state = run_precursor(
+    developed_state,
+    steps=10_000,
+    advance=solver.advance,
+    path="outputs/precursor.h5",
+    runtime=solver.runtime,
+    recording=PrecursorRecordingConfig(
+        sample_every=1,
+        buffer_samples=16,
+        compression=None,
+    ),
+)
+```
+
+Each sample is the accepted pre-step state. `/velocity` has layout
+`(sample, section, component, z, y)`, with sections `inflow` and `outflow` at
+x indices `0` and `nx - 1`; `/scalar`, `/step`, `/time`, and staggered
+coordinates are stored alongside it.
+
+On one process, the requested path is the data file. On multiple processes,
+each rank writes only its owned z slab to
+`precursor.process-NNNNN.h5`. Rank 0 then publishes `precursor.h5` as a small
+HDF5 virtual-dataset catalog over those shards. No global field is gathered,
+no ranks contend for one writable HDF5 file, and an MPI-enabled HDF5 build is
+not required. Plane slices remain device-side until a full buffer is copied in
+one transfer. All ranks must call `run_precursor` with the same path and
+recording policy.
+
+The pressure-driven LASD checkpoint can be exercised end to end with the
+wind-farm precursor application:
+
+```bash
+python -m applications.windfarm_precursor --dry-run
+JAX_PLATFORMS=cuda XLA_PYTHON_CLIENT_PREALLOCATE=false \
+  python -m applications.windfarm_precursor \
+  --restart outputs/pressure_driven_lasd_64x64x64_gpu/checkpoint_final.npz \
+  --output outputs/windfarm_precursor \
+  --precursor-steps 10000 --main-steps 10000
+```
+
+The workflow reloads the developed checkpoint for both domains, writes
+`precursor.h5` and `precursor_final.npz`, then replays the clock-matched inflow
+plane through a downstream fringe and writes `main_final.npz`. Playback reads
+each rank's local shard in time chunks and broadcasts the two-dimensional
+plane across x on device; only the configured fringe region applies it.
+
 ## Package structure
 
 | Path | Responsibility |

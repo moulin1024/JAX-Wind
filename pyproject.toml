@@ -7,7 +7,7 @@ name = "jaxwind"
 version = "0.0.0"
 description = "Functional JAX large-eddy simulation solver"
 requires-python = ">=3.11"
-dependencies = ["jax>=0.4.30"]
+dependencies = ["h5py>=3.10", "jax>=0.4.30"]
 
 [project.optional-dependencies]
 pressure = ["spectral-fd>=0.2.0"]

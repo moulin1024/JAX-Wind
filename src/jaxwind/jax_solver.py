@@ -24,6 +24,7 @@ from jaxwind.domain import (
 from jaxwind.effects import DistributedCheckpointLayout, JaxRuntime
 from jaxwind.integrators import AB2Config, cold_start_boussinesq
 from jaxwind._jax.discretization import build_discretization
+from jaxwind._jax.pytrees import register_solver_pytrees
 from jaxwind.operators import VelocityVector, project
 from jaxwind.physics import (
     BoussinesqFields,
@@ -31,6 +32,8 @@ from jaxwind.physics import (
     BoussinesqVectorField,
     DiagnosticLasdConstants,
     LasdAcceptedStepEvent,
+    WindTunnelBoussinesqVectorField,
+    WindTunnelModel,
 )
 from jaxwind.pressure import build_spectral_fd_pressure_adapter
 from jaxwind.solver import Advance, build_solver
@@ -252,6 +255,7 @@ def build_jax_solver(
     pressure_method: str = "transpose",
     pressure_thomas_chunk: int = 1,
     nonlinear_padding_ratio: float = 1.5,
+    wind_tunnel_model: WindTunnelModel | None = None,
     environment: Any = None,
     optimize_frozen_zero_scalar: bool = False,
 ) -> JaxSolver:
@@ -267,6 +271,7 @@ def build_jax_solver(
             "the vertical cell count must be divisible by the global JAX "
             "device count"
         )
+    register_solver_pytrees()
     decomposition = EqualVerticalPartition(
         grid,
         MeshTopology((MeshAxis("z", runtime.global_devices),)),
@@ -294,6 +299,14 @@ def build_jax_solver(
         thomas_chunk=pressure_thomas_chunk,
     )
     vector_field = BoussinesqVectorField(algebra, model)
+    if wind_tunnel_model is not None:
+        if not isinstance(wind_tunnel_model, WindTunnelModel):
+            raise TypeError("wind-tunnel model has an unsupported type")
+        vector_field = WindTunnelBoussinesqVectorField(
+            algebra,
+            vector_field,
+            wind_tunnel_model,
+        )
     closure_event = LasdAcceptedStepEvent(algebra, model, integrator.dt)
     advance = build_solver(
         config=integrator,
