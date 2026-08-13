@@ -233,7 +233,7 @@ class IdentityClosureEvent:
 
 @dataclass(frozen=True, slots=True)
 class LasdAcceptedStepEvent:
-    """Delegate one accepted-boundary LASD transition to an array interpreter."""
+    """Delegate one accepted-boundary LASD transition to the solver algebra."""
 
     algebra: Any
     model: Any

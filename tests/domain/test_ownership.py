@@ -10,7 +10,7 @@ from jaxwind.domain import (
     Cell,
     DistributionSpec,
     DomainAxis,
-    EqualZSlab,
+    EqualVerticalPartition,
     Evaluated,
     Field,
     GlobalTestRegion,
@@ -31,17 +31,20 @@ class FakeArray:
         self.shape = shape
 
 
-def make_decomposition(shards: int, cells_per_shard: int = 3) -> EqualZSlab:
+def make_decomposition(
+    shards: int,
+    cells_per_partition: int = 3,
+) -> EqualVerticalPartition:
     grid = UniformGrid(
         nx=4,
         ny=6,
-        nz=shards * cells_per_shard,
+        nz=shards * cells_per_partition,
         lx=4.0,
         ly=6.0,
-        lz=float(shards * cells_per_shard),
+        lz=float(shards * cells_per_partition),
     )
     topology = MeshTopology((MeshAxis("z", shards),))
-    return EqualZSlab(grid, topology, DistributionSpec.z_slab())
+    return EqualVerticalPartition(grid, topology, DistributionSpec.vertical())
 
 
 class DomainImportTests(unittest.TestCase):
@@ -103,31 +106,31 @@ class MeshAndDistributionTests(unittest.TestCase):
         topology = MeshTopology((MeshAxis("z", 2),))
 
         with self.assertRaisesRegex(ValueError, "x partitioning"):
-            EqualZSlab(
+            EqualVerticalPartition(
                 grid,
                 topology,
                 DistributionSpec(Partitioned("z"), Replicated(), Replicated()),
             )
         with self.assertRaisesRegex(ValueError, "divisible"):
-            EqualZSlab(
+            EqualVerticalPartition(
                 UniformGrid(4, 4, 7, 1.0, 1.0, 1.0),
                 topology,
-                DistributionSpec.z_slab(),
+                DistributionSpec.vertical(),
             )
         with self.assertRaisesRegex(ValueError, "exactly one"):
-            EqualZSlab(
+            EqualVerticalPartition(
                 grid,
                 MeshTopology((MeshAxis("z", 2), MeshAxis("x", 1))),
-                DistributionSpec.z_slab(),
+                DistributionSpec.vertical(),
             )
 
 
 class OwnershipLawTests(unittest.TestCase):
     def test_cell_and_stored_face_partitions_cover_exactly_once(self) -> None:
         for shards in range(1, 5):
-            for cells_per_shard in range(1, 5):
-                with self.subTest(shards=shards, cells=cells_per_shard):
-                    decomposition = make_decomposition(shards, cells_per_shard)
+            for cells_per_partition in range(1, 5):
+                with self.subTest(shards=shards, cells=cells_per_partition):
+                    decomposition = make_decomposition(shards, cells_per_partition)
                     cells = decomposition.regions(Cell)
                     faces = decomposition.regions(ZFace)
 

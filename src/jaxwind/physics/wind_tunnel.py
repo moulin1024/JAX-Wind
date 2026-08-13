@@ -1,7 +1,7 @@
 """Pure wind-tunnel forcing choices for actuator-disk and actuator-line LES.
 
 The configurations in this module contain no array implementation.  The
-interpreter owns coordinates, reductions, and the distributed array layout.
+solver algebra owns coordinates, reductions, and the distributed array layout.
 """
 
 from __future__ import annotations
@@ -76,7 +76,7 @@ class NoActuatorLine:
 class BladeElementActuatorLine:
     """Rigid or small-deflection modal actuator lines with tabulated airfoils.
 
-    Geometry and angular velocity are expressed in the interpreter's execution
+    Geometry and angular velocity are expressed in the solver's execution
     units.  Each blade element carries one radial quadrature width, chord,
     twist, and airfoil-table index.  All polars share ``polar_alpha_degrees``;
     data importers may form that common grid by exactly resampling piecewise

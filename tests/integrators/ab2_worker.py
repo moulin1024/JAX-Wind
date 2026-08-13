@@ -16,7 +16,7 @@ from jaxwind.domain import (  # noqa: E402
     AddressableField,
     Cell,
     DistributionSpec,
-    EqualZSlab,
+    EqualVerticalPartition,
     Evaluated,
     Field,
     GlobalTestRegion,
@@ -34,7 +34,7 @@ from jaxwind.domain import (  # noqa: E402
     ZFace,
 )
 from jaxwind.effects import (  # noqa: E402
-    ZSlabCheckpointLayout,
+    DistributedCheckpointLayout,
     load_ab2_checkpoint,
     save_ab2_checkpoint,
 )
@@ -48,9 +48,9 @@ from tests.support.jax_oracle import (  # noqa: E402
     JaxOraclePressureSolver,
     JaxOracleProjection,
 )
-from jaxwind.interpreters.jax_zslab import (  # noqa: E402
-    ZFaceFieldContext,
-    build_zslab_interpreter,
+from jaxwind._jax.discretization import (  # noqa: E402
+    VerticalFaceField,
+    build_discretization,
 )
 from jaxwind.operators import VelocityVector  # noqa: E402
 from jaxwind.pressure import build_spectral_fd_pressure_adapter  # noqa: E402
@@ -135,15 +135,15 @@ def main() -> int:
         )
         return VectorFieldResult(tendency, time)
 
-    decomposition = EqualZSlab(
+    decomposition = EqualVerticalPartition(
         grid,
         MeshTopology((MeshAxis("z", args.devices),)),
-        DistributionSpec.z_slab(),
+        DistributionSpec.vertical(),
     )
     shards = tuple(range(args.devices))
     cell_regions = decomposition.regions(Cell)
     face_regions = decomposition.regions(ZFace)
-    local_z = decomposition.cells_per_shard
+    local_z = decomposition.cells_per_partition
     production_velocity = VelocityVector(
         AddressableField(
             XVelocity,
@@ -159,7 +159,7 @@ def main() -> int:
             Projected,
             jnp.zeros((args.devices, local_z, grid.ny, grid.nx), dtype),
         ),
-        ZFaceFieldContext(
+        VerticalFaceField(
             AddressableField(
                 VerticalVelocity,
                 ZFace,
@@ -217,7 +217,7 @@ def main() -> int:
                     - 0.5 * time
                 ),
             ),
-            ZFaceFieldContext(
+            VerticalFaceField(
                 AddressableField(
                     VerticalVelocityTendency,
                     ZFace,
@@ -241,13 +241,13 @@ def main() -> int:
 
     reference_algebra = JaxOracleProjection()
     reference_solver = JaxOraclePressureSolver()
-    production_algebra = build_zslab_interpreter(
+    production_algebra = build_discretization(
         decomposition,
-        addressable_shards=shards,
+        addressable_partitions=shards,
     )
     production_solver = build_spectral_fd_pressure_adapter(
         decomposition,
-        addressable_shards=shards,
+        addressable_partitions=shards,
         runtime=runtime_from_initialized_jax(jax),
         dtype=args.dtype,
         method="transpose",
@@ -335,7 +335,7 @@ def main() -> int:
         save_ab2_checkpoint(path, interrupted)
         restarted = load_ab2_checkpoint(
             path,
-            layout=ZSlabCheckpointLayout(decomposition, shards, jnp.asarray),
+            layout=DistributedCheckpointLayout(decomposition, shards, jnp.asarray),
             config=config,
         )
     for _ in range(2):

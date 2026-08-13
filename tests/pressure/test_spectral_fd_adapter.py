@@ -9,7 +9,7 @@ from jaxwind.domain import (
     AddressableField,
     Cell,
     DistributionSpec,
-    EqualZSlab,
+    EqualVerticalPartition,
     Evaluated,
     MeshAxis,
     MeshTopology,
@@ -44,10 +44,10 @@ class FakeSolver:
 class SpectralFDAdapterBoundaryTests(unittest.TestCase):
     def setUp(self) -> None:
         self.grid = UniformGrid(4, 4, 8, 4.0, 4.0, 8.0)
-        self.decomposition = EqualZSlab(
+        self.decomposition = EqualVerticalPartition(
             self.grid,
             MeshTopology((MeshAxis("z", 2),)),
-            DistributionSpec.z_slab(),
+            DistributionSpec.vertical(),
         )
 
     def test_adapter_preserves_cell_ownership_and_hides_solver_layout(self) -> None:

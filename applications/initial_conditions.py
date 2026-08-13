@@ -65,25 +65,11 @@ def build_initial_fields(
     *,
     jax,
     jnp,
-    decomposition,
-    algebra,
-    pressure_solver,
+    solver,
 ):
     """Materialize and project the configured mean-plus-RMS initial state."""
 
-    from jaxwind.domain import (
-        Accepted,
-        AddressableField,
-        Candidate,
-        Cell,
-        VerticalBoundary,
-        VerticalVelocity,
-        XVelocity,
-        YVelocity,
-        ZFace,
-    )
-    from jaxwind.interpreters.jax_zslab import ZFaceFieldContext
-    from jaxwind.operators import VelocityVector, project
+    from jaxwind.domain import Accepted
     from jaxwind.physics import BoussinesqFields
 
     table = load_initial_profile(case)
@@ -95,72 +81,42 @@ def build_initial_fields(
     def cell_profile(name: str):
         return jnp.interp(z, table_z, jnp.asarray(table[name], dtype=dtype))
 
-    shape = (1, grid.nz, grid.ny, grid.nx)
+    shape = (grid.nz, grid.ny, grid.nx)
     keys = jax.random.split(jax.random.PRNGKey(case.initial_condition.seed), 3)
     u_noise = _unit_plane_noise(jax, jnp, keys[0], shape, dtype)
     v_noise = _unit_plane_noise(jax, jnp, keys[1], shape, dtype)
     coupled_noise = _unit_plane_noise(jax, jnp, keys[2], shape, dtype)
     frame_u, frame_v = case.advection_frame_velocity_m_s
-    u = cell_profile("u_m_s")[None, :, None, None] - frame_u + (
-        cell_profile("u_rms_m_s")[None, :, None, None] * u_noise
+    u = cell_profile("u_m_s")[:, None, None] - frame_u + (
+        cell_profile("u_rms_m_s")[:, None, None] * u_noise
     )
-    v = cell_profile("v_m_s")[None, :, None, None] - frame_v + (
-        cell_profile("v_rms_m_s")[None, :, None, None] * v_noise
+    v = cell_profile("v_m_s")[:, None, None] - frame_v + (
+        cell_profile("v_rms_m_s")[:, None, None] * v_noise
     )
-    w = jnp.asarray(table["w_upper_m_s"], dtype=dtype)[None, :, None, None] + (
-        jnp.asarray(table["w_upper_rms_m_s"], dtype=dtype)[
-            None, :, None, None
-        ]
+    w = jnp.asarray(table["w_upper_m_s"], dtype=dtype)[:, None, None] + (
+        jnp.asarray(table["w_upper_rms_m_s"], dtype=dtype)[:, None, None]
         * coupled_noise
     )
-    w = w.at[:, -1].set(0.0)
-    scalar_physical = cell_profile("scalar")[None, :, None, None] + (
-        cell_profile("scalar_rms")[None, :, None, None] * coupled_noise
+    w = w.at[-1].set(0.0)
+    scalar_physical = cell_profile("scalar")[:, None, None] + (
+        cell_profile("scalar_rms")[:, None, None] * coupled_noise
     )
 
     lower = jnp.zeros((grid.ny, grid.nx), dtype=dtype)
-    velocity = VelocityVector(
-        AddressableField(
-            XVelocity,
-            Cell,
-            decomposition.regions(Cell),
-            Candidate,
-            case.mechanical_scales.to_execution_velocity(u).astype(dtype),
-        ),
-        AddressableField(
-            YVelocity,
-            Cell,
-            decomposition.regions(Cell),
-            Candidate,
-            case.mechanical_scales.to_execution_velocity(v).astype(dtype),
-        ),
-        ZFaceFieldContext(
-            AddressableField(
-                VerticalVelocity,
-                ZFace,
-                decomposition.regions(ZFace),
-                Candidate,
-                case.mechanical_scales.to_execution_velocity(w).astype(dtype),
-            ),
-            lower,
-        ),
+    velocity = solver.candidate_velocity(
+        case.mechanical_scales.to_execution_velocity(u).astype(dtype),
+        case.mechanical_scales.to_execution_velocity(v).astype(dtype),
+        case.mechanical_scales.to_execution_velocity(w).astype(dtype),
+        lower_boundary=lower,
     )
-    projected = project(
-        velocity,
-        dt=case.integrator.dt,
-        normal_boundary=VerticalBoundary(0.0, 0.0),
-        algebra=algebra,
-        pressure_solver=pressure_solver,
-    )
-    scalar = AddressableField(
+    projected = solver.project_initial_velocity(velocity)
+    scalar = solver.cell_field(
         case.scalar_scales.field_quantity,
-        Cell,
-        decomposition.regions(Cell),
         Accepted,
         case.scalar_scales.to_execution_scalar(scalar_physical).astype(dtype),
     )
-    fields = BoussinesqFields(projected.velocity, scalar)
-    return algebra.initialize_lasd_closure(fields, case.model)
+    fields = BoussinesqFields(projected, scalar)
+    return solver.initialize_fields(fields)
 
 
 __all__ = [

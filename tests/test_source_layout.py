@@ -7,7 +7,7 @@ from pathlib import Path
 REPOSITORY_ROOT = Path(__file__).parents[1]
 SOURCE_ROOT = REPOSITORY_ROOT / "src" / "jaxwind"
 MAX_PRODUCTION_MODULE_LINES = 1_000
-INTERPRETER_ROOT = SOURCE_ROOT / "interpreters"
+PRIVATE_JAX_ROOT = SOURCE_ROOT / "_jax"
 
 
 def test_production_modules_stay_within_maintenance_ceiling() -> None:
@@ -23,14 +23,32 @@ def test_production_modules_stay_within_maintenance_ceiling() -> None:
     )
 
 
-def test_zslab_is_the_only_public_interpreter_module() -> None:
-    public_modules = {
-        path.name
-        for path in INTERPRETER_ROOT.glob("*.py")
-        if path.name != "__init__.py" and not path.name.startswith("_")
-    }
+def test_jax_lowering_is_private_and_not_an_interpreter_layer() -> None:
+    assert not (SOURCE_ROOT / "interpreters").exists()
+    assert PRIVATE_JAX_ROOT.is_dir()
+    assert (SOURCE_ROOT / "jax_solver.py").is_file()
 
-    assert public_modules == {"jax_zslab.py"}
+
+def test_applications_do_not_assemble_partitions_or_private_lowerings() -> None:
+    applications = REPOSITORY_ROOT / "applications"
+    prohibited = (
+        "EqualVerticalPartition",
+        "addressable_partitions",
+        "build_discretization",
+        "jaxwind.interpreters",
+        "jaxwind._jax",
+    )
+    violations = {}
+    for path in applications.rglob("*.py"):
+        text = path.read_text(encoding="utf-8")
+        found = tuple(name for name in prohibited if name in text)
+        if found:
+            violations[str(path.relative_to(applications))] = found
+
+    assert not violations, (
+        "applications must use the unified JAX solver instead of assembling "
+        f"backend partitions: {violations}"
+    )
 
 
 def test_package_has_no_case_dispatch_layer() -> None:

@@ -1,4 +1,4 @@
-"""Momentum and wind-tunnel methods for the z-slab interpreter."""
+"""Momentum and wind-tunnel methods for the private JAX discretization."""
 
 from __future__ import annotations
 
@@ -44,7 +44,7 @@ from jaxwind.physics.wind_tunnel import (
 )
 
 if TYPE_CHECKING:
-    from .jax_zslab import ZSlabDryFlowContext
+    from .discretization import ZSlabDryFlowContext
 
 
 class ZSlabFlowMixin:
@@ -66,7 +66,7 @@ class ZSlabFlowMixin:
                 *self._wall_gradient_parameters(wall),
             )
         else:
-            raise TypeError("unsupported z-slab advection choice")
+            raise TypeError("unsupported distributed advection choice")
         return self._dry_tendency(x, y, z)
 
     def pressure_gradient_tendency(
@@ -153,7 +153,7 @@ class ZSlabFlowMixin:
         """Return signed SGS transfer from resolved TKE at owned cell centres.
 
         Forward transfer to unresolved scales is negative. Horizontal nonlinear
-        products use the interpreter's padded path and the first cell uses the
+        products use the solver's padded path and the first cell uses the
         configured log wall.
         """
         wall_gradient_factor = self._diagnostic_wall_gradient_factor(wall)
@@ -424,6 +424,10 @@ class ZSlabFlowMixin:
         return self._dry_tendency(
             self.flow.combine_payloads(tuple(term.x.payload for term in tendencies)),
             self.flow.combine_payloads(tuple(term.y.payload for term in tendencies)),
-            self.flow.combine_payloads(tuple(term.z.owned.payload for term in tendencies)),
-            self.flow.combine_payloads(tuple(term.z.lower_boundary for term in tendencies)),
+            self.flow.combine_payloads(
+                tuple(term.z.owned.payload for term in tendencies)
+            ),
+            self.flow.combine_payloads(
+                tuple(term.z.lower_boundary for term in tendencies)
+            ),
         )

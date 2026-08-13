@@ -12,7 +12,7 @@ def build_padded_momentum_gradients_kernel(
     *,
     grid,
     axis_name,
-    cells_per_shard,
+    cells_per_partition,
     porte_agel_wall_correction,
     padded_horizontal_gradient_pair_local,
 ):
@@ -61,7 +61,7 @@ def build_padded_momentum_gradients_kernel(
         dvdz_upper = dvdz_upper.at[0].add(dvdz_correction)
         dudz_at_cells = dudz_at_cells.at[0].add(0.5 * dudz_correction)
         dvdz_at_cells = dvdz_at_cells.at[0].add(0.5 * dvdz_correction)
-        if cells_per_shard > 1:
+        if cells_per_partition > 1:
             dudz_at_cells = dudz_at_cells.at[1].add(0.5 * dudz_correction)
             dvdz_at_cells = dvdz_at_cells.at[1].add(0.5 * dvdz_correction)
         dwdz = 2.0 * (padded_w_upper - padded_w_at_cells) / grid.dz

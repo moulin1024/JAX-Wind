@@ -81,27 +81,29 @@ python tools/overlay_nieuwstadt1993.py
 
 ## Solver boundary
 
-`build_solver` closes one accepted transition over a model, numerical algebra,
-pressure solver, boundary law, and closure event. `solve` repeats that pure
-transition without reading files or performing output effects:
+Applications use `build_jax_solver` for both one-process and parallel jobs.
+Process/device discovery is captured once by the effect shell; the solver owns
+lowering and pressure projection without exposing its private partition:
 
 ```python
-from jaxwind import build_solver, solve
+from jaxwind import build_jax_solver
+from jaxwind.effects import JaxRuntime
 
-advance = build_solver(
-    config=integrator_config,
-    vector_field=vector_field,
+runtime = JaxRuntime.from_initialized_jax(jax)
+solver = build_jax_solver(
+    execution_grid,
+    runtime=runtime,
+    model=model,
+    integrator=integrator_config,
     normal_boundary=boundary,
-    algebra=algebra,
-    pressure_solver=pressure_solver,
-    closure_event=closure_event,
+    pressure_dtype="float64",
 )
-final_state = solve(initial_state, steps=20, advance=advance)
+result = solver.advance(state)
 ```
 
-The pressure-driven application uses the same `advance` function and owns
-checkpointing, statistics, acceptance, and reporting. The case supplies only
-their configuration values.
+`build_solver` remains the pure transition composer beneath that facade.
+Checkpointing, diagnostic gathering, statistics, acceptance, timing, and
+reporting remain effects and never enter the physical transition.
 
 ## Package structure
 
@@ -111,19 +113,19 @@ their configuration values.
 | `src/jaxwind/operators` | Compatible projection program |
 | `src/jaxwind/physics` | Momentum, scalar, LASD, and optional wind forcing |
 | `src/jaxwind/integrators` | Accepted AB2 transitions |
-| `src/jaxwind/interpreters` | JAX numerical kernels grouped by responsibility |
+| `src/jaxwind/jax_solver.py` | Unified one/many-process JAX solver facade |
+| `src/jaxwind/_jax` | Private JAX distribution lowering and kernels |
 | `src/jaxwind/pressure` | Explicit adapter to `spectral-fd` |
 | `src/jaxwind/solver.py` | Solver composition and repeated pure transitions |
-| `src/jaxwind/effects` | Versioned checkpoint persistence |
+| `src/jaxwind/effects` | Runtime discovery, diagnostics gathering, and checkpoint persistence |
 | `applications` | Case schemas, initialization, diagnostics, and effects |
 | `cases/PressureDrivenLASD` | Pressure-driven configuration data |
 | `cases/Andren1994` | Andrén configuration and reference data |
 | `cases/Nieuwstadt1993` | Nieuwstadt configuration and reference data |
 
-The interpreter retains the established equal-z-slab implementation so its
-one-device and distributed results continue to share the same numerical path.
-Kernel construction is grouped into projection, flow, LASD, scalar, and wind
-products rather than one positional callable matrix.
+The current equal vertical partition remains a private implementation detail.
+One-device and distributed results share one solver path; applications neither
+name the partition nor calculate shard ownership.
 
 ## Verify
 

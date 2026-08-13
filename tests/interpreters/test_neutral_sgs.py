@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import unittest
 
 import jax
@@ -13,7 +14,7 @@ from jaxwind.domain import (  # noqa: E402
     AddressableField,
     Cell,
     DistributionSpec,
-    EqualZSlab,
+    EqualVerticalPartition,
     MeshAxis,
     MeshTopology,
     PassiveScalarConcentration,
@@ -25,11 +26,11 @@ from jaxwind.domain import (  # noqa: E402
     ZFace,
 )
 from jaxwind.integrators import Evaluation  # noqa: E402
-from jaxwind.interpreters.jax_zslab import (  # noqa: E402
-    ZFaceFieldContext,
-    build_zslab_interpreter,
+from jaxwind._jax.discretization import (  # noqa: E402
+    VerticalFaceField,
+    build_discretization,
 )
-from jaxwind.interpreters._jax_zslab_surface import (  # noqa: E402
+from jaxwind._jax.surface import (  # noqa: E402
     monin_obukhov_surface_transfer,
 )
 from jaxwind.operators import VelocityVector  # noqa: E402
@@ -49,6 +50,7 @@ from jaxwind.physics import (  # noqa: E402
     MoninObukhovSurfaceTransfer,
     NoBuoyancy,
     NoRotation,
+    NoSurfaceTransfer,
     ScalarFluxBoundary,
     StaticSmagorinsky,
     StaticSmagorinskyScalarFlux,
@@ -61,10 +63,10 @@ class FusedNeutralSgsTests(unittest.TestCase):
 
     def setUp(self) -> None:
         grid = UniformGrid(8, 8, 4, 8.0, 8.0, 4.0)
-        self.decomposition = EqualZSlab(
+        self.decomposition = EqualVerticalPartition(
             grid,
             MeshTopology((MeshAxis("z", 1),)),
-            DistributionSpec.z_slab(),
+            DistributionSpec.vertical(),
         )
         z = jnp.arange(grid.nz, dtype=jnp.float64)[:, None, None]
         zf = jnp.arange(1, grid.nz + 1, dtype=jnp.float64)[:, None, None]
@@ -78,7 +80,7 @@ class FusedNeutralSgsTests(unittest.TestCase):
         velocity = VelocityVector(
             AddressableField(XVelocity, Cell, regions, Projected, u.reshape(shape)),
             AddressableField(YVelocity, Cell, regions, Projected, v.reshape(shape)),
-            ZFaceFieldContext(
+            VerticalFaceField(
                 AddressableField(
                     VerticalVelocity,
                     ZFace,
@@ -118,7 +120,7 @@ class FusedNeutralSgsTests(unittest.TestCase):
         fields: BoussinesqFields | None = None,
         frozen_zero_scalar: bool = True,
     ) -> None:
-        algebra = build_zslab_interpreter(
+        algebra = build_discretization(
             self.decomposition,
             frozen_zero_scalar=frozen_zero_scalar,
         )
@@ -166,7 +168,7 @@ class FusedNeutralSgsTests(unittest.TestCase):
         )
 
     def test_solver_rejects_a_model_without_a_fused_executable(self) -> None:
-        algebra = build_zslab_interpreter(self.decomposition)
+        algebra = build_discretization(self.decomposition)
         model = BoussinesqModel(
             DryFlowModel(
                 ConservativeAdvection(),
@@ -246,7 +248,7 @@ class FusedNeutralSgsTests(unittest.TestCase):
             scalar_sgs,
             LinearBoussinesqBuoyancy(0.025),
         )
-        algebra = build_zslab_interpreter(
+        algebra = build_discretization(
             self.decomposition,
             frozen_zero_scalar=False,
         )
@@ -321,7 +323,7 @@ class FusedNeutralSgsTests(unittest.TestCase):
                 surface_scalar_rate=-0.1,
             ),
         )
-        algebra = build_zslab_interpreter(
+        algebra = build_discretization(
             self.decomposition,
             frozen_zero_scalar=False,
         )
@@ -337,6 +339,25 @@ class FusedNeutralSgsTests(unittest.TestCase):
         result = BoussinesqVectorField(algebra, model)(
             Evaluation(fields, clock, None)
         )
+        explicit = algebra.fused_boussinesq_tendency(
+            fields,
+            replace(model, surface_transfer=NoSurfaceTransfer()),
+            wall_acceleration=(
+                transfer.wall_x_acceleration,
+                transfer.wall_y_acceleration,
+            ),
+            scalar_surface_source=transfer.scalar_surface_source,
+            execution_time=clock.time,
+        )
+        for automatic, imposed in (
+            (result.tendency.velocity.x.payload, explicit.velocity.x.payload),
+            (result.tendency.velocity.y.payload, explicit.velocity.y.payload),
+            (
+                result.tendency.potential_temperature.payload,
+                explicit.potential_temperature.payload,
+            ),
+        ):
+            self.assertLess(float(jnp.max(jnp.abs(automatic - imposed))), 3.0e-12)
         self.assertTrue(
             bool(jnp.all(jnp.isfinite(result.tendency.velocity.x.payload)))
         )
@@ -363,7 +384,7 @@ class FusedNeutralSgsTests(unittest.TestCase):
             LagrangianScaleDependentScalarFlux(),
             NoBuoyancy(),
         )
-        algebra = build_zslab_interpreter(self.decomposition)
+        algebra = build_discretization(self.decomposition)
         fields = algebra.initialize_lasd_closure(self.fields, model)
         context = algebra.boussinesq_context(fields).momentum
         transfer = algebra.momentum_sgs_tke_transfer(

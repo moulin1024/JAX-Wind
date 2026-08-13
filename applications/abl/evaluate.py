@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import io
 import json
 import math
 import os
@@ -417,27 +418,22 @@ def _physics_fingerprints(case: BoussinesqCase) -> tuple[str, str]:
     return closure, physics
 
 
-def _physical_fields(state, case: BoussinesqCase, jnp):
-    shape = (
-        case.physical_grid.nz,
-        case.physical_grid.ny,
-        case.physical_grid.nx,
-    )
+def _physical_fields(state, case: BoussinesqCase, jnp, solver):
     velocity = state.fields.velocity
     u = case.mechanical_scales.from_execution_velocity(
-        velocity.x.payload
-    ).reshape(shape) + case.advection_frame_velocity_m_s[0]
+        solver.global_array(velocity.x.payload)
+    ) + case.advection_frame_velocity_m_s[0]
     v = case.mechanical_scales.from_execution_velocity(
-        velocity.y.payload
-    ).reshape(shape) + case.advection_frame_velocity_m_s[1]
+        solver.global_array(velocity.y.payload)
+    ) + case.advection_frame_velocity_m_s[1]
     w_upper = case.mechanical_scales.from_execution_velocity(
-        velocity.z.owned.payload
-    ).reshape(shape)
+        solver.global_array(velocity.z.owned.payload)
+    )
     lower = jnp.concatenate((jnp.zeros_like(w_upper[:1]), w_upper[:-1]), axis=0)
     w = 0.5 * (lower + w_upper)
     scalar = case.scalar_scales.from_execution_scalar(
-        state.fields.potential_temperature.payload
-    ).reshape(shape)
+        solver.global_array(state.fields.potential_temperature.payload)
+    )
     return u, v, w, w_upper, scalar
 
 
@@ -507,7 +503,7 @@ def _diagnostic_observables(
     state,
     pressure,
     case: BoussinesqCase,
-    algebra,
+    solver,
     jax,
     jnp,
     *,
@@ -515,7 +511,7 @@ def _diagnostic_observables(
 ):
     """Evaluate paper-aligned instantaneous diagnostics in physical units."""
 
-    u, v, w, _w_upper, scalar = _physical_fields(state, case, jnp)
+    u, v, w, _w_upper, scalar = _physical_fields(state, case, jnp, solver)
     mean_u = jnp.mean(u, axis=(-2, -1))
     mean_v = jnp.mean(v, axis=(-2, -1))
     mean_w = jnp.mean(w, axis=(-2, -1))
@@ -524,11 +520,8 @@ def _diagnostic_observables(
     v_fluctuation = v - mean_v[:, None, None]
     w_fluctuation = w - mean_w[:, None, None]
     scalar_fluctuation = scalar - mean_scalar[:, None, None]
-    surface_transfer = algebra.surface_transfer(
-        state.fields,
-        case.model,
-        state.clock,
-    )
+    numerical = solver.diagnostic_fields(state.fields, state.clock)
+    surface_transfer = numerical.surface_transfer
     if surface_transfer is None:
         tau_x, tau_y, ustar = _wall_stress(u, v, case, jnp)
         surface_scalar_flux = case.scalar_scales.from_execution_flux(
@@ -537,60 +530,55 @@ def _diagnostic_observables(
         surface_scalar = math.nan
         obukhov_length = math.nan
     else:
+        def replicated(value):
+            return value.reshape(-1)[0]
+
         tau_x_value = (
-            -surface_transfer.stress_x
+            -replicated(surface_transfer.stress_x)
             * case.mechanical_scales.kinematic_pressure
         )
         tau_y_value = (
-            -surface_transfer.stress_y
+            -replicated(surface_transfer.stress_y)
             * case.mechanical_scales.kinematic_pressure
         )
         tau_x = jnp.full_like(u[0], tau_x_value)
         tau_y = jnp.full_like(v[0], tau_y_value)
         ustar = float(
             case.mechanical_scales.from_execution_velocity(
-                surface_transfer.friction_velocity
+                replicated(surface_transfer.friction_velocity)
             )
         )
         surface_scalar_flux = float(
-            case.scalar_scales.from_execution_flux(surface_transfer.scalar_flux)
+            case.scalar_scales.from_execution_flux(
+                replicated(surface_transfer.scalar_flux)
+            )
         )
         surface_scalar = float(
             case.scalar_scales.from_execution_scalar(
                 surface_transfer.surface_scalar
+                if getattr(surface_transfer.surface_scalar, "ndim", 0) == 0
+                else replicated(surface_transfer.surface_scalar)
             )
         )
         obukhov_length = float(
             case.mechanical_scales.from_execution_length(
-                surface_transfer.obukhov_length
+                replicated(surface_transfer.obukhov_length)
             )
         )
 
-    context = algebra.boussinesq_context(state.fields)
-    from jaxwind.physics import DiagnosticLasdConstants
-
-    diagnostic = algebra.lasd_diagnostic_fields(
-        context,
-        case.model.momentum.sgs,
-        case.model.scalar_sgs,
-        case.model.scalar_boundary,
-        constants=DiagnosticLasdConstants(horizontal_homogeneous_wall=True),
-        wall=case.model.momentum.wall,
-    )
-    shape = u.shape
     velocity_squared = case.mechanical_scales.kinematic_pressure
-    sgs_tke = diagnostic.sgs_tke.reshape(shape) * velocity_squared
-    momentum_diffusivity = diagnostic.momentum_diffusivity.reshape(shape) * (
+    sgs_tke = solver.global_array(numerical.sgs_tke) * velocity_squared
+    momentum_diffusivity = solver.global_array(numerical.momentum_diffusivity) * (
         case.mechanical_scales.kinematic_viscosity
     )
-    scalar_diffusivity = diagnostic.scalar_diffusivity.reshape(shape) * (
+    scalar_diffusivity = solver.global_array(numerical.scalar_diffusivity) * (
         case.mechanical_scales.kinematic_viscosity
     )
-    sgs_scalar_variance = diagnostic.scalar_variance.reshape(shape) * (
+    sgs_scalar_variance = solver.global_array(numerical.scalar_variance) * (
         case.scalar_scales.magnitude**2
     )
     scalar_flux_upper = case.scalar_scales.from_execution_flux(
-        diagnostic.scalar_flux_z.reshape(shape)
+        solver.global_array(numerical.scalar_flux_z)
     )
     lower_scalar_flux = jnp.concatenate(
         (
@@ -602,17 +590,17 @@ def _diagnostic_observables(
     sgs_scalar_flux = 0.5 * (lower_scalar_flux + scalar_flux_upper)
 
     pressure_physical = (
-        pressure.payload.reshape(shape)
+        solver.global_array(pressure.payload)
         * case.mechanical_scales.kinematic_pressure
     )
     pressure_fluctuation = pressure_physical - jnp.mean(
         pressure_physical, axis=(-2, -1), keepdims=True
     )
     w_face = case.mechanical_scales.from_execution_velocity(
-        state.fields.velocity.z.owned.payload
-    ).reshape(shape)
+        solver.global_array(state.fields.velocity.z.owned.payload)
+    )
     scalar_face = (
-        context.arrays.theta_upper.reshape(shape)
+        solver.global_array(numerical.scalar_upper)
         * case.scalar_scales.magnitude
     )
     w_face_fluctuation = w_face - jnp.mean(
@@ -632,20 +620,14 @@ def _diagnostic_observables(
         )
     )
 
-    resolved_tke_sgs_transfer = algebra.momentum_sgs_tke_transfer(
-        context.momentum,
-        case.model.momentum.sgs,
-        wall=case.model.momentum.wall,
-    ).reshape(shape) * (
+    resolved_tke_sgs_transfer = solver.global_array(
+        numerical.momentum_sgs_tke_transfer
+    ) * (
         case.mechanical_scales.kinematic_pressure
         * case.mechanical_scales.inverse_time
     )
-    txz_upper, tyz_upper = algebra.sgs_vertical_flux(
-        context.momentum,
-        case.model.momentum.sgs,
-    )
-    txz_upper = txz_upper.reshape(shape) * velocity_squared
-    tyz_upper = tyz_upper.reshape(shape) * velocity_squared
+    txz_upper = solver.global_array(numerical.sgs_flux_xz) * velocity_squared
+    tyz_upper = solver.global_array(numerical.sgs_flux_yz) * velocity_squared
     lower_txz = jnp.concatenate((tau_x[None], txz_upper[:-1]), axis=0)
     lower_tyz = jnp.concatenate((tau_y[None], tyz_upper[:-1]), axis=0)
 
@@ -815,8 +797,8 @@ def _diagnostic_observables(
     return fields, history, diagnostics, spectra
 
 
-def _diagnostics(state, divergence, case: BoussinesqCase, jnp):
-    u, v, _w, w_upper, _scalar = _physical_fields(state, case, jnp)
+def _diagnostics(state, divergence, case: BoussinesqCase, jnp, solver):
+    u, v, _w, w_upper, _scalar = _physical_fields(state, case, jnp, solver)
     grid = case.physical_grid
     cfl_x = float(jnp.max(jnp.abs(u))) * case.dt_seconds / grid.dx
     cfl_y = float(jnp.max(jnp.abs(v))) * case.dt_seconds / grid.dy
@@ -829,11 +811,13 @@ def _diagnostics(state, divergence, case: BoussinesqCase, jnp):
         "cfl_z": cfl_z,
         "maximum_cfl": maximum_cfl,
         # Horizontal departure interpolation is periodic and supports travel over
-        # multiple cells.  The z-slab interpolation has one neighboring plane,
+        # multiple cells.  The vertical interpolation has one neighboring plane,
         # so its trajectory limit applies only to vertical displacement.
         "lasd_trajectory_cfl": cfl_z * update_interval,
         "ustar_m_s": _friction_velocity(u, v, case, jnp),
-        "maximum_execution_divergence": float(jnp.max(jnp.abs(divergence))),
+        "maximum_execution_divergence": float(
+            jnp.max(jnp.abs(solver.global_array(divergence)))
+        ),
     }
 
 
@@ -1095,32 +1079,17 @@ def evaluate(
 
     jax.config.update("jax_enable_x64", case.pressure.dtype == "float64")
     import jax.numpy as jnp
-    from spectral_fd import runtime_from_initialized_jax
-
-    from jaxwind import build_solver
+    from jaxwind import build_jax_solver
     from jaxwind.domain import (
         AcceptedClock,
-        DistributionSpec,
-        EqualZSlab,
-        MeshAxis,
-        MeshTopology,
         VerticalBoundary,
     )
     from jaxwind.effects import (
-        ZSlabCheckpointLayout,
+        JaxRuntime,
         load_boussinesq_checkpoint,
         save_boussinesq_checkpoint,
     )
-    from jaxwind.integrators import cold_start_boussinesq
-    from jaxwind.interpreters.jax_zslab import build_zslab_interpreter
-    from jaxwind.physics import (
-        BoussinesqVectorField,
-        LasdAcceptedStepEvent,
-    )
-    from jaxwind.pressure import build_spectral_fd_pressure_adapter
-
-    if jax.process_count() != 1 or jax.device_count() != 1:
-        raise RuntimeError("this case requires one JAX process and one device")
+    runtime = JaxRuntime.from_initialized_jax(jax)
 
     if (
         restart is None
@@ -1131,56 +1100,50 @@ def evaluate(
         raise FileExistsError(
             f"output directory is not empty: {output_dir}; use --overwrite"
         )
-    if restart is not None and not restart.exists():
-        raise FileNotFoundError(restart)
+    if restart is not None and not runtime.checkpoint_path(restart).exists():
+        raise FileNotFoundError(runtime.checkpoint_path(restart))
     output_dir.mkdir(parents=True, exist_ok=True)
-    (output_dir / "resolved_case.json").write_text(
-        json.dumps(resolved(case), indent=2) + "\n"
-    )
+    if runtime.is_primary:
+        (output_dir / "resolved_case.json").write_text(
+            json.dumps(resolved(case), indent=2) + "\n"
+        )
+    runtime.synchronize("jaxwind-abl-output-ready")
 
     grid = case.mechanical_scales.to_execution_grid(case.physical_grid)
-    decomposition = EqualZSlab(
+
+    def boundary(_clock, _environment):
+        return VerticalBoundary(0.0, 0.0)
+
+    solver = build_jax_solver(
         grid,
-        MeshTopology((MeshAxis("z", 1),)),
-        DistributionSpec.z_slab(),
-    )
-    algebra = build_zslab_interpreter(
-        decomposition,
-        addressable_shards=(0,),
+        runtime=runtime,
+        model=case.model,
+        integrator=case.integrator,
+        normal_boundary=boundary,
+        pressure_dtype=case.pressure.dtype,
+        pressure_method=case.pressure.method,
+        pressure_thomas_chunk=case.pressure.thomas_chunk,
         nonlinear_padding_ratio=case.nonlinear_padding_ratio,
-    )
-    pressure_solver = build_spectral_fd_pressure_adapter(
-        decomposition,
-        addressable_shards=(0,),
-        runtime=runtime_from_initialized_jax(jax),
-        dtype=case.pressure.dtype,
-        method=case.pressure.method,
-        thomas_chunk=case.pressure.thomas_chunk,
     )
     closure_fingerprint, physics_fingerprint = _physics_fingerprints(case)
     scale_fingerprint = case.scalar_scales.fingerprint
-    layout = ZSlabCheckpointLayout(decomposition, (0,), jnp.asarray)
+    layout = solver.checkpoint_layout(jnp.asarray)
     statistics_path = output_dir / "statistics_latest.npz"
     latest_checkpoint = output_dir / "checkpoint_latest.npz"
+    local_latest_checkpoint = runtime.checkpoint_path(latest_checkpoint)
 
     if restart is None:
         fields = build_initial_fields(
             case,
             jax=jax,
             jnp=jnp,
-            decomposition=decomposition,
-            algebra=algebra,
-            pressure_solver=pressure_solver,
+            solver=solver,
         )
-        state = cold_start_boussinesq(
-            fields,
-            clock=AcceptedClock(0.0, 0),
-            config=case.integrator,
-        )
+        state = solver.cold_start(fields, clock=AcceptedClock(0.0, 0))
         statistics = ProfileStatistics(case.physical_grid.nz)
     else:
         state = load_boussinesq_checkpoint(
-            restart,
+            runtime.checkpoint_path(restart),
             layout=layout,
             config=case.integrator,
             scale_fingerprint=scale_fingerprint,
@@ -1199,24 +1162,7 @@ def evaluate(
     remaining = case.steps - state.clock.step
     steps_to_run = remaining if max_steps is None else min(remaining, max_steps)
     initial_step = state.clock.step
-    vector_field = BoussinesqVectorField(algebra, case.model)
-    closure_event = LasdAcceptedStepEvent(
-        algebra,
-        case.model,
-        case.integrator.dt,
-    )
-
-    def boundary(_clock, _environment):
-        return VerticalBoundary(0.0, 0.0)
-
-    advance = build_solver(
-        config=case.integrator,
-        vector_field=vector_field,
-        normal_boundary=boundary,
-        algebra=algebra,
-        pressure_solver=pressure_solver,
-        closure_event=closure_event,
-    )
+    advance = solver.advance
 
     history_path = output_dir / "history.csv"
     fieldnames = (
@@ -1242,14 +1188,18 @@ def evaluate(
         "elapsed_seconds",
     )
     prior_history: list[dict[str, str]] = []
-    if restart is not None and history_path.exists():
+    if runtime.is_primary and restart is not None and history_path.exists():
         with history_path.open(newline="") as stream:
             prior_history = [
                 row
                 for row in csv.DictReader(stream)
                 if int(row["step"]) <= state.clock.step
             ]
-    history_stream = history_path.open("w", newline="")
+    history_stream = (
+        history_path.open("w", newline="")
+        if runtime.is_primary
+        else io.StringIO()
+    )
     writer = csv.DictWriter(history_stream, fieldnames=fieldnames, restval=math.nan)
     writer.writeheader()
     writer.writerows(prior_history)
@@ -1305,7 +1255,7 @@ def evaluate(
                     state,
                     result.diagnostic.projection.pressure,
                     case,
-                    algebra,
+                    solver,
                     jax,
                     jnp,
                     include_spectra=should_sample,
@@ -1328,6 +1278,7 @@ def evaluate(
                     result.diagnostic.projection.divergence.payload,
                     case,
                     jnp,
+                    solver,
                 )
                 latest_diagnostic.update(paper_history)
                 if latest_diagnostic["maximum_cfl"] >= case.cfl_abort:
@@ -1353,16 +1304,23 @@ def evaluate(
                     **latest_diagnostic,
                     "elapsed_seconds": time.perf_counter() - started,
                 }
-                writer.writerow(row)
-                history_stream.flush()
-                print(
-                    f"step={accepted_step}/{case.steps} "
-                    "t*="
-                    f"{accepted_step * case.dt_seconds * case.diagnostic_reference.velocity_m_s / case.diagnostic_reference.length_m:.3f} "
-                    f"CFL={latest_diagnostic['maximum_cfl']:.3f} "
-                    f"u*={latest_diagnostic['ustar_m_s']:.4f} m/s",
-                    flush=True,
-                )
+                if runtime.is_primary:
+                    dimensionless_time = (
+                        accepted_step
+                        * case.dt_seconds
+                        * case.diagnostic_reference.velocity_m_s
+                        / case.diagnostic_reference.length_m
+                    )
+                    writer.writerow(row)
+                    history_stream.flush()
+                    print(
+                        f"step={accepted_step}/{case.steps} "
+                        "t*="
+                        f"{dimensionless_time:.3f} "
+                        f"CFL={latest_diagnostic['maximum_cfl']:.3f} "
+                        f"u*={latest_diagnostic['ustar_m_s']:.4f} m/s",
+                        flush=True,
+                    )
 
             should_checkpoint = (
                 accepted_step % case.output.checkpoint_every_steps == 0
@@ -1370,31 +1328,33 @@ def evaluate(
             )
             if should_checkpoint:
                 save_boussinesq_checkpoint(
-                    latest_checkpoint,
+                    local_latest_checkpoint,
                     state,
                     scale_fingerprint=scale_fingerprint,
                     physics_fingerprint=physics_fingerprint,
                 )
-                statistics.save(statistics_path)
+                if runtime.is_primary:
+                    statistics.save(statistics_path)
     finally:
         history_stream.close()
 
     if steps_to_run == 0:
         save_boussinesq_checkpoint(
-            latest_checkpoint,
+            local_latest_checkpoint,
             state,
             scale_fingerprint=scale_fingerprint,
             physics_fingerprint=physics_fingerprint,
         )
-        statistics.save(statistics_path)
-    if statistics.count:
+        if runtime.is_primary:
+            statistics.save(statistics_path)
+    if runtime.is_primary and statistics.count:
         _write_profiles(output_dir / "profiles.csv", case, statistics)
-    if statistics.spectrum_count:
+    if runtime.is_primary and statistics.spectrum_count:
         _write_spectra(output_dir / "spectra.csv", case, statistics)
         _write_radial_spectra(output_dir / "radial_spectra.csv", statistics)
     if state.clock.step == case.steps:
         save_boussinesq_checkpoint(
-            output_dir / "checkpoint_final.npz",
+            runtime.checkpoint_path(output_dir / "checkpoint_final.npz"),
             state,
             scale_fingerprint=scale_fingerprint,
             physics_fingerprint=physics_fingerprint,
@@ -1418,6 +1378,9 @@ def evaluate(
         **resolved(case),
         "runtime": {
             "jax_backend": jax.default_backend(),
+            "process_count": runtime.process_count,
+            "global_device_count": runtime.global_devices,
+            "local_device_count": runtime.local_devices,
             "restart": None if restart is None else str(restart),
             "initial_step": initial_step,
             "steps_run": steps_to_run,
@@ -1452,8 +1415,11 @@ def evaluate(
             evaluate_acceptance=complete,
         ),
     }
-    (output_dir / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
-    print(json.dumps(summary, indent=2), flush=True)
+    if runtime.is_primary:
+        (output_dir / "summary.json").write_text(
+            json.dumps(summary, indent=2) + "\n"
+        )
+        print(json.dumps(summary, indent=2), flush=True)
     return summary
 
 

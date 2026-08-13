@@ -13,7 +13,7 @@ from jaxwind.domain import (  # noqa: E402
     AddressableField,
     Cell,
     DistributionSpec,
-    EqualZSlab,
+    EqualVerticalPartition,
     Field,
     GlobalTestRegion,
     MeshAxis,
@@ -26,9 +26,9 @@ from jaxwind.domain import (  # noqa: E402
     ZFace,
 )
 from tests.support.jax_oracle import JaxOracleProjection  # noqa: E402
-from jaxwind.interpreters.jax_zslab import (  # noqa: E402
-    ZFaceFieldContext,
-    build_zslab_interpreter,
+from jaxwind._jax.discretization import (  # noqa: E402
+    VerticalFaceField,
+    build_discretization,
 )
 from jaxwind.operators import VelocityVector  # noqa: E402
 from jaxwind.physics import (  # noqa: E402
@@ -71,12 +71,12 @@ def main() -> int:
     reference = JaxOracleProjection()
     reference_context = reference.dry_flow_context(reference_velocity)
 
-    decomposition = EqualZSlab(
+    decomposition = EqualVerticalPartition(
         grid,
         MeshTopology((MeshAxis("z", args.devices),)),
-        DistributionSpec.z_slab(),
+        DistributionSpec.vertical(),
     )
-    shape = (args.devices, decomposition.cells_per_shard, grid.ny, grid.nx)
+    shape = (args.devices, decomposition.cells_per_partition, grid.ny, grid.nx)
     production_velocity = VelocityVector(
         AddressableField(
             XVelocity,
@@ -92,7 +92,7 @@ def main() -> int:
             Projected,
             v.reshape(shape),
         ),
-        ZFaceFieldContext(
+        VerticalFaceField(
             AddressableField(
                 VerticalVelocity,
                 ZFace,
@@ -103,14 +103,14 @@ def main() -> int:
             w[0],
         ),
     )
-    production = build_zslab_interpreter(
+    production = build_discretization(
         decomposition,
-        addressable_shards=tuple(range(args.devices)),
+        addressable_partitions=tuple(range(args.devices)),
     )
     production_context = production.dry_flow_context(production_velocity)
-    uncorrected = build_zslab_interpreter(
+    uncorrected = build_discretization(
         decomposition,
-        addressable_shards=tuple(range(args.devices)),
+        addressable_partitions=tuple(range(args.devices)),
         porte_agel_wall_correction=False,
     )
     uncorrected_context = uncorrected.dry_flow_context(production_velocity)

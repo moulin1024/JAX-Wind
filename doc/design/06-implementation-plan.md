@@ -11,7 +11,8 @@ not authorize a complete LES solver or a generic distributed framework.
   construction validation, and exhaustive small-mesh partition laws.
 - The initial Milestone B path is implemented: packed transient cell halos with
   explicit physical-boundary flags and JAX `ppermute` communication.
-- The vertical-operator part of Milestone C is implemented: the unified z-slab
+- The vertical-operator part of Milestone C is implemented: the private vertical
+  partition
   `G_z`/`D_z` interpretation commutes with an independent test oracle for one,
   two, and four host CPU devices in float32/float64 tests.
 - The compatible three-dimensional projection is implemented as one
@@ -55,9 +56,10 @@ and the full ABL integrator are out of scope.
 
 ## 2. Backend and remaining decision boundaries
 
-ADR-0015 accepts one JAX z-slab production interpretation, with one shard as
-the local case and no generic multi-backend public promise. An independent
-tiny-grid array implementation is admitted only as a test oracle.
+ADR-0016 accepts one public JAX solver for the complete initialized runtime
+mesh. The equal vertical partition is private; a one-process job is its
+size-one execution, not a separate local solver. An independent tiny-grid
+array implementation is admitted only as a test oracle.
 
 Decision E does not block this slice because all admitted failures are static
 construction errors. H, I, and J do not alter the ownership/operator laws and
@@ -77,8 +79,10 @@ these responsibilities:
   owned regions, quantities, phases, and immutable field wrappers;
 - `operators`: semantic definitions and signatures for vertical
   boundary reconstruction, `G_z`, `D_z`, and projection composition;
-- `interpreters/jax_zslab`: z ownership, packed halo contexts, compiled
-  collectives, single-shard execution, and the pressure adapter;
+- `jax_solver`: unified production construction, field lowering, pressure
+  projection, and accepted transition;
+- `_jax`: private ownership, packed halo contexts, and compiled
+  collectives;
 - `tests/support/jax_oracle`: independent bounded global validation only;
 - `effects`: configuration validation and JAX/distributed runtime ownership.
 

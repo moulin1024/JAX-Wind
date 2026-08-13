@@ -1,4 +1,4 @@
-"""Compiled lower-boundary exchange kernels for the z-slab interpreter."""
+"""Compiled lower-boundary exchange kernels for the JAX solver."""
 
 from __future__ import annotations
 
@@ -8,6 +8,71 @@ import jax
 import jax.numpy as jnp
 
 from jaxwind.physics.surface_transfer import SurfaceTransferResult
+
+
+def build_monin_obukhov_surface_transfer_kernel(axis_name: str):
+    """Build a job-wide lower-surface law over the solver device axis."""
+
+    def local(
+        u_payload,
+        v_payload,
+        scalar_payload,
+        execution_time,
+        grid_spacing,
+        momentum_roughness_length,
+        scalar_roughness_length,
+        surface_scalar_initial,
+        surface_scalar_rate,
+        x_velocity_offset,
+        y_velocity_offset,
+        buoyancy_coefficient,
+        von_karman,
+        positive_zeta_momentum_slope,
+        positive_zeta_scalar_slope,
+        negative_zeta_momentum_coefficient,
+        negative_zeta_scalar_coefficient,
+        relaxation,
+        maximum_abs_zeta,
+        iterations,
+    ):
+        index = jax.lax.axis_index(axis_name)
+        is_bottom = index == 0
+
+        def bottom_mean(values):
+            local_mean = jnp.where(is_bottom, jnp.mean(values[0]), 0.0)
+            return jax.lax.psum(local_mean, axis_name)
+
+        shape = (1, 1, 1)
+        return monin_obukhov_surface_transfer(
+            bottom_mean(u_payload).reshape(shape),
+            bottom_mean(v_payload).reshape(shape),
+            bottom_mean(scalar_payload).reshape(shape),
+            execution_time,
+            grid_spacing,
+            momentum_roughness_length,
+            scalar_roughness_length,
+            surface_scalar_initial,
+            surface_scalar_rate,
+            x_velocity_offset,
+            y_velocity_offset,
+            buoyancy_coefficient,
+            von_karman,
+            positive_zeta_momentum_slope,
+            positive_zeta_scalar_slope,
+            negative_zeta_momentum_coefficient,
+            negative_zeta_scalar_coefficient,
+            relaxation,
+            maximum_abs_zeta,
+            bottom=0,
+            iterations=iterations,
+        )
+
+    return jax.pmap(
+        local,
+        axis_name=axis_name,
+        in_axes=(0, 0, 0) + (None,) * 17,
+        static_broadcasted_argnums=(19,),
+    )
 
 
 @partial(jax.jit, static_argnames=("bottom", "iterations"))
@@ -190,4 +255,7 @@ def monin_obukhov_surface_transfer(
     )
 
 
-__all__ = ["monin_obukhov_surface_transfer"]
+__all__ = [
+    "build_monin_obukhov_surface_transfer_kernel",
+    "monin_obukhov_surface_transfer",
+]

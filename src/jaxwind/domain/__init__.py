@@ -2,7 +2,7 @@
 
 from .axes import DomainAxis, MeshAxis, MeshCoordinate, MeshTopology
 from .boundaries import VerticalBoundary
-from .fields import AddressableField, Field
+from .fields import AddressableField, Field, VerticalFaceField
 from .grid import UniformGrid
 from .locations import CELL, ZFACE, Cell, Location, ZFace
 from .markers import (
@@ -42,7 +42,7 @@ from .markers import (
 )
 from .ownership import (
     DistributionSpec,
-    EqualZSlab,
+    EqualVerticalPartition,
     GlobalTestRegion,
     OwnedInterval,
     OwnedRegion,
@@ -64,7 +64,7 @@ __all__ = [
     "DistributionSpec",
     "Divergence",
     "DomainAxis",
-    "EqualZSlab",
+    "EqualVerticalPartition",
     "Evaluated",
     "EvaluationTime",
     "Field",
@@ -101,6 +101,7 @@ __all__ = [
     "ScalarLasdQn",
     "UniformGrid",
     "VerticalBoundary",
+    "VerticalFaceField",
     "VerticalPressureGradient",
     "VerticalVelocity",
     "VerticalVelocityTendency",

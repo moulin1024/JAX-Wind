@@ -1,6 +1,7 @@
 # ADR-0015: Unified z-slab production interpreter
 
-Status: **Accepted**
+Status: **Superseded** by
+[ADR-0016](0016-unified-jax-solver.md).
 
 Supersedes [ADR-0008](0008-jax-only-array-interpretations.md).
 

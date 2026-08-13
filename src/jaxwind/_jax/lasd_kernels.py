@@ -10,7 +10,7 @@ def build_lasd_kernels(
     *,
     grid,
     axis_name: str,
-    shard_count: int,
+    partition_count: int,
     exchange_local,
     strain_magnitude_local,
     pad_horizontal_local,
@@ -450,7 +450,7 @@ def build_lasd_kernels(
         index = lax.axis_index(axis_name)
         values = values.at[0].set(jnp.where(index == 0, values[1], values[0]))
         return values.at[-1].set(
-            jnp.where(index == shard_count - 1, values[-2], values[-1])
+            jnp.where(index == partition_count - 1, values[-2], values[-1])
         )
 
     def departure_interpolate_local(

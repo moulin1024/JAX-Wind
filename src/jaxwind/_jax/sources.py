@@ -1,4 +1,4 @@
-"""Shared strain and Boussinesq source kernels for the z-slab backend."""
+"""Shared strain and Boussinesq source kernels for the JAX solver."""
 
 from __future__ import annotations
 

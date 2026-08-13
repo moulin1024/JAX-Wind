@@ -15,7 +15,7 @@ from jaxwind.domain import (  # noqa: E402
     AddressableField,
     Cell,
     DistributionSpec,
-    EqualZSlab,
+    EqualVerticalPartition,
     Field,
     GlobalTestRegion,
     MeshAxis,
@@ -29,9 +29,9 @@ from jaxwind.domain import (  # noqa: E402
     ZFace,
 )
 from tests.support.jax_oracle import JaxOracleProjection  # noqa: E402
-from jaxwind.interpreters.jax_zslab import (  # noqa: E402
-    ZFaceFieldContext,
-    build_zslab_interpreter,
+from jaxwind._jax.discretization import (  # noqa: E402
+    VerticalFaceField,
+    build_discretization,
 )
 from jaxwind.operators import VelocityVector  # noqa: E402
 from jaxwind.physics import (  # noqa: E402
@@ -79,12 +79,12 @@ def main() -> int:
     reference = JaxOracleProjection()
     reference_context = reference.boussinesq_context(reference_fields)
 
-    decomposition = EqualZSlab(
+    decomposition = EqualVerticalPartition(
         grid,
         MeshTopology((MeshAxis("z", args.devices),)),
-        DistributionSpec.z_slab(),
+        DistributionSpec.vertical(),
     )
-    shape = (args.devices, decomposition.cells_per_shard, grid.ny, grid.nx)
+    shape = (args.devices, decomposition.cells_per_partition, grid.ny, grid.nx)
     production_fields = BoussinesqFields(
         VelocityVector(
             AddressableField(
@@ -101,7 +101,7 @@ def main() -> int:
                 Projected,
                 v.reshape(shape),
             ),
-            ZFaceFieldContext(
+            VerticalFaceField(
                 AddressableField(
                     VerticalVelocity,
                     ZFace,
@@ -120,9 +120,9 @@ def main() -> int:
             theta.reshape(shape),
         ),
     )
-    production = build_zslab_interpreter(
+    production = build_discretization(
         decomposition,
-        addressable_shards=tuple(range(args.devices)),
+        addressable_partitions=tuple(range(args.devices)),
     )
     production_context = production.boussinesq_context(production_fields)
     scalar_advection = ConservativeScalarAdvection()

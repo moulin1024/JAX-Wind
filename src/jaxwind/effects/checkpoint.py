@@ -15,7 +15,7 @@ from jaxwind.domain import (
     AcceptedClock,
     AddressableField,
     Cell,
-    EqualZSlab,
+    EqualVerticalPartition,
     Evaluated,
     Field,
     GlobalTestRegion,
@@ -108,22 +108,22 @@ class ReferenceCheckpointLayout:
 
 
 @dataclass(frozen=True, slots=True)
-class ZSlabCheckpointLayout:
-    decomposition: EqualZSlab
-    addressable_shards: tuple[int, ...]
+class DistributedCheckpointLayout:
+    decomposition: EqualVerticalPartition
+    addressable_partitions: tuple[int, ...]
     array_factory: Callable[[np.ndarray], Any]
 
     def __post_init__(self) -> None:
-        if not self.addressable_shards:
-            raise ValueError("checkpoint layout requires addressable shards")
+        if not self.addressable_partitions:
+            raise ValueError("checkpoint layout requires addressable partitions")
         if any(
-            not 0 <= shard < self.decomposition.shard_count
-            for shard in self.addressable_shards
+            not 0 <= partition < self.decomposition.partition_count
+            for partition in self.addressable_partitions
         ):
-            raise ValueError("checkpoint shard is outside the decomposition")
+            raise ValueError("checkpoint partition is outside the decomposition")
 
 
-CheckpointLayout = ReferenceCheckpointLayout | ZSlabCheckpointLayout
+CheckpointLayout = ReferenceCheckpointLayout | DistributedCheckpointLayout
 
 
 def _grid_metadata(grid: UniformGrid) -> dict[str, Any]:
@@ -165,6 +165,8 @@ def _state_metadata(
         ),
     }
     if representation == "owned-z-slab":
+        # Preserve the v1/v2 serialized key so existing production restart
+        # files remain loadable after the public ownership rename.
         metadata["addressable_shards"] = [
             region.coordinate.indices[0] for region in velocity.x.regions
         ]
@@ -197,7 +199,7 @@ def _velocity_arrays(velocity: VelocityVector, representation: str) -> dict[str,
 
 
 def save_ab2_checkpoint(path: str | Path, state: AB2PersistentState) -> None:
-    """Atomically save one reference state or one process's owned z slabs."""
+    """Atomically save one reference state or one process's owned regions."""
     metadata, representation = _state_metadata(
         state,
         state.velocity,
@@ -247,9 +249,13 @@ def _validate_metadata(
         raise ValueError("checkpoint grid does not match the load layout")
     if metadata.get("integrator_fingerprint") != config.fingerprint:
         raise ValueError("checkpoint integrator fingerprint does not match")
-    if isinstance(layout, ZSlabCheckpointLayout):
-        if tuple(metadata.get("addressable_shards", ())) != layout.addressable_shards:
-            raise ValueError("checkpoint shards do not match the load layout")
+    if isinstance(layout, DistributedCheckpointLayout):
+        stored = metadata.get(
+            "addressable_shards",
+            metadata.get("addressable_partitions", ()),
+        )
+        if tuple(stored) != layout.addressable_partitions:
+            raise ValueError("checkpoint partitions do not match the load layout")
     history = metadata.get("history")
     if history not in ("cold-start", "previous-tendency"):
         raise ValueError("checkpoint has an invalid AB2 history tag")
@@ -288,16 +294,16 @@ def _reference_velocity(
     )
 
 
-def _zslab_velocity(
-    archive, prefix: str, layout: ZSlabCheckpointLayout, *, tendency: bool
+def _distributed_velocity(
+    archive, prefix: str, layout: DistributedCheckpointLayout, *, tendency: bool
 ):
-    from jaxwind.interpreters.jax_zslab import ZFaceFieldContext
+    from jaxwind.domain import VerticalFaceField
 
     decomposition = layout.decomposition
     cells = decomposition.regions(Cell)
     faces = decomposition.regions(ZFace)
-    cell_regions = tuple(cells[index] for index in layout.addressable_shards)
-    face_regions = tuple(faces[index] for index in layout.addressable_shards)
+    cell_regions = tuple(cells[index] for index in layout.addressable_partitions)
+    face_regions = tuple(faces[index] for index in layout.addressable_partitions)
     phase = Evaluated if tendency else Projected
     return VelocityVector(
         AddressableField(
@@ -314,7 +320,7 @@ def _zslab_velocity(
             phase,
             _load_array(archive, f"{prefix}_y", layout.array_factory),
         ),
-        ZFaceFieldContext(
+        VerticalFaceField(
             AddressableField(
                 VerticalVelocityTendency if tendency else VerticalVelocity,
                 ZFace,
@@ -345,8 +351,10 @@ def load_ab2_checkpoint(
             velocity = _reference_velocity(archive, "velocity", layout, tendency=False)
             tendency_loader = _reference_velocity
         else:
-            velocity = _zslab_velocity(archive, "velocity", layout, tendency=False)
-            tendency_loader = _zslab_velocity
+            velocity = _distributed_velocity(
+                archive, "velocity", layout, tendency=False
+            )
+            tendency_loader = _distributed_velocity
         if history_tag == "cold-start":
             history = ColdStart()
         else:
@@ -479,7 +487,7 @@ def _checkpoint_scalar(
     return AddressableField(
         quantity,
         Cell,
-        tuple(regions[index] for index in layout.addressable_shards),
+        tuple(regions[index] for index in layout.addressable_partitions),
         phase,
         _load_array(archive, name, layout.array_factory),
     )
@@ -503,7 +511,7 @@ def _checkpoint_closure_field(
     return AddressableField(
         quantity,
         Cell,
-        tuple(regions[index] for index in layout.addressable_shards),
+        tuple(regions[index] for index in layout.addressable_partitions),
         Accepted,
         _load_array(archive, name, layout.array_factory),
     )
@@ -587,7 +595,7 @@ def load_boussinesq_checkpoint(
         if isinstance(layout, ReferenceCheckpointLayout):
             velocity_loader = _reference_velocity
         else:
-            velocity_loader = _zslab_velocity
+            velocity_loader = _distributed_velocity
         velocity = velocity_loader(archive, "velocity", layout, tendency=False)
         scalar_quantity = metadata.get(
             "scalar_quantity",

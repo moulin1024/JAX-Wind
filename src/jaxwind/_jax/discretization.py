@@ -1,4 +1,4 @@
-"""JAX-native equal-z-slab interpretation with transient ppermute halos."""
+"""Private JAX spatial discretization with transient vertical halos."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from jaxwind.domain import (
     Cell,
     Candidate,
     Divergence,
-    EqualZSlab,
+    EqualVerticalPartition,
     Evaluated,
     PressureCorrection,
     PressureRhs,
@@ -23,6 +23,7 @@ from jaxwind.domain import (
     PotentialTemperatureTendency,
     Projected,
     VerticalBoundary,
+    VerticalFaceField,
     VerticalPressureGradient,
     VerticalVelocity,
     VerticalVelocityTendency,
@@ -38,8 +39,8 @@ from jaxwind.operators import PressureGradient, VelocityVector
 from jaxwind.physics.boussinesq import BoussinesqFields
 from jaxwind.physics.wind_tunnel import BladeElementActuatorLine
 
-from ._jax_zslab_flow import ZSlabFlowMixin
-from ._jax_zslab_lasd import ZSlabLasdMixin
+from .flow import ZSlabFlowMixin
+from .lasd import ZSlabLasdMixin
 
 
 class PackedHaloArrays(NamedTuple):
@@ -49,17 +50,6 @@ class PackedHaloArrays(NamedTuple):
     upper: Any
     lower_is_physical: Any
     upper_is_physical: Any
-
-
-@dataclass(frozen=True, slots=True)
-class ZFaceFieldContext:
-    """Owned upper faces plus the separately constructed lower boundary face."""
-
-    owned: AddressableField
-    lower_boundary: Any
-
-    def extract_owned(self) -> AddressableField:
-        return self.owned
 
 
 class ZSlabDryFlowArrays(NamedTuple):
@@ -124,7 +114,7 @@ class ZSlabBoussinesqContext:
 
 
 class ActuatorLineDiagnostic(NamedTuple):
-    """Replicated per-element aerodynamic data from a z-slab evaluation."""
+    """Replicated per-element aerodynamic data from a distributed evaluation."""
 
     force_on_fluid_per_density: Any
     positions: Any
@@ -182,6 +172,7 @@ class _ScalarKernels:
     sgs: Callable
     buoyancy: Callable
     rayleigh_damping: Callable
+    surface_transfer: Callable
 
 
 @dataclass(frozen=True, slots=True)
@@ -191,11 +182,11 @@ class _WindKernels:
 
 
 @dataclass(frozen=True, slots=True)
-class JaxZSlabInterpreter(ZSlabLasdMixin, ZSlabFlowMixin):
-    """Higher-order JAX interpretation of the first equal z-slab topology."""
+class _JaxDiscretization(ZSlabLasdMixin, ZSlabFlowMixin):
+    """JAX lowering over the currently selected private domain partition."""
 
-    decomposition: EqualZSlab
-    addressable_shards: tuple[int, ...]
+    decomposition: EqualVerticalPartition
+    addressable_partitions: tuple[int, ...]
     frozen_zero_scalar: bool
     projection: _ProjectionKernels
     flow: _FlowKernels
@@ -277,39 +268,44 @@ class JaxZSlabInterpreter(ZSlabLasdMixin, ZSlabFlowMixin):
     def halo_communicated_elements(
         self,
         component_count: int,
-        shard_index: int,
+        partition_index: int,
     ) -> int:
         """Network payload derived from the actual non-physical neighbors."""
         if component_count <= 0:
             raise ValueError("packed halo component count must be positive")
-        if not 0 <= shard_index < self.decomposition.shard_count:
+        if not 0 <= partition_index < self.decomposition.partition_count:
             raise ValueError("shard index is outside the global z mesh")
-        neighbors = int(shard_index > 0) + int(
-            shard_index < self.decomposition.shard_count - 1
+        neighbors = int(partition_index > 0) + int(
+            partition_index < self.decomposition.partition_count - 1
         )
         plane = self.decomposition.grid.ny * self.decomposition.grid.nx
         return neighbors * component_count * plane
 
     def _expected_regions(self, location: type) -> tuple:
         all_regions = self.decomposition.regions(location)
-        return tuple(all_regions[index] for index in self.addressable_shards)
+        return tuple(all_regions[index] for index in self.addressable_partitions)
 
     def _validate_field(self, field: AddressableField, location: type) -> None:
         if field.location is not location:
-            raise TypeError(f"z-slab operator requires {location.__name__} input")
+            raise TypeError(
+                f"distributed operator requires {location.__name__} input"
+            )
         if field.regions != self._expected_regions(location):
-            raise ValueError("addressable regions do not match interpreter ownership")
+            raise ValueError("addressable regions do not match solver ownership")
 
     def pressure_gradient_z(
         self,
         pressure: AddressableField,
         boundary_gradient: VerticalBoundary[Any],
-    ) -> ZFaceFieldContext:
+    ) -> VerticalFaceField:
         """Apply the stored-upper-face interpretation of ``G_z``."""
         self._validate_field(pressure, Cell)
         if pressure.quantity is not PressureCorrection:
             raise TypeError("pressure_gradient_z requires PressureCorrection")
-        payload = self.projection.pressure_gradient(pressure.payload, boundary_gradient.upper)
+        payload = self.projection.pressure_gradient(
+            pressure.payload,
+            boundary_gradient.upper,
+        )
         owned = AddressableField(
             VerticalPressureGradient,
             ZFace,
@@ -317,9 +313,9 @@ class JaxZSlabInterpreter(ZSlabLasdMixin, ZSlabFlowMixin):
             Evaluated,
             payload,
         )
-        return ZFaceFieldContext(owned, boundary_gradient.lower)
+        return VerticalFaceField(owned, boundary_gradient.lower)
 
-    def divergence_z(self, vertical_faces: ZFaceFieldContext) -> AddressableField:
+    def divergence_z(self, vertical_faces: VerticalFaceField) -> AddressableField:
         """Apply ``D_z`` using the owned upper faces and lower boundary face."""
         self._validate_field(vertical_faces.owned, ZFace)
         if vertical_faces.owned.quantity not in (
@@ -407,7 +403,7 @@ class JaxZSlabInterpreter(ZSlabLasdMixin, ZSlabFlowMixin):
                 velocity.y.phase,
                 y_payload,
             ),
-            ZFaceFieldContext(
+            VerticalFaceField(
                 owned,
                 lower_boundary,
             ),
@@ -443,7 +439,7 @@ class JaxZSlabInterpreter(ZSlabLasdMixin, ZSlabFlowMixin):
                 Evaluated,
                 y,
             ),
-            ZFaceFieldContext(
+            VerticalFaceField(
                 AddressableField(
                     VerticalVelocityTendency,
                     ZFace,
@@ -590,7 +586,7 @@ class JaxZSlabInterpreter(ZSlabLasdMixin, ZSlabFlowMixin):
                 Projected,
                 y_payload,
             ),
-            ZFaceFieldContext(
+            VerticalFaceField(
                 AddressableField(
                     VerticalVelocity,
                     ZFace,
@@ -697,7 +693,7 @@ class JaxZSlabInterpreter(ZSlabLasdMixin, ZSlabFlowMixin):
                 Candidate,
                 y_payload,
             ),
-            ZFaceFieldContext(
+            VerticalFaceField(
                 AddressableField(
                     VerticalVelocity,
                     ZFace,
@@ -776,31 +772,31 @@ class JaxZSlabInterpreter(ZSlabLasdMixin, ZSlabFlowMixin):
         )
 
 
-def build_zslab_interpreter(
-    decomposition: EqualZSlab,
+def build_discretization(
+    decomposition: EqualVerticalPartition,
     *,
-    addressable_shards: tuple[int, ...] | None = None,
+    addressable_partitions: tuple[int, ...] | None = None,
     axis_name: str = "jaxwind_z",
     porte_agel_wall_correction: bool = True,
     nonlinear_padding_ratio: float = 1.5,
     frozen_zero_scalar: bool = False,
-) -> JaxZSlabInterpreter:
-    """Build the sole production interpreter.
+) -> _JaxDiscretization:
+    """Build the private production spatial discretization.
 
-    A one-shard decomposition is the ordinary single-process case and defaults
-    to its only addressable shard. Multi-shard decompositions use the same
-    interpreter and require the caller's addressable global shard indices.
+    A one-partition decomposition is the ordinary single-process case and
+    defaults to its only addressable partition. Larger decompositions use the
+    same lowering and require the caller's addressable global partition ids.
     ``frozen_zero_scalar`` is reserved for runs whose passive scalar and scalar
     boundary fluxes remain identically zero for the full integration.
     """
 
-    from ._jax_zslab_factory import (
-        build_zslab_interpreter as _build_zslab_interpreter,
+    from .factory import (
+        build_discretization as _build_discretization,
     )
 
-    return _build_zslab_interpreter(
+    return _build_discretization(
         decomposition,
-        addressable_shards=addressable_shards,
+        addressable_partitions=addressable_partitions,
         axis_name=axis_name,
         porte_agel_wall_correction=porte_agel_wall_correction,
         nonlinear_padding_ratio=nonlinear_padding_ratio,

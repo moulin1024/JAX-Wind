@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import io
 import json
 import math
 import os
@@ -121,33 +122,17 @@ def _initial_fields(
     jnp,
     case: CaseConfig,
     physical_grid,
-    decomposition,
-    addressable_shards: tuple[int, ...],
     scales,
-    algebra,
-    pressure_solver,
-    integrator_config,
+    solver,
 ):
     from jaxwind.domain import (
         Accepted,
-        AddressableField,
-        Candidate,
-        Cell,
         PassiveScalarConcentration,
-        VerticalBoundary,
-        VerticalVelocity,
-        XVelocity,
-        YVelocity,
-        ZFace,
     )
-    from jaxwind.interpreters.jax_zslab import ZFaceFieldContext
-    from jaxwind.operators import VelocityVector, project
     from jaxwind.physics import BoussinesqFields
 
     dtype = getattr(jnp, case.numerics.dtype)
     domain = case.domain
-    local_nz = domain.nz // len(addressable_shards)
-    payload_shape = (len(addressable_shards), local_nz, domain.ny, domain.nx)
     z = (jnp.arange(domain.nz, dtype=dtype) + 0.5) * domain.dz_m
     log_velocity = (
         case.flow.friction_velocity_m_s
@@ -168,61 +153,28 @@ def _initial_fields(
     v = jnp.broadcast_to(v, (domain.nz, domain.ny, domain.nx))
     w = jnp.broadcast_to(w, (domain.nz, domain.ny, domain.nx))
 
-    cell_regions = tuple(
-        decomposition.regions(Cell)[index] for index in addressable_shards
+    candidate = solver.candidate_velocity(
+        scales.to_execution_velocity(u),
+        scales.to_execution_velocity(v),
+        scales.to_execution_velocity(w),
+        lower_boundary=jnp.zeros((domain.ny, domain.nx), dtype=dtype),
     )
-    face_regions = tuple(
-        decomposition.regions(ZFace)[index] for index in addressable_shards
-    )
-    candidate = VelocityVector(
-        AddressableField(
-            XVelocity,
-            Cell,
-            cell_regions,
-            Candidate,
-            scales.to_execution_velocity(u).reshape(payload_shape),
-        ),
-        AddressableField(
-            YVelocity,
-            Cell,
-            cell_regions,
-            Candidate,
-            scales.to_execution_velocity(v).reshape(payload_shape),
-        ),
-        ZFaceFieldContext(
-            AddressableField(
-                VerticalVelocity,
-                ZFace,
-                face_regions,
-                Candidate,
-                scales.to_execution_velocity(w).reshape(payload_shape),
-            ),
-            jnp.zeros((domain.ny, domain.nx), dtype=dtype),
-        ),
-    )
-    velocity = project(
-        candidate,
-        dt=integrator_config.dt,
-        normal_boundary=VerticalBoundary(0.0, 0.0),
-        algebra=algebra,
-        pressure_solver=pressure_solver,
-    ).velocity
-    scalar = AddressableField(
+    velocity = solver.project_initial_velocity(candidate)
+    scalar = solver.cell_field(
         PassiveScalarConcentration,
-        Cell,
-        cell_regions,
         Accepted,
-        jnp.zeros_like(velocity.x.payload),
+        jnp.zeros((domain.nz, domain.ny, domain.nx), dtype=dtype),
     )
     return BoussinesqFields(velocity, scalar)
 
 
-def _physical_velocity(state, case: CaseConfig, scales, jnp):
-    shape = (case.domain.nz, case.domain.ny, case.domain.nx)
+def _physical_velocity(state, case: CaseConfig, scales, jnp, solver):
     velocity = state.fields.velocity
-    u = scales.from_execution_velocity(velocity.x.payload).reshape(shape)
-    v = scales.from_execution_velocity(velocity.y.payload).reshape(shape)
-    w_upper = scales.from_execution_velocity(velocity.z.owned.payload).reshape(shape)
+    u = scales.from_execution_velocity(solver.global_array(velocity.x.payload))
+    v = scales.from_execution_velocity(solver.global_array(velocity.y.payload))
+    w_upper = scales.from_execution_velocity(
+        solver.global_array(velocity.z.owned.payload)
+    )
     lower = jnp.concatenate((jnp.zeros_like(w_upper[:1]), w_upper[:-1]), axis=0)
     return u, v, 0.5 * (lower + w_upper), w_upper
 
@@ -244,8 +196,10 @@ def _filtered_first_level(u0, v0, case: CaseConfig, jnp):
     return filtered[0], filtered[1]
 
 
-def _diagnostics(state, divergence, case: CaseConfig, scales, jnp) -> dict[str, float]:
-    u, v, _w, w_upper = _physical_velocity(state, case, scales, jnp)
+def _diagnostics(
+    state, divergence, case: CaseConfig, scales, jnp, solver
+) -> dict[str, float]:
+    u, v, _w, w_upper = _physical_velocity(state, case, scales, jnp, solver)
     cfl_x = float(jnp.max(jnp.abs(u))) * case.time.dt_seconds / case.domain.dx_m
     cfl_y = float(jnp.max(jnp.abs(v))) * case.time.dt_seconds / case.domain.dy_m
     cfl_z = float(jnp.max(jnp.abs(w_upper))) * case.time.dt_seconds / case.domain.dz_m
@@ -262,13 +216,15 @@ def _diagnostics(state, divergence, case: CaseConfig, scales, jnp) -> dict[str, 
         "cfl_z": cfl_z,
         "maximum_cfl": maximum_cfl,
         # Horizontal departure interpolation is periodic and supports travel over
-        # multiple cells.  The z-slab interpolation has one neighboring plane,
+        # multiple cells.  The vertical interpolation has one neighboring plane,
         # so its trajectory limit applies only to vertical displacement.
         "lasd_trajectory_cfl": cfl_z * case.sgs.update_interval_steps,
         "stress_equivalent_ustar_m_s": float(
             jnp.sqrt(jnp.mean(local_ustar * local_ustar))
         ),
-        "maximum_execution_divergence": float(jnp.max(jnp.abs(divergence))),
+        "maximum_execution_divergence": float(
+            jnp.max(jnp.abs(solver.global_array(divergence)))
+        ),
     }
 
 
@@ -322,29 +278,21 @@ def evaluate(
 
     jax.config.update("jax_enable_x64", case.numerics.dtype == "float64")
     import jax.numpy as jnp
-    from spectral_fd import runtime_from_initialized_jax
-
     from jaxwind.domain import (
         AcceptedClock,
-        DistributionSpec,
-        EqualZSlab,
-        MeshAxis,
-        MeshTopology,
         ScaleSystem,
         UniformGrid,
         VerticalBoundary,
     )
     from jaxwind.effects import (
-        ZSlabCheckpointLayout,
+        JaxRuntime,
         load_boussinesq_checkpoint,
         save_boussinesq_checkpoint,
     )
-    from jaxwind import build_solver
-    from jaxwind.integrators import AB2Config, cold_start_boussinesq
-    from jaxwind.interpreters.jax_zslab import build_zslab_interpreter
+    from jaxwind import build_jax_solver
+    from jaxwind.integrators import AB2Config
     from jaxwind.physics import (
         BoussinesqModel,
-        BoussinesqVectorField,
         ConservativeAdvection,
         ConservativeScalarAdvection,
         DryFlowModel,
@@ -352,23 +300,12 @@ def evaluate(
         KinematicPressureGradient,
         LagrangianScaleDependentDynamic,
         LagrangianScaleDependentScalarFlux,
-        LasdAcceptedStepEvent,
         NoBuoyancy,
         NoRayleighDamping,
         NoRotation,
         ScalarFluxBoundary,
     )
-    from jaxwind.pressure import build_spectral_fd_pressure_adapter
-
-    if jax.process_count() != 1:
-        raise RuntimeError(
-            "this case currently supports one JAX process with one or more "
-            "local devices"
-        )
-    shard_count = jax.device_count()
-    if case.domain.nz % shard_count:
-        raise RuntimeError("nz must be divisible by the number of JAX devices")
-    addressable_shards = tuple(range(shard_count))
+    runtime = JaxRuntime.from_initialized_jax(jax)
 
     output_dir.mkdir(parents=True, exist_ok=True)
     latest_checkpoint = output_dir / "checkpoint_latest.npz"
@@ -378,9 +315,11 @@ def evaluate(
             f"{latest_checkpoint} already exists; configure "
             "execution.restart_checkpoint or execution.overwrite"
         )
-    if restart is not None and not restart.exists():
-        raise FileNotFoundError(restart)
-    (output_dir / "resolved_config.toml").write_text(case.resolved_toml())
+    if restart is not None and not runtime.checkpoint_path(restart).exists():
+        raise FileNotFoundError(runtime.checkpoint_path(restart))
+    if runtime.is_primary:
+        (output_dir / "resolved_config.toml").write_text(case.resolved_toml())
+    runtime.synchronize("jaxwind-pressure-driven-output-ready")
 
     physical_grid = UniformGrid(
         case.domain.nx,
@@ -395,25 +334,6 @@ def evaluate(
         case.flow.friction_velocity_m_s,
     )
     grid = scales.to_execution_grid(physical_grid)
-    decomposition = EqualZSlab(
-        grid,
-        MeshTopology((MeshAxis("z", shard_count),)),
-        DistributionSpec.z_slab(),
-    )
-    algebra = build_zslab_interpreter(
-        decomposition,
-        addressable_shards=addressable_shards,
-        porte_agel_wall_correction=case.wall.porte_agel_correction,
-        nonlinear_padding_ratio=1.5,
-        frozen_zero_scalar=True,
-    )
-    pressure_solver = build_spectral_fd_pressure_adapter(
-        decomposition,
-        addressable_shards=addressable_shards,
-        runtime=runtime_from_initialized_jax(jax),
-        dtype=case.numerics.dtype,
-        method=case.numerics.pressure_method,
-    )
     momentum_sgs = LagrangianScaleDependentDynamic(
         filter_grid_ratio=case.sgs.filter_grid_ratio,
         test_filter_ratio=case.sgs.test_filter_ratio,
@@ -453,11 +373,23 @@ def evaluate(
         + "|coefficient-padding=bounded"
     )
     integrator_config = AB2Config(scales.to_execution_time(case.time.dt_seconds))
-    checkpoint_layout = ZSlabCheckpointLayout(
-        decomposition,
-        addressable_shards,
-        jnp.asarray,
+
+    def boundary(_clock, _environment):
+        return VerticalBoundary(0.0, 0.0)
+
+    solver = build_jax_solver(
+        grid,
+        runtime=runtime,
+        model=model,
+        integrator=integrator_config,
+        normal_boundary=boundary,
+        pressure_dtype=case.numerics.dtype,
+        pressure_method=case.numerics.pressure_method,
+        nonlinear_padding_ratio=1.5,
+        optimize_frozen_zero_scalar=True,
     )
+    checkpoint_layout = solver.checkpoint_layout(jnp.asarray)
+    local_latest_checkpoint = runtime.checkpoint_path(latest_checkpoint)
 
     if restart is None:
         fields = _initial_fields(
@@ -465,23 +397,15 @@ def evaluate(
             jnp=jnp,
             case=case,
             physical_grid=physical_grid,
-            decomposition=decomposition,
-            addressable_shards=addressable_shards,
             scales=scales,
-            algebra=algebra,
-            pressure_solver=pressure_solver,
-            integrator_config=integrator_config,
+            solver=solver,
         )
-        fields = algebra.initialize_lasd_closure(fields, model)
-        state = cold_start_boussinesq(
-            fields,
-            clock=AcceptedClock(0.0, 0),
-            config=integrator_config,
-        )
+        fields = solver.initialize_fields(fields)
+        state = solver.cold_start(fields, clock=AcceptedClock(0.0, 0))
         statistics = ProfileStatistics(case.domain.nz)
     else:
         state = load_boussinesq_checkpoint(
-            restart,
+            runtime.checkpoint_path(restart),
             layout=checkpoint_layout,
             config=integrator_config,
             scale_fingerprint=scales.fingerprint,
@@ -501,26 +425,20 @@ def evaluate(
         remaining_steps if max_steps is None else min(remaining_steps, max_steps)
     )
     if steps_to_run == 0:
-        print("configured final time is already present in the checkpoint")
+        if runtime.is_primary:
+            print("configured final time is already present in the checkpoint")
 
-    vector_field = BoussinesqVectorField(algebra, model)
-    closure_event = LasdAcceptedStepEvent(algebra, model, integrator_config.dt)
-
-    def boundary(_clock, _environment):
-        return VerticalBoundary(0.0, 0.0)
-
-    advance = build_solver(
-        config=integrator_config,
-        vector_field=vector_field,
-        normal_boundary=boundary,
-        algebra=algebra,
-        pressure_solver=pressure_solver,
-        closure_event=closure_event,
-    )
+    advance = solver.advance
 
     history_path = output_dir / "history.csv"
-    history_exists = history_path.exists() and restart is not None
-    history_stream = history_path.open("a" if history_exists else "w", newline="")
+    history_exists = (
+        runtime.is_primary and history_path.exists() and restart is not None
+    )
+    history_stream = (
+        history_path.open("a" if history_exists else "w", newline="")
+        if runtime.is_primary
+        else io.StringIO()
+    )
     fieldnames = (
         "step",
         "time_hours",
@@ -558,7 +476,9 @@ def evaluate(
                 % case.output.sample_every_steps
                 == 0
             ):
-                u, v, w, _w_upper = _physical_velocity(state, case, scales, jnp)
+                u, v, w, _w_upper = _physical_velocity(
+                    state, case, scales, jnp, solver
+                )
                 statistics.sample(
                     np.asarray(jax.device_get(u), dtype=np.float64),
                     np.asarray(jax.device_get(v), dtype=np.float64),
@@ -572,6 +492,7 @@ def evaluate(
                     case,
                     scales,
                     jnp,
+                    solver,
                 )
                 if latest_diagnostic["maximum_cfl"] >= case.numerics.cfl_abort:
                     raise RuntimeError(
@@ -594,18 +515,19 @@ def evaluate(
                     **latest_diagnostic,
                     "elapsed_seconds": time.perf_counter() - started,
                 }
-                history_writer.writerow(row)
-                history_stream.flush()
-                print(
-                    f"step={accepted_step}/{case.time.steps} "
-                    f"time={row['time_hours']:.3f}h "
-                    f"CFL={latest_diagnostic['maximum_cfl']:.3f} "
-                    f"trajectory-CFL="
-                    f"{latest_diagnostic['lasd_trajectory_cfl']:.3f} "
-                    f"u*={latest_diagnostic['stress_equivalent_ustar_m_s']:.3f}m/s "
-                    f"elapsed={row['elapsed_seconds']:.1f}s",
-                    flush=True,
-                )
+                if runtime.is_primary:
+                    history_writer.writerow(row)
+                    history_stream.flush()
+                    print(
+                        f"step={accepted_step}/{case.time.steps} "
+                        f"time={row['time_hours']:.3f}h "
+                        f"CFL={latest_diagnostic['maximum_cfl']:.3f} "
+                        f"trajectory-CFL="
+                        f"{latest_diagnostic['lasd_trajectory_cfl']:.3f} "
+                        f"u*={latest_diagnostic['stress_equivalent_ustar_m_s']:.3f}m/s "
+                        f"elapsed={row['elapsed_seconds']:.1f}s",
+                        flush=True,
+                    )
 
             should_checkpoint = (
                 accepted_step % case.output.checkpoint_every_steps == 0
@@ -613,24 +535,26 @@ def evaluate(
             )
             if should_checkpoint:
                 save_boussinesq_checkpoint(
-                    latest_checkpoint,
+                    local_latest_checkpoint,
                     state,
                     scale_fingerprint=scales.fingerprint,
                     physics_fingerprint=physics_fingerprint,
                 )
-                statistics.save(statistics_path)
+                if runtime.is_primary:
+                    statistics.save(statistics_path)
     finally:
         history_stream.close()
 
     if steps_to_run == 0:
         save_boussinesq_checkpoint(
-            latest_checkpoint,
+            local_latest_checkpoint,
             state,
             scale_fingerprint=scales.fingerprint,
             physics_fingerprint=physics_fingerprint,
         )
-        statistics.save(statistics_path)
-    if statistics.count:
+        if runtime.is_primary:
+            statistics.save(statistics_path)
+    if runtime.is_primary and statistics.count:
         profile_path = output_dir / "profiles.csv"
         _write_profiles(profile_path, case, statistics)
         write_log_law_svg(
@@ -647,7 +571,7 @@ def evaluate(
         )
     if state.clock.step == case.time.steps:
         save_boussinesq_checkpoint(
-            output_dir / "checkpoint_final.npz",
+            runtime.checkpoint_path(output_dir / "checkpoint_final.npz"),
             state,
             scale_fingerprint=scales.fingerprint,
             physics_fingerprint=physics_fingerprint,
@@ -663,7 +587,9 @@ def evaluate(
         },
         "runtime": {
             "jax_backend": jax.default_backend(),
-            "jax_devices": shard_count,
+            "process_count": runtime.process_count,
+            "global_device_count": runtime.global_devices,
+            "local_device_count": runtime.local_devices,
             "restart": None if restart is None else str(restart),
             "initial_step": state.clock.step - steps_to_run,
             "steps_run": steps_to_run,
@@ -674,8 +600,11 @@ def evaluate(
             **latest_diagnostic,
         },
     }
-    (output_dir / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
-    print(json.dumps(summary, indent=2), flush=True)
+    if runtime.is_primary:
+        (output_dir / "summary.json").write_text(
+            json.dumps(summary, indent=2) + "\n"
+        )
+        print(json.dumps(summary, indent=2), flush=True)
     return summary
 
 

@@ -1,20 +1,20 @@
-"""Actuator-disk, fringe, and actuator-line z-slab kernels."""
+"""Actuator-disk, fringe, and actuator-line JAX kernels."""
 
 from __future__ import annotations
 
 import jax.numpy as jnp
 from jax import lax
 
-from jaxwind.interpreters._jax_actuator_disk import (
+from jaxwind._jax.actuator_disk import (
     filtered_disk_velocity_correction,
     gaussian_convolved_annulus,
 )
-from jaxwind.interpreters._jax_actuator_line import (
+from jaxwind._jax.actuator_line import (
     actuator_line_deformed_kinematics,
     blade_element_kinematic_forces,
     gaussian_weights,
 )
-from jaxwind.interpreters._jax_fringe import plateau_fringe_mask
+from jaxwind._jax.fringe import plateau_fringe_mask
 
 
 def build_wind_tunnel_kernel(*, grid, axis_name: str):
@@ -44,10 +44,10 @@ def build_wind_tunnel_kernel(*, grid, axis_name: str):
     ):
         dtype = u.dtype
         local_nz = u.shape[0]
-        shard_index = lax.axis_index(axis_name)
+        partition_index = lax.axis_index(axis_name)
         x = (jnp.arange(grid.nx, dtype=dtype) + 0.5) * grid.dx
         y = (jnp.arange(grid.ny, dtype=dtype) + 0.5) * grid.dy
-        z_index = shard_index * local_nz + jnp.arange(local_nz, dtype=dtype)
+        z_index = partition_index * local_nz + jnp.arange(local_nz, dtype=dtype)
         z = (z_index + 0.5) * grid.dz
 
         periodic_x = (
@@ -154,7 +154,7 @@ def build_actuator_line_kernel(
     *,
     grid,
     axis_name: str,
-    shard_count: int,
+    partition_count: int,
 ):
     def actuator_line_local(
         u,
@@ -218,7 +218,7 @@ def build_actuator_line_kernel(
             )
         )
         local_nz = u.shape[0]
-        shard_index = lax.axis_index(axis_name)
+        partition_index = lax.axis_index(axis_name)
         x_coordinates = (
             jnp.arange(grid.nx, dtype=dtype) + 0.5
         ) * grid.dx
@@ -226,7 +226,7 @@ def build_actuator_line_kernel(
             jnp.arange(grid.ny, dtype=dtype) + 0.5
         ) * grid.dy
         global_cell_index = (
-            shard_index * local_nz
+            partition_index * local_nz
             + jnp.arange(local_nz, dtype=dtype)
         )
         z_cell_coordinates = (global_cell_index + 0.5) * grid.dz
@@ -274,7 +274,7 @@ def build_actuator_line_kernel(
         face_denominator = lax.psum(
             jnp.sum(raw_z_upper, axis=1)
             + jnp.where(
-                shard_index == 0,
+                partition_index == 0,
                 raw_lower_boundary,
                 jnp.zeros_like(raw_lower_boundary),
             ),
@@ -327,7 +327,7 @@ def build_actuator_line_kernel(
                 sampled_v_local,
                 sampled_w_local
                 + jnp.where(
-                    shard_index == 0,
+                    partition_index == 0,
                     sampled_w_lower,
                     jnp.zeros_like(sampled_w_lower),
                 ),
@@ -390,7 +390,7 @@ def build_actuator_line_kernel(
         )
         source_z = source_z.at[-1].set(
             jnp.where(
-                shard_index == shard_count - 1,
+                partition_index == partition_count - 1,
                 0.0,
                 source_z[-1],
             )

@@ -207,8 +207,10 @@ class JaxOracleProjection(OracleLasdMixin, OracleFlowMixin):
         *,
         wall_acceleration=None,
         scalar_surface_source=None,
+        execution_time=0.0,
     ) -> BoussinesqTendency:
         """Emulate the fused semantic result in the independent test oracle."""
+        del execution_time
         if wall_acceleration is not None or scalar_surface_source is not None:
             raise TypeError("the tiny-grid oracle does not emulate imposed sources")
         context = self.boussinesq_context(fields)

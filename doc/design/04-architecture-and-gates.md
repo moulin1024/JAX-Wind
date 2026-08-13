@@ -7,7 +7,7 @@ The intended dependency graph points downward only:
 ```text
 applications / effects  <-  data-only cases
                 |
-interpreter: unified JAX z-slab
+unified JAX solver <- private distribution lowering
                 |
 integrators and complete step composition
                 |
@@ -23,10 +23,11 @@ applications, or case configuration. Physics MUST NOT select a process
 topology.
 Interpreters MAY depend on the semantic layers and backend libraries.
 
-JAX is therefore a target interpreter, not the domain model. The z-slab
-interpreter lowers the semantic program through the accepted explicit
-nondimensional `ScaleSystem`. One shard is the local case; additional shards
-change ownership and communication, not the public interpretation API.
+JAX is therefore an execution target, not the domain model. `JaxSolver` lowers
+the semantic program through the accepted explicit nondimensional
+`ScaleSystem`. Runtime process/device count changes private ownership and
+communication only. A size-one job follows the same public construction and
+transition as every parallel job.
 
 ## 2. Proposed package responsibilities
 
@@ -38,7 +39,8 @@ SHOULD separate these responsibilities:
 - `operators`: gradient, divergence, filters, fluxes, projection interfaces;
 - `physics`: pure tendency contributions and closure state transitions;
 - `integrators`: higher-order construction of transitions from vector fields;
-- `interpreters`: the unified JAX z-slab lowering and its private kernels;
+- `jax_solver`: the unified production construction and transition facade;
+- `_jax`: private JAX distribution lowering and numerical kernels;
 - `openfast`: format parsing and conversion into JAX-Wind turbine models;
 - `effects`: generic checkpoint persistence adapters;
 - `solver`: public composition of fixed numerical transitions;
@@ -95,12 +97,12 @@ decisions about field location, units, grids, and error values.
 Closures with persistent memory are transitions over an explicit product of
 flow state and closure state. They are not objects that mutate internal arrays.
 
-## 4. Unified interpreter and independent test oracle
+## 4. Unified solver and independent test oracle
 
-Production has one public interpretation, `jax_zslab`, following ADR-0015.
-A one-shard `EqualZSlab` MUST execute through the same construction and field
-types as a multi-shard case. It MUST NOT select a separate local or global
-production implementation.
+Production has one public `JaxSolver`, following ADR-0016. A one-process job
+MUST execute through the same construction and field types as a multi-process
+job. Applications MUST NOT select a local/global implementation or construct
+the private partition.
 
 An independent, bounded global JAX oracle MAY live under `tests/support` to
 establish laws on tiny grids. It is not a production interpreter or public API,

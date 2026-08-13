@@ -5,6 +5,8 @@ from __future__ import annotations
 import jax.numpy as jnp
 from jax import lax
 
+from .surface import monin_obukhov_surface_transfer
+
 
 def build_fused_neutral_boussinesq_kernels(
     *,
@@ -161,7 +163,22 @@ def build_fused_neutral_boussinesq_kernels(
         imposed_wall_y,
         imposed_scalar_source,
         buoyancy_coefficient,
-        use_imposed_sources,
+        execution_time,
+        momentum_roughness_length,
+        scalar_roughness_length,
+        surface_scalar_initial,
+        surface_scalar_rate,
+        x_velocity_offset,
+        y_velocity_offset,
+        von_karman,
+        positive_zeta_momentum_slope,
+        positive_zeta_scalar_slope,
+        negative_zeta_momentum_coefficient,
+        negative_zeta_scalar_coefficient,
+        surface_relaxation,
+        maximum_abs_zeta,
+        surface_iterations,
+        source_mode,
     ):
         (
             momentum,
@@ -180,7 +197,43 @@ def build_fused_neutral_boussinesq_kernels(
             wall_filtered,
             wall_filter_width,
         )
-        if use_imposed_sources:
+        scalar_surface_source = imposed_scalar_source
+        if source_mode == 2:
+            index = lax.axis_index(axis_name)
+            is_bottom = index == 0
+
+            def bottom_mean(values):
+                local_mean = jnp.where(is_bottom, jnp.mean(values[0]), 0.0)
+                return lax.psum(local_mean, axis_name)
+
+            singleton = (1, 1, 1)
+            surface = monin_obukhov_surface_transfer(
+                bottom_mean(u).reshape(singleton),
+                bottom_mean(v).reshape(singleton),
+                bottom_mean(theta).reshape(singleton),
+                execution_time,
+                grid.dz,
+                momentum_roughness_length,
+                scalar_roughness_length,
+                surface_scalar_initial,
+                surface_scalar_rate,
+                x_velocity_offset,
+                y_velocity_offset,
+                buoyancy_coefficient,
+                von_karman,
+                positive_zeta_momentum_slope,
+                positive_zeta_scalar_slope,
+                negative_zeta_momentum_coefficient,
+                negative_zeta_scalar_coefficient,
+                surface_relaxation,
+                maximum_abs_zeta,
+                bottom=0,
+                iterations=surface_iterations,
+            )
+            imposed_wall_x = surface.wall_x_acceleration
+            imposed_wall_y = surface.wall_y_acceleration
+            scalar_surface_source = surface.scalar_surface_source
+        if source_mode:
             bottom = lax.axis_index(axis_name) == 0
             wall = (
                 jnp.zeros_like(u).at[0].set(
@@ -238,10 +291,10 @@ def build_fused_neutral_boussinesq_kernels(
                 momentum_tendency[2]
                 + buoyancy_local(scalar, buoyancy_coefficient),
             )
-        if use_imposed_sources:
+        if source_mode:
             bottom = lax.axis_index(axis_name) == 0
             scalar_tendency = scalar_tendency.at[0].add(
-                jnp.where(bottom, imposed_scalar_source, 0.0)
+                jnp.where(bottom, scalar_surface_source, 0.0)
             )
         return (
             *momentum_tendency,

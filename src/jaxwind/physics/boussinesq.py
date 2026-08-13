@@ -214,6 +214,7 @@ class BoussinesqAlgebra(Protocol):
         *,
         wall_acceleration: tuple[Any, Any] | None = None,
         scalar_surface_source: Any | None = None,
+        execution_time: Any = 0.0,
     ) -> BoussinesqTendency: ...
 
     def surface_transfer(
@@ -292,27 +293,11 @@ class BoussinesqVectorField:
         )
 
     def __call__(self, evaluation: Any) -> BoussinesqVectorFieldResult:
-        surface = self.algebra.surface_transfer(
-            evaluation.velocity,
-            self.model,
-            evaluation.time,
-        )
-        imposed = (
-            {}
-            if surface is None
-            else {
-                "wall_acceleration": (
-                    surface.wall_x_acceleration,
-                    surface.wall_y_acceleration,
-                ),
-                "scalar_surface_source": surface.scalar_surface_source,
-            }
-        )
         return BoussinesqVectorFieldResult(
             self.algebra.fused_boussinesq_tendency(
                 evaluation.velocity,
                 self.model,
-                **imposed,
+                execution_time=evaluation.time.time,
             ),
             BoussinesqDiagnostic(evaluation.time),
         )

@@ -1,4 +1,4 @@
-"""Static and LASD Smagorinsky stress kernels for the z-slab backend."""
+"""Static and LASD Smagorinsky stress kernels for the JAX solver."""
 
 from __future__ import annotations
 

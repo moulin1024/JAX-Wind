@@ -1,4 +1,4 @@
-"""Rotational-advection kernel for the z-slab backend."""
+"""Rotational-advection kernel for the JAX solver."""
 
 from __future__ import annotations
 

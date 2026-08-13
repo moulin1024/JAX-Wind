@@ -1,4 +1,4 @@
-"""Three-halves conservative momentum advection for the z-slab backend."""
+"""Three-halves conservative momentum advection for the JAX solver."""
 
 from __future__ import annotations
 

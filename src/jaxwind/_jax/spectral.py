@@ -1,4 +1,4 @@
-"""Horizontal spectral kernels shared by the z-slab interpreter."""
+"""Horizontal spectral kernels shared by the JAX solver."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Compilation of mapped kernels for the z-slab interpreter."""
+"""Compilation of mapped kernels for the private JAX discretization."""
 
 from __future__ import annotations
 
@@ -9,19 +9,19 @@ import jax
 import jax.numpy as jnp
 from jax import lax
 
-from jaxwind.domain import EqualZSlab
+from jaxwind.domain import EqualVerticalPartition
 
-from ._jax_zslab_wind import (
+from .wind import (
     build_actuator_line_kernel,
     build_wind_tunnel_kernel,
 )
-from ._jax_zslab_lasd_kernels import build_lasd_kernels
-from ._jax_zslab_conservative import build_conservative_advection_kernels
-from ._jax_zslab_fused_neutral import build_fused_neutral_boussinesq_kernels
-from ._jax_zslab_gradients import build_padded_momentum_gradients_kernel
-from ._jax_zslab_rotational import build_rotational_advection_kernel
-from .jax_zslab import (
-    JaxZSlabInterpreter,
+from .lasd_kernels import build_lasd_kernels
+from .conservative import build_conservative_advection_kernels
+from .fused_boussinesq import build_fused_neutral_boussinesq_kernels
+from .gradients import build_padded_momentum_gradients_kernel
+from .rotational import build_rotational_advection_kernel
+from .discretization import (
+    _JaxDiscretization,
     PackedHaloArrays,
     ZSlabDryFlowArrays,
     ZSlabScalarArrays,
@@ -31,23 +31,24 @@ from .jax_zslab import (
     _ScalarKernels,
     _WindKernels,
 )
-from ._jax_zslab_smag import build_smagorinsky_kernels
-from ._jax_zslab_spectral import build_horizontal_spectral_kernels
-from ._jax_zslab_sources import (
+from .smagorinsky import build_smagorinsky_kernels
+from .spectral import build_horizontal_spectral_kernels
+from .sources import (
     build_boussinesq_source_kernels,
     strain_magnitude_local,
 )
+from .surface import build_monin_obukhov_surface_transfer_kernel
 
 
-def build_zslab_interpreter(
-    decomposition: EqualZSlab,
+def build_discretization(
+    decomposition: EqualVerticalPartition,
     *,
-    addressable_shards: tuple[int, ...] | None = None,
+    addressable_partitions: tuple[int, ...] | None = None,
     axis_name: str = "jaxwind_z",
     porte_agel_wall_correction: bool = True,
     nonlinear_padding_ratio: float = 1.5,
     frozen_zero_scalar: bool = False,
-) -> JaxZSlabInterpreter:
+) -> _JaxDiscretization:
     """Build mapped kernels with horizontally padded nonlinear products."""
     if not isinstance(porte_agel_wall_correction, bool):
         raise TypeError("Porté-Agel wall correction flag must be boolean")
@@ -55,30 +56,32 @@ def build_zslab_interpreter(
         raise TypeError("frozen zero scalar flag must be boolean")
     if not math.isfinite(nonlinear_padding_ratio) or nonlinear_padding_ratio < 1.5:
         raise ValueError("nonlinear padding ratio must be at least 1.5")
-    shard_count = decomposition.shard_count
-    if addressable_shards is None:
-        if shard_count != 1:
+    partition_count = decomposition.partition_count
+    if addressable_partitions is None:
+        if partition_count != 1:
             raise ValueError(
-                "addressable_shards is required for a multi-shard decomposition"
+                "addressable_partitions is required for a multi-shard decomposition"
             )
-        addressable_shards = (0,)
-    if not addressable_shards:
+        addressable_partitions = (0,)
+    if not addressable_partitions:
         raise ValueError("at least one addressable shard is required")
-    if len(set(addressable_shards)) != len(addressable_shards):
-        raise ValueError("addressable shard indices must be unique")
-    if any(not 0 <= index < shard_count for index in addressable_shards):
-        raise ValueError("addressable shard index is outside the global z mesh")
+    if len(set(addressable_partitions)) != len(addressable_partitions):
+        raise ValueError("addressable partition ids must be unique")
+    if any(not 0 <= index < partition_count for index in addressable_partitions):
+        raise ValueError("addressable partition id is outside the global mesh")
 
     previous_permutation = tuple(
-        (source, source + 1) for source in range(shard_count - 1)
+        (source, source + 1) for source in range(partition_count - 1)
     )
-    next_permutation = tuple((source, source - 1) for source in range(1, shard_count))
+    next_permutation = tuple(
+        (source, source - 1) for source in range(1, partition_count)
+    )
 
     def exchange_local(packed):
         if packed.ndim != 4:
             raise ValueError("packed local fields must have shape (field, z, y, x)")
         index = lax.axis_index(axis_name)
-        if shard_count == 1:
+        if partition_count == 1:
             lower = jnp.zeros_like(packed[:, -1])
             upper = jnp.zeros_like(packed[:, 0])
         else:
@@ -93,7 +96,7 @@ def build_zslab_interpreter(
                 next_permutation,
             )
         lower_physical = index == 0
-        upper_physical = index == shard_count - 1
+        upper_physical = index == partition_count - 1
         lower = jnp.where(lower_physical, jnp.zeros_like(lower), lower)
         upper = jnp.where(upper_physical, jnp.zeros_like(upper), upper)
         return PackedHaloArrays(
@@ -139,7 +142,7 @@ def build_zslab_interpreter(
             upper_faces.shape[1:],
         )
         last = jnp.where(
-            index == shard_count - 1,
+            index == partition_count - 1,
             boundary_face,
             upper_faces[-1],
         )
@@ -165,7 +168,7 @@ def build_zslab_interpreter(
     padded_momentum_gradients_local = build_padded_momentum_gradients_kernel(
         grid=grid,
         axis_name=axis_name,
-        cells_per_shard=decomposition.cells_per_shard,
+        cells_per_partition=decomposition.cells_per_partition,
         porte_agel_wall_correction=porte_agel_wall_correction,
         padded_horizontal_gradient_pair_local=spectral.padded_gradient_pair,
     )
@@ -761,7 +764,7 @@ def build_zslab_interpreter(
     ) = build_lasd_kernels(
         grid=grid,
         axis_name=axis_name,
-        shard_count=shard_count,
+        partition_count=partition_count,
         exchange_local=exchange_local,
         strain_magnitude_local=strain_magnitude_local,
         pad_horizontal_local=pad_horizontal_local,
@@ -775,10 +778,10 @@ def build_zslab_interpreter(
     actuator_line_local = build_actuator_line_kernel(
         grid=grid,
         axis_name=axis_name,
-        shard_count=shard_count,
+        partition_count=partition_count,
     )
 
-    mapped = partial(jax.pmap, axis_name=axis_name, axis_size=shard_count)
+    mapped = partial(jax.pmap, axis_name=axis_name, axis_size=partition_count)
     exchange_packed = mapped(exchange_local)
     pressure_gradient = mapped(pressure_gradient_local, in_axes=(0, None))
     divergence = mapped(divergence_local, in_axes=(0, None))
@@ -836,9 +839,13 @@ def build_zslab_interpreter(
     )
     fused_lasd_boussinesq = mapped(
         fused_lasd_boussinesq_local,
-        in_axes=(0, 0, 0, None, 0, 0, 0) + (None,) * 23,
-        static_broadcasted_argnums=(29,),
+        in_axes=(0, 0, 0, None, 0, 0, 0)
+        + (None,) * 18
+        + (0, 0, 0)
+        + (None,) * 17,
+        static_broadcasted_argnums=(43, 44),
     )
+    surface_transfer = build_monin_obukhov_surface_transfer_kernel(axis_name)
     lasd_accumulate = mapped(
         lasd_accumulate_local,
         in_axes=(0, 0, 0, 0, 0, 0, None),
@@ -907,9 +914,9 @@ def build_zslab_interpreter(
         rayleigh_damping_local,
         in_axes=(0, 0, 0, None, None, None, None),
     )
-    return JaxZSlabInterpreter(
+    return _JaxDiscretization(
         decomposition,
-        addressable_shards,
+        addressable_partitions,
         frozen_zero_scalar,
         _ProjectionKernels(
             exchange_packed,
@@ -947,6 +954,7 @@ def build_zslab_interpreter(
             scalar_sgs,
             buoyancy,
             rayleigh_damping,
+            surface_transfer,
         ),
         _WindKernels(wind_tunnel, actuator_line),
     )

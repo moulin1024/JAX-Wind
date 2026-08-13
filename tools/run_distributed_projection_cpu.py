@@ -27,7 +27,10 @@ def _source_environment(root: Path) -> dict[str, str]:
     environment = dict(os.environ)
     paths = [str(root / "src")]
     dependency = Path(
-        environment.get("JAXWIND_SPECTRAL_FD_SOURCE", root.parent / "bw1000_benchmark")
+        environment.get(
+            "JAXWIND_SPECTRAL_FD_SOURCE",
+            root / "external" / "bw1000_benchmark",
+        )
     )
     if dependency.exists():
         paths.append(str(dependency))
@@ -182,7 +185,7 @@ def _worker(args: argparse.Namespace) -> int:
             Candidate,
             Cell,
             DistributionSpec,
-            EqualZSlab,
+            EqualVerticalPartition,
             MeshAxis,
             MeshTopology,
             UniformGrid,
@@ -192,9 +195,9 @@ def _worker(args: argparse.Namespace) -> int:
             YVelocity,
             ZFace,
         )
-        from jaxwind.interpreters.jax_zslab import (
-            ZFaceFieldContext,
-            build_zslab_interpreter,
+        from jaxwind._jax.discretization import (
+            VerticalFaceField,
+            build_discretization,
         )
         from jaxwind.operators import VelocityVector, project
         from jaxwind.pressure import build_spectral_fd_pressure_adapter
@@ -208,15 +211,15 @@ def _worker(args: argparse.Namespace) -> int:
 
         dtype = getattr(jnp, args.dtype)
         grid = UniformGrid(8, 8, 16, 8.0, 8.0, 16.0)
-        decomposition = EqualZSlab(
+        decomposition = EqualVerticalPartition(
             grid,
             MeshTopology((MeshAxis("z", args.processes),)),
-            DistributionSpec.z_slab(),
+            DistributionSpec.vertical(),
         )
-        addressable_shards = (args.rank,)
+        addressable_partitions = (args.rank,)
         cell_region = decomposition.regions(Cell)[args.rank]
         face_region = decomposition.regions(ZFace)[args.rank]
-        local_z = decomposition.cells_per_shard
+        local_z = decomposition.cells_per_partition
         z = jnp.arange(
             cell_region.cell_z.start,
             cell_region.cell_z.stop,
@@ -244,7 +247,7 @@ def _worker(args: argparse.Namespace) -> int:
                 Candidate,
                 jnp.cos(0.23 * x - 0.31 * y + 0.07 * z),
             ),
-            ZFaceFieldContext(
+            VerticalFaceField(
                 AddressableField(
                     VerticalVelocity,
                     ZFace,
@@ -256,9 +259,9 @@ def _worker(args: argparse.Namespace) -> int:
             ),
         )
         boundary = VerticalBoundary(dtype(0.0), dtype(0.0))
-        interpreter = build_zslab_interpreter(
+        interpreter = build_discretization(
             decomposition,
-            addressable_shards=addressable_shards,
+            addressable_partitions=addressable_partitions,
         )
         runtime = runtime_from_initialized_jax(jax)
         methods = tuple(name.strip() for name in args.methods.split(",") if name.strip())
@@ -267,7 +270,7 @@ def _worker(args: argparse.Namespace) -> int:
         for method in methods:
             pressure_solver = build_spectral_fd_pressure_adapter(
                 decomposition,
-                addressable_shards=addressable_shards,
+                addressable_partitions=addressable_partitions,
                 runtime=runtime,
                 dtype=args.dtype,
                 method=method,

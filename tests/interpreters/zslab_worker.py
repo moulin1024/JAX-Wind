@@ -12,7 +12,7 @@ from jaxwind.domain import (  # noqa: E402
     AddressableField,
     Cell,
     DistributionSpec,
-    EqualZSlab,
+    EqualVerticalPartition,
     Evaluated,
     Field,
     GlobalTestRegion,
@@ -28,9 +28,9 @@ from jaxwind.domain import (  # noqa: E402
     ZFace,
 )
 from tests.support import jax_oracle  # noqa: E402
-from jaxwind.interpreters.jax_zslab import (  # noqa: E402
-    ZFaceFieldContext,
-    build_zslab_interpreter,
+from jaxwind._jax.discretization import (  # noqa: E402
+    VerticalFaceField,
+    build_discretization,
 )
 from jaxwind.operators import VelocityVector  # noqa: E402
 from jaxwind.physics import (  # noqa: E402
@@ -51,10 +51,10 @@ def main() -> int:
         )
 
     grid = UniformGrid(4, 3, 8, 4.0, 3.0, 4.0)
-    decomposition = EqualZSlab(
+    decomposition = EqualVerticalPartition(
         grid,
         MeshTopology((MeshAxis("z", args.devices),)),
-        DistributionSpec.z_slab(),
+        DistributionSpec.vertical(),
     )
     z = jnp.arange(grid.nz, dtype=dtype)[:, None, None]
     y = jnp.arange(grid.ny, dtype=dtype)[None, :, None]
@@ -74,7 +74,7 @@ def main() -> int:
     )
     reference_laplacian = jax_oracle.divergence_z(reference_gradient)
 
-    local_z = decomposition.cells_per_shard
+    local_z = decomposition.cells_per_partition
     sharded_pressure = global_pressure.reshape(
         args.devices,
         local_z,
@@ -88,9 +88,9 @@ def main() -> int:
         Evaluated,
         sharded_pressure,
     )
-    interpreter = build_zslab_interpreter(
+    interpreter = build_discretization(
         decomposition,
-        addressable_shards=(None if args.devices == 1 else tuple(range(args.devices))),
+        addressable_partitions=(None if args.devices == 1 else tuple(range(args.devices))),
     )
     distributed_gradient = interpreter.pressure_gradient_z(
         addressable_pressure,
@@ -163,7 +163,7 @@ def main() -> int:
                 grid.nx,
             ),
         ),
-        ZFaceFieldContext(
+        VerticalFaceField(
             AddressableField(
                 VerticalVelocity,
                 ZFace,

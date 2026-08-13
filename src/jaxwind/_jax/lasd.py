@@ -1,4 +1,4 @@
-"""LASD and scalar-transport methods for the z-slab interpreter."""
+"""LASD and scalar-transport methods for the private JAX discretization."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 import jax.numpy as jnp
 
-from jaxwind.interpreters._jax_fringe import plateau_fringe_mask
+from jaxwind._jax.fringe import plateau_fringe_mask
 
 from jaxwind.domain import (
     Accepted,
@@ -77,10 +77,9 @@ from jaxwind.physics.lasd import (
 )
 from jaxwind.physics.wind_tunnel import ConcurrentPrecursorFringe
 
-from ._jax_zslab_surface import monin_obukhov_surface_transfer
 
 if TYPE_CHECKING:
-    from .jax_zslab import ZSlabBoussinesqContext, ZSlabDryFlowContext
+    from .discretization import ZSlabBoussinesqContext, ZSlabDryFlowContext
 
 
 class ZSlabLasdMixin:
@@ -402,17 +401,12 @@ class ZSlabLasdMixin:
                 "surface-transfer height must exceed both roughness lengths"
             )
 
-        bottom = (
-            self.addressable_shards.index(0)
-            if 0 in self.addressable_shards
-            else 0
-        )
         buoyancy_coefficient = (
             model.buoyancy.acceleration_per_temperature
             if isinstance(model.buoyancy, LinearBoussinesqBuoyancy)
             else 0.0
         )
-        return monin_obukhov_surface_transfer(
+        transfer = self.scalar.surface_transfer(
             fields.velocity.x.payload,
             fields.velocity.y.payload,
             fields.potential_temperature.payload,
@@ -432,9 +426,11 @@ class ZSlabLasdMixin:
             config.negative_zeta_scalar_coefficient,
             config.relaxation,
             config.maximum_abs_zeta,
-            bottom=bottom,
-            iterations=config.iterations,
+            config.iterations,
         )
+        # The mapped law is replicated on every local device.  Collapse that
+        # implementation axis before returning to the semantic physics layer.
+        return SurfaceTransferResult(*(value[0] for value in transfer))
 
     def fused_boussinesq_tendency(
         self,
@@ -443,6 +439,7 @@ class ZSlabLasdMixin:
         *,
         wall_acceleration: tuple[Any, Any] | None = None,
         scalar_surface_source: Any | None = None,
+        execution_time: Any = 0.0,
     ) -> BoussinesqTendency:
         """Evaluate the supported Boussinesq model through the mandatory fused RHS."""
         if (wall_acceleration is None) != (scalar_surface_source is None):
@@ -450,6 +447,16 @@ class ZSlabLasdMixin:
                 "imposed wall acceleration and scalar source must be supplied together"
             )
         use_imposed_sources = wall_acceleration is not None
+        surface_config = model.surface_transfer
+        coupled_surface = isinstance(
+            surface_config,
+            MoninObukhovSurfaceTransfer,
+        )
+        if coupled_surface and use_imposed_sources:
+            raise ValueError(
+                "explicit surface sources cannot override coupled surface transfer"
+            )
+        source_mode = 2 if coupled_surface else int(use_imposed_sources)
         if wall_acceleration is not None and len(wall_acceleration) != 2:
             raise ValueError("wall acceleration must contain x and y components")
         momentum_model = model.momentum
@@ -481,7 +488,7 @@ class ZSlabLasdMixin:
                 "with a neutral log wall, supported rotation, scalar flux "
                 "boundary, and no standalone Rayleigh damping"
             )
-        if use_imposed_sources and frozen_model:
+        if source_mode and frozen_model:
             raise ValueError("coupled surface sources require an active scalar")
         if frozen_model and isinstance(model.buoyancy, LinearBoussinesqBuoyancy):
             raise ValueError("Boussinesq buoyancy requires an active scalar")
@@ -555,6 +562,59 @@ class ZSlabLasdMixin:
         closure = fields.closure
         if not isinstance(closure, LasdClosureMemory):
             raise TypeError("LASD fusion requires initialized closure memory")
+        zero_surface = jnp.zeros(
+            (len(self.addressable_partitions),),
+            dtype=velocity.x.payload.dtype,
+        )
+
+        def device_values(value):
+            values = jnp.asarray(value, dtype=velocity.x.payload.dtype)
+            if values.ndim == 0:
+                return jnp.broadcast_to(values, zero_surface.shape)
+            if values.shape != zero_surface.shape:
+                raise ValueError("surface source must be scalar or device-replicated")
+            return values
+
+        imposed_wall = tuple(
+            device_values(value)
+            for value in (wall_acceleration or (zero_surface, zero_surface))
+        )
+        imposed_scalar = device_values(
+            scalar_surface_source
+            if scalar_surface_source is not None
+            else zero_surface
+        )
+        surface_arguments = (
+            (
+                surface_config.scalar_roughness_length,
+                surface_config.surface_scalar_initial,
+                surface_config.surface_scalar_rate,
+                surface_config.x_velocity_offset,
+                surface_config.y_velocity_offset,
+                surface_config.positive_zeta_momentum_slope,
+                surface_config.positive_zeta_scalar_slope,
+                surface_config.negative_zeta_momentum_coefficient,
+                surface_config.negative_zeta_scalar_coefficient,
+                surface_config.relaxation,
+                surface_config.maximum_abs_zeta,
+                surface_config.iterations,
+            )
+            if coupled_surface
+            else (
+                wall.roughness_length,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+                1.0,
+                1.0,
+                1.0,
+                1.0,
+                1.0,
+                1,
+            )
+        )
         x, y, z, scalar_payload = self.flow.fused_boussinesq(
             *common_arguments,
             closure.momentum.coefficient.payload,
@@ -569,14 +629,19 @@ class ZSlabLasdMixin:
             model.scalar_sgs.stability_buoyancy_coefficient,
             model.scalar_sgs.stability_beta,
             model.scalar_sgs.stability_power,
-            *(wall_acceleration or (0.0, 0.0)),
-            scalar_surface_source if scalar_surface_source is not None else 0.0,
+            *imposed_wall,
+            imposed_scalar,
             (
                 model.buoyancy.acceleration_per_temperature
                 if isinstance(model.buoyancy, LinearBoussinesqBuoyancy)
                 else 0.0
             ),
-            use_imposed_sources,
+            execution_time,
+            wall.roughness_length,
+            *surface_arguments[:5],
+            wall.von_karman,
+            *surface_arguments[5:],
+            source_mode,
         )
         scalar_quantity = (
             PotentialTemperatureTendency
