@@ -40,6 +40,27 @@ def serial_pair(left: Callable[[], Any], right: Callable[[], Any]) -> tuple[Any,
     return left(), right()
 
 
+def _advance_pair(
+    state: ConcurrentPrecursorState,
+    *,
+    advance_precursor: Callable[[], Any],
+    advance_main: Callable[[], Any],
+    launch_pair: Callable[
+        [Callable[[], Any], Callable[[], Any]], tuple[Any, Any]
+    ],
+) -> ConcurrentPrecursorStepResult:
+    if state.precursor.clock != state.main.clock:
+        raise ValueError("precursor and main clocks must be synchronized")
+    precursor, main = launch_pair(advance_precursor, advance_main)
+    return ConcurrentPrecursorStepResult(
+        ConcurrentPrecursorState(precursor.state, main.state),
+        ConcurrentPrecursorStepDiagnostic(
+            precursor.diagnostic,
+            main.diagnostic,
+        ),
+    )
+
+
 def step_concurrent_precursor(
     state: ConcurrentPrecursorState,
     *,
@@ -62,8 +83,6 @@ def step_concurrent_precursor(
     on independent GPU streams.  Arrays remain device resident; only the
     small Python product that names the two states is reconstructed.
     """
-    if state.precursor.clock != state.main.clock:
-        raise ValueError("precursor and main clocks must be synchronized")
     environment = ConcurrentPrecursorEnvironment(state.precursor.velocity)
 
     def advance_precursor() -> AB2StepResult:
@@ -90,14 +109,11 @@ def step_concurrent_precursor(
             compute_projection_residual=compute_projection_residual,
         )
 
-    precursor, main = launch_pair(advance_precursor, advance_main)
-    paired = ConcurrentPrecursorState(precursor.state, main.state)
-    return ConcurrentPrecursorStepResult(
-        paired,
-        ConcurrentPrecursorStepDiagnostic(
-            precursor.diagnostic,
-            main.diagnostic,
-        ),
+    return _advance_pair(
+        state,
+        advance_precursor=advance_precursor,
+        advance_main=advance_main,
+        launch_pair=launch_pair,
     )
 
 
@@ -124,8 +140,6 @@ def step_concurrent_boussinesq_precursor(
     precursor velocity at ``t_n``, so the two device-resident advances remain
     independent and may be dispatched on separate execution streams.
     """
-    if state.precursor.clock != state.main.clock:
-        raise ValueError("precursor and main clocks must be synchronized")
     environment = ConcurrentPrecursorEnvironment(
         state.precursor.fields.velocity,
         state.precursor.fields.closure,
@@ -157,12 +171,9 @@ def step_concurrent_boussinesq_precursor(
             compute_projection_residual=compute_projection_residual,
         )
 
-    precursor, main = launch_pair(advance_precursor, advance_main)
-    paired = ConcurrentPrecursorState(precursor.state, main.state)
-    return ConcurrentPrecursorStepResult(
-        paired,
-        ConcurrentPrecursorStepDiagnostic(
-            precursor.diagnostic,
-            main.diagnostic,
-        ),
+    return _advance_pair(
+        state,
+        advance_precursor=advance_precursor,
+        advance_main=advance_main,
+        launch_pair=launch_pair,
     )

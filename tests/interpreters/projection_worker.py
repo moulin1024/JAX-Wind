@@ -14,7 +14,7 @@ from jaxwind.domain import (  # noqa: E402
     Candidate,
     Cell,
     DistributionSpec,
-    EqualZSlab,
+    EqualVerticalPartition,
     Field,
     GlobalTestRegion,
     MeshAxis,
@@ -30,9 +30,9 @@ from tests.support.jax_oracle import (  # noqa: E402
     JaxOraclePressureSolver,
     JaxOracleProjection,
 )
-from jaxwind.interpreters.jax_zslab import (  # noqa: E402
-    ZFaceFieldContext,
-    build_zslab_interpreter,
+from jaxwind._jax.discretization import (  # noqa: E402
+    VerticalFaceField,
+    build_discretization,
 )
 from jaxwind.operators import VelocityVector, project  # noqa: E402
 from jaxwind.pressure import build_spectral_fd_pressure_adapter  # noqa: E402
@@ -90,16 +90,16 @@ def main() -> int:
         pressure_solver=JaxOraclePressureSolver(),
     )
 
-    decomposition = EqualZSlab(
+    decomposition = EqualVerticalPartition(
         grid,
         MeshTopology((MeshAxis("z", args.devices),)),
-        DistributionSpec.z_slab(),
+        DistributionSpec.vertical(),
     )
     shards = tuple(range(args.devices))
-    local_z = decomposition.cells_per_shard
-    interpreter = build_zslab_interpreter(
+    local_z = decomposition.cells_per_partition
+    interpreter = build_discretization(
         decomposition,
-        addressable_shards=shards,
+        addressable_partitions=shards,
     )
     velocity = VelocityVector(
         AddressableField(
@@ -116,7 +116,7 @@ def main() -> int:
             Candidate,
             global_velocity.y.payload.reshape(args.devices, local_z, 4, 4),
         ),
-        ZFaceFieldContext(
+        VerticalFaceField(
             AddressableField(
                 VerticalVelocity,
                 ZFace,
@@ -129,7 +129,7 @@ def main() -> int:
     )
     pressure_solver = build_spectral_fd_pressure_adapter(
         decomposition,
-        addressable_shards=shards,
+        addressable_partitions=shards,
         runtime=runtime_from_initialized_jax(jax),
         dtype=args.dtype,
         method=args.method,

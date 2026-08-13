@@ -37,68 +37,26 @@ __pycache__/
 .DS_Store
 *.ipynb
 
-# Archived generated outputs and old local builds
-/legacy/artifacts/
-*.png
-*.csv
-*.json
-tmp
-*.jpg
-*.npz
-*.md
+# Environments and Python packaging
+/.venv/
+/dist/
+/build/
+*.egg-info/
+.ruff_cache/
 
-# Versioned benchmark specifications and digitized reference assets.
-!/benchmark/BOMEX/**/*.md
-!/benchmark/BOMEX/**/*.png
-!/benchmark/BOMEX/**/*.csv
-!/benchmark/BOMEX/**/*.json
-
-*.csv
-*.toml
-*.png
-*.json
-*.png
-*.gif
-
-# Active reconstruction package metadata.
-!/pyproject.toml
-
-# Versioned declarative runner documentation and direct rigid-ALM smoke case.
-!/runners/README.md
-!/runners/nrel5mw_direct_alm_smoke/
-!/runners/nrel5mw_direct_alm_smoke/**
-
-# The reconstruction is document-first; these specifications and the frozen
-# JAX implementation are source artifacts even when their suffixes match the
-# broad local-output rules above. Cache rules follow the unignore so generated
-# Python artifacts remain excluded.
-!/doc/design/
-!/doc/design/**
-!/legacy/jax/
-!/legacy/jax/**
-/legacy/jax/**/__pycache__/
-/legacy/jax/**/*.pyc
-/legacy/jax/**/.pytest_cache/
-/legacy/jax/**/.ruff_cache/
-
-# Versioned Andrén et al. (1994) benchmark source and extracted factual data.
-!/benchmark/Andren1994/
-!/benchmark/Andren1994/**
-/benchmark/Andren1994/**/__pycache__/
-/benchmark/Andren1994/**/*.pyc
-/benchmark/Andren1994/results/
+# Generated numerical data. Documentation, case configuration, and reference
+# data are deliberately not ignored by file extension.
 *.h5
+*.npy
+*.npz
+*.vtr
+*.vts
 
-# Versioned Nieuwstadt benchmark comparison sheet (paper scan + diagnostics).
-!/benchmark/Nieuwstadt1993/Nieuwstadt1993_LASD_complete_overlay.png
-!/benchmark/Nieuwstadt1993/reference/Nieuwstadt1993.md
-
-# Versioned Lin & Porte-Agel yawed-wake benchmark specification.
-!/benchmark/LinPorteAgel2019/
-!/benchmark/LinPorteAgel2019/**
-/benchmark/LinPorteAgel2019/**/__pycache__/
-
-# Versioned Yang et al. wind-tunnel benchmark specification.
-!/benchmark/yang2024/
-!/benchmark/yang2024/**
-/benchmark/yang2024/**/__pycache__/
+# Repository-local experiments and generated case output
+/benchmark_results/
+/legacy/artifacts/
+/tmp/
+/cases/**/results/
+/cases/**/outputs/
+/cases/NeutralLogLawAMD/
+/*_gpu/

@@ -16,9 +16,10 @@ from jaxwind.openfast import (
 ROOT = Path(__file__).resolve().parents[2]
 INPUT = (
     ROOT
-    / "runners"
-    / "nrel5mw_direct_alm_smoke"
+    / "tests"
+    / "fixtures"
     / "openfast"
+    / "nrel5mw"
     / "NREL5MW_Rigid_Smoke.fst"
 )
 

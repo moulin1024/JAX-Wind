@@ -58,7 +58,7 @@ class Field(Generic[Q, L, OwnershipT, P, A]):
 
 @dataclass(frozen=True, slots=True)
 class AddressableField(Generic[Q, L, P, A]):
-    """One process's local-device batch of uniquely owned z slabs."""
+    """One process's local-device batch of uniquely owned regions."""
 
     quantity: type[Q]
     location: type[L]
@@ -91,3 +91,19 @@ class AddressableField(Generic[Q, L, P, A]):
                 "addressable payload shape does not match owned regions: "
                 f"{_payload_shape(self.payload)} != {expected}"
             )
+
+
+@dataclass(frozen=True, slots=True)
+class VerticalFaceField:
+    """Owned upper faces paired with the physical lower-boundary face.
+
+    This is a semantic staggered-field product.  How the owned values are
+    partitioned and how neighboring faces are reconstructed are backend
+    concerns, so the type deliberately contains no topology-specific name.
+    """
+
+    owned: AddressableField
+    lower_boundary: Any
+
+    def extract_owned(self) -> AddressableField:
+        return self.owned

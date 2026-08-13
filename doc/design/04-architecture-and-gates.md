@@ -5,9 +5,9 @@
 The intended dependency graph points downward only:
 
 ```text
-effects / applications / benchmarks
+applications / effects  <-  data-only cases
                 |
-interpreter: unified JAX z-slab
+unified JAX solver <- private distribution lowering
                 |
 integrators and complete step composition
                 |
@@ -19,13 +19,15 @@ semantic field, grid, ownership, and phase types
 ```
 
 Semantic layers MUST NOT import JAX, filesystem libraries, launchers, plotting,
-or benchmark configuration. Physics MUST NOT select a process topology.
+applications, or case configuration. Physics MUST NOT select a process
+topology.
 Interpreters MAY depend on the semantic layers and backend libraries.
 
-JAX is therefore a target interpreter, not the domain model. The z-slab
-interpreter lowers the semantic program through the accepted explicit
-nondimensional `ScaleSystem`. One shard is the local case; additional shards
-change ownership and communication, not the public interpretation API.
+JAX is therefore an execution target, not the domain model. `JaxSolver` lowers
+the semantic program through the accepted explicit nondimensional
+`ScaleSystem`. Runtime process/device count changes private ownership and
+communication only. A size-one job follows the same public construction and
+transition as every parallel job.
 
 ## 2. Proposed package responsibilities
 
@@ -37,11 +39,15 @@ SHOULD separate these responsibilities:
 - `operators`: gradient, divergence, filters, fluxes, projection interfaces;
 - `physics`: pure tendency contributions and closure state transitions;
 - `integrators`: higher-order construction of transitions from vector fields;
-- `interpreters`: the unified JAX z-slab lowering and its private kernels;
+- `jax_solver`: the unified production construction and transition facade;
+- `_jax`: private JAX distribution lowering and numerical kernels;
 - `openfast`: format parsing and conversion into JAX-Wind turbine models;
-- `effects`: config, launch, checkpoint, logging, and postprocessing adapters;
-- `runners`: thin application shells around validated configuration and effects;
-- `benchmarks`: semantic cases and comparison criteria, not solver internals.
+- `effects`: generic checkpoint persistence adapters;
+- `solver`: public composition of fixed numerical transitions;
+- top-level `applications/`: schema loading, solver materialization,
+  initialization, diagnostics, and effects;
+- top-level `cases/`: configuration and input data with optional reference
+  comparison data, and no Python code.
 
 A single universal `Params` record is prohibited. Each morphism receives the
 smallest immutable environment product that describes its dependencies.
@@ -56,9 +62,12 @@ without exposing backend details through the public API:
   and backend mapping;
 - OpenFAST model modules own compatibility policy and turbine construction;
   the shared parser owns tokenization and typed field extraction;
-- runner model modules own immutable validated configuration, loader modules
-  own file parsing, diagnostic modules own initialization and output
-  conversion, and runner modules own execution order;
+- applications own configuration interpretation, initialization, diagnostics,
+  and output;
+- ABL stability is derived from physical scalar coupling, stratification, and
+  surface transfer; it is not an application, solver, or case selector;
+- case directories contain data only;
+- the package does not dispatch case names or own a case registry;
 - private implementation modules are not compatibility surfaces. Cross-package
   users import from the package facade or documented public module.
 
@@ -88,12 +97,12 @@ decisions about field location, units, grids, and error values.
 Closures with persistent memory are transitions over an explicit product of
 flow state and closure state. They are not objects that mutate internal arrays.
 
-## 4. Unified interpreter and independent test oracle
+## 4. Unified solver and independent test oracle
 
-Production has one public interpretation, `jax_zslab`, following ADR-0015.
-A one-shard `EqualZSlab` MUST execute through the same construction and field
-types as a multi-shard case. It MUST NOT select a separate local or global
-production implementation.
+Production has one public `JaxSolver`, following ADR-0016. A one-process job
+MUST execute through the same construction and field types as a multi-process
+job. Applications MUST NOT select a local/global implementation or construct
+the private partition.
 
 An independent, bounded global JAX oracle MAY live under `tests/support` to
 establish laws on tiny grids. It is not a production interpreter or public API,
@@ -144,7 +153,8 @@ Tests are organized by meaning rather than source file:
 - **discrete physics tests**: conservation, symmetry, manufactured solutions;
 - **interpretation tests**: reference/local/distributed commuting diagrams;
 - **restart tests**: uninterrupted versus serialized continuation;
-- **benchmark tests**: nondimensional profiles and spectra with stated error;
+- **reference-case tests**: nondimensional profiles and spectra with stated
+  error;
 - **performance tests**: memory ownership, communication volume, synchronized
   kernel time, and scaling.
 

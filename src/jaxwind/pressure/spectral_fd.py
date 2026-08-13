@@ -9,7 +9,7 @@ from typing import Any
 from jaxwind.domain import (
     AddressableField,
     Cell,
-    EqualZSlab,
+    EqualVerticalPartition,
     Evaluated,
     PressureCorrection,
     PressureRhs,
@@ -20,8 +20,8 @@ from jaxwind.domain import (
 class SpectralFDPressureAdapter:
     """Keep solver workspaces behind an owned-cell semantic boundary."""
 
-    decomposition: EqualZSlab
-    addressable_shards: tuple[int, ...]
+    decomposition: EqualVerticalPartition
+    addressable_partitions: tuple[int, ...]
     solver: Any
 
     def __post_init__(self) -> None:
@@ -40,19 +40,23 @@ class SpectralFDPressureAdapter:
         ):
             if not math.isclose(actual, expected, rel_tol=0.0, abs_tol=1.0e-12):
                 raise ValueError("pressure facade lengths do not match ownership")
-        if self.solver.global_devices != self.decomposition.shard_count:
+        if self.solver.global_devices != self.decomposition.partition_count:
             raise ValueError("pressure facade device mesh does not match z ownership")
-        if self.solver.local_devices != len(self.addressable_shards):
-            raise ValueError("pressure facade local devices do not match addressable slabs")
-        first = self.solver.process_index * self.solver.local_devices
-        expected_shards = tuple(range(first, first + self.solver.local_devices))
-        if self.addressable_shards != expected_shards:
+        if self.solver.local_devices != len(self.addressable_partitions):
             raise ValueError(
-                "addressable slabs must follow the JAX process-local device order"
+                "pressure facade local devices do not match addressable partitions"
+            )
+        first = self.solver.process_index * self.solver.local_devices
+        expected_partitions = tuple(
+            range(first, first + self.solver.local_devices)
+        )
+        if self.addressable_partitions != expected_partitions:
+            raise ValueError(
+                "addressable partitions must follow JAX process-local device order"
             )
         expected_shape = (
-            len(self.addressable_shards),
-            self.decomposition.cells_per_shard,
+            len(self.addressable_partitions),
+            self.decomposition.cells_per_partition,
             grid.ny,
             grid.nx,
         )
@@ -61,7 +65,7 @@ class SpectralFDPressureAdapter:
 
     def _expected_regions(self) -> tuple:
         regions = self.decomposition.regions(Cell)
-        return tuple(regions[index] for index in self.addressable_shards)
+        return tuple(regions[index] for index in self.addressable_partitions)
 
     def solve(self, rhs: AddressableField) -> AddressableField:
         """Solve ``D G phi = rhs`` without gathering or changing ownership."""
@@ -80,9 +84,9 @@ class SpectralFDPressureAdapter:
 
 
 def build_spectral_fd_pressure_adapter(
-    decomposition: EqualZSlab,
+    decomposition: EqualVerticalPartition,
     *,
-    addressable_shards: tuple[int, ...],
+    addressable_partitions: tuple[int, ...],
     runtime: Any,
     dtype: str,
     method: str = "transpose",
@@ -118,4 +122,4 @@ def build_spectral_fd_pressure_adapter(
         spike_interface_solver=spike_interface_solver,
     )
     solver = Poisson3DSolver(config, runtime=runtime)
-    return SpectralFDPressureAdapter(decomposition, addressable_shards, solver)
+    return SpectralFDPressureAdapter(decomposition, addressable_partitions, solver)

@@ -141,7 +141,7 @@ def _worker(args: argparse.Namespace) -> int:
             AddressableField,
             Cell,
             DistributionSpec,
-            EqualZSlab,
+            EqualVerticalPartition,
             Evaluated,
             MeshAxis,
             MeshTopology,
@@ -157,14 +157,14 @@ def _worker(args: argparse.Namespace) -> int:
             ZFace,
         )
         from jaxwind.effects import (
-            ZSlabCheckpointLayout,
+            DistributedCheckpointLayout,
             load_ab2_checkpoint,
             save_ab2_checkpoint,
         )
         from jaxwind.integrators import AB2Config, VectorFieldResult, cold_start, step
-        from jaxwind.interpreters.jax_zslab import (
-            ZFaceFieldContext,
-            build_zslab_interpreter,
+        from jaxwind._jax.discretization import (
+            VerticalFaceField,
+            build_discretization,
         )
         from jaxwind.operators import VelocityVector
         from jaxwind.physics import (
@@ -186,15 +186,15 @@ def _worker(args: argparse.Namespace) -> int:
         dtype = getattr(jnp, args.dtype)
         grid = UniformGrid(8, 8, 16, 8.0, 8.0, 16.0)
         config = AB2Config(0.02)
-        decomposition = EqualZSlab(
+        decomposition = EqualVerticalPartition(
             grid,
             MeshTopology((MeshAxis("z", args.processes),)),
-            DistributionSpec.z_slab(),
+            DistributionSpec.vertical(),
         )
         shards = (args.rank,)
         cell_region = decomposition.regions(Cell)[args.rank]
         face_region = decomposition.regions(ZFace)[args.rank]
-        local_z = decomposition.cells_per_shard
+        local_z = decomposition.cells_per_partition
         shape = (1, local_z, grid.ny, grid.nx)
         zero_cells = jnp.zeros(shape, dtype)
         zero_faces = jnp.zeros(shape, dtype)
@@ -238,7 +238,7 @@ def _worker(args: argparse.Namespace) -> int:
                 Projected,
                 initial_v,
             ),
-            ZFaceFieldContext(
+            VerticalFaceField(
                 AddressableField(
                     VerticalVelocity,
                     ZFace,
@@ -269,7 +269,7 @@ def _worker(args: argparse.Namespace) -> int:
                             0.19 * x - 0.07 * y + 0.05 * z - 0.5 * physical_time
                         ),
                     ),
-                    ZFaceFieldContext(
+                    VerticalFaceField(
                         AddressableField(
                             VerticalVelocityTendency,
                             ZFace,
@@ -295,9 +295,9 @@ def _worker(args: argparse.Namespace) -> int:
         def normal_boundary(_clock, _environment):
             return VerticalBoundary(0.0, 0.0)
 
-        algebra = build_zslab_interpreter(
+        algebra = build_discretization(
             decomposition,
-            addressable_shards=shards,
+            addressable_partitions=shards,
         )
         if args.vector_field == "dry":
             vector_field = DryFlowVectorField(
@@ -313,7 +313,7 @@ def _worker(args: argparse.Namespace) -> int:
             vector_field = manufactured_vector_field
         pressure_solver = build_spectral_fd_pressure_adapter(
             decomposition,
-            addressable_shards=shards,
+            addressable_partitions=shards,
             runtime=runtime_from_initialized_jax(jax),
             dtype=args.dtype,
             method=args.method,
@@ -369,7 +369,7 @@ def _worker(args: argparse.Namespace) -> int:
             save_ab2_checkpoint(checkpoint, interrupted)
             restarted = load_ab2_checkpoint(
                 checkpoint,
-                layout=ZSlabCheckpointLayout(decomposition, shards, jnp.asarray),
+                layout=DistributedCheckpointLayout(decomposition, shards, jnp.asarray),
                 config=config,
             )
         restarted, _, _, restarted_times = run(restarted, args.steps - split)

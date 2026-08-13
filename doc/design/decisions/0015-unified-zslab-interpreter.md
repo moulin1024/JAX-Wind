@@ -1,13 +1,14 @@
 # ADR-0015: Unified z-slab production interpreter
 
-Status: **Accepted**
+Status: **Superseded** by
+[ADR-0016](0016-unified-jax-solver.md).
 
 Supersedes [ADR-0008](0008-jax-only-array-interpretations.md).
 
 ## Context
 
 The initial architecture exposed separate global-reference, local-kernel, and
-z-slab interpreter modules. Production runners never used the global or local
+z-slab interpreter modules. Production cases never used the global or local
 entry points: they already represented a single-process run as an
 `EqualZSlab` with one shard. Keeping alternate production modules duplicated
 concepts, obscured the real ownership model, and invited semantic drift.
@@ -39,7 +40,7 @@ results, but:
 
 - it is not installed or imported by active source;
 - it is not a runtime fallback;
-- it is not an alternative field representation accepted by runners; and
+- it is not an alternative field representation accepted by cases; and
 - its maximum global test size remains explicit.
 
 JAX remains the only active numerical array backend. This decision changes

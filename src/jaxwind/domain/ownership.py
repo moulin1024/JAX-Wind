@@ -1,4 +1,4 @@
-"""Mesh-general distribution metadata and the first equal z-slab realization."""
+"""Mesh-general distribution metadata and equal vertical ownership."""
 
 from __future__ import annotations
 
@@ -41,7 +41,7 @@ class DistributionSpec:
     z: AxisPlacement
 
     @classmethod
-    def z_slab(cls, mesh_axis: str = "z") -> "DistributionSpec":
+    def vertical(cls, mesh_axis: str = "z") -> "DistributionSpec":
         return cls(Replicated(), Replicated(), Partitioned(mesh_axis))
 
     def placement(self, axis: DomainAxis) -> AxisPlacement:
@@ -85,7 +85,7 @@ class OwnedInterval:
 
 @dataclass(frozen=True, slots=True)
 class OwnedRegion(Generic[L]):
-    """One realized z-slab region for a semantic location."""
+    """One realized owned region for a semantic location."""
 
     grid: UniformGrid
     topology: MeshTopology
@@ -127,7 +127,7 @@ class GlobalTestRegion(Generic[L]):
 
 
 @dataclass(frozen=True, slots=True)
-class EqualZSlab:
+class EqualVerticalPartition:
     """First supported realization of a mesh-general distribution spec."""
 
     grid: UniformGrid
@@ -137,17 +137,17 @@ class EqualZSlab:
     def __post_init__(self) -> None:
         self.distribution.validate(self.topology)
         if not isinstance(self.distribution.x, Replicated):
-            raise ValueError("the first interpreter does not support x partitioning")
+            raise ValueError("the JAX solver does not support x partitioning")
         if not isinstance(self.distribution.y, Replicated):
-            raise ValueError("the first interpreter does not support y partitioning")
+            raise ValueError("the JAX solver does not support y partitioning")
         if not isinstance(self.distribution.z, Partitioned):
-            raise ValueError("the first interpreter requires z partitioning")
+            raise ValueError("the JAX solver requires vertical partitioning")
         if len(self.topology.axes) != 1:
-            raise ValueError("the first interpreter supports exactly one mesh axis")
+            raise ValueError("the JAX solver supports exactly one mesh axis")
         if self.topology.axes[0].name != self.distribution.z.mesh_axis:
             raise ValueError("the z partition must use the sole process-mesh axis")
-        if self.grid.nz % self.shard_count:
-            raise ValueError("nz must be divisible by the equal z-slab count")
+        if self.grid.nz % self.partition_count:
+            raise ValueError("nz must be divisible by the partition count")
 
     @property
     def mesh_axis(self) -> str:
@@ -155,12 +155,12 @@ class EqualZSlab:
         return self.distribution.z.mesh_axis
 
     @property
-    def shard_count(self) -> int:
+    def partition_count(self) -> int:
         return self.topology.axis(self.mesh_axis).size
 
     @property
-    def cells_per_shard(self) -> int:
-        return self.grid.nz // self.shard_count
+    def cells_per_partition(self) -> int:
+        return self.grid.nz // self.partition_count
 
     def region(
         self,
@@ -168,9 +168,9 @@ class EqualZSlab:
         coordinate: MeshCoordinate,
     ) -> OwnedRegion[L]:
         coordinate.validate(self.topology)
-        shard = coordinate.index(self.topology, self.mesh_axis)
-        start = shard * self.cells_per_shard
-        cell_z = OwnedInterval(start, start + self.cells_per_shard)
+        partition = coordinate.index(self.topology, self.mesh_axis)
+        start = partition * self.cells_per_partition
+        cell_z = OwnedInterval(start, start + self.cells_per_partition)
         if location is Cell:
             stored_z = cell_z
         elif location is ZFace:
@@ -185,13 +185,12 @@ class EqualZSlab:
             location=location,
             cell_z=cell_z,
             stored_z=stored_z,
-            lower_physical=shard == 0,
-            upper_physical=shard == self.shard_count - 1,
+            lower_physical=partition == 0,
+            upper_physical=partition == self.partition_count - 1,
         )
 
     def regions(self, location: type[L]) -> tuple[OwnedRegion[L], ...]:
         return tuple(
-            self.region(location, MeshCoordinate((shard,)))
-            for shard in range(self.shard_count)
+            self.region(location, MeshCoordinate((partition,)))
+            for partition in range(self.partition_count)
         )
-

@@ -1,0 +1,133 @@
+{
+  "source": {
+    "citation": "Andrén et al. (1994), Q.J.R. Meteorol. Soc. 120, 1457-1484",
+    "doi": "10.1002/qj.49712052003",
+    "url": "https://elib.dlr.de/31898/1/qj-1457-1994.pdf"
+  },
+  "render": {
+    "dpi": 144,
+    "page_size_pixels": [1008, 1440]
+  },
+  "panels": {
+    "01": {"file": "figure_01.png", "page": 5, "crop": [120, 455, 900, 1370]},
+    "02": {"file": "figure_02.png", "page": 8, "crop": [100, 90, 900, 675]},
+    "03": {"file": "figure_03.png", "page": 9, "crop": [100, 90, 900, 1365]},
+    "04": {"file": "figure_04.png", "page": 10, "crop": [250, 90, 820, 1360]},
+    "05": {"file": "figure_05.png", "page": 11, "crop": [100, 90, 900, 900]},
+    "06": {"file": "figure_06.png", "page": 12, "crop": [100, 90, 900, 1335]},
+    "07": {"file": "figure_07.png", "page": 13, "crop": [250, 750, 795, 1370]},
+    "08": {"file": "figure_08.png", "page": 14, "crop": [245, 90, 800, 690]},
+    "09": {"file": "figure_09.png", "page": 15, "crop": [215, 90, 815, 700]},
+    "10": {"file": "figure_10.png", "page": 15, "crop": [215, 730, 815, 1365]},
+    "11": {"file": "figure_11.png", "page": 17, "crop": [220, 90, 815, 690]},
+    "12": {"file": "figure_12.png", "page": 18, "crop": [125, 90, 905, 1370]},
+    "13": {"file": "figure_13.png", "page": 19, "crop": [115, 90, 905, 985]},
+    "14": {"file": "figure_14.png", "page": 20, "crop": [240, 90, 810, 1350]},
+    "15": {"file": "figure_15.png", "page": 21, "crop": [105, 450, 905, 1370]},
+    "16": {"file": "figure_16.png", "page": 23, "crop": [195, 90, 815, 1340]},
+    "17": {"file": "figure_17.png", "page": 24, "crop": [205, 90, 815, 700]},
+    "18": {"file": "figure_18.png", "page": 24, "crop": [205, 720, 815, 1365]},
+    "19": {"file": "figure_19.png", "page": 25, "crop": [100, 455, 905, 1370]}
+  },
+  "overlay_axes": {
+    "figure_02_total_tke": {
+      "panel": "02",
+      "frame": [216, 38, 624, 451],
+      "limits": [0.0, 14.0, 0.0, 1.5]
+    },
+    "figure_03_cu": {
+      "panel": "03",
+      "frame": [232, 48, 641, 461],
+      "limits": [0.0, 14.0, 0.0, 2.0]
+    },
+    "figure_03_cv": {
+      "panel": "03",
+      "frame": [233, 705, 642, 1118],
+      "limits": [0.0, 14.0, 0.0, 3.0]
+    },
+    "figure_04_momentum_gradient": {
+      "panel": "04",
+      "frame": [85, 46, 494, 459],
+      "limits": [0.0, 2.0, 0.0, 0.1]
+    },
+    "figure_04_scalar_gradient": {
+      "panel": "04",
+      "frame": [85, 716, 494, 1129],
+      "limits": [0.0, 2.0, 0.0, 0.1]
+    },
+    "figure_05_u_variance": {
+      "panel": "05",
+      "frame": [86, 42, 378, 338],
+      "limits": [0.0, 8.0, 0.0, 0.35]
+    },
+    "figure_05_v_variance": {
+      "panel": "05",
+      "frame": [463, 42, 759, 338],
+      "limits": [0.0, 4.0, 0.0, 0.35]
+    },
+    "figure_05_w_variance": {
+      "panel": "05",
+      "frame": [86, 424, 378, 721],
+      "limits": [0.0, 3.0, 0.0, 0.35]
+    },
+    "figure_06_uw_flux": {
+      "panel": "06",
+      "frame": [210, 47, 618, 460],
+      "limits": [-1.0, 0.2, 0.0, 0.35]
+    },
+    "figure_06_vw_flux": {
+      "panel": "06",
+      "frame": [210, 721, 618, 1133],
+      "limits": [-0.7, 0.3, 0.0, 0.35]
+    },
+    "figure_07_scalar_variance": {
+      "panel": "07",
+      "frame": [74, 82, 486, 493],
+      "limits": [0.0, 8.0, 0.0, 0.35]
+    },
+    "figure_08_scalar_flux": {
+      "panel": "08",
+      "frame": [85, 48, 495, 460],
+      "limits": [0.0, 1.0, 0.0, 0.35]
+    },
+    "figure_11_tke_sgs_transfer": {
+      "panel": "11",
+      "frame": [130, 46, 537, 459],
+      "limits": [-150.0, 0.0, 0.0, 0.35]
+    },
+    "figure_14_momentum_diffusivity": {
+      "panel": "14",
+      "frame": [92, 48, 500, 461],
+      "limits": [0.0, 10.0, 0.0, 0.35]
+    },
+    "figure_14_scalar_diffusivity": {
+      "panel": "14",
+      "frame": [87, 716, 495, 1127],
+      "limits": [0.0, 15.0, 0.0, 0.35]
+    },
+    "figure_15_u_spectrum": {
+      "panel": "15",
+      "frame": [91, 71, 384, 368],
+      "limits": [1.0, 1000.0, 0.01, 10.0],
+      "scale": ["log", "log"]
+    },
+    "figure_15_v_spectrum": {
+      "panel": "15",
+      "frame": [468, 72, 764, 368],
+      "limits": [1.0, 1000.0, 0.01, 10.0],
+      "scale": ["log", "log"]
+    },
+    "figure_15_w_spectrum": {
+      "panel": "15",
+      "frame": [90, 452, 383, 748],
+      "limits": [1.0, 1000.0, 0.01, 10.0],
+      "scale": ["log", "log"]
+    },
+    "figure_15_scalar_spectrum": {
+      "panel": "15",
+      "frame": [467, 452, 762, 749],
+      "limits": [1.0, 1000.0, 0.01, 10.0],
+      "scale": ["log", "log"]
+    }
+  }
+}

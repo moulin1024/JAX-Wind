@@ -43,9 +43,9 @@ neutral ABL without turbine or spray. The next milestone adds one conserved
 scalar and Boussinesq buoyancy. This exercises the architectural core without
 allowing multiphase requirements to dominate it.
 
-## J. Benchmark ownership
+## J. Case and reference-data ownership
 
-Existing benchmark inputs and reference figures can remain top-level evidence,
-but their Python drivers currently target the archived implementation. We must
-separate semantic case specifications and numerical acceptance data from
-backend-specific runners before using them as gates for the new solver.
+All executable configurations live as ordinary top-level cases. Literature
+inputs and reference figures are optional evidence owned by the case that uses
+them; their presence does not select a different execution path. Semantic case
+specifications and numerical acceptance data remain separate from the solver.

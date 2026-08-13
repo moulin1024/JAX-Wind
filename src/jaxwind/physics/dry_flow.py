@@ -1,7 +1,7 @@
 """The first pure dry-flow vector field and its static physical choices.
 
 This semantic module contains no JAX code.  Array layout, halo exchange, and
-operator lowering belong to the interpreter supplied to ``DryFlowVectorField``.
+operator lowering belong to the algebra supplied to ``DryFlowVectorField``.
 """
 
 from __future__ import annotations

@@ -14,16 +14,16 @@ from typing import Any
 import jax
 import jax.numpy as jnp
 
-from jaxwind.interpreters._jax_actuator_disk import (
+from jaxwind._jax.actuator_disk import (
     filtered_disk_velocity_correction,
     gaussian_convolved_annulus,
 )
-from jaxwind.interpreters._jax_actuator_line import (
+from jaxwind._jax.actuator_line import (
     actuator_line_deformed_kinematics,
     blade_element_kinematic_forces,
     gaussian_weights,
 )
-from jaxwind.interpreters._jax_fringe import plateau_fringe_mask
+from jaxwind._jax.fringe import plateau_fringe_mask
 
 from jaxwind.domain import (
     Accepted,

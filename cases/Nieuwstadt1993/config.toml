@@ -1,0 +1,70 @@
+[case]
+name = "nieuwstadt1993_lasd_40x40x48"
+citation = "Nieuwstadt, Mason, Moeng & Schumann (1993), Turbulent Shear Flows 8"
+initial_profile = "reference/initial_profiles.csv"
+reference_results = "reference/reference_results.json"
+seed = 0
+
+[domain]
+cells = [40, 40, 48]
+lengths_m = [6400.0, 6400.0, 2400.0]
+
+[scales]
+length_m = 1600.0
+velocity_m_s = 1.4642199794858317
+scalar = 0.040977449318147743
+
+[flow]
+pressure_acceleration_m_s2 = [0.0, 0.0]
+geostrophic_velocity_m_s = [0.0, 0.0]
+advection_frame_velocity_m_s = [0.0, 0.0]
+coriolis_s = [0.0, 0.0]
+roughness_length_m = 0.16
+von_karman = 0.4
+
+[scalar]
+quantity = "potential_temperature"
+reference_value = 300.0
+surface_flux = 0.06
+buoyancy_acceleration_per_unit = 0.0327
+
+[time]
+dt_seconds = 1.25
+steps = 9646
+
+[sgs]
+filter_grid_ratio = 1.5
+test_filter_ratio = 2.0
+update_interval_steps = 8
+timescale_coefficient = 1.5
+momentum_initial_coefficient = 0.03
+momentum_minimum_coefficient = 1.0e-6
+momentum_maximum_coefficient = 0.81
+scalar_initial_coefficient = 0.03
+scalar_minimum_coefficient = 0.0
+scalar_maximum_coefficient = 1.0
+stratification_beta = 30.0
+stratification_power = 2.0
+
+[numerics]
+dtype = "float32"
+pressure_method = "spike"
+thomas_chunk = 24
+cfl_warning = 0.25
+cfl_abort = 1.0
+trajectory_cfl_abort = 1.0
+nonlinear_padding_ratio = 1.5
+
+[diagnostics]
+sample_start_step = 8742
+sample_every_steps = 20
+log_every_steps = 96
+checkpoint_every_steps = 960
+reference_length_m = 1600.0
+reference_velocity_m_s = 1.4642199794858317
+reference_scalar = 0.040977449318147743
+inversion_search_max_height_m = 1840.0
+spectrum_heights_m = [320.0, 960.0, 1600.0]
+
+[output]
+directory = "outputs/nieuwstadt1993_lasd_40x40x48"

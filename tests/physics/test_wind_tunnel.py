@@ -12,7 +12,7 @@ from jaxwind.domain import (  # noqa: E402
     AddressableField,
     Cell,
     DistributionSpec,
-    EqualZSlab,
+    EqualVerticalPartition,
     Evaluated,
     Field,
     GlobalTestRegion,
@@ -29,10 +29,10 @@ from jaxwind.domain import (  # noqa: E402
     ZFace,
 )
 from tests.support.jax_oracle import JaxOracleProjection  # noqa: E402
-from jaxwind.interpreters._jax_fringe import plateau_fringe_mask  # noqa: E402
-from jaxwind.interpreters.jax_zslab import (  # noqa: E402
-    ZFaceFieldContext,
-    build_zslab_interpreter,
+from jaxwind._jax.fringe import plateau_fringe_mask  # noqa: E402
+from jaxwind._jax.discretization import (  # noqa: E402
+    VerticalFaceField,
+    build_discretization,
 )
 from jaxwind.operators import VelocityVector  # noqa: E402
 from jaxwind.physics import (  # noqa: E402
@@ -83,10 +83,10 @@ class WindTunnelForcingTests(unittest.TestCase):
         )
 
     def zslab_velocity(self, u, v, w) -> VelocityVector:
-        decomposition = EqualZSlab(
+        decomposition = EqualVerticalPartition(
             self.grid,
             MeshTopology((MeshAxis("z", 1),)),
-            DistributionSpec.z_slab(),
+            DistributionSpec.vertical(),
         )
         return VelocityVector(
             AddressableField(
@@ -103,7 +103,7 @@ class WindTunnelForcingTests(unittest.TestCase):
                 Projected,
                 v[None],
             ),
-            ZFaceFieldContext(
+            VerticalFaceField(
                 AddressableField(
                     VerticalVelocity,
                     ZFace,
@@ -126,14 +126,14 @@ class WindTunnelForcingTests(unittest.TestCase):
             ConcurrentPrecursorEnvironment(reference_target),
         )
 
-        decomposition = EqualZSlab(
+        decomposition = EqualVerticalPartition(
             self.grid,
             MeshTopology((MeshAxis("z", 1),)),
-            DistributionSpec.z_slab(),
+            DistributionSpec.vertical(),
         )
-        production = build_zslab_interpreter(
+        production = build_discretization(
             decomposition,
-            addressable_shards=(0,),
+            addressable_partitions=(0,),
         ).wind_tunnel_tendency(
             self.zslab_velocity(self.u, self.v, self.w),
             self.model,
@@ -242,14 +242,14 @@ class WindTunnelForcingTests(unittest.TestCase):
             None,
         )
 
-        decomposition = EqualZSlab(
+        decomposition = EqualVerticalPartition(
             self.grid,
             MeshTopology((MeshAxis("z", 1),)),
-            DistributionSpec.z_slab(),
+            DistributionSpec.vertical(),
         )
-        production = build_zslab_interpreter(
+        production = build_discretization(
             decomposition,
-            addressable_shards=(0,),
+            addressable_partitions=(0,),
         ).wind_tunnel_tendency(
             self.zslab_velocity(
                 jnp.full_like(self.u, 2.0),

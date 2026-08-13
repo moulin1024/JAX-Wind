@@ -20,7 +20,8 @@ links to their replacements so the reasoning is auditable.
 | [ADR-0012](0012-boussinesq-scalar-and-capping-inversion.md) | Accepted | Conserved potential-temperature perturbation, Boussinesq buoyancy, and explicit capping inversion |
 | [ADR-0013](0013-top-rayleigh-geostrophic-damping.md) | Accepted | Additive top Rayleigh relaxation toward geostrophic flow |
 | [ADR-0014](0014-lagrangian-scale-dependent-dynamic-closure.md) | Accepted | LASD accepted-step event, restart memory, scalar flux, and diagnostic variance |
-| [ADR-0015](0015-unified-zslab-interpreter.md) | Accepted | One z-slab production interpreter with single-shard local execution |
+| [ADR-0015](0015-unified-zslab-interpreter.md) | Superseded | One z-slab production interpreter with single-shard local execution |
+| [ADR-0016](0016-unified-jax-solver.md) | Accepted | One JAX solver with size-one execution and private distribution lowering |
 
 Decision records constrain future code but contain no implementation. A record
 is accepted only through an explicit design discussion.

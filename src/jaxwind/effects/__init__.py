@@ -2,18 +2,20 @@
 
 from .checkpoint import (
     ReferenceCheckpointLayout,
-    ZSlabCheckpointLayout,
+    DistributedCheckpointLayout,
     load_ab2_checkpoint,
     load_boussinesq_checkpoint,
     save_ab2_checkpoint,
     save_boussinesq_checkpoint,
 )
 from .side_by_side import SideBySideStreamLauncher
+from .runtime import JaxRuntime
 
 __all__ = [
     "ReferenceCheckpointLayout",
+    "JaxRuntime",
     "SideBySideStreamLauncher",
-    "ZSlabCheckpointLayout",
+    "DistributedCheckpointLayout",
     "load_ab2_checkpoint",
     "load_boussinesq_checkpoint",
     "save_ab2_checkpoint",

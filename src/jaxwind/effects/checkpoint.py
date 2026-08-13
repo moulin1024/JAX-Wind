@@ -15,7 +15,7 @@ from jaxwind.domain import (
     AcceptedClock,
     AddressableField,
     Cell,
-    EqualZSlab,
+    EqualVerticalPartition,
     Evaluated,
     Field,
     GlobalTestRegion,
@@ -108,22 +108,22 @@ class ReferenceCheckpointLayout:
 
 
 @dataclass(frozen=True, slots=True)
-class ZSlabCheckpointLayout:
-    decomposition: EqualZSlab
-    addressable_shards: tuple[int, ...]
+class DistributedCheckpointLayout:
+    decomposition: EqualVerticalPartition
+    addressable_partitions: tuple[int, ...]
     array_factory: Callable[[np.ndarray], Any]
 
     def __post_init__(self) -> None:
-        if not self.addressable_shards:
-            raise ValueError("checkpoint layout requires addressable shards")
+        if not self.addressable_partitions:
+            raise ValueError("checkpoint layout requires addressable partitions")
         if any(
-            not 0 <= shard < self.decomposition.shard_count
-            for shard in self.addressable_shards
+            not 0 <= partition < self.decomposition.partition_count
+            for partition in self.addressable_partitions
         ):
-            raise ValueError("checkpoint shard is outside the decomposition")
+            raise ValueError("checkpoint partition is outside the decomposition")
 
 
-CheckpointLayout = ReferenceCheckpointLayout | ZSlabCheckpointLayout
+CheckpointLayout = ReferenceCheckpointLayout | DistributedCheckpointLayout
 
 
 def _grid_metadata(grid: UniformGrid) -> dict[str, Any]:
@@ -137,12 +137,52 @@ def _grid_metadata(grid: UniformGrid) -> dict[str, Any]:
     }
 
 
-def _representation_and_grid(state: AB2PersistentState) -> tuple[str, UniformGrid]:
-    if isinstance(state.velocity.x, Field):
-        return "reference-global-test", state.velocity.x.ownership.grid
-    if isinstance(state.velocity.x, AddressableField):
-        return "owned-z-slab", state.velocity.x.regions[0].grid
-    raise TypeError("unsupported AB2 checkpoint velocity representation")
+def _representation_and_grid(velocity: VelocityVector) -> tuple[str, UniformGrid]:
+    if isinstance(velocity.x, Field):
+        return "reference-global-test", velocity.x.ownership.grid
+    if isinstance(velocity.x, AddressableField):
+        return "owned-z-slab", velocity.x.regions[0].grid
+    raise TypeError("unsupported checkpoint velocity representation")
+
+
+def _state_metadata(
+    state: Any,
+    velocity: VelocityVector,
+    *,
+    schema: str,
+) -> tuple[dict[str, Any], str]:
+    representation, grid = _representation_and_grid(velocity)
+    metadata = {
+        "schema": schema,
+        "representation": representation,
+        "grid": _grid_metadata(grid),
+        "clock": {"time": state.clock.time, "step": state.clock.step},
+        "integrator_fingerprint": state.integrator_fingerprint,
+        "history": (
+            "cold-start"
+            if isinstance(state.history, ColdStart)
+            else "previous-tendency"
+        ),
+    }
+    if representation == "owned-z-slab":
+        # Preserve the v1/v2 serialized key so existing production restart
+        # files remain loadable after the public ownership rename.
+        metadata["addressable_shards"] = [
+            region.coordinate.indices[0] for region in velocity.x.regions
+        ]
+    return metadata, representation
+
+
+def _write_archive(
+    path: str | Path,
+    metadata: dict[str, Any],
+    arrays: dict[str, Any],
+) -> None:
+    target = Path(path)
+    temporary = target.with_name(f".{target.name}.tmp-{os.getpid()}")
+    with temporary.open("wb") as stream:
+        np.savez(stream, metadata=np.asarray(json.dumps(metadata)), **arrays)
+    os.replace(temporary, target)
 
 
 def _velocity_arrays(velocity: VelocityVector, representation: str) -> dict[str, Any]:
@@ -159,25 +199,12 @@ def _velocity_arrays(velocity: VelocityVector, representation: str) -> dict[str,
 
 
 def save_ab2_checkpoint(path: str | Path, state: AB2PersistentState) -> None:
-    """Atomically save one reference state or one process's owned z slabs."""
-    target = Path(path)
-    representation, grid = _representation_and_grid(state)
-    metadata = {
-        "schema": SCHEMA,
-        "representation": representation,
-        "grid": _grid_metadata(grid),
-        "clock": {"time": state.clock.time, "step": state.clock.step},
-        "integrator_fingerprint": state.integrator_fingerprint,
-        "history": (
-            "cold-start"
-            if isinstance(state.history, ColdStart)
-            else "previous-tendency"
-        ),
-    }
-    if representation == "owned-z-slab":
-        metadata["addressable_shards"] = [
-            region.coordinate.indices[0] for region in state.velocity.x.regions
-        ]
+    """Atomically save one reference state or one process's owned regions."""
+    metadata, representation = _state_metadata(
+        state,
+        state.velocity,
+        schema=SCHEMA,
+    )
     arrays = {
         f"velocity_{name}": value
         for name, value in _velocity_arrays(state.velocity, representation).items()
@@ -192,10 +219,7 @@ def save_ab2_checkpoint(path: str | Path, state: AB2PersistentState) -> None:
                 ).items()
             }
         )
-    temporary = target.with_name(f".{target.name}.tmp-{os.getpid()}")
-    with temporary.open("wb") as stream:
-        np.savez(stream, metadata=np.asarray(json.dumps(metadata)), **arrays)
-    os.replace(temporary, target)
+    _write_archive(path, metadata, arrays)
 
 
 def _load_array(archive, name: str, factory: Callable) -> Any:
@@ -225,9 +249,13 @@ def _validate_metadata(
         raise ValueError("checkpoint grid does not match the load layout")
     if metadata.get("integrator_fingerprint") != config.fingerprint:
         raise ValueError("checkpoint integrator fingerprint does not match")
-    if isinstance(layout, ZSlabCheckpointLayout):
-        if tuple(metadata.get("addressable_shards", ())) != layout.addressable_shards:
-            raise ValueError("checkpoint shards do not match the load layout")
+    if isinstance(layout, DistributedCheckpointLayout):
+        stored = metadata.get(
+            "addressable_shards",
+            metadata.get("addressable_partitions", ()),
+        )
+        if tuple(stored) != layout.addressable_partitions:
+            raise ValueError("checkpoint partitions do not match the load layout")
     history = metadata.get("history")
     if history not in ("cold-start", "previous-tendency"):
         raise ValueError("checkpoint has an invalid AB2 history tag")
@@ -266,16 +294,16 @@ def _reference_velocity(
     )
 
 
-def _zslab_velocity(
-    archive, prefix: str, layout: ZSlabCheckpointLayout, *, tendency: bool
+def _distributed_velocity(
+    archive, prefix: str, layout: DistributedCheckpointLayout, *, tendency: bool
 ):
-    from jaxwind.interpreters.jax_zslab import ZFaceFieldContext
+    from jaxwind.domain import VerticalFaceField
 
     decomposition = layout.decomposition
     cells = decomposition.regions(Cell)
     faces = decomposition.regions(ZFace)
-    cell_regions = tuple(cells[index] for index in layout.addressable_shards)
-    face_regions = tuple(faces[index] for index in layout.addressable_shards)
+    cell_regions = tuple(cells[index] for index in layout.addressable_partitions)
+    face_regions = tuple(faces[index] for index in layout.addressable_partitions)
     phase = Evaluated if tendency else Projected
     return VelocityVector(
         AddressableField(
@@ -292,7 +320,7 @@ def _zslab_velocity(
             phase,
             _load_array(archive, f"{prefix}_y", layout.array_factory),
         ),
-        ZFaceFieldContext(
+        VerticalFaceField(
             AddressableField(
                 VerticalVelocityTendency if tendency else VerticalVelocity,
                 ZFace,
@@ -323,8 +351,10 @@ def load_ab2_checkpoint(
             velocity = _reference_velocity(archive, "velocity", layout, tendency=False)
             tendency_loader = _reference_velocity
         else:
-            velocity = _zslab_velocity(archive, "velocity", layout, tendency=False)
-            tendency_loader = _zslab_velocity
+            velocity = _distributed_velocity(
+                archive, "velocity", layout, tendency=False
+            )
+            tendency_loader = _distributed_velocity
         if history_tag == "cold-start":
             history = ColdStart()
         else:
@@ -381,30 +411,16 @@ def save_boussinesq_checkpoint(
     physics_fingerprint: str | None = None,
 ) -> None:
     """Atomically save velocity, scalar, and both previous AB2 tendencies."""
-    target = Path(path)
     velocity = state.fields.velocity
-    if isinstance(velocity.x, Field):
-        representation = "reference-global-test"
-        grid = velocity.x.ownership.grid
-    elif isinstance(velocity.x, AddressableField):
-        representation = "owned-z-slab"
-        grid = velocity.x.regions[0].grid
-    else:
-        raise TypeError("unsupported Boussinesq checkpoint representation")
-    metadata = {
-        "schema": BOUSSINESQ_SCHEMA,
-        "representation": representation,
-        "grid": _grid_metadata(grid),
-        "clock": {"time": state.clock.time, "step": state.clock.step},
-        "integrator_fingerprint": state.integrator_fingerprint,
-        "history": (
-            "cold-start"
-            if isinstance(state.history, ColdStart)
-            else "previous-tendency"
-        ),
+    metadata, representation = _state_metadata(
+        state,
+        velocity,
+        schema=BOUSSINESQ_SCHEMA,
+    )
+    metadata.update({
         "scalar_quantity": _scalar_quantity_tag(state.fields.potential_temperature),
         "closure": _closure_metadata(state.fields.closure),
-    }
+    })
     if scale_fingerprint is not None:
         if not scale_fingerprint:
             raise ValueError("scale fingerprint must be non-empty")
@@ -413,10 +429,6 @@ def save_boussinesq_checkpoint(
         if not physics_fingerprint:
             raise ValueError("physics fingerprint must be non-empty")
         metadata["physics_fingerprint"] = physics_fingerprint
-    if representation == "owned-z-slab":
-        metadata["addressable_shards"] = [
-            region.coordinate.indices[0] for region in velocity.x.regions
-        ]
     arrays = {
         f"velocity_{name}": value
         for name, value in _velocity_arrays(velocity, representation).items()
@@ -436,10 +448,7 @@ def save_boussinesq_checkpoint(
         arrays["history_scalar"] = _scalar_arrays(
             state.history.value.potential_temperature
         )
-    temporary = target.with_name(f".{target.name}.tmp-{os.getpid()}")
-    with temporary.open("wb") as stream:
-        np.savez(stream, metadata=np.asarray(json.dumps(metadata)), **arrays)
-    os.replace(temporary, target)
+    _write_archive(path, metadata, arrays)
 
 
 def _checkpoint_scalar(
@@ -478,7 +487,7 @@ def _checkpoint_scalar(
     return AddressableField(
         quantity,
         Cell,
-        tuple(regions[index] for index in layout.addressable_shards),
+        tuple(regions[index] for index in layout.addressable_partitions),
         phase,
         _load_array(archive, name, layout.array_factory),
     )
@@ -502,7 +511,7 @@ def _checkpoint_closure_field(
     return AddressableField(
         quantity,
         Cell,
-        tuple(regions[index] for index in layout.addressable_shards),
+        tuple(regions[index] for index in layout.addressable_partitions),
         Accepted,
         _load_array(archive, name, layout.array_factory),
     )
@@ -586,7 +595,7 @@ def load_boussinesq_checkpoint(
         if isinstance(layout, ReferenceCheckpointLayout):
             velocity_loader = _reference_velocity
         else:
-            velocity_loader = _zslab_velocity
+            velocity_loader = _distributed_velocity
         velocity = velocity_loader(archive, "velocity", layout, tendency=False)
         scalar_quantity = metadata.get(
             "scalar_quantity",

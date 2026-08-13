@@ -11,7 +11,7 @@ from jaxwind.domain import (  # noqa: E402
     AddressableField,
     Cell,
     DistributionSpec,
-    EqualZSlab,
+    EqualVerticalPartition,
     MeshAxis,
     MeshTopology,
     Projected,
@@ -22,9 +22,9 @@ from jaxwind.domain import (  # noqa: E402
     YVelocity,
     ZFace,
 )
-from jaxwind.interpreters.jax_zslab import (  # noqa: E402
-    ZFaceFieldContext,
-    build_zslab_interpreter,
+from jaxwind._jax.discretization import (  # noqa: E402
+    VerticalFaceField,
+    build_discretization,
 )
 from jaxwind.operators import VelocityVector  # noqa: E402
 from jaxwind.physics import ConservativeAdvection  # noqa: E402
@@ -33,10 +33,10 @@ from jaxwind.physics import ConservativeAdvection  # noqa: E402
 class ThreeHalvesPaddingTests(unittest.TestCase):
     def test_high_resolved_mode_is_retained_without_quadratic_alias(self) -> None:
         grid = UniformGrid(8, 8, 2, 2.0 * jnp.pi, 2.0 * jnp.pi, 2.0)
-        decomposition = EqualZSlab(
+        decomposition = EqualVerticalPartition(
             grid,
             MeshTopology((MeshAxis("z", 1),)),
-            DistributionSpec.z_slab(),
+            DistributionSpec.vertical(),
         )
         x = 2.0 * jnp.pi * jnp.arange(grid.nx, dtype=jnp.float64) / grid.nx
         high_mode = jnp.cos(3.0 * x)[None, None, :]
@@ -58,7 +58,7 @@ class ThreeHalvesPaddingTests(unittest.TestCase):
                 Projected,
                 v,
             ),
-            ZFaceFieldContext(
+            VerticalFaceField(
                 AddressableField(
                     VerticalVelocity,
                     ZFace,
@@ -69,7 +69,7 @@ class ThreeHalvesPaddingTests(unittest.TestCase):
                 jnp.zeros((grid.ny, grid.nx), dtype=jnp.float64),
             ),
         )
-        algebra = build_zslab_interpreter(decomposition)
+        algebra = build_discretization(decomposition)
         accepted_bandwidth = algebra.enforce_normal_boundary(
             velocity,
             VerticalBoundary(0.0, 0.0),
