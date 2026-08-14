@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
+from types import SimpleNamespace
 
 from applications.windfarm_precursor.visualization import (
     evenly_spaced_frame_offsets,
@@ -33,6 +34,11 @@ def test_two_frames_are_saved_and_rendered(tmp_path) -> None:
         grid=grid,
         fringe_start_x_m=30.0,
         fps=2,
+        turbine=SimpleNamespace(
+            x_m=20.0,
+            hub_height_m=10.0,
+            rotor_diameter_m=8.0,
+        ),
     )
 
     with np.load(archive) as values:

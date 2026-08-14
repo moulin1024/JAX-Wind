@@ -453,8 +453,11 @@ class WindTunnelBoussinesqVectorField:
     base: Any
     model: WindTunnelModel
 
-    def __call__(self, evaluation: Any) -> WindTunnelVectorFieldResult:
-        base = self.base(evaluation)
+    def _combine(
+        self,
+        evaluation: Any,
+        base: Any,
+    ) -> WindTunnelVectorFieldResult:
         disk_enabled = isinstance(self.model.actuator_disk, PureThrustActuatorDisk)
         line_enabled = isinstance(
             self.model.actuator_line,
@@ -481,4 +484,20 @@ class WindTunnelBoussinesqVectorField:
                 fringe_enabled,
                 line_enabled,
             ),
+        )
+
+    def __call__(self, evaluation: Any) -> WindTunnelVectorFieldResult:
+        return self._combine(evaluation, self.base(evaluation))
+
+    def evaluate_prepared(
+        self,
+        evaluation: Any,
+        momentum_context: Any,
+    ) -> WindTunnelVectorFieldResult:
+        evaluate_prepared = getattr(self.base, "evaluate_prepared", None)
+        if evaluate_prepared is None:
+            raise TypeError("wind-tunnel base does not support prepared evaluation")
+        return self._combine(
+            evaluation,
+            evaluate_prepared(evaluation, momentum_context),
         )

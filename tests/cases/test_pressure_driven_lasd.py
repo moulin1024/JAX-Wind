@@ -35,6 +35,15 @@ def test_case_is_data_only_configuration() -> None:
     assert Path(case.output.directory) == Path(
         "outputs/pressure_driven_lasd_64x64x64_gpu"
     )
+    assert case.numerics.pressure_tridiag == "pcr"
+    assert case.numerics.pressure_thomas_chunk == 1
+    assert case.numerics.nonlinear_dealiasing == "two_thirds"
+    assert case.flow.advection == "rotational"
+    assert case.time.dt_seconds == pytest.approx(0.6)
+    assert case.sgs.update_interval_steps == 8
+    assert case.sgs.lasd_filter_backend == "cufft"
+    assert case.sgs.reuse_rhs_momentum_context
+    assert not case.sgs.scalar_lasd_enabled
 
 
 def test_case_resolves_its_configuration(capsys) -> None:
@@ -42,6 +51,48 @@ def test_case_resolves_its_configuration(capsys) -> None:
     output = capsys.readouterr().out
     assert 'case = "pressure_driven_lasd_64x64x64"' in output
     assert 'closure = "lagrangian-scale-dependent-dynamic"' in output
+    assert 'advection = "rotational"' in output
+    assert 'pressure_tridiag = "pcr"' in output
+    assert 'nonlinear_dealiasing = "two_thirds"' in output
+    assert "dt_seconds = 0.6" in output
+    assert "update_interval_steps = 8" in output
+
+
+def test_case_can_select_two_thirds_dealiasing(tmp_path: Path) -> None:
+    assert load_case(CONFIG).numerics.nonlinear_dealiasing == "two_thirds"
+
+
+def test_case_can_select_legacy_two_thirds_dealiasing(tmp_path: Path) -> None:
+    selected = tmp_path / "config.toml"
+    selected.write_text(
+        CONFIG.read_text(encoding="utf-8").replace(
+            'nonlinear_dealiasing = "two_thirds"',
+            'nonlinear_dealiasing = "legacy_two_thirds"',
+        ),
+        encoding="utf-8",
+    )
+
+    assert (
+        load_case(selected).numerics.nonlinear_dealiasing
+        == "legacy_two_thirds"
+    )
+
+
+def test_case_can_select_cufft_lasd_filtering(tmp_path: Path) -> None:
+    assert load_case(CONFIG).sgs.lasd_filter_backend == "cufft"
+
+
+def test_cufft_lasd_filtering_requires_float32(tmp_path: Path) -> None:
+    selected = tmp_path / "config.toml"
+    selected.write_text(
+        CONFIG.read_text(encoding="utf-8").replace(
+            'dtype = "float32"', 'dtype = "float64"'
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="cuFFT LASD backend"):
+        load_case(selected)
 
 
 def test_log_law_plot_is_a_case_owned_dependency_free_svg(tmp_path: Path) -> None:

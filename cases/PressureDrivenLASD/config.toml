@@ -10,6 +10,7 @@ ly_m = 6283.185307179586
 lz_m = 1000.0
 
 [flow]
+advection = "rotational"
 friction_velocity_m_s = 0.4
 roughness_length_m = 0.001
 forcing_height_m = 1000.0
@@ -23,24 +24,30 @@ test_filter_ratio = 2.0
 porte_agel_correction = true
 
 [sgs]
-update_interval_steps = 4
+update_interval_steps = 8
 filter_grid_ratio = 1.5
 test_filter_ratio = 2.0
 timescale_coefficient = 1.5
 initial_coefficient = 0.03
 minimum_coefficient = 1.0e-6
 maximum_coefficient = 0.81
+scalar_lasd_enabled = false
+reuse_rhs_momentum_context = true
+lasd_filter_backend = "cufft"
 
 [time]
-dt_seconds = 0.1
+dt_seconds = 0.6
 duration_hours = 10.0
 
 [numerics]
 dtype = "float32"
 pressure_method = "spike"
+pressure_tridiag = "pcr"
+pressure_thomas_chunk = 1
 seed = 2025
 cfl_abort = 0.5
 lasd_trajectory_cfl_abort = 1.0
+nonlinear_dealiasing = "two_thirds"
 
 [output]
 directory = "outputs/pressure_driven_lasd_64x64x64_gpu"

@@ -15,6 +15,7 @@ velocity_m_s = 8.0
 scalar = 1.0
 
 [flow]
+advection = "conservative"
 pressure_acceleration_m_s2 = [0.0, 0.0]
 geostrophic_velocity_m_s = [8.0, 0.0]
 advection_frame_velocity_m_s = [8.0, 0.0]

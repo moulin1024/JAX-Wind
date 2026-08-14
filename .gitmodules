@@ -1,3 +1,7 @@
 [submodule "external/bw1000_benchmark"]
 	path = external/bw1000_benchmark
 	url = https://github.com/moulin1024/bw1000_benchmark.git
+[submodule "src/jaxwind/windfarm/reference/openfast"]
+	path = src/jaxwind/windfarm/reference/openfast
+	url = https://github.com/OpenFAST/openfast.git
+	shallow = true

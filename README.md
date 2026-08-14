@@ -55,6 +55,63 @@ python -m applications.pressure_driven_lasd \
 There is no package runner registry or case-name dispatch. An explicitly
 selected application reads case data and constructs the JAX-Wind solver.
 
+Momentum advection is selected in the `[flow]` table:
+
+```toml
+advection = "rotational" # or "conservative"
+```
+
+The nonlinear dealiasing rule is selected in the `[numerics]` table:
+
+```toml
+nonlinear_dealiasing = "three_halves" # or "two_thirds"
+nonlinear_padding_ratio = 1.5         # used by three_halves only
+```
+
+`three_halves` evaluates products on the padded horizontal grid and projects
+them back. `two_thirds` keeps the base grid and strictly retains modes
+`|k_x| < N_x/3` and `|k_y| < N_y/3` before and after quadratic products. The
+choice is part of the physics fingerprint, so changing it requires a cold
+start from checkpoint fields rather than reusing AB2 history. The ABL runner
+also accepts `--dealiasing two_thirds` as a temporary override.
+
+For neutral runs that deliberately freeze the passive scalar at zero, LASD
+offers two independent performance controls in the `[sgs]` table:
+
+```toml
+scalar_lasd_enabled = false
+reuse_rhs_momentum_context = true
+```
+
+The first skips scalar filtering and scalar Lagrangian-memory updates while
+retaining the momentum LASD model. It is accepted only with the solver's
+frozen-zero-scalar optimization. The second passes the momentum halo and
+derivative context built during each accepted-step LASD preparation directly
+into the fused RHS, avoiding a duplicate context build. Both options preserve
+their legacy behavior when omitted (`true` and `false`, respectively).
+
+CUDA float32 runs can also replace the pure-JAX LASD test filters with a
+native backend that reuses persistent three- and six-component cuFFT plans and
+work buffers. Build it for the target GPU architecture, then select it in the
+same table:
+
+```bash
+JAXWIND_CUDA_ARCHITECTURES=86 tools/build_lasd_cufft.sh
+```
+
+```toml
+[sgs]
+lasd_filter_backend = "cufft" # default: "jax"
+```
+
+The backend performs one forward transform per component group and reuses its
+spectrum for both LASD filter widths. Its cache is keyed by CUDA device,
+stream, field shape, and component count, so separate MPI processes and local
+devices own independent plans and buffers. Set
+`JAXWIND_LASD_CUFFT_LIBRARY` only when the shared library is installed outside
+the default `build/native/lasd_cufft` directory. The JAX backend remains the
+portable fallback and is required for float64 runs.
+
 The Andrén case uses a strict, fixed-schema TOML configuration. The generic
 ABL application translates its SI values into existing physical components
 without an Ekman mode, stability selector, or case branch in the solver.
@@ -66,6 +123,16 @@ python -m applications.abl \
   cases/Andren1994/config.toml --dry-run
 python -m applications.abl \
   cases/Andren1994/config.toml --max-steps 10 --overwrite
+```
+
+Run the same reference-backed case with rotational momentum advection and
+two-thirds filtering in a separate output directory:
+
+```bash
+python -m applications.abl cases/Andren1994/config.toml \
+  --advection rotational \
+  --dealiasing two_thirds \
+  --output outputs/andren1994_lasd_rotational_two_thirds_40x40x40
 ```
 
 Nieuwstadt uses that same ABL command and schema. Its scalar profile, surface
@@ -104,6 +171,34 @@ result = solver.advance(state)
 `build_solver` remains the pure transition composer beneath that facade.
 Checkpointing, diagnostic gathering, statistics, acceptance, timing, and
 reporting remain effects and never enter the physical transition.
+
+## Wind-farm turbine models
+
+`jaxwind.windfarm` owns physical turbine parameterizations and OpenFAST input
+adapters. The smallest turbine model is a uniform, non-rotating actuator disk
+specified in SI units and lowered explicitly to the solver scales:
+
+```python
+from jaxwind.physics import WindTunnelModel
+from jaxwind.windfarm import SimpleActuatorDisk
+
+turbine = SimpleActuatorDisk(
+    x_m=400.0,
+    y_m=250.0,
+    hub_height_m=90.0,
+    rotor_diameter_m=120.0,
+    thrust_coefficient_prime=4.0 / 3.0,
+    smoothing_width_m=10.0,
+)
+wind_tunnel = WindTunnelModel(
+    actuator_disk=turbine.to_actuator_disk(scales=scales),
+)
+```
+
+The disk reuses the force-conserving, filtered pure-thrust kernel. The upstream
+OpenFAST source is pinned under `src/jaxwind/windfarm/reference/openfast` only
+for implementation and input-format reference; it is excluded from package
+discovery and is never imported or linked by JAX-Wind.
 
 ## Offline precursor sections
 
@@ -168,6 +263,7 @@ plane across x on device; only the configured fringe region applies it.
 | `src/jaxwind/domain` | Grids, fields, locations, ownership, phases, and scales |
 | `src/jaxwind/operators` | Compatible projection program |
 | `src/jaxwind/physics` | Momentum, scalar, LASD, and optional wind forcing |
+| `src/jaxwind/windfarm` | Turbine parameterizations and OpenFAST input adapters |
 | `src/jaxwind/integrators` | Accepted AB2 transitions |
 | `src/jaxwind/jax_solver.py` | Unified one/many-process JAX solver facade |
 | `src/jaxwind/_jax` | Private JAX distribution lowering and kernels |
@@ -178,6 +274,7 @@ plane across x on device; only the configured fringe region applies it.
 | `cases/PressureDrivenLASD` | Pressure-driven configuration data |
 | `cases/Andren1994` | Andrén configuration and reference data |
 | `cases/Nieuwstadt1993` | Nieuwstadt configuration and reference data |
+| `cases/DTU10MWPrecursor` | 4096 × 1024 × 1024 m DTU 10-MW precursor domain |
 
 The current equal vertical partition remains a private implementation detail.
 One-device and distributed results share one solver path; applications neither

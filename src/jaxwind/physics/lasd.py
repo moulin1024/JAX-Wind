@@ -74,6 +74,7 @@ class LagrangianScaleDependentScalarFlux:
     stability_buoyancy_coefficient: float = 0.0
     stability_beta: float = 30.0
     stability_power: float = 2.0
+    dynamic_updates_enabled: bool = True
 
     def __post_init__(self) -> None:
         values = (
@@ -97,10 +98,12 @@ class LagrangianScaleDependentScalarFlux:
             )
         if not math.isfinite(self.stability_power) or self.stability_power <= 0.0:
             raise ValueError("scalar stability power must be finite and positive")
+        if not isinstance(self.dynamic_updates_enabled, bool):
+            raise TypeError("scalar LASD update flag must be boolean")
 
     @property
     def fingerprint(self) -> str:
-        return (
+        fingerprint = (
             "jaxwind.lasd.scalar.v1"
             f"|initial={self.initial_coefficient.hex()}"
             f"|min={self.minimum_coefficient.hex()}"
@@ -110,6 +113,9 @@ class LagrangianScaleDependentScalarFlux:
             f"|stability-beta={self.stability_beta.hex()}"
             f"|stability-power={self.stability_power.hex()}"
         )
+        if not self.dynamic_updates_enabled:
+            fingerprint += "|dynamic-updates=0"
+        return fingerprint
 
 
 @dataclass(frozen=True, slots=True)
@@ -238,13 +244,75 @@ class LasdAcceptedStepEvent:
     algebra: Any
     model: Any
     dt: float
+    reuse_rhs_momentum_context: bool = False
+    fused_update_evaluation: Any = None
 
     def __post_init__(self) -> None:
         if not math.isfinite(self.dt) or self.dt <= 0.0:
             raise ValueError("LASD event dt must be finite and positive")
+        if not isinstance(self.reuse_rhs_momentum_context, bool):
+            raise TypeError("LASD momentum-context reuse flag must be boolean")
+        if self.fused_update_evaluation is not None and not callable(
+            self.fused_update_evaluation
+        ):
+            raise TypeError("fused LASD update evaluation must be callable")
 
-    def __call__(self, fields: Any, clock: Any, environment: Any) -> tuple[Any, Any]:
+    def __call__(self, fields: Any, clock: Any, environment: Any) -> Any:
         del environment
+        if self.reuse_rhs_momentum_context:
+            should_update = (
+                clock.step + 1
+            ) % self.model.momentum.sgs.update_interval == 0
+            if (
+                self.fused_update_evaluation is not None
+                and isinstance(should_update, bool)
+                and should_update
+            ):
+                from jaxwind.domain import EvaluationTime
+                from jaxwind.integrators.ab2 import (
+                    PreparedVectorEvaluation,
+                    VectorFieldResult,
+                )
+                from jaxwind.physics.boussinesq import BoussinesqDiagnostic
+
+                first_update = (
+                    clock.step == self.model.momentum.sgs.update_interval - 1
+                )
+                prepared, tendency = self.fused_update_evaluation(
+                    fields,
+                    clock.time,
+                    first_update,
+                )
+                diagnostic = LasdClosureEventDiagnostic(
+                    True,
+                    clock.step,
+                    self.model.momentum.sgs.update_interval,
+                )
+                evaluation_time = EvaluationTime(
+                    clock.time,
+                    clock.step,
+                    "ab2-current",
+                )
+                return PreparedVectorEvaluation(
+                    prepared,
+                    VectorFieldResult(
+                        tendency,
+                        BoussinesqDiagnostic(evaluation_time),
+                    ),
+                    diagnostic,
+                )
+
+            from jaxwind.integrators.ab2 import PreparedEvaluation
+
+            prepared, diagnostic, context = (
+                self.algebra.prepare_lasd_closure_reusing_update_context(
+                    fields,
+                    self.model,
+                    clock,
+                    self.dt,
+                )
+            )
+            return PreparedEvaluation(prepared, context, diagnostic)
         return self.algebra.prepare_lasd_closure(
             fields,
             self.model,

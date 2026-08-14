@@ -330,7 +330,7 @@ def evaluate(
             layout=checkpoint_layout,
             config=integrator_config,
             scale_fingerprint=scales.fingerprint,
-            closure_fingerprint=momentum_sgs.fingerprint + "|" + scalar_sgs.fingerprint,
+            closure_fingerprint=problem.closure_fingerprint,
             physics_fingerprint=physics_fingerprint,
         )
         statistics = (
@@ -377,6 +377,14 @@ def evaluate(
         history_writer.writeheader()
 
     started = time.perf_counter()
+    timing_warmup_steps = min(
+        steps_to_run,
+        2 * case.sgs.update_interval_steps,
+    )
+    timing_end_step = max(timing_warmup_steps, steps_to_run - 1)
+    timing_warmup_elapsed: float | None = None
+    timing_end_elapsed: float | None = None
+    solver_elapsed: float | None = None
     latest_diagnostic: dict[str, float] = {}
     try:
         for local_step in range(1, steps_to_run + 1):
@@ -390,6 +398,15 @@ def evaluate(
                 compute_projection_residual=should_log,
             )
             state = result.state
+            if local_step == timing_warmup_steps:
+                state.fields.velocity.x.payload.block_until_ready()
+                timing_warmup_elapsed = time.perf_counter() - started
+            if local_step == timing_end_step:
+                state.fields.velocity.x.payload.block_until_ready()
+                timing_end_elapsed = time.perf_counter() - started
+            if local_step == steps_to_run:
+                state.fields.velocity.x.payload.block_until_ready()
+                solver_elapsed = time.perf_counter() - started
             accepted_step = state.clock.step
             if (
                 accepted_step >= case.sample_start_step
@@ -415,6 +432,11 @@ def evaluate(
                     jnp,
                     solver,
                 )
+                if not all(
+                    math.isfinite(value)
+                    for value in latest_diagnostic.values()
+                ):
+                    raise RuntimeError("non-finite flow diagnostic detected")
                 if latest_diagnostic["maximum_cfl"] >= case.numerics.cfl_abort:
                     raise RuntimeError(
                         "CFL abort limit reached: "
@@ -498,11 +520,22 @@ def evaluate(
             physics_fingerprint=physics_fingerprint,
         )
 
+    elapsed_seconds = time.perf_counter() - started
+    post_warmup_steps = timing_end_step - timing_warmup_steps
+    post_warmup_elapsed = (
+        timing_end_elapsed - timing_warmup_elapsed
+        if (
+            timing_end_elapsed is not None
+            and timing_warmup_elapsed is not None
+            and post_warmup_steps
+        )
+        else None
+    )
     summary = {
         **case.resolved(),
         "physics": {
-            "momentum_advection": "conservative",
-            "dealiasing": "three-halves-padding",
+            "momentum_advection": case.flow.advection,
+            "dealiasing": case.numerics.nonlinear_dealiasing,
             "nonlinear_padding_ratio": 1.5,
             "fingerprint": physics_fingerprint,
         },
@@ -511,9 +544,26 @@ def evaluate(
             "process_count": runtime.process_count,
             "global_device_count": runtime.global_devices,
             "local_device_count": runtime.local_devices,
+            "result_directory": str(output_dir),
             "restart": None if restart is None else str(restart),
             "initial_step": state.clock.step - steps_to_run,
             "steps_run": steps_to_run,
+            "elapsed_seconds": elapsed_seconds,
+            "steps_per_second": (
+                steps_to_run / elapsed_seconds if steps_to_run else None
+            ),
+            "solver_elapsed_seconds": solver_elapsed,
+            "timing_warmup_steps": timing_warmup_steps,
+            "timing_warmup_elapsed_seconds": timing_warmup_elapsed,
+            "timing_end_step": timing_end_step,
+            "timing_end_elapsed_seconds": timing_end_elapsed,
+            "post_warmup_steps": post_warmup_steps,
+            "post_warmup_elapsed_seconds": post_warmup_elapsed,
+            "post_warmup_steps_per_second": (
+                post_warmup_steps / post_warmup_elapsed
+                if post_warmup_elapsed
+                else None
+            ),
             "final_step": state.clock.step,
             "final_time_hours": (state.clock.step * case.time.dt_seconds / 3600.0),
             "profile_samples": statistics.count,
@@ -533,6 +583,7 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("config", type=Path, nargs="?", default=DEFAULT_CONFIG)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--output", type=Path)
     parser.add_argument("--restart", type=Path)
     parser.add_argument("--max-steps", type=int)
     parser.add_argument("--overwrite", action="store_true")
@@ -547,7 +598,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     evaluate(
         case,
-        output_dir=Path(case.output.directory),
+        output_dir=args.output or Path(case.output.directory),
         restart=args.restart,
         max_steps=args.max_steps,
         overwrite=args.overwrite,

@@ -1,0 +1,59 @@
+[case]
+name = "dtu10mw_precursor_128x64x256"
+
+[domain]
+nx = 128
+ny = 64
+nz = 256
+lx_m = 4096.0
+ly_m = 1024.0
+lz_m = 1024.0
+
+[flow]
+advection = "conservative"
+friction_velocity_m_s = 0.4
+roughness_length_m = 0.001
+forcing_height_m = 1024.0
+von_karman = 0.4
+initial_perturbation_rms_m_s = 0.1
+initial_correlation_length_m = 32.0
+
+[wall]
+filter_grid_ratio = 1.5
+test_filter_ratio = 2.0
+porte_agel_correction = true
+
+[sgs]
+closure = "static-smagorinsky"
+static_coefficient = 0.16
+turbulent_prandtl = 0.4
+update_interval_steps = 1
+filter_grid_ratio = 1.5
+test_filter_ratio = 2.0
+timescale_coefficient = 1.5
+initial_coefficient = 0.03
+minimum_coefficient = 1.0e-6
+maximum_coefficient = 0.81
+
+[time]
+dt_seconds = 0.2
+duration_hours = 10.0
+
+[numerics]
+dtype = "float32"
+pressure_method = "transpose"
+pressure_tridiag = "pcr"
+pressure_thomas_chunk = 1
+seed = 2025
+cfl_abort = 0.5
+lasd_trajectory_cfl_abort = 1.0
+
+[output]
+directory = "outputs/dtu10mw_warmup_128x64x256"
+log_every_steps = 1000
+sample_start_hours = 9.0
+sample_every_steps = 1000
+checkpoint_every_steps = 18000
+
+[execution]
+overwrite = false

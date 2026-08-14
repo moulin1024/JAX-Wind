@@ -101,6 +101,15 @@ def load_period_sets(
     ]
 
 
+def load_time_series_sets(reference_dir: Path) -> list[ReferenceSet]:
+    """Load the complete Set-E histories for one reference resolution."""
+
+    return [
+        read_reference_set(path)
+        for path in sorted(reference_dir.glob("*/*_E_*.dat"))
+    ]
+
+
 def interpolate_values(
     dataset: ReferenceSet,
     coordinate: str,
@@ -122,14 +131,35 @@ def interpolate_values(
 
 
 def ensemble_statistics(stack: np.ndarray) -> dict[str, np.ndarray]:
-    with np.errstate(all="ignore"):
-        return {
-            "mean": np.nanmean(stack, axis=0),
-            "minimum": np.nanmin(stack, axis=0),
-            "maximum": np.nanmax(stack, axis=0),
-            "standard_deviation": np.nanstd(stack, axis=0),
-            "count": np.sum(np.isfinite(stack), axis=0),
-        }
+    values = np.asarray(stack, dtype=float)
+    finite = np.isfinite(values)
+    count = np.sum(finite, axis=0)
+    mean = np.full(values.shape[1:], np.nan, dtype=float)
+    np.divide(
+        np.nansum(values, axis=0),
+        count,
+        out=mean,
+        where=count > 0,
+    )
+    minimum = np.min(np.where(finite, values, np.inf), axis=0)
+    maximum = np.max(np.where(finite, values, -np.inf), axis=0)
+    minimum = np.where(count > 0, minimum, np.nan)
+    maximum = np.where(count > 0, maximum, np.nan)
+    centered = np.where(finite, values - mean, 0.0)
+    variance = np.full(values.shape[1:], np.nan, dtype=float)
+    np.divide(
+        np.sum(centered * centered, axis=0),
+        count,
+        out=variance,
+        where=count > 0,
+    )
+    return {
+        "mean": mean,
+        "minimum": minimum,
+        "maximum": maximum,
+        "standard_deviation": np.sqrt(variance),
+        "count": count,
+    }
 
 
 def ensemble_on_grid(
@@ -155,5 +185,6 @@ __all__ = [
     "ensemble_statistics",
     "interpolate_values",
     "load_period_sets",
+    "load_time_series_sets",
     "read_reference_set",
 ]

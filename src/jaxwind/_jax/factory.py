@@ -47,14 +47,29 @@ def build_discretization(
     axis_name: str = "jaxwind_z",
     porte_agel_wall_correction: bool = True,
     nonlinear_padding_ratio: float = 1.5,
+    nonlinear_dealiasing: str = "three_halves",
     frozen_zero_scalar: bool = False,
+    lasd_filter_backend: str = "jax",
 ) -> _JaxDiscretization:
-    """Build mapped kernels with horizontally padded nonlinear products."""
+    """Build mapped kernels with horizontally dealiased nonlinear products."""
     if not isinstance(porte_agel_wall_correction, bool):
         raise TypeError("Porté-Agel wall correction flag must be boolean")
     if not isinstance(frozen_zero_scalar, bool):
         raise TypeError("frozen zero scalar flag must be boolean")
-    if not math.isfinite(nonlinear_padding_ratio) or nonlinear_padding_ratio < 1.5:
+    if lasd_filter_backend not in ("jax", "cufft"):
+        raise ValueError("LASD filter backend must be jax or cufft")
+    if nonlinear_dealiasing not in (
+        "three_halves",
+        "two_thirds",
+        "legacy_two_thirds",
+    ):
+        raise ValueError(
+            "nonlinear dealiasing must be three_halves, two_thirds, "
+            "or legacy_two_thirds"
+        )
+    if not math.isfinite(nonlinear_padding_ratio):
+        raise ValueError("nonlinear padding ratio must be finite")
+    if nonlinear_dealiasing == "three_halves" and nonlinear_padding_ratio < 1.5:
         raise ValueError("nonlinear padding ratio must be at least 1.5")
     partition_count = decomposition.partition_count
     if addressable_partitions is None:
@@ -149,7 +164,11 @@ def build_discretization(
         return upper_faces.at[-1].set(last)
 
     grid = decomposition.grid
-    spectral = build_horizontal_spectral_kernels(grid, nonlinear_padding_ratio)
+    spectral = build_horizontal_spectral_kernels(
+        grid,
+        nonlinear_padding_ratio,
+        nonlinear_dealiasing,
+    )
     kx, ky, keep, state_keep = (
         spectral.kx,
         spectral.ky,
@@ -618,6 +637,10 @@ def build_discretization(
         y = jnp.zeros_like(context.v).at[0].set(jnp.where(index == 0, wall_y, 0.0))
         return x, y, jnp.zeros_like(context.w_upper)
 
+    filter_two_scales_external = None
+    if lasd_filter_backend == "cufft":
+        from .lasd_cufft import filter_two_scales as filter_two_scales_external
+
     (
         dry_sgs_local,
         dry_sgs_vertical_flux_local,
@@ -641,7 +664,12 @@ def build_discretization(
         axis_name=axis_name,
         wall_filter_local=wall_filter_local,
     )
-    fused_lasd_boussinesq_local = build_fused_neutral_boussinesq_kernels(
+    (
+        fused_lasd_boussinesq_local,
+        fused_lasd_boussinesq_from_context_local,
+        fused_rotational_lasd_boussinesq_local,
+        fused_rotational_lasd_boussinesq_from_context_local,
+    ) = build_fused_neutral_boussinesq_kernels(
         grid=grid,
         axis_name=axis_name,
         frozen_zero_scalar=frozen_zero_scalar,
@@ -656,16 +684,21 @@ def build_discretization(
         pad_horizontal_local=pad_horizontal_local,
         truncate_padded_local=truncate_padded_local,
         wall_filter_local=wall_filter_local,
+        exchange_local=exchange_local,
         dry_flow_context_local=dry_flow_context_local,
         dry_advection_from_padded_local=dry_advection_from_padded_local,
         padded_momentum_gradients_local=padded_momentum_gradients_local,
         dry_sgs_from_padded_gradients_local=dry_sgs_from_padded_gradients_local,
+        reuse_state_filtered_context=(
+            nonlinear_dealiasing == "legacy_two_thirds"
+        ),
     )
     def horizontal_divergence_local(x_velocity, y_velocity):
         x_spectrum = jnp.fft.rfftn(x_velocity, axes=(-2, -1))
         y_spectrum = jnp.fft.rfftn(y_velocity, axes=(-2, -1))
         spectrum = (
-            1j * kx[None, None, :] * x_spectrum + 1j * ky[None, :, None] * y_spectrum
+            1j * kx[None, None, :] * x_spectrum
+            + 1j * ky[None, :, None] * y_spectrum
         ) * keep[None, ...]
         return jnp.fft.irfftn(
             spectrum,
@@ -675,17 +708,18 @@ def build_discretization(
 
     def horizontal_gradient_local(pressure):
         spectrum = jnp.fft.rfftn(pressure, axes=(-2, -1)) * keep[None, ...]
-        gradient_x = jnp.fft.irfftn(
-            spectrum * (1j * kx[None, None, :]),
+        gradients = jnp.fft.irfftn(
+            jnp.stack(
+                (
+                    spectrum * (1j * kx[None, None, :]),
+                    spectrum * (1j * ky[None, :, None]),
+                ),
+                axis=0,
+            ),
             s=(grid.ny, grid.nx),
             axes=(-2, -1),
         ).astype(pressure.dtype)
-        gradient_y = jnp.fft.irfftn(
-            spectrum * (1j * ky[None, :, None]),
-            s=(grid.ny, grid.nx),
-            axes=(-2, -1),
-        ).astype(pressure.dtype)
-        return gradient_x, gradient_y
+        return gradients[0], gradients[1]
 
     def filter_horizontal_local(values):
         spectrum = jnp.fft.rfftn(values, axes=(-2, -1))
@@ -698,6 +732,77 @@ def build_discretization(
     def filter_velocity_local(x, y, z):
         filtered = filter_horizontal_local(jnp.stack((x, y, z), axis=0))
         return filtered[0], filtered[1], filtered[2]
+
+    def prepare_projection_local(
+        x_velocity,
+        y_velocity,
+        z_velocity,
+        lower_boundary,
+        upper_boundary,
+    ):
+        # Reuse the state-filter spectra for horizontal divergence. Keep x/y
+        # spectral until pressure correction so they are transformed back only
+        # once, after the pressure-gradient spectra have been subtracted.
+        velocity_spectra = jnp.fft.rfftn(
+            jnp.stack((x_velocity, y_velocity, z_velocity), axis=0),
+            axes=(-2, -1),
+        )
+        filtered_spectra = velocity_spectra * state_keep[None, None, ...]
+        horizontal_divergence_spectrum = (
+            1j * kx[None, None, :] * filtered_spectra[0]
+            + 1j * ky[None, :, None] * filtered_spectra[1]
+        ) * keep[None, ...]
+        transformed = jnp.fft.irfftn(
+            jnp.stack(
+                (filtered_spectra[2], horizontal_divergence_spectrum),
+                axis=0,
+            ),
+            s=(grid.ny, grid.nx),
+            axes=(-2, -1),
+        ).astype(x_velocity.dtype)
+        filtered_z = enforce_upper_boundary_local(transformed[0], upper_boundary)
+        vertical_divergence = divergence_local(filtered_z, lower_boundary)
+        return (
+            filtered_spectra[0],
+            filtered_spectra[1],
+            filtered_z,
+            transformed[1] + vertical_divergence,
+        )
+
+    def finish_projection_local(
+        candidate_x_spectrum,
+        candidate_y_spectrum,
+        candidate_z,
+        pressure,
+        dt,
+    ):
+        local_dt = jnp.asarray(dt, dtype=pressure.dtype)
+        pressure_spectrum = (
+            jnp.fft.rfftn(pressure, axes=(-2, -1)) * keep[None, ...]
+        )
+        corrected_horizontal = jnp.fft.irfftn(
+            jnp.stack(
+                (
+                    candidate_x_spectrum
+                    - local_dt
+                    * pressure_spectrum
+                    * (1j * kx[None, None, :]),
+                    candidate_y_spectrum
+                    - local_dt
+                    * pressure_spectrum
+                    * (1j * ky[None, :, None]),
+                ),
+                axis=0,
+            ),
+            s=(grid.ny, grid.nx),
+            axes=(-2, -1),
+        ).astype(pressure.dtype)
+        gradient_z = pressure_gradient_local(pressure, 0.0)
+        return (
+            corrected_horizontal[0],
+            corrected_horizontal[1],
+            candidate_z - local_dt * gradient_z,
+        )
 
     def filter_boundary(boundary):
         plane = jnp.broadcast_to(
@@ -747,6 +852,47 @@ def build_discretization(
             + previous_coefficient * previous_tendency
         )
 
+    def ab2_update_velocity_local(
+        state_x,
+        state_y,
+        state_z,
+        current_x,
+        current_y,
+        current_z,
+        previous_x,
+        previous_y,
+        previous_z,
+        dt,
+        current_weight,
+        previous_weight,
+    ):
+        return (
+            ab2_update_local(
+                state_x,
+                current_x,
+                previous_x,
+                dt,
+                current_weight,
+                previous_weight,
+            ),
+            ab2_update_local(
+                state_y,
+                current_y,
+                previous_y,
+                dt,
+                current_weight,
+                previous_weight,
+            ),
+            ab2_update_local(
+                state_z,
+                current_z,
+                previous_z,
+                dt,
+                current_weight,
+                previous_weight,
+            ),
+        )
+
     def combine_payloads_local(payloads):
         total = payloads[0]
         for payload in payloads[1:]:
@@ -761,6 +907,7 @@ def build_discretization(
         lasd_accumulate_local,
         lasd_accumulate_velocity_local,
         lasd_update_local,
+        lasd_update_momentum_local,
     ) = build_lasd_kernels(
         grid=grid,
         axis_name=axis_name,
@@ -769,6 +916,7 @@ def build_discretization(
         strain_magnitude_local=strain_magnitude_local,
         pad_horizontal_local=pad_horizontal_local,
         truncate_padded_local=truncate_padded_local,
+        filter_two_scales_external=filter_two_scales_external,
     )
 
     wind_tunnel_local = build_wind_tunnel_kernel(
@@ -789,6 +937,14 @@ def build_discretization(
         enforce_upper_boundary_local,
         in_axes=(0, None),
     )
+    prepare_projection = mapped(
+        prepare_projection_local,
+        in_axes=(0, 0, 0, None, None),
+    )
+    finish_projection = mapped(
+        finish_projection_local,
+        in_axes=(0, 0, 0, 0, None),
+    )
     horizontal_divergence = mapped(
         horizontal_divergence_local,
         in_axes=(0, 0),
@@ -802,6 +958,10 @@ def build_discretization(
     ab2_update = mapped(
         ab2_update_local,
         in_axes=(0, 0, 0, None, None, None),
+    )
+    ab2_update_velocity = mapped(
+        ab2_update_velocity_local,
+        in_axes=(0,) * 9 + (None,) * 3,
     )
     # Stage composite elementwise expressions once so Python composition does
     # not dispatch one full-grid GPU program for every arithmetic operator.
@@ -840,10 +1000,34 @@ def build_discretization(
     fused_lasd_boussinesq = mapped(
         fused_lasd_boussinesq_local,
         in_axes=(0, 0, 0, None, 0, 0, 0)
-        + (None,) * 18
+        + (None,) * 19
         + (0, 0, 0)
         + (None,) * 17,
-        static_broadcasted_argnums=(43, 44),
+        static_broadcasted_argnums=(44, 45),
+    )
+    fused_lasd_boussinesq_from_context = mapped(
+        fused_lasd_boussinesq_from_context_local,
+        in_axes=(0, 0, 0, 0)
+        + (None,) * 19
+        + (0, 0, 0)
+        + (None,) * 17,
+        static_broadcasted_argnums=(41, 42),
+    )
+    fused_rotational_lasd_boussinesq = mapped(
+        fused_rotational_lasd_boussinesq_local,
+        in_axes=(0, 0, 0, None, 0, 0, 0)
+        + (None,) * 19
+        + (0, 0, 0)
+        + (None,) * 17,
+        static_broadcasted_argnums=(44, 45),
+    )
+    fused_rotational_lasd_boussinesq_from_context = mapped(
+        fused_rotational_lasd_boussinesq_from_context_local,
+        in_axes=(0, 0, 0, 0)
+        + (None,) * 19
+        + (0, 0, 0)
+        + (None,) * 17,
+        static_broadcasted_argnums=(41, 42),
     )
     surface_transfer = build_monin_obukhov_surface_transfer_kernel(axis_name)
     lasd_accumulate = mapped(
@@ -885,6 +1069,10 @@ def build_discretization(
             None,
         ),
     )
+    lasd_update_momentum = mapped(
+        lasd_update_momentum_local,
+        in_axes=(0,) * 8 + (None,) * 9,
+    )
     lasd_diagnostics = mapped(
         lasd_diagnostics_local,
         in_axes=(
@@ -923,6 +1111,8 @@ def build_discretization(
             pressure_gradient,
             divergence,
             enforce_upper_boundary,
+            prepare_projection,
+            finish_projection,
             horizontal_divergence,
             horizontal_gradient,
             filter_horizontal,
@@ -931,6 +1121,7 @@ def build_discretization(
         ),
         _FlowKernels(
             ab2_update,
+            ab2_update_velocity,
             combine_payloads,
             dry_flow_context,
             dry_advection,
@@ -940,12 +1131,16 @@ def build_discretization(
             dry_sgs_vertical_flux,
             dry_sgs_tke_transfer,
             fused_lasd_boussinesq,
+            fused_lasd_boussinesq_from_context,
+            fused_rotational_lasd_boussinesq,
+            fused_rotational_lasd_boussinesq_from_context,
         ),
         _LasdKernels(
             relax_lasd_field,
             lasd_accumulate,
             lasd_accumulate_velocity,
             lasd_update,
+            lasd_update_momentum,
             lasd_diagnostics,
         ),
         _ScalarKernels(

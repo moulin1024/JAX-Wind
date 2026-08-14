@@ -215,6 +215,7 @@ class BoussinesqAlgebra(Protocol):
         wall_acceleration: tuple[Any, Any] | None = None,
         scalar_surface_source: Any | None = None,
         execution_time: Any = 0.0,
+        momentum_context: Any | None = None,
     ) -> BoussinesqTendency: ...
 
     def surface_transfer(
@@ -298,6 +299,23 @@ class BoussinesqVectorField:
                 evaluation.velocity,
                 self.model,
                 execution_time=evaluation.time.time,
+            ),
+            BoussinesqDiagnostic(evaluation.time),
+        )
+
+    def evaluate_prepared(
+        self,
+        evaluation: Any,
+        momentum_context: Any,
+    ) -> BoussinesqVectorFieldResult:
+        """Evaluate using momentum derivatives retained by LASD preparation."""
+
+        return BoussinesqVectorFieldResult(
+            self.algebra.fused_boussinesq_tendency(
+                evaluation.velocity,
+                self.model,
+                execution_time=evaluation.time.time,
+                momentum_context=momentum_context,
             ),
             BoussinesqDiagnostic(evaluation.time),
         )

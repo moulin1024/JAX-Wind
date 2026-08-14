@@ -25,8 +25,12 @@ class HorizontalSpectralKernels(NamedTuple):
     wall_filter: object
 
 
-def build_horizontal_spectral_kernels(grid, nonlinear_padding_ratio):
-    """Build base-grid and three-halves horizontal FFT operations."""
+def build_horizontal_spectral_kernels(
+    grid,
+    nonlinear_padding_ratio,
+    nonlinear_dealiasing,
+):
+    """Build horizontal FFT operations for the selected dealiasing rule."""
     kx = 2.0 * jnp.pi * jnp.fft.rfftfreq(grid.nx, d=grid.lx / grid.nx)
     ky = 2.0 * jnp.pi * jnp.fft.fftfreq(grid.ny, d=grid.ly / grid.ny)
     keep = jnp.ones((grid.ny, grid.nx // 2 + 1))
@@ -39,8 +43,29 @@ def build_horizontal_spectral_kernels(grid, nonlinear_padding_ratio):
 
     x_mode = jnp.arange(grid.nx // 2 + 1)
     y_mode = jnp.fft.fftfreq(grid.ny) * grid.ny
-    padded_ny = int(math.ceil(nonlinear_padding_ratio * grid.ny))
-    padded_nx = int(math.ceil(nonlinear_padding_ratio * grid.nx))
+    two_thirds_keep = (
+        (3 * x_mode[None, :] < grid.nx)
+        & (3 * jnp.abs(y_mode)[:, None] < grid.ny)
+    )
+    legacy_x_cutoff = round(grid.nx / 3.0)
+    legacy_y_cutoff = round(grid.ny / 3.0)
+    legacy_two_thirds_keep = (
+        (x_mode[None, :] < legacy_x_cutoff)
+        & (jnp.abs(y_mode)[:, None] < legacy_y_cutoff)
+    )
+    if nonlinear_dealiasing == "two_thirds":
+        state_keep = two_thirds_keep
+    elif nonlinear_dealiasing == "legacy_two_thirds":
+        # Match the sharp fgr=1.5 cutoff used by legacy ddxy_filter.
+        state_keep = legacy_two_thirds_keep
+    else:
+        state_keep = keep
+    if nonlinear_dealiasing in ("two_thirds", "legacy_two_thirds"):
+        padded_ny = grid.ny
+        padded_nx = grid.nx
+    else:
+        padded_ny = int(math.ceil(nonlinear_padding_ratio * grid.ny))
+        padded_nx = int(math.ceil(nonlinear_padding_ratio * grid.nx))
     padded_kx = 2.0 * jnp.pi * jnp.fft.rfftfreq(padded_nx, d=grid.lx / padded_nx)
     padded_ky = 2.0 * jnp.pi * jnp.fft.fftfreq(padded_ny, d=grid.ly / padded_ny)
     if padded_nx % 2 == 0:
@@ -61,8 +86,18 @@ def build_horizontal_spectral_kernels(grid, nonlinear_padding_ratio):
     opposite_base_y_in_padded = (-base_y_mode) % padded_ny
 
     def pad_horizontal_local(values):
+        if nonlinear_dealiasing == "legacy_two_thirds":
+            # Accepted velocity is already sharply filtered by projection.
+            # Legacy evaluates products directly from that state.
+            return values
         spectrum = jnp.fft.rfftn(values, axes=(-2, -1))
-        spectrum = spectrum * keep.astype(values.real.dtype)
+        spectrum = spectrum * state_keep.astype(values.real.dtype)
+        if nonlinear_dealiasing == "two_thirds":
+            return jnp.fft.irfftn(
+                spectrum,
+                s=(grid.ny, grid.nx),
+                axes=(-2, -1),
+            ).astype(values.dtype)
         shifted = jnp.fft.fftshift(spectrum, axes=(-2,))
         padded = jnp.pad(
             shifted,
@@ -81,6 +116,12 @@ def build_horizontal_spectral_kernels(grid, nonlinear_padding_ratio):
 
     def truncate_padded_spectrum_local(values):
         half_spectrum = jnp.fft.rfftn(values, axes=(-2, -1))
+        if nonlinear_dealiasing == "legacy_two_thirds":
+            # Stress divergence still needs a spectrum, but legacy does not
+            # apply the state cutoff to nonlinear products here.
+            return half_spectrum * keep.astype(values.real.dtype)
+        if nonlinear_dealiasing == "two_thirds":
+            return half_spectrum * state_keep.astype(values.real.dtype)
         shifted = jnp.fft.fftshift(half_spectrum, axes=(-2,))
         cropped = jnp.fft.ifftshift(
             shifted[
@@ -125,6 +166,8 @@ def build_horizontal_spectral_kernels(grid, nonlinear_padding_ratio):
         ).astype(dtype)
 
     def truncate_padded_local(values):
+        if nonlinear_dealiasing == "legacy_two_thirds":
+            return values
         return inverse_horizontal_spectrum_local(
             truncate_padded_spectrum_local(values), values.dtype
         )
@@ -169,6 +212,11 @@ def build_horizontal_spectral_kernels(grid, nonlinear_padding_ratio):
             padded_kx,
             padded_ky,
             (padded_ny, padded_nx),
+            (
+                state_keep
+                if nonlinear_dealiasing == "two_thirds"
+                else keep if nonlinear_dealiasing == "legacy_two_thirds" else None
+            ),
         )
 
     def flux_divergence_spectrum(x_spectra, y_spectra, dtype):
@@ -216,7 +264,7 @@ def build_horizontal_spectral_kernels(grid, nonlinear_padding_ratio):
         kx,
         ky,
         keep,
-        keep,
+        state_keep,
         pad_horizontal_local,
         truncate_padded_spectrum_local,
         truncate_padded_local,

@@ -187,6 +187,7 @@ class BoussinesqCase:
     trajectory_cfl_abort: float
     advection_frame_velocity_m_s: tuple[float, float] = (0.0, 0.0)
     nonlinear_padding_ratio: float = 1.5
+    nonlinear_dealiasing: str = "three_halves"
 
     def __post_init__(self) -> None:
         if not self.name or not self.citation:
@@ -205,8 +206,20 @@ class BoussinesqCase:
             math.isfinite(value) for value in self.advection_frame_velocity_m_s
         ):
             raise ValueError("advection-frame velocity must be finite")
-        if self.nonlinear_padding_ratio < 1.0:
-            raise ValueError("nonlinear padding ratio cannot be below one")
+        if self.nonlinear_dealiasing not in (
+            "three_halves",
+            "two_thirds",
+            "legacy_two_thirds",
+        ):
+            raise ValueError(
+                "nonlinear dealiasing must be three_halves, two_thirds, "
+                "or legacy_two_thirds"
+            )
+        if (
+            self.nonlinear_dealiasing == "three_halves"
+            and self.nonlinear_padding_ratio < 1.5
+        ):
+            raise ValueError("nonlinear padding ratio must be at least 1.5")
 
     @property
     def dt_seconds(self) -> float:

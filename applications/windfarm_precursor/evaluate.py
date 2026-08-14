@@ -58,6 +58,20 @@ def _fringe_fingerprint(problem: PressureDrivenProblem, fringe: Any) -> str:
     )
 
 
+def _turbine_fingerprint(turbine: Any | None) -> str:
+    if turbine is None:
+        return ""
+    return (
+        "|turbine=simple-adm-dtu-10mw-v1"
+        f"|x={float(turbine.x_m).hex()}"
+        f"|y={float(turbine.y_m).hex()}"
+        f"|hub-height={float(turbine.hub_height_m).hex()}"
+        f"|diameter={float(turbine.rotor_diameter_m).hex()}"
+        f"|ct-prime={float(turbine.thrust_coefficient_prime).hex()}"
+        f"|epsilon={float(turbine.smoothing_width_m).hex()}"
+    )
+
+
 def evaluate(
     case: CaseConfig,
     *,
@@ -73,6 +87,7 @@ def evaluate(
     compression: str | None,
     frame_count: int,
     gif_fps: int,
+    turbine: Any | None,
     overwrite: bool,
 ) -> dict[str, Any]:
     """Generate offline planes, then replay them through the production fringe."""
@@ -177,10 +192,20 @@ def evaluate(
         fringe_relaxation_seconds
     )
     fringe = ConcurrentPrecursorFringe(start_x, relaxation_time)
+    actuator_disk = (
+        turbine.to_actuator_disk(scales=precursor_problem.scales)
+        if turbine is not None
+        else None
+    )
+    wind_tunnel = (
+        WindTunnelModel(fringe=fringe)
+        if actuator_disk is None
+        else WindTunnelModel(actuator_disk=actuator_disk, fringe=fringe)
+    )
     main_problem = build_pressure_driven_problem(
         case,
         runtime=runtime,
-        wind_tunnel_model=WindTunnelModel(fringe=fringe),
+        wind_tunnel_model=wind_tunnel,
     )
     main = _load_developed_state(
         main_problem,
@@ -232,7 +257,9 @@ def evaluate(
         )
     main.fields.velocity.x.payload.block_until_ready()
     main_elapsed = time.perf_counter() - started - precursor_elapsed
-    main_fingerprint = _fringe_fingerprint(main_problem, fringe)
+    main_fingerprint = (
+        _fringe_fingerprint(main_problem, fringe) + _turbine_fingerprint(turbine)
+    )
     _save_state(
         output_dir / "main_final.npz",
         main,
@@ -256,6 +283,7 @@ def evaluate(
             grid=main_problem.physical_grid,
             fringe_start_x_m=fringe_start_fraction * case.domain.lx_m,
             fps=gif_fps,
+            turbine=turbine,
         )
 
     comparison = None
@@ -294,6 +322,19 @@ def evaluate(
             "fringe_start_fraction": fringe_start_fraction,
             "fringe_relaxation_seconds": fringe_relaxation_seconds,
             "source_section": section,
+            "turbine": (
+                None
+                if turbine is None
+                else {
+                    "model": "DTU-10MW simple ADM",
+                    "x_m": turbine.x_m,
+                    "y_m": turbine.y_m,
+                    "hub_height_m": turbine.hub_height_m,
+                    "rotor_diameter_m": turbine.rotor_diameter_m,
+                    "thrust_coefficient_prime": turbine.thrust_coefficient_prime,
+                    "smoothing_width_m": turbine.smoothing_width_m,
+                }
+            ),
             "initial_local_target_delta": local_target_delta,
             "local_difference_from_unforced_precursor": comparison,
             "frame_count": frame_count,

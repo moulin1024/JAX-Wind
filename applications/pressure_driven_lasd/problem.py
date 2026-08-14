@@ -19,8 +19,10 @@ class PressureDrivenProblem:
     solver: Any
 
     @property
-    def closure_fingerprint(self) -> str:
-        return self.momentum_sgs.fingerprint + "|" + self.scalar_sgs.fingerprint
+    def closure_fingerprint(self) -> str | None:
+        momentum = getattr(self.momentum_sgs, "fingerprint", None)
+        scalar = getattr(self.scalar_sgs, "fingerprint", None)
+        return None if momentum is None or scalar is None else momentum + "|" + scalar
 
 
 def build_pressure_driven_problem(
@@ -28,6 +30,11 @@ def build_pressure_driven_problem(
     *,
     runtime: Any,
     wind_tunnel_model: Any = None,
+    pressure_tridiag: str | None = None,
+    pressure_thomas_chunk: int | None = None,
+    nonlinear_padding_ratio: float = 1.5,
+    nonlinear_dealiasing: str | None = None,
+    lasd_filter_backend: str | None = None,
 ) -> PressureDrivenProblem:
     """Build the reusable pressure-driven model, scales, and JAX solver."""
 
@@ -46,7 +53,10 @@ def build_pressure_driven_problem(
         NoBuoyancy,
         NoRayleighDamping,
         NoRotation,
+        RotationalAdvection,
         ScalarFluxBoundary,
+        StaticSmagorinsky,
+        StaticSmagorinskyScalarFlux,
     )
 
     physical_grid = UniformGrid(
@@ -62,19 +72,60 @@ def build_pressure_driven_problem(
         case.flow.friction_velocity_m_s,
     )
     grid = scales.to_execution_grid(physical_grid)
-    momentum_sgs = LagrangianScaleDependentDynamic(
-        filter_grid_ratio=case.sgs.filter_grid_ratio,
-        test_filter_ratio=case.sgs.test_filter_ratio,
-        update_interval=case.sgs.update_interval_steps,
-        timescale_coefficient=case.sgs.timescale_coefficient,
-        initial_coefficient=case.sgs.initial_coefficient,
-        minimum_coefficient=case.sgs.minimum_coefficient,
-        maximum_coefficient=case.sgs.maximum_coefficient,
+    selected_pressure_tridiag = (
+        case.numerics.pressure_tridiag
+        if pressure_tridiag is None
+        else pressure_tridiag
     )
-    scalar_sgs = LagrangianScaleDependentScalarFlux()
+    selected_pressure_thomas_chunk = (
+        case.numerics.pressure_thomas_chunk
+        if pressure_thomas_chunk is None
+        else pressure_thomas_chunk
+    )
+    selected_dealiasing = (
+        case.numerics.nonlinear_dealiasing
+        if nonlinear_dealiasing is None
+        else nonlinear_dealiasing
+    )
+    selected_lasd_filter_backend = (
+        case.sgs.lasd_filter_backend
+        if lasd_filter_backend is None
+        else lasd_filter_backend
+    )
+    dealiasing_fingerprint = (
+        "three-halves-padding"
+        if selected_dealiasing == "three_halves"
+        else "two-thirds-filtering"
+    )
+    if case.sgs.closure == "lasd":
+        momentum_sgs = LagrangianScaleDependentDynamic(
+            filter_grid_ratio=case.sgs.filter_grid_ratio,
+            test_filter_ratio=case.sgs.test_filter_ratio,
+            update_interval=case.sgs.update_interval_steps,
+            timescale_coefficient=case.sgs.timescale_coefficient,
+            initial_coefficient=case.sgs.initial_coefficient,
+            minimum_coefficient=case.sgs.minimum_coefficient,
+            maximum_coefficient=case.sgs.maximum_coefficient,
+        )
+        scalar_sgs = LagrangianScaleDependentScalarFlux(
+            dynamic_updates_enabled=case.sgs.scalar_lasd_enabled,
+        )
+        closure_fingerprint = momentum_sgs.fingerprint
+    else:
+        momentum_sgs = StaticSmagorinsky(case.sgs.static_coefficient)
+        scalar_sgs = StaticSmagorinskyScalarFlux(case.sgs.turbulent_prandtl)
+        closure_fingerprint = (
+            "static-smagorinsky-v1"
+            f"|coefficient={float(case.sgs.static_coefficient).hex()}"
+            f"|prandtl={float(case.sgs.turbulent_prandtl).hex()}"
+        )
     model = BoussinesqModel(
         DryFlowModel(
-            ConservativeAdvection(),
+            (
+                RotationalAdvection()
+                if case.flow.advection == "rotational"
+                else ConservativeAdvection()
+            ),
             KinematicPressureGradient(
                 scales.to_execution_acceleration(
                     case.flow.pressure_acceleration_m_s2
@@ -97,9 +148,9 @@ def build_pressure_driven_problem(
         ScalarFluxBoundary(),
     )
     physics_fingerprint = (
-        momentum_sgs.fingerprint
-        + "|advection=conservative"
-        + "|dealiasing=three-halves-padding"
+        closure_fingerprint
+        + f"|advection={case.flow.advection}"
+        + f"|dealiasing={dealiasing_fingerprint}"
         + "|coefficient-padding=bounded"
     )
     integrator = AB2Config(scales.to_execution_time(case.time.dt_seconds))
@@ -115,8 +166,13 @@ def build_pressure_driven_problem(
         normal_boundary=boundary,
         pressure_dtype=case.numerics.dtype,
         pressure_method=case.numerics.pressure_method,
-        nonlinear_padding_ratio=1.5,
+        pressure_tridiag=selected_pressure_tridiag,
+        pressure_thomas_chunk=selected_pressure_thomas_chunk,
+        nonlinear_padding_ratio=nonlinear_padding_ratio,
+        nonlinear_dealiasing=selected_dealiasing,
         optimize_frozen_zero_scalar=True,
+        reuse_rhs_momentum_context=case.sgs.reuse_rhs_momentum_context,
+        lasd_filter_backend=selected_lasd_filter_backend,
         wind_tunnel_model=wind_tunnel_model,
     )
     return PressureDrivenProblem(

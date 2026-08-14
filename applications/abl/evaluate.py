@@ -345,6 +345,7 @@ def resolved(case: BoussinesqCase) -> dict[str, Any]:
             "dtype": case.pressure.dtype,
             "pressure_method": case.pressure.method,
             "thomas_chunk": case.pressure.thomas_chunk,
+            "nonlinear_dealiasing": case.nonlinear_dealiasing,
             "nonlinear_padding_ratio": case.nonlinear_padding_ratio,
             "advection_frame_velocity_m_s": list(
                 case.advection_frame_velocity_m_s
@@ -413,6 +414,11 @@ def _physics_fingerprints(case: BoussinesqCase) -> tuple[str, str]:
         + f":{scalar_boundary.upper_flux.hex()}"
         + f"|surface-transfer={surface_transfer!r}"
         + f"|rayleigh={case.model.rayleigh_damping!r}"
+        + (
+            ""
+            if case.nonlinear_dealiasing == "three_halves"
+            else f"|dealiasing={case.nonlinear_dealiasing}"
+        )
         + f"|padding={case.nonlinear_padding_ratio.hex()}"
     )
     return closure, physics
@@ -1069,11 +1075,16 @@ def evaluate(
     restart: Path | None,
     max_steps: int | None,
     overwrite: bool,
+    lasd_filter_backend: str = "jax",
 ) -> dict[str, Any]:
     """Evaluate one already-composed case without selecting implementations."""
 
     if max_steps is not None and max_steps < 0:
         raise ValueError("maximum steps must be nonnegative")
+    if lasd_filter_backend not in ("jax", "cufft"):
+        raise ValueError("LASD filter backend must be jax or cufft")
+    if lasd_filter_backend == "cufft" and case.pressure.dtype != "float32":
+        raise ValueError("the cuFFT LASD backend currently requires float32")
     _configure_pressure_source()
     import jax
 
@@ -1124,6 +1135,8 @@ def evaluate(
         pressure_method=case.pressure.method,
         pressure_thomas_chunk=case.pressure.thomas_chunk,
         nonlinear_padding_ratio=case.nonlinear_padding_ratio,
+        nonlinear_dealiasing=case.nonlinear_dealiasing,
+        lasd_filter_backend=lasd_filter_backend,
     )
     closure_fingerprint, physics_fingerprint = _physics_fingerprints(case)
     scale_fingerprint = case.scalar_scales.fingerprint
@@ -1381,6 +1394,8 @@ def evaluate(
             "process_count": runtime.process_count,
             "global_device_count": runtime.global_devices,
             "local_device_count": runtime.local_devices,
+            "lasd_filter_backend": lasd_filter_backend,
+            "result_directory": str(output_dir),
             "restart": None if restart is None else str(restart),
             "initial_step": initial_step,
             "steps_run": steps_to_run,

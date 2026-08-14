@@ -98,6 +98,7 @@ class FlowConfig:
     von_karman: float
     initial_perturbation_rms_m_s: float
     initial_correlation_length_m: float
+    advection: str = "conservative"
 
     def __post_init__(self) -> None:
         positive = (
@@ -111,6 +112,8 @@ class FlowConfig:
             raise ConfigError("flow scales and wall constants must be positive")
         if self.initial_perturbation_rms_m_s < 0.0:
             raise ConfigError("initial perturbation RMS must be nonnegative")
+        if self.advection not in ("conservative", "rotational"):
+            raise ConfigError("flow.advection must be conservative or rotational")
 
     @property
     def pressure_acceleration_m_s2(self) -> float:
@@ -137,8 +140,16 @@ class SgsConfig:
     initial_coefficient: float
     minimum_coefficient: float
     maximum_coefficient: float
+    closure: str = "lasd"
+    static_coefficient: float = 0.16
+    turbulent_prandtl: float = 0.4
+    scalar_lasd_enabled: bool = True
+    reuse_rhs_momentum_context: bool = False
+    lasd_filter_backend: str = "jax"
 
     def __post_init__(self) -> None:
+        if self.closure not in ("lasd", "static-smagorinsky"):
+            raise ConfigError("unsupported SGS closure")
         if self.filter_grid_ratio <= 0.0:
             raise ConfigError("SGS filter-grid ratio must be positive")
         if self.update_interval_steps <= 0:
@@ -154,6 +165,16 @@ class SgsConfig:
             <= self.maximum_coefficient
         ):
             raise ConfigError("LASD coefficient bounds are inconsistent")
+        if self.static_coefficient < 0.0:
+            raise ConfigError("static Smagorinsky coefficient must be nonnegative")
+        if self.turbulent_prandtl <= 0.0:
+            raise ConfigError("turbulent Prandtl number must be positive")
+        if not isinstance(self.scalar_lasd_enabled, bool):
+            raise ConfigError("scalar LASD flag must be boolean")
+        if not isinstance(self.reuse_rhs_momentum_context, bool):
+            raise ConfigError("LASD momentum-context reuse flag must be boolean")
+        if self.lasd_filter_backend not in ("jax", "cufft"):
+            raise ConfigError("LASD filter backend must be jax or cufft")
 
 
 @dataclass(frozen=True, slots=True)
@@ -183,19 +204,35 @@ class TimeConfig:
 class NumericsConfig:
     dtype: str
     pressure_method: str
+    pressure_tridiag: str
+    pressure_thomas_chunk: int
     seed: int
     cfl_abort: float
     lasd_trajectory_cfl_abort: float
+    nonlinear_dealiasing: str = "three_halves"
 
     def __post_init__(self) -> None:
         if self.dtype not in ("float32", "float64"):
             raise ConfigError("numerics.dtype must be float32 or float64")
         if self.pressure_method not in ("transpose", "spike", "spike-adaptive"):
             raise ConfigError("unsupported pressure method")
+        if self.pressure_tridiag not in ("pcr", "thomas"):
+            raise ConfigError("unsupported pressure tridiagonal solver")
+        if self.pressure_thomas_chunk <= 0:
+            raise ConfigError("pressure Thomas chunk must be positive")
         if self.seed < 0:
             raise ConfigError("random seed must be nonnegative")
         if self.cfl_abort <= 0.0 or self.lasd_trajectory_cfl_abort <= 0.0:
             raise ConfigError("CFL abort limits must be positive")
+        if self.nonlinear_dealiasing not in (
+            "three_halves",
+            "two_thirds",
+            "legacy_two_thirds",
+        ):
+            raise ConfigError(
+                "numerics.nonlinear_dealiasing must be three_halves, "
+                "two_thirds, or legacy_two_thirds"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -251,6 +288,11 @@ class CaseConfig:
                 "estimated LASD trajectory CFL exceeds its abort limit; "
                 "reduce dt or the update interval"
             )
+        if (
+            self.sgs.lasd_filter_backend == "cufft"
+            and self.numerics.dtype != "float32"
+        ):
+            raise ConfigError("the cuFFT LASD backend currently requires float32")
 
     @property
     def top_cell_height_m(self) -> float:
@@ -301,6 +343,7 @@ class CaseConfig:
                 ],
             },
             "flow": {
+                "advection": self.flow.advection,
                 "friction_velocity_m_s": self.flow.friction_velocity_m_s,
                 "roughness_length_m": self.flow.roughness_length_m,
                 "forcing_height_m": self.flow.forcing_height_m,
@@ -315,8 +358,19 @@ class CaseConfig:
                 "porte_agel_correction": self.wall.porte_agel_correction,
             },
             "sgs": {
-                "closure": "lagrangian-scale-dependent-dynamic",
+                "closure": (
+                    "lagrangian-scale-dependent-dynamic"
+                    if self.sgs.closure == "lasd"
+                    else "static-smagorinsky"
+                ),
                 "update_interval_steps": self.sgs.update_interval_steps,
+                "static_coefficient": self.sgs.static_coefficient,
+                "turbulent_prandtl": self.sgs.turbulent_prandtl,
+                "scalar_lasd_enabled": self.sgs.scalar_lasd_enabled,
+                "reuse_rhs_momentum_context": (
+                    self.sgs.reuse_rhs_momentum_context
+                ),
+                "lasd_filter_backend": self.sgs.lasd_filter_backend,
             },
             "time": {
                 "method": "ab2",
@@ -327,6 +381,9 @@ class CaseConfig:
             "numerics": {
                 "dtype": self.numerics.dtype,
                 "pressure_method": self.numerics.pressure_method,
+                "pressure_tridiag": self.numerics.pressure_tridiag,
+                "pressure_thomas_chunk": self.numerics.pressure_thomas_chunk,
+                "nonlinear_dealiasing": self.numerics.nonlinear_dealiasing,
                 "estimated_startup_cfl": self.estimated_startup_cfl,
                 "estimated_lasd_trajectory_cfl": (
                     self.estimated_lasd_trajectory_cfl
@@ -411,6 +468,11 @@ def load_case(
             initial_correlation_length_m=_number(
                 flow, "initial_correlation_length_m"
             ),
+            advection=(
+                _string(flow, "advection")
+                if "advection" in flow
+                else "conservative"
+            ),
         ),
         wall=WallConfig(
             filter_grid_ratio=_number(wall, "filter_grid_ratio"),
@@ -429,6 +491,30 @@ def load_case(
             initial_coefficient=_number(sgs, "initial_coefficient"),
             minimum_coefficient=_number(sgs, "minimum_coefficient"),
             maximum_coefficient=_number(sgs, "maximum_coefficient"),
+            closure=sgs.get("closure", "lasd"),
+            static_coefficient=_number(
+                sgs,
+                "static_coefficient",
+            ) if "static_coefficient" in sgs else 0.16,
+            turbulent_prandtl=_number(
+                sgs,
+                "turbulent_prandtl",
+            ) if "turbulent_prandtl" in sgs else 0.4,
+            scalar_lasd_enabled=_boolean(
+                sgs,
+                "scalar_lasd_enabled",
+                default=True,
+            ),
+            reuse_rhs_momentum_context=_boolean(
+                sgs,
+                "reuse_rhs_momentum_context",
+                default=False,
+            ),
+            lasd_filter_backend=(
+                _string(sgs, "lasd_filter_backend")
+                if "lasd_filter_backend" in sgs
+                else "jax"
+            ),
         ),
         time=TimeConfig(
             dt_seconds=resolved_dt,
@@ -437,10 +523,25 @@ def load_case(
         numerics=NumericsConfig(
             dtype=_string(numerics, "dtype"),
             pressure_method=_string(numerics, "pressure_method"),
+            pressure_tridiag=(
+                _string(numerics, "pressure_tridiag")
+                if "pressure_tridiag" in numerics
+                else "pcr"
+            ),
+            pressure_thomas_chunk=(
+                _integer(numerics, "pressure_thomas_chunk")
+                if "pressure_thomas_chunk" in numerics
+                else 1
+            ),
             seed=_integer(numerics, "seed"),
             cfl_abort=_number(numerics, "cfl_abort"),
             lasd_trajectory_cfl_abort=_number(
                 numerics, "lasd_trajectory_cfl_abort"
+            ),
+            nonlinear_dealiasing=(
+                _string(numerics, "nonlinear_dealiasing")
+                if "nonlinear_dealiasing" in numerics
+                else "three_halves"
             ),
         ),
         output=OutputConfig(

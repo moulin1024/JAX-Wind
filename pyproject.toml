@@ -14,6 +14,7 @@ pressure = ["spectral-fd>=0.2.0"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+exclude = ["jaxwind.windfarm.reference*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -21,3 +22,4 @@ pythonpath = ["src"]
 
 [tool.ruff]
 line-length = 88
+extend-exclude = ["src/jaxwind/windfarm/reference/openfast"]

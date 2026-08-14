@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 
 from jaxwind.domain import ScaleSystem
-from jaxwind.openfast import (
+from jaxwind.windfarm import (
     build_modal_blade_model,
     load_openfast_modal_turbine,
 )

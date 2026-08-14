@@ -51,6 +51,7 @@ from jaxwind.physics import (  # noqa: E402
     NoBuoyancy,
     NoRotation,
     NoSurfaceTransfer,
+    RotationalAdvection,
     ScalarFluxBoundary,
     StaticSmagorinsky,
     StaticSmagorinskyScalarFlux,
@@ -167,23 +168,252 @@ class FusedNeutralSgsTests(unittest.TestCase):
             )
         )
 
-    def test_solver_rejects_a_model_without_a_fused_executable(self) -> None:
-        algebra = build_discretization(self.decomposition)
+    def test_rotational_lasd_fused_rhs_matches_resolved_contributions(self) -> None:
+        self.assert_fused_matches_contributions(
+            BoussinesqModel(
+                DryFlowModel(
+                    RotationalAdvection(),
+                    KinematicPressureGradient(0.002, -0.001),
+                    FilteredNeutralLogWall(0.01),
+                    LagrangianScaleDependentDynamic(update_interval=4),
+                    NoRotation(),
+                ),
+                ConservativeScalarAdvection(),
+                LagrangianScaleDependentScalarFlux(),
+                NoBuoyancy(),
+            )
+        )
+
+    def test_rotational_fused_rhs_removes_unresolved_product_alias(self) -> None:
+        algebra = build_discretization(
+            self.decomposition,
+            frozen_zero_scalar=True,
+        )
+        grid = self.decomposition.grid
+        x = 2.0 * jnp.pi * jnp.arange(grid.nx) / grid.nx
+        shape = (1, grid.nz, grid.ny, grid.nx)
+        u = jnp.broadcast_to(jnp.sin(3.0 * x), shape)
+        v = jnp.broadcast_to(jnp.cos(3.0 * x), shape)
+        zero_w = jnp.zeros(shape, dtype=u.dtype)
+        velocity = VelocityVector(
+            replace(self.fields.velocity.x, payload=u),
+            replace(self.fields.velocity.y, payload=v),
+            replace(
+                self.fields.velocity.z,
+                owned=replace(self.fields.velocity.z.owned, payload=zero_w),
+            ),
+        )
+        fields = replace(self.fields, velocity=velocity)
+        wall = FilteredNeutralLogWall(0.01)
         model = BoussinesqModel(
             DryFlowModel(
-                ConservativeAdvection(),
+                RotationalAdvection(),
                 KinematicPressureGradient(0.0),
-                FilteredNeutralLogWall(0.01),
-                StaticSmagorinsky(0.16),
+                wall,
+                StaticSmagorinsky(0.0),
                 NoRotation(),
             ),
             ConservativeScalarAdvection(),
             StaticSmagorinskyScalarFlux(),
             NoBuoyancy(),
         )
-        evaluation = Evaluation(self.fields, AcceptedClock(0.0, 0), None)
-        with self.assertRaisesRegex(TypeError, "requires the fused"):
-            BoussinesqVectorField(algebra, model)(evaluation)
+
+        fused = algebra.fused_boussinesq_tendency(fields, model)
+        unpadded = algebra.advection_tendency(
+            algebra.dry_flow_context(velocity),
+            RotationalAdvection(),
+            wall,
+        )
+        fused_y = fused.velocity.y.payload[:, 1:]
+        unpadded_y = unpadded.y.payload[:, 1:]
+        self.assertLess(
+            float(
+                jnp.max(
+                    jnp.abs(
+                        fused_y
+                        - jnp.mean(fused_y, axis=(-2, -1), keepdims=True)
+                    )
+                )
+            ),
+            3.0e-12,
+        )
+        self.assertGreater(
+            float(
+                jnp.max(
+                    jnp.abs(
+                        unpadded_y
+                        - jnp.mean(unpadded_y, axis=(-2, -1), keepdims=True)
+                    )
+                )
+            ),
+            0.1,
+        )
+
+    def test_two_thirds_rotational_rhs_filters_unresolved_input_modes(self) -> None:
+        algebra = build_discretization(
+            self.decomposition,
+            nonlinear_dealiasing="two_thirds",
+            frozen_zero_scalar=True,
+        )
+        grid = self.decomposition.grid
+        x = 2.0 * jnp.pi * jnp.arange(grid.nx) / grid.nx
+        shape = (1, grid.nz, grid.ny, grid.nx)
+        u = jnp.broadcast_to(jnp.sin(3.0 * x), shape)
+        v = jnp.broadcast_to(jnp.cos(3.0 * x), shape)
+        zero_w = jnp.zeros(shape, dtype=u.dtype)
+        velocity = VelocityVector(
+            replace(self.fields.velocity.x, payload=u),
+            replace(self.fields.velocity.y, payload=v),
+            replace(
+                self.fields.velocity.z,
+                owned=replace(self.fields.velocity.z.owned, payload=zero_w),
+            ),
+        )
+        fields = replace(self.fields, velocity=velocity)
+        model = BoussinesqModel(
+            DryFlowModel(
+                RotationalAdvection(),
+                KinematicPressureGradient(0.0),
+                FilteredNeutralLogWall(0.01),
+                StaticSmagorinsky(0.0),
+                NoRotation(),
+            ),
+            ConservativeScalarAdvection(),
+            StaticSmagorinskyScalarFlux(),
+            NoBuoyancy(),
+        )
+
+        fused = algebra.fused_boussinesq_tendency(fields, model)
+        for payload in (
+            fused.velocity.x.payload[:, 1:],
+            fused.velocity.y.payload[:, 1:],
+            fused.velocity.z.owned.payload[:, 1:],
+        ):
+            self.assertLess(float(jnp.max(jnp.abs(payload))), 3.0e-12)
+
+    def test_lasd_fused_rhs_reuses_prepared_momentum_context(self) -> None:
+        model = BoussinesqModel(
+            DryFlowModel(
+                ConservativeAdvection(),
+                KinematicPressureGradient(0.002, -0.001),
+                FilteredNeutralLogWall(0.01),
+                LagrangianScaleDependentDynamic(update_interval=4),
+                NoRotation(),
+            ),
+            ConservativeScalarAdvection(),
+            LagrangianScaleDependentScalarFlux(),
+            NoBuoyancy(),
+        )
+        algebra = build_discretization(
+            self.decomposition,
+            frozen_zero_scalar=True,
+        )
+        fields = algebra.initialize_lasd_closure(self.fields, model)
+        regular = algebra.fused_boussinesq_tendency(fields, model)
+        context = algebra.dry_flow_context(fields.velocity)
+        reused = algebra.fused_boussinesq_tendency(
+            fields,
+            model,
+            momentum_context=context,
+        )
+
+        for expected, actual in (
+            (regular.velocity.x.payload, reused.velocity.x.payload),
+            (regular.velocity.y.payload, reused.velocity.y.payload),
+            (regular.velocity.z.owned.payload, reused.velocity.z.owned.payload),
+            (
+                regular.potential_temperature.payload,
+                reused.potential_temperature.payload,
+            ),
+        ):
+            self.assertLess(float(jnp.max(jnp.abs(expected - actual))), 3.0e-12)
+
+    def test_momentum_only_lasd_matches_full_zero_scalar_update(self) -> None:
+        momentum = LagrangianScaleDependentDynamic(update_interval=4)
+
+        def model(*, scalar_updates: bool) -> BoussinesqModel:
+            return BoussinesqModel(
+                DryFlowModel(
+                    ConservativeAdvection(),
+                    KinematicPressureGradient(0.0),
+                    FilteredNeutralLogWall(0.01),
+                    momentum,
+                    NoRotation(),
+                ),
+                ConservativeScalarAdvection(),
+                LagrangianScaleDependentScalarFlux(
+                    dynamic_updates_enabled=scalar_updates,
+                ),
+                NoBuoyancy(),
+            )
+
+        algebra = build_discretization(
+            self.decomposition,
+            frozen_zero_scalar=True,
+        )
+        full_model = model(scalar_updates=True)
+        momentum_only_model = model(scalar_updates=False)
+        full_fields = algebra.initialize_lasd_closure(self.fields, full_model)
+        momentum_only_fields = algebra.initialize_lasd_closure(
+            self.fields,
+            momentum_only_model,
+        )
+        clock = AcceptedClock(0.015, 3)
+        full, full_diagnostic = algebra.prepare_lasd_closure(
+            full_fields,
+            full_model,
+            clock,
+            0.005,
+        )
+        momentum_only, momentum_only_diagnostic = algebra.prepare_lasd_closure(
+            momentum_only_fields,
+            momentum_only_model,
+            clock,
+            0.005,
+        )
+
+        self.assertTrue(bool(full_diagnostic.updated))
+        self.assertTrue(bool(momentum_only_diagnostic.updated))
+        for full_value, momentum_only_value in zip(
+            full.closure.momentum.fields(),
+            momentum_only.closure.momentum.fields(),
+            strict=True,
+        ):
+            self.assertLess(
+                float(
+                    jnp.max(
+                        jnp.abs(full_value.payload - momentum_only_value.payload)
+                    )
+                ),
+                3.0e-12,
+            )
+        for before, after in zip(
+            momentum_only_fields.closure.scalar.fields(),
+            momentum_only.closure.scalar.fields(),
+            strict=True,
+        ):
+            self.assertEqual(
+                float(jnp.max(jnp.abs(before.payload - after.payload))),
+                0.0,
+            )
+
+    def test_static_smagorinsky_fused_rhs_matches_individual_contributions(
+        self,
+    ) -> None:
+        self.assert_fused_matches_contributions(
+            BoussinesqModel(
+                DryFlowModel(
+                    ConservativeAdvection(),
+                    KinematicPressureGradient(0.0),
+                    FilteredNeutralLogWall(0.01),
+                    StaticSmagorinsky(0.16),
+                    NoRotation(),
+                ),
+                ConservativeScalarAdvection(),
+                StaticSmagorinskyScalarFlux(),
+                NoBuoyancy(),
+            )
+        )
 
     def test_lasd_active_scalar_coriolis_fusion_matches_contributions(self) -> None:
         self.assert_fused_matches_contributions(

@@ -1,5 +1,11 @@
-"""OpenFAST input adapters for JAX-Wind turbine models."""
+"""Wind-turbine parameterizations and OpenFAST input adapters."""
 
+from .actuator_disk import (
+    DTU_10MW_HUB_HEIGHT_M,
+    DTU_10MW_ROTOR_DIAMETER_M,
+    SimpleActuatorDisk,
+    dtu_10mw_reference_actuator_disk,
+)
 from .errors import OpenFASTInputError
 from .rigid import (
     OpenFASTAirfoilPolar,
@@ -25,7 +31,11 @@ __all__ = [
     "OpenFASTInputError",
     "OpenFASTModalTurbine",
     "OpenFASTRigidTurbine",
+    "DTU_10MW_HUB_HEIGHT_M",
+    "DTU_10MW_ROTOR_DIAMETER_M",
+    "SimpleActuatorDisk",
     "build_modal_blade_model",
+    "dtu_10mw_reference_actuator_disk",
     "load_openfast_modal_turbine",
     "load_openfast_rigid_turbine",
 ]

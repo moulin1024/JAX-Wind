@@ -61,6 +61,7 @@ def write_flow_gif(
     grid: Any,
     fringe_start_x_m: float,
     fps: int,
+    turbine: Any | None = None,
 ) -> Path:
     """Render fixed-scale X--Z streamwise velocity with the fringe annotated."""
 
@@ -107,6 +108,34 @@ def write_flow_gif(
         va="top",
         bbox={"facecolor": "black", "alpha": 0.38, "edgecolor": "none"},
     )
+    if turbine is not None:
+        lower = turbine.hub_height_m - 0.5 * turbine.rotor_diameter_m
+        upper = turbine.hub_height_m + 0.5 * turbine.rotor_diameter_m
+        axis.plot(
+            (turbine.x_m, turbine.x_m),
+            (lower, upper),
+            color="black",
+            linewidth=3.0,
+            solid_capstyle="round",
+        )
+        axis.scatter(
+            (turbine.x_m,),
+            (turbine.hub_height_m,),
+            color="white",
+            edgecolor="black",
+            linewidth=1.0,
+            s=34,
+            zorder=4,
+        )
+        axis.text(
+            turbine.x_m,
+            upper + 0.025 * grid.lz,
+            "DTU 10-MW ADM",
+            color="black",
+            ha="center",
+            va="bottom",
+            bbox={"facecolor": "white", "alpha": 0.7, "edgecolor": "none"},
+        )
     axis.set(xlabel="x [m]", ylabel="z [m]")
     colorbar = figure.colorbar(image, ax=axis, pad=0.02)
     colorbar.set_label(r"streamwise velocity $u$ [m s$^{-1}$]")

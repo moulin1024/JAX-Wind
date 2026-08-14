@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from jaxwind.domain import ScaleSystem
-from jaxwind.openfast import (
+from jaxwind.windfarm import (
     OpenFASTInputError,
     load_openfast_rigid_turbine,
 )

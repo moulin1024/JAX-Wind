@@ -1,0 +1,76 @@
+[case]
+name = "gabls1_lasd_64x64x64"
+citation = "Beare et al. (2006), Boundary-Layer Meteorology 118, 247-272"
+initial_profile = "reference/initial_profiles_64.csv"
+reference_results = "reference/reference_results.json"
+seed = 0
+
+[domain]
+cells = [64, 64, 64]
+lengths_m = [400.0, 400.0, 400.0]
+
+[scales]
+length_m = 400.0
+velocity_m_s = 8.0
+scalar = 1.0
+
+[flow]
+advection = "conservative"
+pressure_acceleration_m_s2 = [0.0, 0.0]
+geostrophic_velocity_m_s = [8.0, 0.0]
+advection_frame_velocity_m_s = [8.0, 0.0]
+coriolis_s = [1.39e-4, 0.0]
+roughness_length_m = 0.1
+von_karman = 0.4
+
+[scalar]
+quantity = "potential_temperature"
+reference_value = 265.0
+surface_flux = 0.0
+buoyancy_acceleration_per_unit = 0.03722960151802657
+
+[surface_scalar]
+initial_value = 265.0
+rate_per_second = -6.944444444444444e-5
+roughness_length_m = 0.1
+
+[time]
+dt_seconds = 0.08333333333333333
+steps = 388800
+
+[sgs]
+filter_grid_ratio = 1.5
+test_filter_ratio = 2.0
+update_interval_steps = 8
+timescale_coefficient = 1.5
+momentum_initial_coefficient = 0.03
+momentum_minimum_coefficient = 1.0e-6
+momentum_maximum_coefficient = 0.81
+scalar_initial_coefficient = 0.03
+scalar_minimum_coefficient = 0.0
+scalar_maximum_coefficient = 1.0
+stratification_beta = 0.0
+stratification_power = 2.0
+
+[numerics]
+dtype = "float32"
+pressure_method = "spike"
+thomas_chunk = 32
+cfl_warning = 0.9
+cfl_abort = 1.1
+trajectory_cfl_abort = 1.0
+nonlinear_padding_ratio = 1.5
+
+[diagnostics]
+sample_start_step = 345600
+sample_every_steps = 720
+log_every_steps = 3600
+checkpoint_every_steps = 36000
+reference_length_m = 100.0
+reference_velocity_m_s = 8.0
+reference_scalar = 1.0
+inversion_search_max_height_m = 250.0
+spectrum_heights_m = [25.0, 75.0, 150.0]
+
+[output]
+directory = "outputs/gabls1_lasd_64x64x64_dt0p083333_lasd8"

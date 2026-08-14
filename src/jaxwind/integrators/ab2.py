@@ -83,6 +83,24 @@ class VectorFieldResult(Generic[T, D]):
 
 
 @dataclass(frozen=True, slots=True)
+class PreparedEvaluation(Generic[V, D]):
+    """Prepared state plus a transient context reusable by vector evaluation."""
+
+    value: V
+    context: Any
+    diagnostic: D
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedVectorEvaluation(Generic[V, T, D]):
+    """Prepared state whose vector-field evaluation is already available."""
+
+    value: V
+    evaluated: VectorFieldResult[T, Any]
+    diagnostic: D
+
+
+@dataclass(frozen=True, slots=True)
 class _AB2Stage(Generic[V, T, D]):
     value: V
     evaluated: VectorFieldResult[T, D]
@@ -152,21 +170,46 @@ def _stage_ab2(
 
     if state.integrator_fingerprint != config.fingerprint:
         raise ValueError("AB2 state fingerprint does not match the configuration")
+    precomputed_evaluated = None
     if prepare is None:
         prepared = value
         preparation_diagnostic = None
+        evaluation_context = None
     else:
-        prepared, preparation_diagnostic = prepare(
+        preparation = prepare(
             value,
             state.clock,
             environment,
         )
+        if isinstance(preparation, PreparedVectorEvaluation):
+            prepared = preparation.value
+            preparation_diagnostic = preparation.diagnostic
+            evaluation_context = None
+            precomputed_evaluated = preparation.evaluated
+        elif isinstance(preparation, PreparedEvaluation):
+            prepared = preparation.value
+            preparation_diagnostic = preparation.diagnostic
+            evaluation_context = preparation.context
+        else:
+            prepared, preparation_diagnostic = preparation
+            evaluation_context = None
     evaluation_time = EvaluationTime(
         state.clock.time,
         state.clock.step,
         "ab2-current",
     )
-    evaluated = vector_field(Evaluation(prepared, evaluation_time, environment))
+    evaluation = Evaluation(prepared, evaluation_time, environment)
+    if precomputed_evaluated is not None:
+        evaluated = precomputed_evaluated
+    elif evaluation_context is None:
+        evaluated = vector_field(evaluation)
+    else:
+        evaluate_prepared = getattr(vector_field, "evaluate_prepared", None)
+        if evaluate_prepared is None:
+            raise TypeError(
+                "prepared vector evaluation requires evaluate_prepared support"
+            )
+        evaluated = evaluate_prepared(evaluation, evaluation_context)
     if isinstance(state.history, ColdStart):
         previous = evaluated.tendency
         current_weight = 1.0

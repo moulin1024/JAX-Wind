@@ -113,6 +113,16 @@ class ZSlabBoussinesqContext:
     arrays: ZSlabScalarArrays
 
 
+@dataclass(frozen=True, slots=True)
+class ZSlabProjectionPreparation:
+    """Filtered horizontal spectra retained until pressure correction."""
+
+    x_spectrum: Any
+    y_spectrum: Any
+    z_payload: Any
+    lower_boundary: Any
+
+
 class ActuatorLineDiagnostic(NamedTuple):
     """Replicated per-element aerodynamic data from a distributed evaluation."""
 
@@ -135,6 +145,8 @@ class _ProjectionKernels:
     pressure_gradient: Callable
     divergence: Callable
     enforce_upper_boundary: Callable
+    prepare: Callable
+    finish: Callable
     horizontal_divergence: Callable
     horizontal_gradient: Callable
     filter_horizontal: Callable
@@ -145,6 +157,7 @@ class _ProjectionKernels:
 @dataclass(frozen=True, slots=True)
 class _FlowKernels:
     ab2_update: Callable
+    ab2_update_velocity: Callable
     combine_payloads: Callable
     context: Callable
     advection: Callable
@@ -154,6 +167,9 @@ class _FlowKernels:
     sgs_vertical_flux: Callable
     sgs_tke_transfer: Callable
     fused_boussinesq: Callable
+    fused_boussinesq_from_context: Callable
+    fused_rotational_boussinesq: Callable
+    fused_rotational_boussinesq_from_context: Callable
 
 
 @dataclass(frozen=True, slots=True)
@@ -162,6 +178,7 @@ class _LasdKernels:
     accumulate: Callable
     accumulate_velocity: Callable
     update: Callable
+    update_momentum: Callable
     diagnostics: Callable
 
 
@@ -409,6 +426,103 @@ class _JaxDiscretization(ZSlabLasdMixin, ZSlabFlowMixin):
             ),
         )
 
+    def prepare_projection(
+        self,
+        velocity: VelocityVector,
+        boundary: VerticalBoundary[Any],
+    ) -> tuple[ZSlabProjectionPreparation, AddressableField]:
+        """Filter the candidate, retaining spectra through pressure solve."""
+        self._validate_velocity_cell(velocity.x, XVelocity)
+        self._validate_velocity_cell(velocity.y, YVelocity)
+        self._validate_field(velocity.z.owned, ZFace)
+        if velocity.z.owned.quantity is not VerticalVelocity:
+            raise TypeError("vertical velocity requires VerticalVelocity")
+        if velocity.z.owned.phase not in (Candidate, Projected):
+            raise TypeError("vertical velocity must be Candidate or Projected")
+
+        boundary_dtype = velocity.z.owned.payload.dtype
+        boundary_shape = (
+            self.decomposition.grid.ny,
+            self.decomposition.grid.nx,
+        )
+
+        def filtered_boundary(value):
+            array = jnp.asarray(value, dtype=boundary_dtype)
+            if array.ndim == 0:
+                return jnp.broadcast_to(array, boundary_shape)
+            return self.projection.filter_boundary(array)
+
+        lower_boundary = filtered_boundary(boundary.lower)
+        x_spectrum, y_spectrum, z_payload, divergence_payload = (
+            self.projection.prepare(
+                velocity.x.payload,
+                velocity.y.payload,
+                velocity.z.owned.payload,
+                lower_boundary,
+                filtered_boundary(boundary.upper),
+            )
+        )
+        prepared = ZSlabProjectionPreparation(
+            x_spectrum,
+            y_spectrum,
+            z_payload,
+            lower_boundary,
+        )
+        divergence = AddressableField(
+            Divergence,
+            Cell,
+            self._expected_regions(Cell),
+            Evaluated,
+            divergence_payload,
+        )
+        return prepared, divergence
+
+    def finish_projection(
+        self,
+        prepared: ZSlabProjectionPreparation,
+        pressure: AddressableField,
+        dt: float,
+    ) -> VelocityVector:
+        """Correct retained candidate spectra and materialize the velocity."""
+        if not isinstance(prepared, ZSlabProjectionPreparation):
+            raise TypeError("finish_projection requires a prepared JAX candidate")
+        self._validate_field(pressure, Cell)
+        if pressure.quantity is not PressureCorrection:
+            raise TypeError("finish_projection requires PressureCorrection")
+        x_payload, y_payload, z_payload = self.projection.finish(
+            prepared.x_spectrum,
+            prepared.y_spectrum,
+            prepared.z_payload,
+            pressure.payload,
+            dt,
+        )
+        return VelocityVector(
+            AddressableField(
+                XVelocity,
+                Cell,
+                self._expected_regions(Cell),
+                Projected,
+                x_payload,
+            ),
+            AddressableField(
+                YVelocity,
+                Cell,
+                self._expected_regions(Cell),
+                Projected,
+                y_payload,
+            ),
+            VerticalFaceField(
+                AddressableField(
+                    VerticalVelocity,
+                    ZFace,
+                    self._expected_regions(ZFace),
+                    Projected,
+                    z_payload,
+                ),
+                prepared.lower_boundary,
+            ),
+        )
+
     def _dry_tendency(
         self,
         x,
@@ -491,6 +605,32 @@ class _JaxDiscretization(ZSlabLasdMixin, ZSlabFlowMixin):
         )
         return ZSlabBoussinesqContext(
             momentum,
+            scalar,
+            self.scalar.context(scalar.payload),
+        )
+
+    def boussinesq_context_from_momentum(
+        self,
+        fields: BoussinesqFields,
+        momentum: ZSlabDryFlowContext,
+    ) -> ZSlabBoussinesqContext:
+        """Attach the scalar context without rebuilding momentum derivatives."""
+
+        scalar = fields.potential_temperature
+        self._validate_field(scalar, Cell)
+        if scalar.quantity not in (
+            PotentialTemperaturePerturbation,
+            PassiveScalarConcentration,
+        ):
+            raise TypeError("Boussinesq context requires a supported scalar quantity")
+        if scalar.phase is not Accepted:
+            raise TypeError("Boussinesq context requires accepted scalar state")
+        return ZSlabBoussinesqContext(
+            ZSlabDryFlowContext(
+                momentum.velocity,
+                momentum.arrays,
+                fields.closure,
+            ),
             scalar,
             self.scalar.context(scalar.payload),
         )
@@ -640,30 +780,19 @@ class _JaxDiscretization(ZSlabLasdMixin, ZSlabFlowMixin):
             ):
                 raise TypeError("AB2 requires an evaluated vertical tendency")
 
-        def update(state, current, previous):
-            return self.flow.ab2_update(
-                state,
-                current,
-                previous,
-                dt,
-                current_weight,
-                previous_weight,
-            )
-
-        x_payload = update(
+        x_payload, y_payload, z_payload = self.flow.ab2_update_velocity(
             velocity.x.payload,
-            current_tendency.x.payload,
-            previous_tendency.x.payload,
-        )
-        y_payload = update(
             velocity.y.payload,
-            current_tendency.y.payload,
-            previous_tendency.y.payload,
-        )
-        z_payload = update(
             velocity.z.owned.payload,
+            current_tendency.x.payload,
+            current_tendency.y.payload,
             current_tendency.z.owned.payload,
+            previous_tendency.x.payload,
+            previous_tendency.y.payload,
             previous_tendency.z.owned.payload,
+            dt,
+            current_weight,
+            previous_weight,
         )
         boundary_dtype = z_payload.dtype
         boundary_dt = jnp.asarray(dt, dtype=boundary_dtype)
@@ -779,7 +908,9 @@ def build_discretization(
     axis_name: str = "jaxwind_z",
     porte_agel_wall_correction: bool = True,
     nonlinear_padding_ratio: float = 1.5,
+    nonlinear_dealiasing: str = "three_halves",
     frozen_zero_scalar: bool = False,
+    lasd_filter_backend: str = "jax",
 ) -> _JaxDiscretization:
     """Build the private production spatial discretization.
 
@@ -800,5 +931,7 @@ def build_discretization(
         axis_name=axis_name,
         porte_agel_wall_correction=porte_agel_wall_correction,
         nonlinear_padding_ratio=nonlinear_padding_ratio,
+        nonlinear_dealiasing=nonlinear_dealiasing,
         frozen_zero_scalar=frozen_zero_scalar,
+        lasd_filter_backend=lasd_filter_backend,
     )

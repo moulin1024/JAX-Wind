@@ -82,12 +82,23 @@ def project(
         raise ValueError("projection dt must be finite and positive")
     if not isinstance(compute_residual, bool):
         raise TypeError("compute_residual must be a bool")
-    prepared = algebra.enforce_normal_boundary(velocity, normal_boundary)
-    candidate_divergence = algebra.velocity_divergence(prepared)
+    prepare_projection = getattr(algebra, "prepare_projection", None)
+    if prepare_projection is None:
+        prepared = algebra.enforce_normal_boundary(velocity, normal_boundary)
+        candidate_divergence = algebra.velocity_divergence(prepared)
+    else:
+        prepared, candidate_divergence = prepare_projection(
+            velocity,
+            normal_boundary,
+        )
     rhs = algebra.pressure_rhs(candidate_divergence, 1.0 / dt)
     pressure = pressure_solver.solve(rhs)
-    gradient = algebra.pressure_gradient(pressure)
-    projected = algebra.correct_velocity(prepared, gradient, dt)
+    finish_projection = getattr(algebra, "finish_projection", None)
+    if finish_projection is None:
+        gradient = algebra.pressure_gradient(pressure)
+        projected = algebra.correct_velocity(prepared, gradient, dt)
+    else:
+        projected = finish_projection(prepared, pressure, dt)
     residual = (
         algebra.velocity_divergence(projected) if compute_residual else None
     )

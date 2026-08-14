@@ -12,6 +12,7 @@ from jaxwind.domain import (
     Cell,
     DistributionSpec,
     EqualVerticalPartition,
+    EvaluationTime,
     MeshAxis,
     MeshTopology,
     VerticalBoundary,
@@ -22,7 +23,7 @@ from jaxwind.domain import (
     ZFace,
 )
 from jaxwind.effects import DistributedCheckpointLayout, JaxRuntime
-from jaxwind.integrators import AB2Config, cold_start_boussinesq
+from jaxwind.integrators import AB2Config, Evaluation, cold_start_boussinesq
 from jaxwind._jax.discretization import build_discretization
 from jaxwind._jax.pytrees import register_solver_pytrees
 from jaxwind.operators import VelocityVector, project
@@ -31,6 +32,9 @@ from jaxwind.physics import (
     BoussinesqModel,
     BoussinesqVectorField,
     DiagnosticLasdConstants,
+    IdentityClosureEvent,
+    LagrangianScaleDependentDynamic,
+    LagrangianScaleDependentScalarFlux,
     LasdAcceptedStepEvent,
     WindTunnelBoussinesqVectorField,
     WindTunnelModel,
@@ -179,7 +183,9 @@ class JaxSolver:
     def initialize_fields(self, fields: BoussinesqFields) -> BoussinesqFields:
         """Initialize closure memory selected by the semantic model."""
 
-        return self._algebra.initialize_lasd_closure(fields, self.model)
+        if isinstance(self.model.momentum.sgs, LagrangianScaleDependentDynamic):
+            return self._algebra.initialize_lasd_closure(fields, self.model)
+        return fields
 
     def cold_start(
         self,
@@ -253,11 +259,15 @@ def build_jax_solver(
     normal_boundary: Callable[[Any, Any], VerticalBoundary],
     pressure_dtype: str,
     pressure_method: str = "transpose",
+    pressure_tridiag: str = "thomas",
     pressure_thomas_chunk: int = 1,
     nonlinear_padding_ratio: float = 1.5,
+    nonlinear_dealiasing: str = "three_halves",
     wind_tunnel_model: WindTunnelModel | None = None,
     environment: Any = None,
     optimize_frozen_zero_scalar: bool = False,
+    reuse_rhs_momentum_context: bool = False,
+    lasd_filter_backend: str = "jax",
 ) -> JaxSolver:
     """Build the same solver for the full initialized JAX process mesh.
 
@@ -270,6 +280,16 @@ def build_jax_solver(
         raise ValueError(
             "the vertical cell count must be divisible by the global JAX "
             "device count"
+        )
+    if not isinstance(reuse_rhs_momentum_context, bool):
+        raise TypeError("LASD momentum-context reuse flag must be boolean")
+    if (
+        isinstance(model.scalar_sgs, LagrangianScaleDependentScalarFlux)
+        and not model.scalar_sgs.dynamic_updates_enabled
+        and not optimize_frozen_zero_scalar
+    ):
+        raise ValueError(
+            "disabled scalar LASD updates require a frozen zero scalar"
         )
     register_solver_pytrees()
     decomposition = EqualVerticalPartition(
@@ -288,7 +308,9 @@ def build_jax_solver(
         addressable_partitions=addressable,
         porte_agel_wall_correction=wall_correction,
         nonlinear_padding_ratio=nonlinear_padding_ratio,
+        nonlinear_dealiasing=nonlinear_dealiasing,
         frozen_zero_scalar=optimize_frozen_zero_scalar,
+        lasd_filter_backend=lasd_filter_backend,
     )
     pressure_solver = build_spectral_fd_pressure_adapter(
         decomposition,
@@ -296,6 +318,7 @@ def build_jax_solver(
         runtime=runtime,
         dtype=pressure_dtype,
         method=pressure_method,
+        tridiag=pressure_tridiag,
         thomas_chunk=pressure_thomas_chunk,
     )
     vector_field = BoussinesqVectorField(algebra, model)
@@ -307,7 +330,68 @@ def build_jax_solver(
             vector_field,
             wind_tunnel_model,
         )
-    closure_event = LasdAcceptedStepEvent(algebra, model, integrator.dt)
+    fused_update_evaluation = None
+    if (
+        reuse_rhs_momentum_context
+        and wind_tunnel_model is None
+        and isinstance(model.momentum.sgs, LagrangianScaleDependentDynamic)
+    ):
+        import jax
+
+        interval = model.momentum.sgs.update_interval
+
+        def compiled_update(first_update: bool):
+            update_step = interval - 1 if first_update else 2 * interval - 1
+            update_clock = AcceptedClock(0.0, update_step)
+
+            def update_and_evaluate(fields, execution_time):
+                prepared, _, momentum_context = (
+                    algebra.prepare_lasd_closure_with_context(
+                        fields,
+                        model,
+                        update_clock,
+                        integrator.dt,
+                    )
+                )
+                evaluation = Evaluation(
+                    prepared,
+                    EvaluationTime(
+                        execution_time,
+                        update_step,
+                        "fused-lasd-update",
+                    ),
+                    environment,
+                )
+                evaluated = vector_field.evaluate_prepared(
+                    evaluation,
+                    momentum_context,
+                )
+                return prepared, evaluated.tendency
+
+            return jax.jit(update_and_evaluate)
+
+        first_update_evaluation = compiled_update(True)
+        regular_update_evaluation = compiled_update(False)
+
+        def fused_update_evaluation(fields, execution_time, first_update):
+            operation = (
+                first_update_evaluation
+                if first_update
+                else regular_update_evaluation
+            )
+            return operation(fields, execution_time)
+
+    closure_event = (
+        LasdAcceptedStepEvent(
+            algebra,
+            model,
+            integrator.dt,
+            reuse_rhs_momentum_context,
+            fused_update_evaluation,
+        )
+        if isinstance(model.momentum.sgs, LagrangianScaleDependentDynamic)
+        else IdentityClosureEvent()
+    )
     advance = build_solver(
         config=integrator,
         vector_field=vector_field,

@@ -20,7 +20,11 @@ class ConservativeAdvection:
 
 @dataclass(frozen=True, slots=True)
 class RotationalAdvection:
-    """Rotational ``omega x u`` advection on the staggered velocity layout."""
+    """Rotational ``omega x u`` advection.
+
+    The fused Boussinesq lowering evaluates its products with three-halves
+    horizontal padding.
+    """
 
 
 @dataclass(frozen=True, slots=True)

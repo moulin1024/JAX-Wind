@@ -64,7 +64,7 @@ program main
     real(fp), dimension(n_turb,5),device :: turb_loc
     !---------------------------------------------------------------------------
     ! io
-    real(fp) :: t01
+    real(fp) :: t01,t_loop_start,t_loop_end,t_steady_start,t_steady_end
     real(fp) :: log_ustar, log_kemax, log_umax
     real(fp), dimension(nx,ny,nzb) :: ta_u_host,ta_v_host,ta_w_host,&
                                       ta_u2_host,ta_v2_host,ta_w2_host,&
@@ -276,6 +276,9 @@ program main
     #ifdef USE_NVTX    
         call nvtxEndRange
     #endif
+    istat = cudaDeviceSynchronize()
+    call mpi_barrier(nall,ierr)
+    if (me == 0) t_loop_start=mpi_wtime()
 !===========================================================================
 ! solve
 !===========================================================================
@@ -595,7 +598,33 @@ program main
         #ifdef USE_NVTX
             call nvtxEndRange
         #endif
+        if (t == 2*cs_count) then
+            istat = cudaDeviceSynchronize()
+            call mpi_barrier(nall,ierr)
+            if (me == 0) t_steady_start=mpi_wtime()
+        end if
+        if (t == nsteps-1 .and. nsteps > 2*cs_count+1) then
+            istat = cudaDeviceSynchronize()
+            call mpi_barrier(nall,ierr)
+            if (me == 0) then
+                t_steady_end=mpi_wtime()
+                print "(a,i0)",'post_warmup_steps=',nsteps-1-2*cs_count
+                print "(a,f12.6)",'post_warmup_wall_seconds=',&
+                    t_steady_end-t_steady_start
+                print "(a,f12.6)",'post_warmup_steps_per_second=',&
+                    real(nsteps-1-2*cs_count,fp)/&
+                    (t_steady_end-t_steady_start)
+            end if
+        end if
     end do
+    istat = cudaDeviceSynchronize()
+    call mpi_barrier(nall,ierr)
+    if (me == 0) then
+        t_loop_end=mpi_wtime()
+        print "(a,f12.6)",'time_loop_wall_seconds=',t_loop_end-t_loop_start
+        print "(a,f12.6)",'time_loop_steps_per_second=',&
+            real(nsteps,fp)/(t_loop_end-t_loop_start)
+    end if
 ! ===============================================================================
 ! post
 !===============================================================================
