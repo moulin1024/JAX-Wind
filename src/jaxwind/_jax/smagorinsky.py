@@ -12,12 +12,10 @@ def build_smagorinsky_kernels(
     axis_name,
     exchange_local,
     strain_magnitude_local,
-    pad_horizontal_local,
-    truncate_padded_spectrum_local,
-    truncate_padded_local,
+    horizontal_spectrum_local,
     horizontal_spectral_flux_divergence_local,
 ):
-    def padded_gradients_local(context, upper):
+    def gradients_local(context, upper):
         if upper:
             gradients = (
                 context.dudx_upper,
@@ -42,22 +40,22 @@ def build_smagorinsky_kernels(
                 context.dwdy_at_cells,
                 context.dwdz,
             )
-        return tuple(pad_horizontal_local(jnp.stack(gradients, axis=0)))
+        return gradients
 
-    def face_coefficient_local(padded_coefficient):
-        coefficient_halo = exchange_local(padded_coefficient[None, ...])
+    def face_coefficient_local(coefficient):
+        coefficient_halo = exchange_local(coefficient[None, ...])
         next_coefficient_plane = jnp.where(
             coefficient_halo.upper_is_physical,
-            padded_coefficient[-1],
+            coefficient[-1],
             coefficient_halo.upper[0],
         )
         next_coefficient = jnp.concatenate(
-            (padded_coefficient[1:], next_coefficient_plane[None]),
+            (coefficient[1:], next_coefficient_plane[None]),
             axis=0,
         )
-        return 0.5 * (padded_coefficient + next_coefficient)
+        return 0.5 * (coefficient + next_coefficient)
 
-    def viscosities_from_padded_gradients_local(
+    def viscosities_from_gradients_local(
         cell_gradients,
         face_gradients,
         coefficient,
@@ -65,38 +63,33 @@ def build_smagorinsky_kernels(
         maximum_coefficient,
     ):
         delta = (grid.dx * grid.dy * grid.dz) ** (1.0 / 3.0)
-        padded_coefficient = jnp.clip(
-            pad_horizontal_local(coefficient),
+        local_coefficient = jnp.clip(
+            coefficient,
             minimum_coefficient,
             maximum_coefficient,
         )
         cell_viscosity = (
-            padded_coefficient
+            local_coefficient
             * delta**2
             * strain_magnitude_local(*cell_gradients)
         )
         face_viscosity = (
-            face_coefficient_local(padded_coefficient)
+            face_coefficient_local(local_coefficient)
             * delta**2
             * strain_magnitude_local(*face_gradients)
         )
         return cell_viscosity, face_viscosity
 
-    def vertical_flux_from_padded_local(context, face_gradients, face_viscosity):
-        txz, tyz = truncate_padded_local(
-            jnp.stack(
-                (
-                    -face_viscosity * (face_gradients[2] + face_gradients[6]),
-                    -face_viscosity * (face_gradients[5] + face_gradients[7]),
-                ),
-                axis=0,
-            )
+    def vertical_flux_local(context, face_gradients, face_viscosity):
+        txz = -face_viscosity * (face_gradients[2] + face_gradients[6])
+        tyz = -face_viscosity * (face_gradients[5] + face_gradients[7])
+        txz = txz.at[-1].set(
+            jnp.where(context.upper_is_physical, 0.0, txz[-1])
         )
-        txz = txz.at[-1].set(jnp.where(context.upper_is_physical, 0.0, txz[-1]))
         tyz = tyz.at[-1].set(jnp.where(context.upper_is_physical, 0.0, tyz[-1]))
         return txz, tyz
 
-    def dry_sgs_from_padded_gradients_local(
+    def dry_sgs_from_gradients_local(
         context,
         cell_gradients,
         face_gradients,
@@ -104,7 +97,7 @@ def build_smagorinsky_kernels(
         minimum_coefficient,
         maximum_coefficient,
     ):
-        cell_viscosity, face_viscosity = viscosities_from_padded_gradients_local(
+        cell_viscosity, face_viscosity = viscosities_from_gradients_local(
             cell_gradients,
             face_gradients,
             coefficient,
@@ -121,7 +114,7 @@ def build_smagorinsky_kernels(
             axis=0,
         )
         txx_s, txy_s, tyy_s, tzz_s = tuple(
-            truncate_padded_spectrum_local(cell_stress)
+            horizontal_spectrum_local(cell_stress)
         )
         txz, tyz = tuple(
             jnp.stack(
@@ -139,7 +132,7 @@ def build_smagorinsky_kernels(
             jnp.where(context.upper_is_physical, 0.0, tyz[-1])
         )
         txz_s, tyz_s = tuple(
-            truncate_padded_spectrum_local(jnp.stack((txz, tyz), axis=0))
+            horizontal_spectrum_local(jnp.stack((txz, tyz), axis=0))
         )
         tzz = cell_stress[3]
         stress_halo = exchange_local(jnp.stack((txz, tyz, tzz), axis=0))
@@ -178,19 +171,19 @@ def build_smagorinsky_kernels(
         minimum_coefficient,
         maximum_coefficient,
     ):
-        face_gradients = padded_gradients_local(context, True)
-        padded_coefficient = jnp.clip(
-            pad_horizontal_local(coefficient),
+        face_gradients = gradients_local(context, True)
+        local_coefficient = jnp.clip(
+            coefficient,
             minimum_coefficient,
             maximum_coefficient,
         )
         delta = (grid.dx * grid.dy * grid.dz) ** (1.0 / 3.0)
         face_viscosity = (
-            face_coefficient_local(padded_coefficient)
+            face_coefficient_local(local_coefficient)
             * delta**2
             * strain_magnitude_local(*face_gradients)
         )
-        return vertical_flux_from_padded_local(
+        return vertical_flux_local(
             context,
             face_gradients,
             face_viscosity,
@@ -202,10 +195,10 @@ def build_smagorinsky_kernels(
         minimum_coefficient,
         maximum_coefficient,
     ):
-        return dry_sgs_from_padded_gradients_local(
+        return dry_sgs_from_gradients_local(
             context,
-            padded_gradients_local(context, False),
-            padded_gradients_local(context, True),
+            gradients_local(context, False),
+            gradients_local(context, True),
             coefficient,
             minimum_coefficient,
             maximum_coefficient,
@@ -236,37 +229,30 @@ def build_smagorinsky_kernels(
                 dvdz[0],
             )
         )
-        gradients = tuple(
-            pad_horizontal_local(
-                jnp.stack(
-                    (
-                        context.dudx,
-                        context.dudy,
-                        dudz,
-                        context.dvdx,
-                        context.dvdy,
-                        dvdz,
-                        context.dwdx_at_cells,
-                        context.dwdy_at_cells,
-                        context.dwdz,
-                    ),
-                    axis=0,
-                )
-            )
+        gradients = (
+            context.dudx,
+            context.dudy,
+            dudz,
+            context.dvdx,
+            context.dvdy,
+            dvdz,
+            context.dwdx_at_cells,
+            context.dwdy_at_cells,
+            context.dwdz,
         )
-        padded_coefficient = jnp.clip(
-            pad_horizontal_local(coefficient),
+        local_coefficient = jnp.clip(
+            coefficient,
             minimum_coefficient,
             maximum_coefficient,
         )
         delta = (grid.dx * grid.dy * grid.dz) ** (1.0 / 3.0)
         magnitude = strain_magnitude_local(*gradients)
-        forward_transfer = padded_coefficient * delta**2 * magnitude**3
-        return truncate_padded_local(-forward_transfer)
+        forward_transfer = local_coefficient * delta**2 * magnitude**3
+        return -forward_transfer
 
     return (
         dry_sgs_local,
         dry_sgs_vertical_flux_local,
-        dry_sgs_from_padded_gradients_local,
+        dry_sgs_from_gradients_local,
         dry_sgs_tke_transfer_local,
     )

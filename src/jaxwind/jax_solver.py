@@ -59,14 +59,14 @@ class JaxDiagnosticFields(NamedTuple):
 
 
 @dataclass(frozen=True, slots=True)
-class _LegacyFortranStepEvent:
+class _PreRhsFilterEvent:
     """Reproduce WIRE-LES's pre-RHS in-place velocity filtering order."""
 
     algebra: Any
     closure_event: Any
 
     def __call__(self, fields: Any, clock: Any, environment: Any) -> Any:
-        filtered = self.algebra.legacy_fortran_filter_fields(fields)
+        filtered = self.algebra.filter_fields_for_rhs(fields)
         return self.closure_event(filtered, clock, environment)
 
 
@@ -400,7 +400,7 @@ def build_jax_solver(
         if isinstance(model.momentum.sgs, LagrangianScaleDependentDynamic)
         else IdentityClosureEvent()
     )
-    closure_event = _LegacyFortranStepEvent(algebra, closure_event)
+    closure_event = _PreRhsFilterEvent(algebra, closure_event)
     advance = build_solver(
         config=integrator,
         vector_field=vector_field,

@@ -26,7 +26,6 @@ from .parser import (
     _Line,
     _boolean_value,
     _finite_number,
-    _find,
     _float_value,
     _integer_value,
     _optional_boolean_value,

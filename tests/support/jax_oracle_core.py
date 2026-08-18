@@ -7,104 +7,31 @@ different z-slab storage interpretation.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 import math
 from typing import Any
 
 import jax
 import jax.numpy as jnp
 
-from jaxwind._jax.actuator_disk import (
-    filtered_disk_velocity_correction,
-    gaussian_convolved_annulus,
-)
-from jaxwind._jax.actuator_line import (
-    actuator_line_deformed_kinematics,
-    blade_element_kinematic_forces,
-    gaussian_weights,
-)
-from jaxwind._jax.fringe import plateau_fringe_mask
-
 from jaxwind.domain import (
-    Accepted,
     Cell,
     Candidate,
     Divergence,
     Evaluated,
     Field,
     GlobalTestRegion,
-    LasdTrajectoryXVelocity,
-    LasdTrajectoryYVelocity,
-    LasdTrajectoryZVelocity,
-    MomentumLasdCoefficient,
-    MomentumLasdLm,
-    MomentumLasdMm,
-    MomentumLasdNn,
-    MomentumLasdQn,
     PressureCorrection,
-    PressureRhs,
-    PassiveScalarConcentration,
-    PassiveScalarTendency,
-    PotentialTemperaturePerturbation,
-    PotentialTemperatureTendency,
     Projected,
-    ScalarLasdCoefficient,
-    ScalarLasdLm,
-    ScalarLasdMm,
-    ScalarLasdNn,
-    ScalarLasdQn,
     VerticalBoundary,
     VerticalPressureGradient,
     VerticalVelocity,
     VerticalVelocityTendency,
-    XPressureGradient,
-    XVelocity,
     XVelocityTendency,
-    YPressureGradient,
-    YVelocity,
     YVelocityTendency,
     ZFace,
 )
-from jaxwind.operators import PressureGradient, VelocityVector
-from jaxwind.physics.dry_flow import (
-    RotationalAdvection,
-    CoriolisGeostrophic,
-    FilteredNeutralLogWall,
-    KinematicPressureGradient,
-    NeutralLogWall,
-    NoRotation,
-    StaticSmagorinsky,
-)
-from jaxwind.physics.boussinesq import (
-    BoussinesqFields,
-    ConservativeScalarAdvection,
-    LinearBoussinesqBuoyancy,
-    NoBuoyancy,
-    NoRayleighDamping,
-    RayleighGeostrophicDamping,
-    ScalarFluxBoundary,
-    StaticSmagorinskyScalarFlux,
-)
-from jaxwind.physics.lasd import (
-    DiagnosticLasdConstants,
-    LagrangianScaleDependentDynamic,
-    LagrangianScaleDependentScalarFlux,
-    LasdClosureEventDiagnostic,
-    LasdClosureMemory,
-    LasdDiagnosticFields,
-    MomentumLasdMemory,
-    ScalarLasdMemory,
-)
-from jaxwind.physics.wind_tunnel import (
-    BladeElementActuatorLine,
-    ConcurrentPrecursorEnvironment,
-    ConcurrentPrecursorFringe,
-    NoActuatorDisk,
-    NoActuatorLine,
-    NoFringe,
-    PureThrustActuatorDisk,
-    WindTunnelModel,
-)
+from jaxwind.operators import VelocityVector
 
 
 MAX_ORACLE_CELLS = 32_768
@@ -227,23 +154,6 @@ def _wall_filter(values, *, grid, filter_width: float):
         s=(grid.ny, grid.nx),
         axes=(-2, -1),
     ).astype(values.dtype)
-
-
-def _pad_horizontal(values, *, grid):
-    """Compatibility-shaped oracle operation for the fixed base grid."""
-    del grid
-    return values
-
-
-def _truncate_padded(values, *, grid):
-    """Compatibility-shaped oracle operation for the fixed base grid."""
-    del grid
-    return values
-
-
-def _padded_product(left, right, *, grid):
-    del grid
-    return left * right
 
 
 def _require_velocity_component(field: Field, quantity: type) -> GlobalTestRegion:

@@ -14,34 +14,32 @@ def build_fused_neutral_boussinesq_kernels(
     axis_name,
     frozen_zero_scalar,
     scalar_context_local,
-    scalar_advection_from_padded_momentum_local,
-    scalar_sgs_from_padded_momentum_gradients_local,
+    scalar_advection_from_momentum_local,
+    scalar_sgs_from_momentum_gradients_local,
     buoyancy_local,
-    pad_horizontal_local,
-    truncate_padded_local,
     wall_filter_local,
     dry_flow_context_local,
-    dry_sgs_from_padded_gradients_local,
+    dry_sgs_from_gradients_local,
 ):
     if not isinstance(frozen_zero_scalar, bool):
         raise TypeError("frozen zero scalar flag must be boolean")
 
     def rotational_advection_local(
         momentum,
-        padded_momentum,
-        padded_lower,
+        momentum_fields,
+        lower_fields,
         cell_gradients,
         face_gradients,
-        padded_wall_u,
-        padded_wall_v,
+        wall_u,
+        wall_v,
         wall_gradient_factor,
     ):
         """Evaluate legacy ``-omega x u`` on the base staggered layout."""
 
-        padded_u, padded_v, padded_w_upper = padded_momentum[:3]
-        padded_u_upper, padded_v_upper = padded_momentum[3:5]
-        padded_lower_w = jnp.concatenate(
-            (padded_lower[0][None], padded_w_upper[:-1]),
+        u, v, w_upper = momentum_fields[:3]
+        u_upper, v_upper = momentum_fields[3:5]
+        w_lower = jnp.concatenate(
+            (lower_fields[0][None], w_upper[:-1]),
             axis=0,
         )
         lower_dudz = 2.0 * cell_gradients[2] - face_gradients[2]
@@ -52,30 +50,30 @@ def build_fused_neutral_boussinesq_kernels(
         lower_dudz = lower_dudz.at[0].set(
             jnp.where(
                 bottom,
-                wall_gradient_factor * padded_wall_u,
+                wall_gradient_factor * wall_u,
                 lower_dudz[0],
             )
         )
         lower_dvdz = lower_dvdz.at[0].set(
             jnp.where(
                 bottom,
-                wall_gradient_factor * padded_wall_v,
+                wall_gradient_factor * wall_v,
                 lower_dvdz[0],
             )
         )
-        x = padded_v * (cell_gradients[1] - cell_gradients[3])
+        x = v * (cell_gradients[1] - cell_gradients[3])
         x += 0.5 * (
-            padded_w_upper * (face_gradients[2] - face_gradients[6])
-            + padded_lower_w * (lower_dudz - lower_dwdx)
+            w_upper * (face_gradients[2] - face_gradients[6])
+            + w_lower * (lower_dudz - lower_dwdx)
         )
-        y = padded_u * (cell_gradients[3] - cell_gradients[1])
+        y = u * (cell_gradients[3] - cell_gradients[1])
         y += 0.5 * (
-            padded_w_upper * (face_gradients[5] - face_gradients[7])
-            + padded_lower_w * (lower_dvdz - lower_dwdy)
+            w_upper * (face_gradients[5] - face_gradients[7])
+            + w_lower * (lower_dvdz - lower_dwdy)
         )
-        z = padded_u_upper * (face_gradients[6] - face_gradients[2])
-        z += padded_v_upper * (face_gradients[7] - face_gradients[5])
-        x, y, z = truncate_padded_local(jnp.stack((-x, -y, -z), axis=0))
+        z = u_upper * (face_gradients[6] - face_gradients[2])
+        z += v_upper * (face_gradients[7] - face_gradients[5])
+        x, y, z = -x, -y, -z
         z = z.at[-1].set(jnp.where(momentum.upper_is_physical, 0.0, z[-1]))
         return x, y, z
 
@@ -86,7 +84,7 @@ def build_fused_neutral_boussinesq_kernels(
         wall_filter_width,
         wall_gradient_factor,
     ):
-        padded_momentum = jnp.stack(
+        momentum_fields = jnp.stack(
             (
                 momentum.u,
                 momentum.v,
@@ -98,7 +96,7 @@ def build_fused_neutral_boussinesq_kernels(
             ),
             axis=0,
         )
-        padded_lower = jnp.stack(
+        lower_fields = jnp.stack(
             (momentum.w_lower, momentum.u_lower, momentum.v_lower),
             axis=0,
         )
@@ -130,29 +128,19 @@ def build_fused_neutral_boussinesq_kernels(
         )
         wall_u = jnp.where(wall_filtered, wall_velocity[0], momentum.u[0])
         wall_v = jnp.where(wall_filtered, wall_velocity[1], momentum.v[0])
-        padded_wall_u, padded_wall_v = pad_horizontal_local(
-            jnp.stack((wall_u, wall_v), axis=0)
-        )
         advection = rotational_advection_local(
             momentum,
-            padded_momentum,
-            padded_lower,
+            momentum_fields,
+            lower_fields,
             cell_gradients,
             face_gradients,
-            padded_wall_u,
-            padded_wall_v,
+            wall_u,
+            wall_v,
             wall_gradient_factor,
         )
-        wall_speed = jnp.hypot(padded_wall_u, padded_wall_v)
-        wall_x, wall_y = truncate_padded_local(
-            jnp.stack(
-                (
-                    -wall_drag * wall_speed * padded_wall_u / grid.dz,
-                    -wall_drag * wall_speed * padded_wall_v / grid.dz,
-                ),
-                axis=0,
-            )
-        )
+        wall_speed = jnp.hypot(wall_u, wall_v)
+        wall_x = -wall_drag * wall_speed * wall_u / grid.dz
+        wall_y = -wall_drag * wall_speed * wall_v / grid.dz
         bottom = lax.axis_index(axis_name) == 0
         wall = (
             jnp.zeros_like(momentum.u).at[0].set(
@@ -169,27 +157,8 @@ def build_fused_neutral_boussinesq_kernels(
             wall,
             cell_gradients,
             face_gradients,
-            padded_momentum,
-            padded_lower,
-        )
-
-    def shared_momentum_local(
-        u,
-        v,
-        w_upper,
-        lower_boundary,
-        wall_drag,
-        wall_filtered,
-        wall_filter_width,
-        wall_gradient_factor,
-    ):
-        momentum = dry_flow_context_local(u, v, w_upper, lower_boundary)
-        return shared_momentum_from_context_local(
-            momentum,
-            wall_drag,
-            wall_filtered,
-            wall_filter_width,
-            wall_gradient_factor,
+            momentum_fields,
+            lower_fields,
         )
 
     def combine_local(advection, wall, sgs, pressure_x, pressure_y):
@@ -277,8 +246,8 @@ def build_fused_neutral_boussinesq_kernels(
             wall,
             cell_gradients,
             face_gradients,
-            padded_momentum,
-            padded_lower,
+            momentum_fields,
+            lower_fields,
         ) = shared_momentum_from_context_local(
             momentum,
             wall_drag,
@@ -336,7 +305,7 @@ def build_fused_neutral_boussinesq_kernels(
                 ),
                 jnp.zeros_like(w_upper),
             )
-        sgs = dry_sgs_from_padded_gradients_local(
+        sgs = dry_sgs_from_gradients_local(
             momentum,
             cell_gradients,
             face_gradients,
@@ -355,14 +324,14 @@ def build_fused_neutral_boussinesq_kernels(
         scalar_tendency = jnp.zeros_like(theta)
         if not frozen_zero_scalar:
             scalar = scalar_context_local(theta)
-            scalar_tendency = scalar_advection_from_padded_momentum_local(
+            scalar_tendency = scalar_advection_from_momentum_local(
                 scalar,
-                padded_momentum,
-                padded_lower,
+                momentum_fields,
+                lower_fields,
             )
             scalar_tendency = (
                 scalar_tendency
-                + scalar_sgs_from_padded_momentum_gradients_local(
+                + scalar_sgs_from_momentum_gradients_local(
                     scalar,
                     momentum,
                     cell_gradients,

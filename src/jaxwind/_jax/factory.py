@@ -157,15 +157,10 @@ def build_discretization(
         spectral.keep,
         spectral.state_keep,
     )
-    projection_keep = keep
-    pad_horizontal_local = spectral.pad
-    truncate_padded_spectrum_local = spectral.project_spectrum
-    truncate_padded_local = spectral.truncate
-    horizontal_derivative_local = spectral.derivative
+    horizontal_spectrum_local = spectral.spectrum
     horizontal_gradient_pair_local = spectral.gradient_pair
     horizontal_spectral_flux_divergence_local = spectral.spectral_flux_divergence
     horizontal_flux_divergence_local = spectral.flux_divergence
-    padded_horizontal_flux_divergence_local = spectral.padded_flux_divergence
     wall_filter_local = spectral.wall_filter
     def dry_flow_context_local(u, v, w_upper, lower_boundary):
         halo = exchange_local(jnp.stack((u, v, w_upper), axis=0))
@@ -353,57 +348,40 @@ def build_discretization(
         grid=grid, axis_name=axis_name
     )
 
-    def scalar_advection_from_padded_local(
-        padded_u,
-        padded_v,
-        padded_w_upper,
-        padded_w_lower,
-        padded_theta,
-        padded_theta_upper,
-        padded_theta_lower,
+    def scalar_advection_from_fields_local(
+        u,
+        v,
+        w_upper,
+        w_lower,
+        theta,
+        theta_upper,
+        theta_lower,
     ):
-        horizontal = padded_horizontal_flux_divergence_local(
-            (padded_u * padded_theta)[None],
-            (padded_v * padded_theta)[None],
+        horizontal = horizontal_flux_divergence_local(
+            (u * theta)[None],
+            (v * theta)[None],
         )[0]
-        upper_flux, lower_flux = truncate_padded_local(
-            jnp.stack(
-                (
-                    padded_w_upper * padded_theta_upper,
-                    padded_w_lower * padded_theta_lower,
-                ),
-                axis=0,
-            )
-        )
+        upper_flux = w_upper * theta_upper
+        lower_flux = w_lower * theta_lower
         return -(horizontal + (upper_flux - lower_flux) / grid.dz)
 
-    def scalar_advection_from_padded_momentum_local(
+    def scalar_advection_from_momentum_local(
         scalar,
-        padded_momentum,
-        padded_lower,
+        momentum_fields,
+        lower_fields,
     ):
-        padded_scalar = pad_horizontal_local(
-            jnp.stack(
-                (
-                    scalar.theta,
-                    scalar.theta_upper,
-                    scalar.theta_lower,
-                ),
-                axis=0,
-            )
-        )
-        padded_w_lower = jnp.concatenate(
-            (padded_lower[0][None], padded_momentum[2][:-1]),
+        w_lower = jnp.concatenate(
+            (lower_fields[0][None], momentum_fields[2][:-1]),
             axis=0,
         )
-        return scalar_advection_from_padded_local(
-            padded_momentum[0],
-            padded_momentum[1],
-            padded_momentum[2],
-            padded_w_lower,
-            padded_scalar[0],
-            padded_scalar[1],
-            padded_scalar[2],
+        return scalar_advection_from_fields_local(
+            momentum_fields[0],
+            momentum_fields[1],
+            momentum_fields[2],
+            w_lower,
+            scalar.theta,
+            scalar.theta_upper,
+            scalar.theta_lower,
         )
 
     def scalar_advection_local(scalar, momentum):
@@ -411,31 +389,17 @@ def build_discretization(
             (momentum.w_lower[None], momentum.w_upper[:-1]),
             axis=0,
         )
-        padded = pad_horizontal_local(
-            jnp.stack(
-                (
-                    momentum.u,
-                    momentum.v,
-                    momentum.w_upper,
-                    w_lower,
-                    scalar.theta,
-                    scalar.theta_upper,
-                    scalar.theta_lower,
-                ),
-                axis=0,
-            )
-        )
-        return scalar_advection_from_padded_local(
-            padded[0],
-            padded[1],
-            padded[2],
-            padded[3],
-            padded[4],
-            padded[5],
-            padded[6],
+        return scalar_advection_from_fields_local(
+            momentum.u,
+            momentum.v,
+            momentum.w_upper,
+            w_lower,
+            scalar.theta,
+            scalar.theta_upper,
+            scalar.theta_lower,
         )
 
-    def scalar_sgs_from_padded_momentum_gradients_local(
+    def scalar_sgs_from_momentum_gradients_local(
         scalar,
         momentum,
         momentum_gradients,
@@ -457,14 +421,13 @@ def build_discretization(
             *face_gradients,
         )
         local_coefficient = jnp.clip(
-            pad_horizontal_local(coefficient.astype(scalar.theta.dtype)),
+            coefficient.astype(scalar.theta.dtype),
             minimum_coefficient,
             maximum_coefficient,
         )
-        padded_dtheta_dz = pad_horizontal_local(scalar.dtheta_dz_at_cells)
         n2 = jnp.maximum(
             jnp.asarray(stability_buoyancy_coefficient, dtype=scalar.theta.dtype)
-            * padded_dtheta_dz,
+            * scalar.dtheta_dz_at_cells,
             0.0,
         )
         richardson = n2 / jnp.maximum(cell_magnitude**2, 1.0e-24)
@@ -485,22 +448,9 @@ def build_discretization(
         face_coefficient = 0.5 * (effective_coefficient + next_coefficient)
         cell_diffusivity = effective_coefficient * delta**2 * cell_magnitude
         face_diffusivity = face_coefficient * delta**2 * face_magnitude
-        padded_scalar_gradients = pad_horizontal_local(
-            jnp.stack(
-                (scalar.dtheta_dx, scalar.dtheta_dy, scalar.dtheta_dz_upper),
-                axis=0,
-            )
-        )
-        qx, qy, qz = truncate_padded_local(
-            jnp.stack(
-                (
-                    -cell_diffusivity * padded_scalar_gradients[0],
-                    -cell_diffusivity * padded_scalar_gradients[1],
-                    -face_diffusivity * padded_scalar_gradients[2],
-                ),
-                axis=0,
-            )
-        )
+        qx = -cell_diffusivity * scalar.dtheta_dx
+        qy = -cell_diffusivity * scalar.dtheta_dy
+        qz = -face_diffusivity * scalar.dtheta_dz_upper
         qz = qz.at[-1].set(
             jnp.where(scalar.upper_is_physical, upper_boundary_flux, qz[-1])
         )
@@ -527,42 +477,38 @@ def build_discretization(
         stability_power,
     ):
         momentum_gradients = tuple(
-            pad_horizontal_local(
-                jnp.stack(
-                    (
-                        momentum.dudx,
-                        momentum.dudy,
-                        momentum.dudz_at_cells,
-                        momentum.dvdx,
-                        momentum.dvdy,
-                        momentum.dvdz_at_cells,
-                        momentum.dwdx_at_cells,
-                        momentum.dwdy_at_cells,
-                        momentum.dwdz,
-                    ),
-                    axis=0,
-                )
+            jnp.stack(
+                (
+                    momentum.dudx,
+                    momentum.dudy,
+                    momentum.dudz_at_cells,
+                    momentum.dvdx,
+                    momentum.dvdy,
+                    momentum.dvdz_at_cells,
+                    momentum.dwdx_at_cells,
+                    momentum.dwdy_at_cells,
+                    momentum.dwdz,
+                ),
+                axis=0,
             )
         )
         face_gradients = tuple(
-            pad_horizontal_local(
-                jnp.stack(
-                    (
-                        momentum.dudx_upper,
-                        momentum.dudy_upper,
-                        momentum.dudz_upper,
-                        momentum.dvdx_upper,
-                        momentum.dvdy_upper,
-                        momentum.dvdz_upper,
-                        momentum.dwdx_upper,
-                        momentum.dwdy_upper,
-                        momentum.dwdz_upper,
-                    ),
-                    axis=0,
-                )
+            jnp.stack(
+                (
+                    momentum.dudx_upper,
+                    momentum.dudy_upper,
+                    momentum.dudz_upper,
+                    momentum.dvdx_upper,
+                    momentum.dvdy_upper,
+                    momentum.dvdz_upper,
+                    momentum.dwdx_upper,
+                    momentum.dwdy_upper,
+                    momentum.dwdz_upper,
+                ),
+                axis=0,
             )
         )
-        return scalar_sgs_from_padded_momentum_gradients_local(
+        return scalar_sgs_from_momentum_gradients_local(
             scalar,
             momentum,
             momentum_gradients,
@@ -585,19 +531,9 @@ def build_discretization(
         )
         wall_u = jnp.where(filtered, wall_velocity[0], context.u[0])
         wall_v = jnp.where(filtered, wall_velocity[1], context.v[0])
-        padded_wall_u, padded_wall_v = pad_horizontal_local(
-            jnp.stack((wall_u, wall_v), axis=0)
-        )
-        speed = jnp.hypot(padded_wall_u, padded_wall_v)
-        wall_x, wall_y = truncate_padded_local(
-            jnp.stack(
-                (
-                    -drag * speed * padded_wall_u / grid.dz,
-                    -drag * speed * padded_wall_v / grid.dz,
-                ),
-                axis=0,
-            )
-        )
+        speed = jnp.hypot(wall_u, wall_v)
+        wall_x = -drag * speed * wall_u / grid.dz
+        wall_y = -drag * speed * wall_v / grid.dz
         x = jnp.zeros_like(context.u).at[0].set(jnp.where(index == 0, wall_x, 0.0))
         y = jnp.zeros_like(context.v).at[0].set(jnp.where(index == 0, wall_y, 0.0))
         return x, y, jnp.zeros_like(context.w_upper)
@@ -609,16 +545,14 @@ def build_discretization(
     (
         dry_sgs_local,
         dry_sgs_vertical_flux_local,
-        dry_sgs_from_padded_gradients_local,
+        dry_sgs_from_gradients_local,
         dry_sgs_tke_transfer_local,
     ) = build_smagorinsky_kernels(
         grid=grid,
         axis_name=axis_name,
         exchange_local=exchange_local,
         strain_magnitude_local=strain_magnitude_local,
-        pad_horizontal_local=pad_horizontal_local,
-        truncate_padded_spectrum_local=truncate_padded_spectrum_local,
-        truncate_padded_local=truncate_padded_local,
+        horizontal_spectrum_local=horizontal_spectrum_local,
         horizontal_spectral_flux_divergence_local=(
             horizontal_spectral_flux_divergence_local
         ),
@@ -637,18 +571,16 @@ def build_discretization(
         axis_name=axis_name,
         frozen_zero_scalar=frozen_zero_scalar,
         scalar_context_local=scalar_context_local,
-        scalar_advection_from_padded_momentum_local=(
-            scalar_advection_from_padded_momentum_local
+        scalar_advection_from_momentum_local=(
+            scalar_advection_from_momentum_local
         ),
-        scalar_sgs_from_padded_momentum_gradients_local=(
-            scalar_sgs_from_padded_momentum_gradients_local
+        scalar_sgs_from_momentum_gradients_local=(
+            scalar_sgs_from_momentum_gradients_local
         ),
         buoyancy_local=buoyancy_local,
-        pad_horizontal_local=pad_horizontal_local,
-        truncate_padded_local=truncate_padded_local,
         wall_filter_local=wall_filter_local,
         dry_flow_context_local=dry_flow_context_local,
-        dry_sgs_from_padded_gradients_local=dry_sgs_from_padded_gradients_local,
+        dry_sgs_from_gradients_local=dry_sgs_from_gradients_local,
     )
     (
         horizontal_divergence_local,
@@ -749,8 +681,6 @@ def build_discretization(
         partition_count=partition_count,
         exchange_local=exchange_local,
         strain_magnitude_local=strain_magnitude_local,
-        pad_horizontal_local=pad_horizontal_local,
-        truncate_padded_local=truncate_padded_local,
         filter_two_scales_external=filter_two_scales_external,
     )
 

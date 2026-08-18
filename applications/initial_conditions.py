@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from .boussinesq import BoussinesqCase, TabulatedBoussinesqState
+from .boussinesq import BoussinesqCase
 
 
 REQUIRED_COLUMNS = (

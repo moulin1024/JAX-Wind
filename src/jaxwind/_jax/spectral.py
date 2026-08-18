@@ -12,15 +12,10 @@ class HorizontalSpectralKernels(NamedTuple):
     ky: object
     keep: object
     state_keep: object
-    pad: object
-    project_spectrum: object
-    truncate: object
-    derivative: object
+    spectrum: object
     gradient_pair: object
-    padded_gradient_pair: object
     spectral_flux_divergence: object
     flux_divergence: object
-    padded_flux_divergence: object
     wall_filter: object
 
 
@@ -51,15 +46,9 @@ def build_horizontal_spectral_kernels(grid):
         & (jnp.abs(y_mode)[:, None] < legacy_y_cutoff)
     )
 
-    def pad_horizontal_local(values):
-        return values
-
-    def project_spectrum_local(values):
+    def horizontal_spectrum_local(values):
         spectrum = jnp.fft.rfftn(values, axes=(-2, -1))
         return spectrum * keep.astype(values.real.dtype)
-
-    def truncate_local(values):
-        return values
 
     def inverse_spectrum_local(spectrum, dtype):
         return jnp.fft.irfftn(
@@ -67,18 +56,6 @@ def build_horizontal_spectral_kernels(grid):
             s=(grid.ny, grid.nx),
             axes=(-2, -1),
         ).astype(dtype)
-
-    def horizontal_derivative_local(values, axis):
-        spectrum = jnp.fft.rfftn(values, axes=(-2, -1))
-        multiplier = (
-            1j * kx.astype(values.real.dtype)
-            if axis == 0
-            else 1j * ky.astype(values.real.dtype)[:, None]
-        )
-        return inverse_spectrum_local(
-            spectrum * multiplier * keep.astype(values.real.dtype),
-            values.dtype,
-        )
 
     def horizontal_gradient_pair_local(values):
         spectrum = jnp.fft.rfftn(values, axes=(-2, -1))
@@ -133,14 +110,9 @@ def build_horizontal_spectral_kernels(grid):
         ky,
         keep,
         state_keep,
-        pad_horizontal_local,
-        project_spectrum_local,
-        truncate_local,
-        horizontal_derivative_local,
-        horizontal_gradient_pair_local,
+        horizontal_spectrum_local,
         horizontal_gradient_pair_local,
         spectral_flux_divergence,
-        horizontal_flux_divergence_local,
         horizontal_flux_divergence_local,
         wall_filter_local,
     )

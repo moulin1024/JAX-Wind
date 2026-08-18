@@ -39,7 +39,6 @@ from jaxwind.domain import (
     YVelocity,
     ZFace,
 )
-from jaxwind.operators import VelocityVector
 from jaxwind.physics.dry_flow import (
     CoriolisGeostrophic,
     FilteredNeutralLogWall,
@@ -57,7 +56,6 @@ from jaxwind.physics.boussinesq import (
     LinearBoussinesqBuoyancy,
     NoBuoyancy,
     NoRayleighDamping,
-    RayleighGeostrophicDamping,
     ScalarFluxBoundary,
     StaticSmagorinskyScalarFlux,
 )
@@ -67,12 +65,10 @@ from jaxwind.physics.surface_transfer import (
     SurfaceTransferResult,
 )
 from jaxwind.physics.lasd import (
-    DiagnosticLasdConstants,
     LagrangianScaleDependentDynamic,
     LagrangianScaleDependentScalarFlux,
     LasdClosureEventDiagnostic,
     LasdClosureMemory,
-    LasdDiagnosticFields,
     MomentumLasdMemory,
     ScalarLasdMemory,
 )

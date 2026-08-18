@@ -102,7 +102,7 @@ class LegacyFilteringTests(unittest.TestCase):
             Accepted,
             unresolved.x.payload,
         )
-        filtered = self.algebra.legacy_fortran_filter_fields(
+        filtered = self.algebra.filter_fields_for_rhs(
             BoussinesqFields(unresolved, scalar)
         )
         self.assertLess(

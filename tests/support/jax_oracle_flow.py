@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
 import math
 from typing import Any
 
@@ -64,12 +63,9 @@ from .jax_oracle_core import (
     _horizontal_derivative,
     _oracle_tendency,
     _oracle_tendency_from_velocity,
-    _pad_horizontal,
-    _padded_product,
     _require_tiny_global,
     _require_velocity_component,
     _strain_magnitude,
-    _truncate_padded,
     _wall_filter,
 )
 
@@ -190,11 +186,9 @@ class OracleFlowMixin:
                 filter_width=width,
             )
             u0, v0 = filtered[0], filtered[1]
-        padded_u0 = _pad_horizontal(u0, grid=grid)
-        padded_v0 = _pad_horizontal(v0, grid=grid)
-        speed = jnp.hypot(padded_u0, padded_v0)
-        wall_x = _truncate_padded(-drag * speed * padded_u0 / grid.dz, grid=grid)
-        wall_y = _truncate_padded(-drag * speed * padded_v0 / grid.dz, grid=grid)
+        speed = jnp.hypot(u0, v0)
+        wall_x = -drag * speed * u0 / grid.dz
+        wall_y = -drag * speed * v0 / grid.dz
         x = jnp.zeros_like(velocity.x.payload).at[0].set(wall_x)
         y = jnp.zeros_like(velocity.y.payload).at[0].set(wall_y)
         z = jnp.zeros_like(velocity.z.payload)
@@ -216,40 +210,19 @@ class OracleFlowMixin:
             raise TypeError("unsupported SGS choice")
         velocity = context.velocity
         grid = velocity.x.ownership.grid
-        padded_context = replace(
-            context,
-            u_on_faces=_pad_horizontal(context.u_on_faces, grid=grid),
-            v_on_faces=_pad_horizontal(context.v_on_faces, grid=grid),
-            w_at_cells=_pad_horizontal(context.w_at_cells, grid=grid),
-            dudx=_pad_horizontal(context.dudx, grid=grid),
-            dudy=_pad_horizontal(context.dudy, grid=grid),
-            dudz_at_cells=_pad_horizontal(context.dudz_at_cells, grid=grid),
-            dvdx=_pad_horizontal(context.dvdx, grid=grid),
-            dvdy=_pad_horizontal(context.dvdy, grid=grid),
-            dvdz_at_cells=_pad_horizontal(context.dvdz_at_cells, grid=grid),
-            dwdx_at_cells=_pad_horizontal(context.dwdx_at_cells, grid=grid),
-            dwdy_at_cells=_pad_horizontal(context.dwdy_at_cells, grid=grid),
-            dwdz=_pad_horizontal(context.dwdz, grid=grid),
-            dudz_on_faces=_pad_horizontal(context.dudz_on_faces, grid=grid),
-            dvdz_on_faces=_pad_horizontal(context.dvdz_on_faces, grid=grid),
-            dwdx_on_faces=_pad_horizontal(context.dwdx_on_faces, grid=grid),
-            dwdy_on_faces=_pad_horizontal(context.dwdy_on_faces, grid=grid),
-        )
         delta = (grid.dx * grid.dy * grid.dz) ** (1.0 / 3.0)
         magnitude = _strain_magnitude(
-            padded_context.dudx,
-            padded_context.dudy,
-            padded_context.dudz_at_cells,
-            padded_context.dvdx,
-            padded_context.dvdy,
-            padded_context.dvdz_at_cells,
-            padded_context.dwdx_at_cells,
-            padded_context.dwdy_at_cells,
-            padded_context.dwdz,
+            context.dudx,
+            context.dudy,
+            context.dudz_at_cells,
+            context.dvdx,
+            context.dvdy,
+            context.dvdz_at_cells,
+            context.dwdx_at_cells,
+            context.dwdy_at_cells,
+            context.dwdz,
         )
-        coefficient = _pad_horizontal(
-            self._momentum_sgs_coefficient(context, config), grid=grid
-        )
+        coefficient = self._momentum_sgs_coefficient(context, config)
         if isinstance(config, LagrangianScaleDependentDynamic):
             coefficient = jnp.clip(
                 coefficient,
@@ -257,19 +230,10 @@ class OracleFlowMixin:
                 config.maximum_coefficient,
             )
         eddy_viscosity = coefficient * delta**2 * magnitude
-        txx = _truncate_padded(
-            -2.0 * eddy_viscosity * padded_context.dudx, grid=grid
-        )
-        txy = _truncate_padded(
-            -eddy_viscosity * (padded_context.dudy + padded_context.dvdx),
-            grid=grid,
-        )
-        tyy = _truncate_padded(
-            -2.0 * eddy_viscosity * padded_context.dvdy, grid=grid
-        )
-        tzz = _truncate_padded(
-            -2.0 * eddy_viscosity * padded_context.dwdz, grid=grid
-        )
+        txx = -2.0 * eddy_viscosity * context.dudx
+        txy = -eddy_viscosity * (context.dudy + context.dvdx)
+        tyy = -2.0 * eddy_viscosity * context.dvdy
+        tzz = -2.0 * eddy_viscosity * context.dwdz
         txz, tyz = self.sgs_vertical_flux(context, config)
         x = -(
             _horizontal_derivative(txx, grid=grid, axis="x")
@@ -304,37 +268,19 @@ class OracleFlowMixin:
         ):
             raise TypeError("unsupported SGS choice")
         grid = context.velocity.x.ownership.grid
-        padded_context = replace(
-            context,
-            dudx=_pad_horizontal(context.dudx, grid=grid),
-            dudy=_pad_horizontal(context.dudy, grid=grid),
-            dudz_at_cells=_pad_horizontal(context.dudz_at_cells, grid=grid),
-            dvdx=_pad_horizontal(context.dvdx, grid=grid),
-            dvdy=_pad_horizontal(context.dvdy, grid=grid),
-            dvdz_at_cells=_pad_horizontal(context.dvdz_at_cells, grid=grid),
-            dwdx_at_cells=_pad_horizontal(context.dwdx_at_cells, grid=grid),
-            dwdy_at_cells=_pad_horizontal(context.dwdy_at_cells, grid=grid),
-            dwdz=_pad_horizontal(context.dwdz, grid=grid),
-            dudz_on_faces=_pad_horizontal(context.dudz_on_faces, grid=grid),
-            dvdz_on_faces=_pad_horizontal(context.dvdz_on_faces, grid=grid),
-            dwdx_on_faces=_pad_horizontal(context.dwdx_on_faces, grid=grid),
-            dwdy_on_faces=_pad_horizontal(context.dwdy_on_faces, grid=grid),
-        )
         delta = (grid.dx * grid.dy * grid.dz) ** (1.0 / 3.0)
         face_magnitude = _strain_magnitude(
-            _cell_to_full_faces(padded_context.dudx),
-            _cell_to_full_faces(padded_context.dudy),
-            padded_context.dudz_on_faces,
-            _cell_to_full_faces(padded_context.dvdx),
-            _cell_to_full_faces(padded_context.dvdy),
-            padded_context.dvdz_on_faces,
-            padded_context.dwdx_on_faces,
-            padded_context.dwdy_on_faces,
-            _cell_to_full_faces(padded_context.dwdz),
+            _cell_to_full_faces(context.dudx),
+            _cell_to_full_faces(context.dudy),
+            context.dudz_on_faces,
+            _cell_to_full_faces(context.dvdx),
+            _cell_to_full_faces(context.dvdy),
+            context.dvdz_on_faces,
+            context.dwdx_on_faces,
+            context.dwdy_on_faces,
+            _cell_to_full_faces(context.dwdz),
         )
-        coefficient = _pad_horizontal(
-            self._momentum_sgs_coefficient(context, config), grid=grid
-        )
+        coefficient = self._momentum_sgs_coefficient(context, config)
         if isinstance(config, LagrangianScaleDependentDynamic):
             coefficient = jnp.clip(
                 coefficient,
@@ -344,15 +290,11 @@ class OracleFlowMixin:
         viscosity_on_faces = (
             _cell_to_full_faces(coefficient) * delta**2 * face_magnitude
         )
-        txz = _truncate_padded(
-            -viscosity_on_faces
-            * (padded_context.dudz_on_faces + padded_context.dwdx_on_faces),
-            grid=grid,
+        txz = -viscosity_on_faces * (
+            context.dudz_on_faces + context.dwdx_on_faces
         )
-        tyz = _truncate_padded(
-            -viscosity_on_faces
-            * (padded_context.dvdz_on_faces + padded_context.dwdy_on_faces),
-            grid=grid,
+        tyz = -viscosity_on_faces * (
+            context.dvdz_on_faces + context.dwdy_on_faces
         )
         txz = txz.at[0].set(0.0).at[-1].set(0.0)
         tyz = tyz.at[0].set(0.0).at[-1].set(0.0)

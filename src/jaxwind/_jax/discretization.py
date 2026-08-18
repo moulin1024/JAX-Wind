@@ -412,7 +412,7 @@ class _JaxDiscretization(ZSlabLasdMixin, ZSlabFlowMixin):
             ),
         )
 
-    def legacy_fortran_filter_fields(
+    def filter_fields_for_rhs(
         self,
         fields: BoussinesqFields,
     ) -> BoussinesqFields:
