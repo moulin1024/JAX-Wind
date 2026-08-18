@@ -38,7 +38,6 @@ from jaxwind.physics import (  # noqa: E402
     BoussinesqFields,
     BoussinesqModel,
     BoussinesqVectorField,
-    ConservativeAdvection,
     ConservativeScalarAdvection,
     CoriolisGeostrophic,
     DryFlowModel,
@@ -152,23 +151,7 @@ class FusedNeutralSgsTests(unittest.TestCase):
                 3.0e-12,
             )
 
-    def test_lasd_fused_rhs_matches_individual_contributions(self) -> None:
-        self.assert_fused_matches_contributions(
-            BoussinesqModel(
-                DryFlowModel(
-                    ConservativeAdvection(),
-                    KinematicPressureGradient(0.002, -0.001),
-                    FilteredNeutralLogWall(0.01),
-                    LagrangianScaleDependentDynamic(update_interval=4),
-                    NoRotation(),
-                ),
-                ConservativeScalarAdvection(),
-                LagrangianScaleDependentScalarFlux(),
-                NoBuoyancy(),
-            )
-        )
-
-    def test_rotational_lasd_fused_rhs_matches_resolved_contributions(self) -> None:
+    def test_legacy_lasd_fused_rhs_matches_resolved_contributions(self) -> None:
         self.assert_fused_matches_contributions(
             BoussinesqModel(
                 DryFlowModel(
@@ -184,117 +167,10 @@ class FusedNeutralSgsTests(unittest.TestCase):
             )
         )
 
-    def test_rotational_fused_rhs_removes_unresolved_product_alias(self) -> None:
-        algebra = build_discretization(
-            self.decomposition,
-            frozen_zero_scalar=True,
-        )
-        grid = self.decomposition.grid
-        x = 2.0 * jnp.pi * jnp.arange(grid.nx) / grid.nx
-        shape = (1, grid.nz, grid.ny, grid.nx)
-        u = jnp.broadcast_to(jnp.sin(3.0 * x), shape)
-        v = jnp.broadcast_to(jnp.cos(3.0 * x), shape)
-        zero_w = jnp.zeros(shape, dtype=u.dtype)
-        velocity = VelocityVector(
-            replace(self.fields.velocity.x, payload=u),
-            replace(self.fields.velocity.y, payload=v),
-            replace(
-                self.fields.velocity.z,
-                owned=replace(self.fields.velocity.z.owned, payload=zero_w),
-            ),
-        )
-        fields = replace(self.fields, velocity=velocity)
-        wall = FilteredNeutralLogWall(0.01)
-        model = BoussinesqModel(
-            DryFlowModel(
-                RotationalAdvection(),
-                KinematicPressureGradient(0.0),
-                wall,
-                StaticSmagorinsky(0.0),
-                NoRotation(),
-            ),
-            ConservativeScalarAdvection(),
-            StaticSmagorinskyScalarFlux(),
-            NoBuoyancy(),
-        )
-
-        fused = algebra.fused_boussinesq_tendency(fields, model)
-        unpadded = algebra.advection_tendency(
-            algebra.dry_flow_context(velocity),
-            RotationalAdvection(),
-            wall,
-        )
-        fused_y = fused.velocity.y.payload[:, 1:]
-        unpadded_y = unpadded.y.payload[:, 1:]
-        self.assertLess(
-            float(
-                jnp.max(
-                    jnp.abs(
-                        fused_y
-                        - jnp.mean(fused_y, axis=(-2, -1), keepdims=True)
-                    )
-                )
-            ),
-            3.0e-12,
-        )
-        self.assertGreater(
-            float(
-                jnp.max(
-                    jnp.abs(
-                        unpadded_y
-                        - jnp.mean(unpadded_y, axis=(-2, -1), keepdims=True)
-                    )
-                )
-            ),
-            0.1,
-        )
-
-    def test_two_thirds_rotational_rhs_filters_unresolved_input_modes(self) -> None:
-        algebra = build_discretization(
-            self.decomposition,
-            nonlinear_dealiasing="two_thirds",
-            frozen_zero_scalar=True,
-        )
-        grid = self.decomposition.grid
-        x = 2.0 * jnp.pi * jnp.arange(grid.nx) / grid.nx
-        shape = (1, grid.nz, grid.ny, grid.nx)
-        u = jnp.broadcast_to(jnp.sin(3.0 * x), shape)
-        v = jnp.broadcast_to(jnp.cos(3.0 * x), shape)
-        zero_w = jnp.zeros(shape, dtype=u.dtype)
-        velocity = VelocityVector(
-            replace(self.fields.velocity.x, payload=u),
-            replace(self.fields.velocity.y, payload=v),
-            replace(
-                self.fields.velocity.z,
-                owned=replace(self.fields.velocity.z.owned, payload=zero_w),
-            ),
-        )
-        fields = replace(self.fields, velocity=velocity)
-        model = BoussinesqModel(
-            DryFlowModel(
-                RotationalAdvection(),
-                KinematicPressureGradient(0.0),
-                FilteredNeutralLogWall(0.01),
-                StaticSmagorinsky(0.0),
-                NoRotation(),
-            ),
-            ConservativeScalarAdvection(),
-            StaticSmagorinskyScalarFlux(),
-            NoBuoyancy(),
-        )
-
-        fused = algebra.fused_boussinesq_tendency(fields, model)
-        for payload in (
-            fused.velocity.x.payload[:, 1:],
-            fused.velocity.y.payload[:, 1:],
-            fused.velocity.z.owned.payload[:, 1:],
-        ):
-            self.assertLess(float(jnp.max(jnp.abs(payload))), 3.0e-12)
-
     def test_lasd_fused_rhs_reuses_prepared_momentum_context(self) -> None:
         model = BoussinesqModel(
             DryFlowModel(
-                ConservativeAdvection(),
+                RotationalAdvection(),
                 KinematicPressureGradient(0.002, -0.001),
                 FilteredNeutralLogWall(0.01),
                 LagrangianScaleDependentDynamic(update_interval=4),
@@ -334,7 +210,7 @@ class FusedNeutralSgsTests(unittest.TestCase):
         def model(*, scalar_updates: bool) -> BoussinesqModel:
             return BoussinesqModel(
                 DryFlowModel(
-                    ConservativeAdvection(),
+                    RotationalAdvection(),
                     KinematicPressureGradient(0.0),
                     FilteredNeutralLogWall(0.01),
                     momentum,
@@ -403,7 +279,7 @@ class FusedNeutralSgsTests(unittest.TestCase):
         self.assert_fused_matches_contributions(
             BoussinesqModel(
                 DryFlowModel(
-                    ConservativeAdvection(),
+                    RotationalAdvection(),
                     KinematicPressureGradient(0.0),
                     FilteredNeutralLogWall(0.01),
                     StaticSmagorinsky(0.16),
@@ -419,7 +295,7 @@ class FusedNeutralSgsTests(unittest.TestCase):
         self.assert_fused_matches_contributions(
             BoussinesqModel(
                 DryFlowModel(
-                    ConservativeAdvection(),
+                    RotationalAdvection(),
                     KinematicPressureGradient(0.002, -0.001),
                     FilteredNeutralLogWall(0.01),
                     LagrangianScaleDependentDynamic(update_interval=4),
@@ -438,7 +314,7 @@ class FusedNeutralSgsTests(unittest.TestCase):
         self.assert_fused_matches_contributions(
             BoussinesqModel(
                 DryFlowModel(
-                    ConservativeAdvection(),
+                    RotationalAdvection(),
                     KinematicPressureGradient(0.0),
                     FilteredNeutralLogWall(0.01),
                     LagrangianScaleDependentDynamic(update_interval=4),
@@ -468,7 +344,7 @@ class FusedNeutralSgsTests(unittest.TestCase):
     ) -> None:
         model = BoussinesqModel(
             DryFlowModel(
-                ConservativeAdvection(),
+                RotationalAdvection(),
                 KinematicPressureGradient(0.002, -0.001),
                 FilteredNeutralLogWall(0.01),
                 momentum_sgs,
@@ -538,7 +414,7 @@ class FusedNeutralSgsTests(unittest.TestCase):
     def test_monin_obukhov_transfer_drives_the_uniform_fused_rhs(self) -> None:
         model = BoussinesqModel(
             DryFlowModel(
-                ConservativeAdvection(),
+                RotationalAdvection(),
                 KinematicPressureGradient(0.0),
                 FilteredNeutralLogWall(0.01),
                 LagrangianScaleDependentDynamic(update_interval=4),
@@ -604,7 +480,7 @@ class FusedNeutralSgsTests(unittest.TestCase):
         momentum = LagrangianScaleDependentDynamic(update_interval=4)
         model = BoussinesqModel(
             DryFlowModel(
-                ConservativeAdvection(),
+                RotationalAdvection(),
                 KinematicPressureGradient(0.0, 0.0),
                 wall,
                 momentum,

@@ -937,6 +937,11 @@ class HDF5PrecursorPlayback:
         """Broadcast one local ``(component,z,y)`` plane over x on device."""
 
         velocity, _scalar = _state_payloads(state)
+        plane = self.runtime.jnp.roll(
+            plane,
+            shift=self.config.spanwise_shift_cells,
+            axis=-1,
+        )
         local_shape = tuple(int(extent) for extent in velocity.x.payload.shape)
         planes = plane.reshape(
             len(VELOCITY_COMPONENTS),

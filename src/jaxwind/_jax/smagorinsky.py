@@ -111,43 +111,37 @@ def build_smagorinsky_kernels(
             minimum_coefficient,
             maximum_coefficient,
         )
+        cell_stress = jnp.stack(
+            (
+                -2.0 * cell_viscosity * cell_gradients[0],
+                -cell_viscosity * (cell_gradients[1] + cell_gradients[3]),
+                -2.0 * cell_viscosity * cell_gradients[4],
+                -2.0 * cell_viscosity * cell_gradients[8],
+            ),
+            axis=0,
+        )
         txx_s, txy_s, tyy_s, tzz_s = tuple(
-            truncate_padded_spectrum_local(
-                jnp.stack(
-                    (
-                        -2.0 * cell_viscosity * cell_gradients[0],
-                        -cell_viscosity * (cell_gradients[1] + cell_gradients[3]),
-                        -2.0 * cell_viscosity * cell_gradients[4],
-                        -2.0 * cell_viscosity * cell_gradients[8],
-                    ),
-                    axis=0,
-                )
+            truncate_padded_spectrum_local(cell_stress)
+        )
+        txz, tyz = tuple(
+            jnp.stack(
+                (
+                    -face_viscosity * (face_gradients[2] + face_gradients[6]),
+                    -face_viscosity * (face_gradients[5] + face_gradients[7]),
+                ),
+                axis=0,
             )
+        )
+        txz = txz.at[-1].set(
+            jnp.where(context.upper_is_physical, 0.0, txz[-1])
+        )
+        tyz = tyz.at[-1].set(
+            jnp.where(context.upper_is_physical, 0.0, tyz[-1])
         )
         txz_s, tyz_s = tuple(
-            truncate_padded_spectrum_local(
-                jnp.stack(
-                    (
-                        -face_viscosity * (face_gradients[2] + face_gradients[6]),
-                        -face_viscosity * (face_gradients[5] + face_gradients[7]),
-                    ),
-                    axis=0,
-                )
-            )
+            truncate_padded_spectrum_local(jnp.stack((txz, tyz), axis=0))
         )
-        txz_s = txz_s.at[-1].set(
-            jnp.where(context.upper_is_physical, 0.0, txz_s[-1])
-        )
-        tyz_s = tyz_s.at[-1].set(
-            jnp.where(context.upper_is_physical, 0.0, tyz_s[-1])
-        )
-        txz, tyz, tzz = tuple(
-            jnp.fft.irfftn(
-                jnp.stack((txz_s, tyz_s, tzz_s)),
-                s=(grid.ny, grid.nx),
-                axes=(-2, -1),
-            ).astype(coefficient.dtype)
-        )
+        tzz = cell_stress[3]
         stress_halo = exchange_local(jnp.stack((txz, tyz, tzz), axis=0))
         lower_txz_plane = jnp.where(
             stress_halo.lower_is_physical,

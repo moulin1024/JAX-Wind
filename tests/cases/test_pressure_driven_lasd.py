@@ -37,8 +37,6 @@ def test_case_is_data_only_configuration() -> None:
     )
     assert case.numerics.pressure_tridiag == "pcr"
     assert case.numerics.pressure_thomas_chunk == 1
-    assert case.numerics.nonlinear_dealiasing == "two_thirds"
-    assert case.flow.advection == "rotational"
     assert case.time.dt_seconds == pytest.approx(0.6)
     assert case.sgs.update_interval_steps == 8
     assert case.sgs.lasd_filter_backend == "cufft"
@@ -51,35 +49,38 @@ def test_case_resolves_its_configuration(capsys) -> None:
     output = capsys.readouterr().out
     assert 'case = "pressure_driven_lasd_64x64x64"' in output
     assert 'closure = "lagrangian-scale-dependent-dynamic"' in output
-    assert 'advection = "rotational"' in output
+    assert 'momentum_advection = "legacy-rotational"' in output
     assert 'pressure_tridiag = "pcr"' in output
-    assert 'nonlinear_dealiasing = "two_thirds"' in output
+    assert 'nonlinear_scheme = "legacy-fortran-pre-rhs-filtering"' in output
     assert "dt_seconds = 0.6" in output
     assert "update_interval_steps = 8" in output
 
 
-def test_case_can_select_two_thirds_dealiasing(tmp_path: Path) -> None:
-    assert load_case(CONFIG).numerics.nonlinear_dealiasing == "two_thirds"
+def test_case_can_select_cufft_lasd_filtering(tmp_path: Path) -> None:
+    assert load_case(CONFIG).sgs.lasd_filter_backend == "cufft"
 
 
-def test_case_can_select_legacy_two_thirds_dealiasing(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("table", "selector"),
+    (
+        ("[flow]", 'advection = "conservative"'),
+        ("[numerics]", 'nonlinear_dealiasing = "three_halves"'),
+        ("[numerics]", "nonlinear_padding_ratio = 1.5"),
+    ),
+)
+def test_removed_nonlinear_selectors_are_rejected(
+    tmp_path: Path,
+    table: str,
+    selector: str,
+) -> None:
     selected = tmp_path / "config.toml"
     selected.write_text(
-        CONFIG.read_text(encoding="utf-8").replace(
-            'nonlinear_dealiasing = "two_thirds"',
-            'nonlinear_dealiasing = "legacy_two_thirds"',
-        ),
+        CONFIG.read_text(encoding="utf-8").replace(table, f"{table}\n{selector}"),
         encoding="utf-8",
     )
 
-    assert (
-        load_case(selected).numerics.nonlinear_dealiasing
-        == "legacy_two_thirds"
-    )
-
-
-def test_case_can_select_cufft_lasd_filtering(tmp_path: Path) -> None:
-    assert load_case(CONFIG).sgs.lasd_filter_backend == "cufft"
+    with pytest.raises(ValueError, match="removed|was removed"):
+        load_case(selected)
 
 
 def test_cufft_lasd_filtering_requires_float32(tmp_path: Path) -> None:

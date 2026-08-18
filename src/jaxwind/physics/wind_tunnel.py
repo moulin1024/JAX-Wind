@@ -39,6 +39,8 @@ class PureThrustActuatorDisk:
     hub_diameter: float = 0.0
     yaw_degrees: float = 0.0
     filtered_velocity_correction: bool = True
+    prescribed_inflow_velocity: float = 0.0
+    prescribed_thrust_coefficient: float = 0.0
 
     def __post_init__(self) -> None:
         finite = (
@@ -51,6 +53,8 @@ class PureThrustActuatorDisk:
             self.transverse_smoothing_width,
             self.hub_diameter,
             self.yaw_degrees,
+            self.prescribed_inflow_velocity,
+            self.prescribed_thrust_coefficient,
         )
         if not all(math.isfinite(value) for value in finite):
             raise ValueError("actuator-disk parameters must be finite")
@@ -58,6 +62,11 @@ class PureThrustActuatorDisk:
             raise ValueError("actuator-disk diameter must be positive")
         if self.thrust_coefficient_prime < 0.0:
             raise ValueError("local thrust coefficient must be nonnegative")
+        prescribed = self.prescribed_inflow_velocity > 0.0
+        if prescribed != (self.prescribed_thrust_coefficient > 0.0):
+            raise ValueError(
+                "prescribed inflow velocity and thrust coefficient must both be positive or both zero"
+            )
         if min(
             self.normal_smoothing_width,
             self.transverse_smoothing_width,
@@ -249,6 +258,68 @@ class BladeElementActuatorLine:
 
 
 @dataclass(frozen=True, slots=True)
+class BladeElementActuatorDisk(BladeElementActuatorLine):
+    """Azimuthally averaged blade-element disk with thrust and swirl loading."""
+
+    def __post_init__(self) -> None:
+        super(BladeElementActuatorDisk, self).__post_init__()
+        if self.tilt_degrees != 0.0 or self.precone_degrees != 0.0:
+            raise ValueError("AD-BEM currently supports an upright rotor axis")
+        if self.yaw_degrees != 0.0:
+            raise ValueError("AD-BEM currently supports zero yaw")
+        if any(
+            (
+                self.element_flap_displacements,
+                self.element_edge_displacements,
+                self.element_flap_slopes,
+                self.element_edge_slopes,
+                self.element_flap_velocities,
+                self.element_edge_velocities,
+            )
+        ):
+            raise ValueError("AD-BEM does not accept blade deformation state")
+
+
+@dataclass(frozen=True, slots=True)
+class NoTurbineBody:
+    """Explicit absence of nacelle and tower drag."""
+
+
+@dataclass(frozen=True, slots=True)
+class NacelleTowerDrag:
+    """Smoothed nacelle and tapered-tower drag in execution units."""
+
+    x: float
+    y: float
+    hub_height: float
+    nacelle_length: float
+    nacelle_diameter: float
+    nacelle_drag_coefficient: float
+    tower_base_diameter: float
+    tower_top_diameter: float
+    tower_drag_coefficient: float
+    smoothing_width: float
+
+    def __post_init__(self) -> None:
+        values = (
+            self.x, self.y, self.hub_height, self.nacelle_length,
+            self.nacelle_diameter, self.nacelle_drag_coefficient,
+            self.tower_base_diameter, self.tower_top_diameter,
+            self.tower_drag_coefficient, self.smoothing_width,
+        )
+        if not all(math.isfinite(value) for value in values):
+            raise ValueError("nacelle/tower parameters must be finite")
+        if min(
+            self.hub_height, self.nacelle_length, self.nacelle_diameter,
+            self.tower_base_diameter, self.tower_top_diameter,
+            self.smoothing_width,
+        ) <= 0.0:
+            raise ValueError("nacelle/tower dimensions must be positive")
+        if min(self.nacelle_drag_coefficient, self.tower_drag_coefficient) < 0.0:
+            raise ValueError("nacelle/tower drag coefficients must be nonnegative")
+
+
+@dataclass(frozen=True, slots=True)
 class NoFringe:
     """Explicit absence of downstream fringe forcing."""
 
@@ -292,15 +363,19 @@ class ConcurrentPrecursorFringe:
 class WindTunnelModel:
     """Independent turbine and fringe choices."""
 
-    actuator_disk: NoActuatorDisk | PureThrustActuatorDisk = NoActuatorDisk()
+    actuator_disk: (
+        NoActuatorDisk | PureThrustActuatorDisk | BladeElementActuatorDisk
+    ) = NoActuatorDisk()
     fringe: NoFringe | ConcurrentPrecursorFringe = NoFringe()
     actuator_line: NoActuatorLine | BladeElementActuatorLine = (
         NoActuatorLine()
     )
+    turbine_body: NoTurbineBody | NacelleTowerDrag = NoTurbineBody()
 
     def __post_init__(self) -> None:
         if not isinstance(
-            self.actuator_disk, (NoActuatorDisk, PureThrustActuatorDisk)
+            self.actuator_disk,
+            (NoActuatorDisk, PureThrustActuatorDisk, BladeElementActuatorDisk),
         ):
             raise TypeError("unsupported actuator-disk choice")
         if not isinstance(self.fringe, (NoFringe, ConcurrentPrecursorFringe)):
@@ -313,9 +388,11 @@ class WindTunnelModel:
             ),
         ):
             raise TypeError("unsupported actuator-line choice")
+        if not isinstance(self.turbine_body, (NoTurbineBody, NacelleTowerDrag)):
+            raise TypeError("unsupported turbine-body choice")
         if isinstance(
             self.actuator_disk,
-            PureThrustActuatorDisk,
+            (PureThrustActuatorDisk, BladeElementActuatorDisk),
         ) and isinstance(
             self.actuator_line,
             BladeElementActuatorLine,
@@ -413,13 +490,17 @@ class WindTunnelVectorField:
 
     def __call__(self, evaluation: Any) -> WindTunnelVectorFieldResult:
         base = self.base(evaluation)
-        disk_enabled = isinstance(self.model.actuator_disk, PureThrustActuatorDisk)
+        disk_enabled = isinstance(
+            self.model.actuator_disk,
+            (PureThrustActuatorDisk, BladeElementActuatorDisk),
+        )
         line_enabled = isinstance(
             self.model.actuator_line,
             BladeElementActuatorLine,
         )
         fringe_enabled = isinstance(self.model.fringe, ConcurrentPrecursorFringe)
-        if disk_enabled or line_enabled or fringe_enabled:
+        body_enabled = isinstance(self.model.turbine_body, NacelleTowerDrag)
+        if disk_enabled or line_enabled or body_enabled or fringe_enabled:
             forcing = self.algebra.wind_tunnel_tendency(
                 evaluation.velocity,
                 self.model,
@@ -458,14 +539,18 @@ class WindTunnelBoussinesqVectorField:
         evaluation: Any,
         base: Any,
     ) -> WindTunnelVectorFieldResult:
-        disk_enabled = isinstance(self.model.actuator_disk, PureThrustActuatorDisk)
+        disk_enabled = isinstance(
+            self.model.actuator_disk,
+            (PureThrustActuatorDisk, BladeElementActuatorDisk),
+        )
         line_enabled = isinstance(
             self.model.actuator_line,
             BladeElementActuatorLine,
         )
         fringe_enabled = isinstance(self.model.fringe, ConcurrentPrecursorFringe)
         momentum = base.tendency.velocity
-        if disk_enabled or line_enabled or fringe_enabled:
+        body_enabled = isinstance(self.model.turbine_body, NacelleTowerDrag)
+        if disk_enabled or line_enabled or body_enabled or fringe_enabled:
             forcing = self.algebra.wind_tunnel_tendency(
                 evaluation.velocity.velocity,
                 self.model,

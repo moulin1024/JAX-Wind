@@ -296,6 +296,7 @@ def resolved(case: BoussinesqCase) -> dict[str, Any]:
                 wall.roughness_length
             ),
             "momentum_sgs": type(momentum.sgs).__name__,
+            "lasd_update_interval_steps": momentum.sgs.update_interval,
             "scalar_sgs": type(case.model.scalar_sgs).__name__,
             "rotation": type(rotation).__name__,
             "coriolis_vertical_s": rotation_values[0],
@@ -345,8 +346,7 @@ def resolved(case: BoussinesqCase) -> dict[str, Any]:
             "dtype": case.pressure.dtype,
             "pressure_method": case.pressure.method,
             "thomas_chunk": case.pressure.thomas_chunk,
-            "nonlinear_dealiasing": case.nonlinear_dealiasing,
-            "nonlinear_padding_ratio": case.nonlinear_padding_ratio,
+            "nonlinear_scheme": "legacy-fortran-pre-rhs-filtering",
             "advection_frame_velocity_m_s": list(
                 case.advection_frame_velocity_m_s
             ),
@@ -414,12 +414,7 @@ def _physics_fingerprints(case: BoussinesqCase) -> tuple[str, str]:
         + f":{scalar_boundary.upper_flux.hex()}"
         + f"|surface-transfer={surface_transfer!r}"
         + f"|rayleigh={case.model.rayleigh_damping!r}"
-        + (
-            ""
-            if case.nonlinear_dealiasing == "three_halves"
-            else f"|dealiasing={case.nonlinear_dealiasing}"
-        )
-        + f"|padding={case.nonlinear_padding_ratio.hex()}"
+        + "|nonlinear=legacy-fortran-pre-rhs-filtering"
     )
     return closure, physics
 
@@ -1134,8 +1129,6 @@ def evaluate(
         pressure_dtype=case.pressure.dtype,
         pressure_method=case.pressure.method,
         pressure_thomas_chunk=case.pressure.thomas_chunk,
-        nonlinear_padding_ratio=case.nonlinear_padding_ratio,
-        nonlinear_dealiasing=case.nonlinear_dealiasing,
         lasd_filter_backend=lasd_filter_backend,
     )
     closure_fingerprint, physics_fingerprint = _physics_fingerprints(case)

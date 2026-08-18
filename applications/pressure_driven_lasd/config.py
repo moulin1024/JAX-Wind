@@ -98,7 +98,6 @@ class FlowConfig:
     von_karman: float
     initial_perturbation_rms_m_s: float
     initial_correlation_length_m: float
-    advection: str = "conservative"
 
     def __post_init__(self) -> None:
         positive = (
@@ -112,8 +111,6 @@ class FlowConfig:
             raise ConfigError("flow scales and wall constants must be positive")
         if self.initial_perturbation_rms_m_s < 0.0:
             raise ConfigError("initial perturbation RMS must be nonnegative")
-        if self.advection not in ("conservative", "rotational"):
-            raise ConfigError("flow.advection must be conservative or rotational")
 
     @property
     def pressure_acceleration_m_s2(self) -> float:
@@ -209,7 +206,6 @@ class NumericsConfig:
     seed: int
     cfl_abort: float
     lasd_trajectory_cfl_abort: float
-    nonlinear_dealiasing: str = "three_halves"
 
     def __post_init__(self) -> None:
         if self.dtype not in ("float32", "float64"):
@@ -224,15 +220,6 @@ class NumericsConfig:
             raise ConfigError("random seed must be nonnegative")
         if self.cfl_abort <= 0.0 or self.lasd_trajectory_cfl_abort <= 0.0:
             raise ConfigError("CFL abort limits must be positive")
-        if self.nonlinear_dealiasing not in (
-            "three_halves",
-            "two_thirds",
-            "legacy_two_thirds",
-        ):
-            raise ConfigError(
-                "numerics.nonlinear_dealiasing must be three_halves, "
-                "two_thirds, or legacy_two_thirds"
-            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -343,7 +330,7 @@ class CaseConfig:
                 ],
             },
             "flow": {
-                "advection": self.flow.advection,
+                "momentum_advection": "legacy-rotational",
                 "friction_velocity_m_s": self.flow.friction_velocity_m_s,
                 "roughness_length_m": self.flow.roughness_length_m,
                 "forcing_height_m": self.flow.forcing_height_m,
@@ -383,7 +370,7 @@ class CaseConfig:
                 "pressure_method": self.numerics.pressure_method,
                 "pressure_tridiag": self.numerics.pressure_tridiag,
                 "pressure_thomas_chunk": self.numerics.pressure_thomas_chunk,
-                "nonlinear_dealiasing": self.numerics.nonlinear_dealiasing,
+                "nonlinear_scheme": "legacy-fortran-pre-rhs-filtering",
                 "estimated_startup_cfl": self.estimated_startup_cfl,
                 "estimated_lasd_trajectory_cfl": (
                     self.estimated_lasd_trajectory_cfl
@@ -424,6 +411,19 @@ def load_case(
     time = _table(document, "time")
     numerics = _table(document, "numerics")
     output = _table(document, "output")
+    if "advection" in flow:
+        raise ConfigError(
+            "flow.advection was removed; the legacy rotational scheme is fixed"
+        )
+    removed_nonlinear_keys = {
+        "nonlinear_dealiasing",
+        "nonlinear_padding_ratio",
+    } & numerics.keys()
+    if removed_nonlinear_keys:
+        names = ", ".join(sorted(removed_nonlinear_keys))
+        raise ConfigError(
+            f"removed nonlinear selector(s): {names}; the legacy scheme is fixed"
+        )
     configured_dt = _number(time, "dt_seconds")
     configured_duration = _number(time, "duration_hours")
     resolved_dt = (
@@ -467,11 +467,6 @@ def load_case(
             ),
             initial_correlation_length_m=_number(
                 flow, "initial_correlation_length_m"
-            ),
-            advection=(
-                _string(flow, "advection")
-                if "advection" in flow
-                else "conservative"
             ),
         ),
         wall=WallConfig(
@@ -537,11 +532,6 @@ def load_case(
             cfl_abort=_number(numerics, "cfl_abort"),
             lasd_trajectory_cfl_abort=_number(
                 numerics, "lasd_trajectory_cfl_abort"
-            ),
-            nonlinear_dealiasing=(
-                _string(numerics, "nonlinear_dealiasing")
-                if "nonlinear_dealiasing" in numerics
-                else "three_halves"
             ),
         ),
         output=OutputConfig(

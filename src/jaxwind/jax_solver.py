@@ -59,6 +59,18 @@ class JaxDiagnosticFields(NamedTuple):
 
 
 @dataclass(frozen=True, slots=True)
+class _LegacyFortranStepEvent:
+    """Reproduce WIRE-LES's pre-RHS in-place velocity filtering order."""
+
+    algebra: Any
+    closure_event: Any
+
+    def __call__(self, fields: Any, clock: Any, environment: Any) -> Any:
+        filtered = self.algebra.legacy_fortran_filter_fields(fields)
+        return self.closure_event(filtered, clock, environment)
+
+
+@dataclass(frozen=True, slots=True)
 class JaxSolver:
     """A complete Boussinesq solver over an initialized JAX job.
 
@@ -261,8 +273,6 @@ def build_jax_solver(
     pressure_method: str = "transpose",
     pressure_tridiag: str = "thomas",
     pressure_thomas_chunk: int = 1,
-    nonlinear_padding_ratio: float = 1.5,
-    nonlinear_dealiasing: str = "three_halves",
     wind_tunnel_model: WindTunnelModel | None = None,
     environment: Any = None,
     optimize_frozen_zero_scalar: bool = False,
@@ -307,8 +317,6 @@ def build_jax_solver(
         decomposition,
         addressable_partitions=addressable,
         porte_agel_wall_correction=wall_correction,
-        nonlinear_padding_ratio=nonlinear_padding_ratio,
-        nonlinear_dealiasing=nonlinear_dealiasing,
         frozen_zero_scalar=optimize_frozen_zero_scalar,
         lasd_filter_backend=lasd_filter_backend,
     )
@@ -392,6 +400,7 @@ def build_jax_solver(
         if isinstance(model.momentum.sgs, LagrangianScaleDependentDynamic)
         else IdentityClosureEvent()
     )
+    closure_event = _LegacyFortranStepEvent(algebra, closure_event)
     advance = build_solver(
         config=integrator,
         vector_field=vector_field,

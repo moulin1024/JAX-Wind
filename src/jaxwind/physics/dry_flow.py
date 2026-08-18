@@ -14,17 +14,8 @@ from .lasd import LagrangianScaleDependentDynamic
 
 
 @dataclass(frozen=True, slots=True)
-class ConservativeAdvection:
-    """Conservative flux form with horizontal three-halves dealiasing."""
-
-
-@dataclass(frozen=True, slots=True)
 class RotationalAdvection:
-    """Rotational ``omega x u`` advection.
-
-    The fused Boussinesq lowering evaluates its products with three-halves
-    horizontal padding.
-    """
+    """Legacy base-grid rotational ``omega x u`` advection."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,7 +115,7 @@ class CoriolisGeostrophic:
 class DryFlowModel:
     """Small product of independent choices required by the first model."""
 
-    advection: ConservativeAdvection | RotationalAdvection
+    advection: RotationalAdvection
     pressure_gradient: KinematicPressureGradient
     wall: NeutralLogWall | FilteredNeutralLogWall
     sgs: StaticSmagorinsky | LagrangianScaleDependentDynamic
@@ -134,7 +125,7 @@ class DryFlowModel:
         expected = (
             (
                 self.advection,
-                (ConservativeAdvection, RotationalAdvection),
+                RotationalAdvection,
                 "advection",
             ),
             (self.pressure_gradient, KinematicPressureGradient, "pressure gradient"),

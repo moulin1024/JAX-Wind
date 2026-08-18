@@ -36,15 +36,18 @@ from jaxwind._jax.discretization import (  # noqa: E402
 )
 from jaxwind.operators import VelocityVector  # noqa: E402
 from jaxwind.physics import (  # noqa: E402
+    BladeElementActuatorDisk,
     BladeElementActuatorLine,
     BoussinesqFields,
     BoussinesqTendency,
     ConcurrentPrecursorEnvironment,
     ConcurrentPrecursorFringe,
+    NacelleTowerDrag,
     PureThrustActuatorDisk,
     WindTunnelBoussinesqVectorField,
     WindTunnelModel,
 )
+from jaxwind._jax.actuator_line import blade_element_kinematic_forces  # noqa: E402
 
 
 class WindTunnelForcingTests(unittest.TestCase):
@@ -147,6 +150,119 @@ class WindTunnelForcingTests(unittest.TestCase):
             jnp.max(jnp.abs(reference.z.payload[1:] - production.z.owned.payload[0])),
         )
         self.assertLess(max(float(value) for value in errors), 2.0e-12)
+
+    def test_ad_bem_conserves_thrust_and_applies_swirl(self) -> None:
+        disk = BladeElementActuatorDisk(
+            x=3.5,
+            y=3.0,
+            z=2.0,
+            blade_count=3,
+            hub_radius=0.25,
+            tip_radius=1.5,
+            angular_velocity=3.0,
+            smoothing_width=0.35,
+            element_radii=(0.5, 1.0, 1.4),
+            element_widths=(0.4, 0.5, 0.35),
+            element_chords=(0.25, 0.2, 0.12),
+            element_twist_degrees=(12.0, 6.0, 2.0),
+            element_airfoil_ids=(0, 0, 0),
+            polar_alpha_degrees=(-180.0, 0.0, 180.0),
+            polar_lift_coefficients=((0.8, 0.8, 0.8),),
+            polar_drag_coefficients=((0.05, 0.05, 0.05),),
+            tip_loss=False,
+            root_loss=False,
+        )
+        u = jnp.full_like(self.u, 2.0)
+        v = jnp.zeros_like(self.v)
+        w = jnp.zeros_like(self.w)
+        decomposition = EqualVerticalPartition(
+            self.grid,
+            MeshTopology((MeshAxis("z", 1),)),
+            DistributionSpec.vertical(),
+        )
+        result = build_discretization(
+            decomposition, addressable_partitions=(0,)
+        ).wind_tunnel_tendency(
+            self.zslab_velocity(u, v, w), WindTunnelModel(disk), None
+        )
+
+        expected, *_ = blade_element_kinematic_forces(
+            jnp.asarray(((2.0, 0.0, 0.0),) * 3),
+            jnp.asarray(((0.0, 1.0, 0.0),) * 3),
+            3.0 * jnp.asarray(disk.element_radii),
+            jnp.asarray((1.0, 0.0, 0.0)),
+            element_radii=jnp.asarray(disk.element_radii),
+            element_widths=jnp.asarray(disk.element_widths),
+            element_chords=jnp.asarray(disk.element_chords),
+            element_twist_degrees=jnp.asarray(disk.element_twist_degrees),
+            element_airfoil_ids=jnp.asarray(disk.element_airfoil_ids),
+            blade_count=3,
+            hub_radius=disk.hub_radius,
+            tip_radius=disk.tip_radius,
+            pitch_degrees=0.0,
+            polar_alpha_degrees=disk.polar_alpha_degrees,
+            polar_lift_coefficients=disk.polar_lift_coefficients,
+            polar_drag_coefficients=disk.polar_drag_coefficients,
+            tip_loss=False,
+            root_loss=False,
+        )
+        volume = self.grid.dx * self.grid.dy * self.grid.dz
+        integrated_thrust = jnp.sum(result.x.payload) * volume
+        self.assertAlmostEqual(
+            float(integrated_thrust), float(3.0 * jnp.sum(expected[:, 0])), places=11
+        )
+        self.assertGreater(float(jnp.max(jnp.abs(result.y.payload))), 0.0)
+        self.assertGreater(float(jnp.max(jnp.abs(result.z.owned.payload))), 0.0)
+        self.assertAlmostEqual(float(jnp.sum(result.y.payload)), 0.0, places=11)
+
+    def test_nacelle_and_tapered_tower_conserve_drag(self) -> None:
+        body = NacelleTowerDrag(
+            x=3.5,
+            y=3.0,
+            hub_height=3.0,
+            nacelle_length=1.0,
+            nacelle_diameter=0.6,
+            nacelle_drag_coefficient=1.2,
+            tower_base_diameter=0.5,
+            tower_top_diameter=0.3,
+            tower_drag_coefficient=1.0,
+            smoothing_width=0.4,
+        )
+        u = jnp.full_like(self.u, 2.0)
+        result = build_discretization(
+            EqualVerticalPartition(
+                self.grid,
+                MeshTopology((MeshAxis("z", 1),)),
+                DistributionSpec.vertical(),
+            ),
+            addressable_partitions=(0,),
+        ).wind_tunnel_tendency(
+            self.zslab_velocity(u, jnp.zeros_like(self.v), jnp.zeros_like(self.w)),
+            WindTunnelModel(turbine_body=body),
+            None,
+        )
+        z = (jnp.arange(self.grid.nz) + 0.5) * self.grid.dz
+        top = body.hub_height - 0.5 * body.nacelle_diameter
+        fraction = jnp.clip(z / top, 0.0, 1.0)
+        diameter = body.tower_base_diameter + fraction * (
+            body.tower_top_diameter - body.tower_base_diameter
+        )
+        tower_force = jnp.sum(
+            -0.5 * body.tower_drag_coefficient * diameter * 2.0**2
+            * (z < top) * self.grid.dz
+        )
+        nacelle_force = (
+            -0.5 * body.nacelle_drag_coefficient
+            * jnp.pi * body.nacelle_diameter**2 / 4.0 * 2.0**2
+        )
+        integrated = jnp.sum(result.x.payload) * (
+            self.grid.dx * self.grid.dy * self.grid.dz
+        )
+        self.assertAlmostEqual(
+            float(integrated), float(nacelle_force + tower_force), places=11
+        )
+        self.assertTrue(jnp.all(result.x.payload <= 0.0))
+        self.assertTrue(jnp.all(result.y.payload == 0.0))
 
     def test_configured_fringe_has_a_unit_plateau_and_smooth_seam(self) -> None:
         x = jnp.asarray(

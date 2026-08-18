@@ -12,7 +12,6 @@ from applications.abl.__main__ import main
 from applications.abl.config import load_abl
 from applications.abl.evaluate import ProfileStatistics
 from jaxwind.physics import (
-    ConservativeAdvection,
     CoriolisGeostrophic,
     LagrangianScaleDependentDynamic,
     LagrangianScaleDependentScalarFlux,
@@ -63,19 +62,6 @@ def test_toml_schema_rejects_unknown_keys(tmp_path: Path) -> None:
         load_abl(invalid)
 
 
-def test_toml_schema_selects_two_thirds_dealiasing(tmp_path: Path) -> None:
-    selected = tmp_path / "config.toml"
-    selected.write_text(
-        CONFIG.read_text(encoding="utf-8").replace(
-            "nonlinear_padding_ratio = 1.5",
-            'nonlinear_padding_ratio = 1.5\nnonlinear_dealiasing = "two_thirds"',
-        ),
-        encoding="utf-8",
-    )
-
-    assert load_abl(selected).nonlinear_dealiasing == "two_thirds"
-
-
 def test_production_solver_has_no_andren_or_ekman_mode() -> None:
     source_root = ROOT / "src" / "jaxwind"
     mentions = {
@@ -91,7 +77,7 @@ def test_production_solver_has_no_andren_or_ekman_mode() -> None:
 def test_case_composes_generic_physics_objects() -> None:
     momentum = CASE.model.momentum
 
-    assert isinstance(momentum.advection, ConservativeAdvection)
+    assert isinstance(momentum.advection, RotationalAdvection)
     assert isinstance(momentum.wall, NeutralLogWall)
     assert isinstance(momentum.sgs, LagrangianScaleDependentDynamic)
     assert isinstance(momentum.rotation, CoriolisGeostrophic)
@@ -99,8 +85,6 @@ def test_case_composes_generic_physics_objects() -> None:
     assert isinstance(CASE.model.buoyancy, LinearBoussinesqBuoyancy)
     assert CASE.model.buoyancy.acceleration_per_temperature == 0.0
     assert momentum.sgs.update_interval == 5
-    assert CASE.nonlinear_padding_ratio == 1.5
-    assert CASE.nonlinear_dealiasing == "three_halves"
 
 
 def test_canonical_grid_and_time_match_andren1994() -> None:
@@ -154,20 +138,17 @@ def test_dry_run_resolves_python_composition_without_jax(capsys) -> None:
     )
     assert result["physics"]["buoyancy_acceleration_per_scalar"] == 0.0
     assert result["physics"]["coriolis_vertical_s"] == pytest.approx(1.0e-4)
-
-
-def test_dry_run_can_override_rotational_advection(capsys) -> None:
-    assert main(["--dry-run", "--advection", "rotational"]) == 0
-    result = json.loads(capsys.readouterr().out)
-
     assert result["physics"]["advection"] == RotationalAdvection.__name__
+    assert result["numerics"]["nonlinear_scheme"] == (
+        "legacy-fortran-pre-rhs-filtering"
+    )
 
 
-def test_dry_run_can_override_two_thirds_dealiasing(capsys) -> None:
-    assert main(["--dry-run", "--dealiasing", "two_thirds"]) == 0
+def test_dry_run_can_override_lasd_update_interval(capsys) -> None:
+    assert main(["--dry-run", "--lasd-update-interval", "4"]) == 0
     result = json.loads(capsys.readouterr().out)
 
-    assert result["numerics"]["nonlinear_dealiasing"] == "two_thirds"
+    assert result["physics"]["lasd_update_interval_steps"] == 4
 
 
 def test_profile_statistics_do_not_fold_mean_drift_into_variance() -> None:

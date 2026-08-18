@@ -46,7 +46,7 @@ from jaxwind.physics import (  # noqa: E402
     BoussinesqFields,
     BoussinesqModel,
     BoussinesqVectorField,
-    ConservativeAdvection,
+    RotationalAdvection,
     ConservativeScalarAdvection,
     DryFlowModel,
     KinematicPressureGradient,
@@ -93,7 +93,7 @@ class BoussinesqReferenceTests(unittest.TestCase):
     def model(self) -> BoussinesqModel:
         return BoussinesqModel(
             DryFlowModel(
-                ConservativeAdvection(),
+                RotationalAdvection(),
                 KinematicPressureGradient(0.0, 0.0),
                 NeutralLogWall(0.01),
                 StaticSmagorinsky(0.16),

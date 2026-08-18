@@ -13,13 +13,14 @@ from jaxwind.domain import EqualVerticalPartition
 
 from .wind import (
     build_actuator_line_kernel,
+    build_blade_element_disk_kernel,
+    build_nacelle_tower_kernel,
     build_wind_tunnel_kernel,
 )
 from .lasd_kernels import build_lasd_kernels
-from .conservative import build_conservative_advection_kernels
 from .fused_boussinesq import build_fused_neutral_boussinesq_kernels
-from .gradients import build_padded_momentum_gradients_kernel
 from .rotational import build_rotational_advection_kernel
+from .projection import build_projection_kernels
 from .discretization import (
     _JaxDiscretization,
     PackedHaloArrays,
@@ -46,31 +47,16 @@ def build_discretization(
     addressable_partitions: tuple[int, ...] | None = None,
     axis_name: str = "jaxwind_z",
     porte_agel_wall_correction: bool = True,
-    nonlinear_padding_ratio: float = 1.5,
-    nonlinear_dealiasing: str = "three_halves",
     frozen_zero_scalar: bool = False,
     lasd_filter_backend: str = "jax",
 ) -> _JaxDiscretization:
-    """Build mapped kernels with horizontally dealiased nonlinear products."""
+    """Build mapped kernels with legacy WIRE-LES nonlinear ordering."""
     if not isinstance(porte_agel_wall_correction, bool):
         raise TypeError("Porté-Agel wall correction flag must be boolean")
     if not isinstance(frozen_zero_scalar, bool):
         raise TypeError("frozen zero scalar flag must be boolean")
     if lasd_filter_backend not in ("jax", "cufft"):
         raise ValueError("LASD filter backend must be jax or cufft")
-    if nonlinear_dealiasing not in (
-        "three_halves",
-        "two_thirds",
-        "legacy_two_thirds",
-    ):
-        raise ValueError(
-            "nonlinear dealiasing must be three_halves, two_thirds, "
-            "or legacy_two_thirds"
-        )
-    if not math.isfinite(nonlinear_padding_ratio):
-        raise ValueError("nonlinear padding ratio must be finite")
-    if nonlinear_dealiasing == "three_halves" and nonlinear_padding_ratio < 1.5:
-        raise ValueError("nonlinear padding ratio must be at least 1.5")
     partition_count = decomposition.partition_count
     if addressable_partitions is None:
         if partition_count != 1:
@@ -164,17 +150,14 @@ def build_discretization(
         return upper_faces.at[-1].set(last)
 
     grid = decomposition.grid
-    spectral = build_horizontal_spectral_kernels(
-        grid,
-        nonlinear_padding_ratio,
-        nonlinear_dealiasing,
-    )
+    spectral = build_horizontal_spectral_kernels(grid)
     kx, ky, keep, state_keep = (
         spectral.kx,
         spectral.ky,
         spectral.keep,
         spectral.state_keep,
     )
+    projection_keep = keep
     pad_horizontal_local = spectral.pad
     truncate_padded_spectrum_local = spectral.project_spectrum
     truncate_padded_local = spectral.truncate
@@ -184,13 +167,6 @@ def build_discretization(
     horizontal_flux_divergence_local = spectral.flux_divergence
     padded_horizontal_flux_divergence_local = spectral.padded_flux_divergence
     wall_filter_local = spectral.wall_filter
-    padded_momentum_gradients_local = build_padded_momentum_gradients_kernel(
-        grid=grid,
-        axis_name=axis_name,
-        cells_per_partition=decomposition.cells_per_partition,
-        porte_agel_wall_correction=porte_agel_wall_correction,
-        padded_horizontal_gradient_pair_local=spectral.padded_gradient_pair,
-    )
     def dry_flow_context_local(u, v, w_upper, lower_boundary):
         halo = exchange_local(jnp.stack((u, v, w_upper), axis=0))
         lower_boundary_plane = jnp.broadcast_to(
@@ -601,17 +577,6 @@ def build_discretization(
             stability_power,
         )
 
-    dry_advection_local, dry_advection_from_padded_local = (
-        build_conservative_advection_kernels(
-            grid=grid,
-            pad_horizontal_local=pad_horizontal_local,
-            truncate_padded_local=truncate_padded_local,
-            padded_horizontal_flux_divergence_local=(
-                padded_horizontal_flux_divergence_local
-            ),
-        )
-    )
-
     def dry_wall_local(context, drag, filtered, filter_width):
         index = lax.axis_index(axis_name)
         wall_velocity = wall_filter_local(
@@ -667,8 +632,6 @@ def build_discretization(
     (
         fused_lasd_boussinesq_local,
         fused_lasd_boussinesq_from_context_local,
-        fused_rotational_lasd_boussinesq_local,
-        fused_rotational_lasd_boussinesq_from_context_local,
     ) = build_fused_neutral_boussinesq_kernels(
         grid=grid,
         axis_name=axis_name,
@@ -684,157 +647,29 @@ def build_discretization(
         pad_horizontal_local=pad_horizontal_local,
         truncate_padded_local=truncate_padded_local,
         wall_filter_local=wall_filter_local,
-        exchange_local=exchange_local,
         dry_flow_context_local=dry_flow_context_local,
-        dry_advection_from_padded_local=dry_advection_from_padded_local,
-        padded_momentum_gradients_local=padded_momentum_gradients_local,
         dry_sgs_from_padded_gradients_local=dry_sgs_from_padded_gradients_local,
-        reuse_state_filtered_context=(
-            nonlinear_dealiasing == "legacy_two_thirds"
-        ),
     )
-    def horizontal_divergence_local(x_velocity, y_velocity):
-        x_spectrum = jnp.fft.rfftn(x_velocity, axes=(-2, -1))
-        y_spectrum = jnp.fft.rfftn(y_velocity, axes=(-2, -1))
-        spectrum = (
-            1j * kx[None, None, :] * x_spectrum
-            + 1j * ky[None, :, None] * y_spectrum
-        ) * keep[None, ...]
-        return jnp.fft.irfftn(
-            spectrum,
-            s=(grid.ny, grid.nx),
-            axes=(-2, -1),
-        ).astype(x_velocity.dtype)
-
-    def horizontal_gradient_local(pressure):
-        spectrum = jnp.fft.rfftn(pressure, axes=(-2, -1)) * keep[None, ...]
-        gradients = jnp.fft.irfftn(
-            jnp.stack(
-                (
-                    spectrum * (1j * kx[None, None, :]),
-                    spectrum * (1j * ky[None, :, None]),
-                ),
-                axis=0,
-            ),
-            s=(grid.ny, grid.nx),
-            axes=(-2, -1),
-        ).astype(pressure.dtype)
-        return gradients[0], gradients[1]
-
-    def filter_horizontal_local(values):
-        spectrum = jnp.fft.rfftn(values, axes=(-2, -1))
-        return jnp.fft.irfftn(
-            spectrum * state_keep[None, ...],
-            s=(grid.ny, grid.nx),
-            axes=(-2, -1),
-        ).astype(values.dtype)
-
-    def filter_velocity_local(x, y, z):
-        filtered = filter_horizontal_local(jnp.stack((x, y, z), axis=0))
-        return filtered[0], filtered[1], filtered[2]
-
-    def prepare_projection_local(
-        x_velocity,
-        y_velocity,
-        z_velocity,
-        lower_boundary,
-        upper_boundary,
-    ):
-        # Reuse the state-filter spectra for horizontal divergence. Keep x/y
-        # spectral until pressure correction so they are transformed back only
-        # once, after the pressure-gradient spectra have been subtracted.
-        velocity_spectra = jnp.fft.rfftn(
-            jnp.stack((x_velocity, y_velocity, z_velocity), axis=0),
-            axes=(-2, -1),
-        )
-        filtered_spectra = velocity_spectra * state_keep[None, None, ...]
-        horizontal_divergence_spectrum = (
-            1j * kx[None, None, :] * filtered_spectra[0]
-            + 1j * ky[None, :, None] * filtered_spectra[1]
-        ) * keep[None, ...]
-        transformed = jnp.fft.irfftn(
-            jnp.stack(
-                (filtered_spectra[2], horizontal_divergence_spectrum),
-                axis=0,
-            ),
-            s=(grid.ny, grid.nx),
-            axes=(-2, -1),
-        ).astype(x_velocity.dtype)
-        filtered_z = enforce_upper_boundary_local(transformed[0], upper_boundary)
-        vertical_divergence = divergence_local(filtered_z, lower_boundary)
-        return (
-            filtered_spectra[0],
-            filtered_spectra[1],
-            filtered_z,
-            transformed[1] + vertical_divergence,
-        )
-
-    def finish_projection_local(
-        candidate_x_spectrum,
-        candidate_y_spectrum,
-        candidate_z,
-        pressure,
-        dt,
-    ):
-        local_dt = jnp.asarray(dt, dtype=pressure.dtype)
-        pressure_spectrum = (
-            jnp.fft.rfftn(pressure, axes=(-2, -1)) * keep[None, ...]
-        )
-        corrected_horizontal = jnp.fft.irfftn(
-            jnp.stack(
-                (
-                    candidate_x_spectrum
-                    - local_dt
-                    * pressure_spectrum
-                    * (1j * kx[None, None, :]),
-                    candidate_y_spectrum
-                    - local_dt
-                    * pressure_spectrum
-                    * (1j * ky[None, :, None]),
-                ),
-                axis=0,
-            ),
-            s=(grid.ny, grid.nx),
-            axes=(-2, -1),
-        ).astype(pressure.dtype)
-        gradient_z = pressure_gradient_local(pressure, 0.0)
-        return (
-            corrected_horizontal[0],
-            corrected_horizontal[1],
-            candidate_z - local_dt * gradient_z,
-        )
-
-    def filter_boundary(boundary):
-        plane = jnp.broadcast_to(
-            jnp.asarray(boundary),
-            (grid.ny, grid.nx),
-        )
-        spectrum = jnp.fft.rfftn(plane, axes=(-2, -1))
-        return jnp.fft.irfftn(
-            spectrum * state_keep,
-            s=(grid.ny, grid.nx),
-            axes=(-2, -1),
-        ).astype(plane.dtype)
-
-    def correct_local(
-        candidate_x,
-        candidate_y,
-        candidate_z,
-        gradient_x,
-        gradient_y,
-        gradient_z,
-        lower_boundary,
-        lower_gradient,
-        dt,
-    ):
-        local_dt = jnp.asarray(dt, dtype=candidate_x.dtype)
-        return (
-            candidate_x - local_dt * gradient_x,
-            candidate_y - local_dt * gradient_y,
-            candidate_z - local_dt * gradient_z,
-            jnp.asarray(lower_boundary, dtype=candidate_x.dtype)
-            - local_dt * jnp.asarray(lower_gradient, dtype=candidate_x.dtype),
-        )
+    (
+        horizontal_divergence_local,
+        horizontal_gradient_local,
+        filter_horizontal_local,
+        filter_velocity_local,
+        filter_projection_velocity_local,
+        prepare_projection_local,
+        finish_projection_local,
+        filter_boundary,
+        correct_local,
+    ) = build_projection_kernels(
+        grid=grid,
+        kx=kx,
+        ky=ky,
+        keep=keep,
+        state_keep=state_keep,
+        divergence_local=divergence_local,
+        enforce_upper_boundary_local=enforce_upper_boundary_local,
+        pressure_gradient_local=pressure_gradient_local,
+    )
 
     def ab2_update_local(
         state,
@@ -928,6 +763,15 @@ def build_discretization(
         axis_name=axis_name,
         partition_count=partition_count,
     )
+    actuator_disk_bem_local = build_blade_element_disk_kernel(
+        grid=grid,
+        axis_name=axis_name,
+        partition_count=partition_count,
+    )
+    nacelle_tower_local = build_nacelle_tower_kernel(
+        grid=grid,
+        axis_name=axis_name,
+    )
 
     mapped = partial(jax.pmap, axis_name=axis_name, axis_size=partition_count)
     exchange_packed = mapped(exchange_local)
@@ -950,7 +794,12 @@ def build_discretization(
         in_axes=(0, 0),
     )
     horizontal_gradient = mapped(horizontal_gradient_local)
-    filter_horizontal = mapped(filter_velocity_local, in_axes=(0, 0, 0))
+    filter_state = mapped(filter_velocity_local, in_axes=(0, 0, 0))
+    filter_horizontal = mapped(
+        filter_projection_velocity_local,
+        in_axes=(0, 0, 0),
+    )
+    filter_scalar = mapped(filter_horizontal_local)
     correct = mapped(
         correct_local,
         in_axes=(0, 0, 0, 0, 0, 0, None, None, None),
@@ -969,20 +818,28 @@ def build_discretization(
     relax_lasd_field = jax.jit(relax_lasd_field_local)
     wind_tunnel = mapped(
         wind_tunnel_local,
-        in_axes=(0, 0, 0, 0, 0, 0) + (None,) * 16,
+        in_axes=(0, 0, 0, 0, 0, 0) + (None,) * 18,
         # Geometry and fringe parameters are invariant throughout a case.
-        static_broadcasted_argnums=tuple(range(6, 22)),
+        static_broadcasted_argnums=tuple(range(6, 24)),
     )
     actuator_line = mapped(
         actuator_line_local,
         in_axes=(0, 0, 0) + (None,) * 31,
         static_broadcasted_argnums=(8,),
     )
+    actuator_disk_bem = mapped(
+        actuator_disk_bem_local,
+        in_axes=(0, 0, 0) + (None,) * 19,
+        static_broadcasted_argnums=(6,),
+    )
+    nacelle_tower = mapped(
+        nacelle_tower_local,
+        in_axes=(0, 0) + (None,) * 10,
+    )
     dry_flow_context = mapped(
         dry_flow_context_local,
         in_axes=(0, 0, 0, None),
     )
-    dry_advection = mapped(dry_advection_local)
     dry_rotational_advection = mapped(
         dry_rotational_advection_local,
         in_axes=(0, None, None, None, None, None),
@@ -1007,22 +864,6 @@ def build_discretization(
     )
     fused_lasd_boussinesq_from_context = mapped(
         fused_lasd_boussinesq_from_context_local,
-        in_axes=(0, 0, 0, 0)
-        + (None,) * 19
-        + (0, 0, 0)
-        + (None,) * 17,
-        static_broadcasted_argnums=(41, 42),
-    )
-    fused_rotational_lasd_boussinesq = mapped(
-        fused_rotational_lasd_boussinesq_local,
-        in_axes=(0, 0, 0, None, 0, 0, 0)
-        + (None,) * 19
-        + (0, 0, 0)
-        + (None,) * 17,
-        static_broadcasted_argnums=(44, 45),
-    )
-    fused_rotational_lasd_boussinesq_from_context = mapped(
-        fused_rotational_lasd_boussinesq_from_context_local,
         in_axes=(0, 0, 0, 0)
         + (None,) * 19
         + (0, 0, 0)
@@ -1115,7 +956,9 @@ def build_discretization(
             finish_projection,
             horizontal_divergence,
             horizontal_gradient,
+            filter_state,
             filter_horizontal,
+            filter_scalar,
             jax.jit(filter_boundary),
             correct,
         ),
@@ -1124,7 +967,6 @@ def build_discretization(
             ab2_update_velocity,
             combine_payloads,
             dry_flow_context,
-            dry_advection,
             dry_rotational_advection,
             dry_wall,
             dry_sgs,
@@ -1132,8 +974,6 @@ def build_discretization(
             dry_sgs_tke_transfer,
             fused_lasd_boussinesq,
             fused_lasd_boussinesq_from_context,
-            fused_rotational_lasd_boussinesq,
-            fused_rotational_lasd_boussinesq_from_context,
         ),
         _LasdKernels(
             relax_lasd_field,
@@ -1151,5 +991,10 @@ def build_discretization(
             rayleigh_damping,
             surface_transfer,
         ),
-        _WindKernels(wind_tunnel, actuator_line),
+        _WindKernels(
+            wind_tunnel,
+            actuator_line,
+            actuator_disk_bem,
+            nacelle_tower,
+        ),
     )

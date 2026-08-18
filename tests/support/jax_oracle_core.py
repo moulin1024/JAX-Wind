@@ -67,7 +67,7 @@ from jaxwind.domain import (
 )
 from jaxwind.operators import PressureGradient, VelocityVector
 from jaxwind.physics.dry_flow import (
-    ConservativeAdvection,
+    RotationalAdvection,
     CoriolisGeostrophic,
     FilteredNeutralLogWall,
     KinematicPressureGradient,
@@ -229,66 +229,21 @@ def _wall_filter(values, *, grid, filter_width: float):
     ).astype(values.dtype)
 
 
-def _pad_horizontal(values, *, grid, padding_ratio: float = 1.5):
-    padded_ny = int(math.ceil(padding_ratio * grid.ny))
-    padded_nx = int(math.ceil(padding_ratio * grid.nx))
-    before_y = padded_ny // 2 - grid.ny // 2
-    before_x = padded_nx // 2 - grid.nx // 2
-    after_y = padded_ny - grid.ny - before_y
-    after_x = padded_nx - grid.nx - before_x
-    keep = jnp.ones((grid.ny, grid.nx), dtype=values.real.dtype)
-    if grid.nx % 2 == 0:
-        keep = keep.at[:, grid.nx // 2].set(0.0)
-    if grid.ny % 2 == 0:
-        keep = keep.at[grid.ny // 2, :].set(0.0)
-    shifted = jnp.fft.fftshift(
-        jnp.fft.fftn(values, axes=(-2, -1)) * keep,
-        axes=(-2, -1),
-    )
-    padded = jnp.pad(
-        shifted,
-        ((0, 0),) * (values.ndim - 2)
-        + ((before_y, after_y), (before_x, after_x)),
-    )
-    scale = (padded_ny * padded_nx) / (grid.ny * grid.nx)
-    return (
-        jnp.fft.ifftn(
-            jnp.fft.ifftshift(padded, axes=(-2, -1)),
-            axes=(-2, -1),
-        ).real
-        * scale
-    ).astype(values.dtype)
+def _pad_horizontal(values, *, grid):
+    """Compatibility-shaped oracle operation for the fixed base grid."""
+    del grid
+    return values
 
 
-def _truncate_padded(values, *, grid, padding_ratio: float = 1.5):
-    padded_ny = int(math.ceil(padding_ratio * grid.ny))
-    padded_nx = int(math.ceil(padding_ratio * grid.nx))
-    before_y = padded_ny // 2 - grid.ny // 2
-    before_x = padded_nx // 2 - grid.nx // 2
-    shifted = jnp.fft.fftshift(
-        jnp.fft.fftn(values, axes=(-2, -1)),
-        axes=(-2, -1),
-    )
-    cropped = shifted[
-        ...,
-        before_y : before_y + grid.ny,
-        before_x : before_x + grid.nx,
-    ]
-    scale = (grid.ny * grid.nx) / (padded_ny * padded_nx)
-    return (
-        jnp.fft.ifftn(
-            jnp.fft.ifftshift(cropped, axes=(-2, -1)),
-            axes=(-2, -1),
-        ).real
-        * scale
-    ).astype(values.dtype)
+def _truncate_padded(values, *, grid):
+    """Compatibility-shaped oracle operation for the fixed base grid."""
+    del grid
+    return values
 
 
 def _padded_product(left, right, *, grid):
-    return _truncate_padded(
-        _pad_horizontal(left, grid=grid) * _pad_horizontal(right, grid=grid),
-        grid=grid,
-    )
+    del grid
+    return left * right
 
 
 def _require_velocity_component(field: Field, quantity: type) -> GlobalTestRegion:

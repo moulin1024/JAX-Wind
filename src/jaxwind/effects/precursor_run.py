@@ -32,6 +32,7 @@ def run_main_with_precursor(
     compile_step: bool = False,
     dt: float | None = None,
     observer_steps: tuple[int, ...] | None = None,
+    accepted_state_transform: Callable[[Any, Any, int], Any] | None = None,
 ) -> Any:
     """Advance a main domain with clock-matched offline precursor inflow."""
 
@@ -63,6 +64,8 @@ def run_main_with_precursor(
                 compute_projection_residual=compute_projection_residual,
             )
             current = result.state
+            if accepted_state_transform is not None:
+                current = accepted_state_transform(current, environment, completed)
             if observer is not None:
                 observer(current, completed)
             if progress is not None:
@@ -83,6 +86,8 @@ def run_main_with_precursor(
             time=host_time,
         )
         current = compiled_advance(current, environment)
+        if accepted_state_transform is not None:
+            current = accepted_state_transform(current, environment, completed)
         host_step += 1
         host_time += dt
         if observer is not None and (

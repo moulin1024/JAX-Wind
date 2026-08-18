@@ -82,6 +82,12 @@ if(USE_NVTX)
     set(CMAKE_Fortran_FLAGS "${CMAKE_Fortran_FLAGS} -DUSE_NVTX")
 endif()
 
+# Select the legacy turbine kernel at configure time.  The implementations
+# export the same module name but not the same turbine_force signature.
+set(WIRELES_TURBINE_MODEL "alm_nrel_new" CACHE STRING
+    "Turbine implementation: alm_nrel_new or admnr")
+set_property(CACHE WIRELES_TURBINE_MODEL PROPERTY STRINGS alm_nrel_new admnr)
+
 # Optional: Double precision
 option(USE_DOUBLE_PRECISION "Use double precision" OFF)
 if(DEFINED PRECISION_DOUBLE)
@@ -121,10 +127,19 @@ set(SOURCES_DEP2
     src/rotation.cuf
 )
 
-# DEP3: divergence, turbine_alm_nrel_new (depends on precision, dimen, derivative, control)
+# DEP3: divergence and selected turbine implementation.
+if(WIRELES_TURBINE_MODEL STREQUAL "admnr")
+    set(WIRELES_TURBINE_SOURCE src/turbine_admnr.cuf)
+    add_compile_definitions(WIRELES_TURBINE_ADMNR)
+elseif(WIRELES_TURBINE_MODEL STREQUAL "alm_nrel_new")
+    set(WIRELES_TURBINE_SOURCE src/turbine_alm_nrel_new.cuf)
+else()
+    message(FATAL_ERROR "Unsupported WIRELES_TURBINE_MODEL=${WIRELES_TURBINE_MODEL}")
+endif()
+
 set(SOURCES_DEP3
     src/divergence.cuf
-    src/turbine_alm_nrel_new.cuf
+    ${WIRELES_TURBINE_SOURCE}
 )
 
 # DEP4: sgs, sgs_mgm, wall (depends on precision, dimen, cufft_m, filter)

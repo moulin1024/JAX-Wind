@@ -32,6 +32,7 @@ def build(PATH, case_name):
     compiler = os.environ.get('WIRELES_FC', os.environ.get('FC', 'nvfortran'))
     gpu_arch = os.environ.get('WIRELES_GPU_ARCH', os.environ.get('GPU_ARCH', 'sm_80'))
     use_nvtx = os.environ.get('WIRELES_USE_NVTX', 'ON')
+    turbine_model = os.environ.get('WIRELES_TURBINE_MODEL', 'alm_nrel_new')
     build_jobs = os.environ.get('WIRELES_BUILD_JOBS', '4')
     precision_double = _bool_option(int(config['double_flag']) != 0)
 
@@ -44,6 +45,7 @@ def build(PATH, case_name):
         '-DCMAKE_Fortran_COMPILER={}'.format(compiler),
         '-DGPU_ARCH={}'.format(gpu_arch),
         '-DUSE_NVTX={}'.format(use_nvtx),
+        '-DWIRELES_TURBINE_MODEL={}'.format(turbine_model),
         '-DPRECISION_DOUBLE={}'.format(precision_double),
         '-DWIRELES_CONFIG_FILE={}'.format(config_file),
     ]

@@ -10,7 +10,6 @@ ly_m = 1024.0
 lz_m = 1024.0
 
 [flow]
-advection = "conservative"
 friction_velocity_m_s = 0.4
 roughness_length_m = 0.001
 forcing_height_m = 1024.0

@@ -30,7 +30,7 @@ from tests.support.jax_oracle import (  # noqa: E402
 )
 from jaxwind.operators import VelocityVector  # noqa: E402
 from jaxwind.physics import (  # noqa: E402
-    ConservativeAdvection,
+    RotationalAdvection,
     CoriolisGeostrophic,
     DryFlowModel,
     DryFlowVectorField,
@@ -62,7 +62,7 @@ class DryFlowReferenceTests(unittest.TestCase):
         w = jnp.zeros(self.faces.storage_shape)
         velocity = self.velocity(u, v, w)
         model = DryFlowModel(
-            ConservativeAdvection(),
+            RotationalAdvection(),
             KinematicPressureGradient(0.002, -0.001),
             NeutralLogWall(0.01),
             StaticSmagorinsky(0.16),
@@ -106,7 +106,7 @@ class DryFlowReferenceTests(unittest.TestCase):
             self.assertEqual(float(jnp.max(jnp.abs(left.payload - total.payload))), 0.0)
         self.assertEqual(result.diagnostic.shared_context_builds, 1)
 
-    def test_conservative_advection_preserves_integrated_horizontal_momentum(
+    def test_legacy_rotational_advection_preserves_integrated_horizontal_momentum(
         self,
     ) -> None:
         z = jnp.arange(self.grid.nz, dtype=jnp.float64)[:, None, None]
@@ -117,7 +117,7 @@ class DryFlowReferenceTests(unittest.TestCase):
         v = -0.4 + 0.2 * jnp.cos(x - y) - 0.03 * z
         w = 0.15 * jnp.sin(x) * jnp.cos(y) * jnp.sin(jnp.pi * zf / self.grid.nz)
         context = self.algebra.dry_flow_context(self.velocity(u, v, w))
-        tendency = self.algebra.advection_tendency(context, ConservativeAdvection())
+        tendency = self.algebra.advection_tendency(context, RotationalAdvection())
         self.assertLess(abs(float(jnp.sum(tendency.x.payload))), 2.0e-12)
         self.assertLess(abs(float(jnp.sum(tendency.y.payload))), 2.0e-12)
         boundary_faces = jnp.stack(
@@ -229,7 +229,7 @@ class DryFlowReferenceTests(unittest.TestCase):
             jnp.zeros(self.faces.storage_shape),
         )
         model = DryFlowModel(
-            ConservativeAdvection(),
+            RotationalAdvection(),
             KinematicPressureGradient(0.01),
             NeutralLogWall(0.01),
             StaticSmagorinsky(0.16),

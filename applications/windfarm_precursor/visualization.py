@@ -27,13 +27,26 @@ def evenly_spaced_frame_offsets(steps: int, frame_count: int) -> tuple[int, ...]
     return tuple(int(value) for value in offsets)
 
 
-def capture_xz_velocity(state: Any, problem: Any, *, jax: Any) -> np.ndarray:
+def capture_xz_velocity(
+    state: Any,
+    problem: Any,
+    *,
+    jax: Any,
+    y_m: float | None = None,
+) -> np.ndarray:
     """Gather one centre-y streamwise-velocity plane in physical SI units."""
 
     velocity = state.fields.velocity
     global_u = problem.solver.global_array(velocity.x.payload)
     physical_u = problem.scales.from_execution_velocity(global_u)
-    plane = physical_u[:, problem.physical_grid.ny // 2, :]
+    if y_m is None:
+        plane = physical_u[:, problem.physical_grid.ny // 2, :]
+    else:
+        position = y_m / problem.physical_grid.dy - 0.5
+        lower = int(np.floor(position)) % problem.physical_grid.ny
+        upper = (lower + 1) % problem.physical_grid.ny
+        fraction = position - np.floor(position)
+        plane = (1.0 - fraction) * physical_u[:, lower, :] + fraction * physical_u[:, upper, :]
     return np.asarray(jax.device_get(plane), dtype=np.float32)
 
 
@@ -88,7 +101,6 @@ def write_flow_gif(
         extent=(0.0, grid.lx, 0.0, grid.lz),
         aspect="auto",
         interpolation="bilinear",
-        cmap="turbo",
         vmin=vmin,
         vmax=vmax,
     )
@@ -130,7 +142,7 @@ def write_flow_gif(
         axis.text(
             turbine.x_m,
             upper + 0.025 * grid.lz,
-            "DTU 10-MW ADM",
+            getattr(turbine, "model_name", "turbine"),
             color="black",
             ha="center",
             va="bottom",

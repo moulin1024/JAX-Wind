@@ -51,20 +51,24 @@ def _read_lines(path: Path) -> tuple[_Line, ...]:
             continue
         try:
             tokens = tuple(shlex.split(uncommented, posix=True))
-        except ValueError as error:
-            raise OpenFASTInputError(
-                f"{path}:{number}: cannot tokenize line: {error}"
-            ) from error
+        except ValueError:
+            # Output-channel descriptions in otherwise valid OpenFAST decks
+            # occasionally contain unmatched prose apostrophes (for example
+            # ``shaft's``). Required quoted path fields remain validated when
+            # they are looked up; retaining these irrelevant prose lines as
+            # whitespace tokens makes the label-oriented reader tolerant of
+            # the upstream format.
+            tokens = tuple(uncommented.split())
         if tokens:
             result.append(_Line(number, tokens))
     return tuple(result)
 
 
 def _find(lines: tuple[_Line, ...], key: str, path: Path) -> tuple[int, int]:
-    target = key.casefold()
+    target = key.casefold().replace("_", "")
     for line_index, line in enumerate(lines):
         for token_index, token in enumerate(line.tokens):
-            if token.casefold() == target:
+            if token.casefold().replace("_", "") == target:
                 return line_index, token_index
     raise OpenFASTInputError(f"{path}: required OpenFAST field {key!r} is missing")
 

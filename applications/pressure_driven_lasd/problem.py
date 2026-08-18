@@ -32,9 +32,8 @@ def build_pressure_driven_problem(
     wind_tunnel_model: Any = None,
     pressure_tridiag: str | None = None,
     pressure_thomas_chunk: int | None = None,
-    nonlinear_padding_ratio: float = 1.5,
-    nonlinear_dealiasing: str | None = None,
     lasd_filter_backend: str | None = None,
+    pressure_acceleration_m_s2: float | None = None,
 ) -> PressureDrivenProblem:
     """Build the reusable pressure-driven model, scales, and JAX solver."""
 
@@ -43,7 +42,6 @@ def build_pressure_driven_problem(
     from jaxwind.integrators import AB2Config
     from jaxwind.physics import (
         BoussinesqModel,
-        ConservativeAdvection,
         ConservativeScalarAdvection,
         DryFlowModel,
         FilteredNeutralLogWall,
@@ -82,20 +80,10 @@ def build_pressure_driven_problem(
         if pressure_thomas_chunk is None
         else pressure_thomas_chunk
     )
-    selected_dealiasing = (
-        case.numerics.nonlinear_dealiasing
-        if nonlinear_dealiasing is None
-        else nonlinear_dealiasing
-    )
     selected_lasd_filter_backend = (
         case.sgs.lasd_filter_backend
         if lasd_filter_backend is None
         else lasd_filter_backend
-    )
-    dealiasing_fingerprint = (
-        "three-halves-padding"
-        if selected_dealiasing == "three_halves"
-        else "two-thirds-filtering"
     )
     if case.sgs.closure == "lasd":
         momentum_sgs = LagrangianScaleDependentDynamic(
@@ -121,14 +109,12 @@ def build_pressure_driven_problem(
         )
     model = BoussinesqModel(
         DryFlowModel(
-            (
-                RotationalAdvection()
-                if case.flow.advection == "rotational"
-                else ConservativeAdvection()
-            ),
+            RotationalAdvection(),
             KinematicPressureGradient(
                 scales.to_execution_acceleration(
                     case.flow.pressure_acceleration_m_s2
+                    if pressure_acceleration_m_s2 is None
+                    else pressure_acceleration_m_s2
                 )
             ),
             FilteredNeutralLogWall(
@@ -149,8 +135,8 @@ def build_pressure_driven_problem(
     )
     physics_fingerprint = (
         closure_fingerprint
-        + f"|advection={case.flow.advection}"
-        + f"|dealiasing={dealiasing_fingerprint}"
+        + "|advection=legacy-rotational"
+        + "|nonlinear=legacy-fortran-pre-rhs-filtering"
         + "|coefficient-padding=bounded"
     )
     integrator = AB2Config(scales.to_execution_time(case.time.dt_seconds))
@@ -168,8 +154,6 @@ def build_pressure_driven_problem(
         pressure_method=case.numerics.pressure_method,
         pressure_tridiag=selected_pressure_tridiag,
         pressure_thomas_chunk=selected_pressure_thomas_chunk,
-        nonlinear_padding_ratio=nonlinear_padding_ratio,
-        nonlinear_dealiasing=selected_dealiasing,
         optimize_frozen_zero_scalar=True,
         reuse_rhs_momentum_context=case.sgs.reuse_rhs_momentum_context,
         lasd_filter_backend=selected_lasd_filter_backend,

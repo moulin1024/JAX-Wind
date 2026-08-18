@@ -15,7 +15,6 @@ from jaxwind.domain import ScaleSystem, UniformGrid
 from jaxwind.integrators import AB2Config
 from jaxwind.physics import (
     BoussinesqModel,
-    ConservativeAdvection,
     ConservativeScalarAdvection,
     CoriolisGeostrophic,
     DryFlowModel,
@@ -131,7 +130,6 @@ def compose_abl(
     surface_scalar: SurfaceScalarEvolution | None,
     buoyancy_acceleration_per_scalar: float,
     pressure_acceleration_m_s2: tuple[float, float],
-    momentum_advection: str,
     geostrophic_velocity_m_s: tuple[float, float],
     advection_frame_velocity_m_s: tuple[float, float],
     coriolis_s: tuple[float, float],
@@ -165,8 +163,6 @@ def compose_abl(
     cfl_warning: float,
     cfl_abort: float,
     trajectory_cfl_abort: float,
-    nonlinear_padding_ratio: float,
-    nonlinear_dealiasing: str = "three_halves",
 ) -> BoussinesqCase:
     """Lower one set of physical inputs without classifying the flow regime."""
 
@@ -182,12 +178,6 @@ def compose_abl(
         raise ValueError(
             "a nonzero advection frame requires coupled surface transfer"
         )
-    if momentum_advection == "conservative":
-        advection = ConservativeAdvection()
-    elif momentum_advection == "rotational":
-        advection = RotationalAdvection()
-    else:
-        raise ValueError("flow.advection must be conservative or rotational")
     relative_geostrophic = (
         geostrophic_velocity_m_s[0] - advection_frame_velocity_m_s[0],
         geostrophic_velocity_m_s[1] - advection_frame_velocity_m_s[1],
@@ -249,7 +239,7 @@ def compose_abl(
     )
     model = BoussinesqModel(
         momentum=DryFlowModel(
-            advection=advection,
+            advection=RotationalAdvection(),
             pressure_gradient=KinematicPressureGradient(
                 mechanical_scales.to_execution_acceleration(
                     pressure_acceleration_m_s2[0]
@@ -299,8 +289,6 @@ def compose_abl(
         cfl_abort=cfl_abort,
         trajectory_cfl_abort=trajectory_cfl_abort,
         advection_frame_velocity_m_s=advection_frame_velocity_m_s,
-        nonlinear_padding_ratio=nonlinear_padding_ratio,
-        nonlinear_dealiasing=nonlinear_dealiasing,
     )
 
 
@@ -360,7 +348,6 @@ def load_abl(path: str | Path) -> BoussinesqCase:
     _keys(
         flow,
         {
-            "advection",
             "pressure_acceleration_m_s2",
             "geostrophic_velocity_m_s",
             "advection_frame_velocity_m_s",
@@ -408,10 +395,8 @@ def load_abl(path: str | Path) -> BoussinesqCase:
             "cfl_warning",
             "cfl_abort",
             "trajectory_cfl_abort",
-            "nonlinear_padding_ratio",
         },
         name="numerics",
-        optional={"nonlinear_dealiasing"},
     )
     _keys(
         diagnostics,
@@ -476,7 +461,6 @@ def load_abl(path: str | Path) -> BoussinesqCase:
             pressure_acceleration[0],
             pressure_acceleration[1],
         ),
-        momentum_advection=_string(flow, "advection"),
         geostrophic_velocity_m_s=(geostrophic[0], geostrophic[1]),
         advection_frame_velocity_m_s=(
             advection_frame[0],
@@ -532,12 +516,6 @@ def load_abl(path: str | Path) -> BoussinesqCase:
         cfl_warning=_number(numerics, "cfl_warning"),
         cfl_abort=_number(numerics, "cfl_abort"),
         trajectory_cfl_abort=_number(numerics, "trajectory_cfl_abort"),
-        nonlinear_padding_ratio=_number(numerics, "nonlinear_padding_ratio"),
-        nonlinear_dealiasing=(
-            _string(numerics, "nonlinear_dealiasing")
-            if "nonlinear_dealiasing" in numerics
-            else "three_halves"
-        ),
     )
 
 

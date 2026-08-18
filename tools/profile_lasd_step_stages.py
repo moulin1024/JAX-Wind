@@ -37,17 +37,6 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--repeats", type=int, default=12)
     parser.add_argument("--tridiag", choices=("thomas", "pcr"), default="thomas")
     parser.add_argument("--thomas-chunk", type=int, default=1)
-    parser.add_argument("--padding-ratio", type=float, choices=(1.0, 1.5), default=1.5)
-    parser.add_argument(
-        "--dealiasing",
-        choices=("three_halves", "two_thirds", "legacy_two_thirds"),
-        default=None,
-    )
-    parser.add_argument(
-        "--advection",
-        choices=("conservative", "rotational"),
-        default=None,
-    )
     parser.add_argument(
         "--lasd-filter-backend",
         choices=("jax", "cufft"),
@@ -76,7 +65,7 @@ def main() -> int:
     from jaxwind.effects import JaxRuntime, load_boussinesq_checkpoint
     from jaxwind.integrators import Evaluation
     from jaxwind.physics import BoussinesqVectorField
-    from jaxwind.physics import ConservativeAdvection, RotationalAdvection
+    from jaxwind.physics import RotationalAdvection
 
     runtime = JaxRuntime.from_initialized_jax(jax)
     checkpoint_problem = build_pressure_driven_problem(
@@ -84,7 +73,6 @@ def main() -> int:
         runtime=runtime,
         pressure_tridiag=args.tridiag,
         pressure_thomas_chunk=args.thomas_chunk,
-        nonlinear_padding_ratio=args.padding_ratio,
         lasd_filter_backend=args.lasd_filter_backend,
     )
     state = load_boussinesq_checkpoint(
@@ -95,31 +83,7 @@ def main() -> int:
         closure_fingerprint=checkpoint_problem.closure_fingerprint,
         physics_fingerprint=checkpoint_problem.physics_fingerprint,
     )
-    selected_advection = args.advection or case.flow.advection
-    selected_dealiasing = args.dealiasing or case.numerics.nonlinear_dealiasing
-    if (
-        selected_advection == case.flow.advection
-        and selected_dealiasing == case.numerics.nonlinear_dealiasing
-    ):
-        problem = checkpoint_problem
-    else:
-        selected_case = replace(
-            case,
-            flow=replace(case.flow, advection=selected_advection),
-        )
-        problem = build_pressure_driven_problem(
-            selected_case,
-            runtime=runtime,
-            pressure_tridiag=args.tridiag,
-            pressure_thomas_chunk=args.thomas_chunk,
-            nonlinear_padding_ratio=args.padding_ratio,
-            nonlinear_dealiasing=selected_dealiasing,
-            lasd_filter_backend=args.lasd_filter_backend,
-        )
-        state = problem.solver.cold_start(
-            state.fields,
-            clock=state.clock,
-        )
+    problem = checkpoint_problem
     solver = problem.solver
     jax.block_until_ready(state)
     algebra = solver._algebra
@@ -197,15 +161,7 @@ def main() -> int:
         ),
     )
     measure(
-        "standalone_conservative_advection_ms",
-        lambda: algebra.advection_tendency(
-            context_update,
-            ConservativeAdvection(),
-            model.momentum.wall,
-        ),
-    )
-    measure(
-        "standalone_rotational_advection_ms",
+        "standalone_legacy_rotational_advection_ms",
         lambda: algebra.advection_tendency(
             context_update,
             RotationalAdvection(),
@@ -376,9 +332,7 @@ def main() -> int:
                 "repeats": args.repeats,
                 "tridiag": args.tridiag,
                 "thomas_chunk": args.thomas_chunk,
-                "padding_ratio": args.padding_ratio,
-                "dealiasing": selected_dealiasing,
-                "advection": selected_advection,
+                "nonlinear_scheme": "legacy-fortran-pre-rhs-filtering",
                 "lasd_filter_backend": args.lasd_filter_backend,
                 **results,
             },

@@ -55,25 +55,13 @@ python -m applications.pressure_driven_lasd \
 There is no package runner registry or case-name dispatch. An explicitly
 selected application reads case data and constructs the JAX-Wind solver.
 
-Momentum advection is selected in the `[flow]` table:
-
-```toml
-advection = "rotational" # or "conservative"
-```
-
-The nonlinear dealiasing rule is selected in the `[numerics]` table:
-
-```toml
-nonlinear_dealiasing = "three_halves" # or "two_thirds"
-nonlinear_padding_ratio = 1.5         # used by three_halves only
-```
-
-`three_halves` evaluates products on the padded horizontal grid and projects
-them back. `two_thirds` keeps the base grid and strictly retains modes
-`|k_x| < N_x/3` and `|k_y| < N_y/3` before and after quadratic products. The
-choice is part of the physics fingerprint, so changing it requires a cold
-start from checkpoint fields rather than reusing AB2 history. The ABL runner
-also accepts `--dealiasing two_thirds` as a temporary override.
+JAX-Wind uses the WIRE-LES legacy nonlinear discretization exclusively.
+Momentum convection is evaluated in rotational form on the base grid. At the
+start of every RHS evaluation, the exact `nint(N/3)` box mask is applied to
+the complete velocity and to any transported scalar. Rotational products are
+not filtered, and terminal projection leaves the accepted/output state
+unfiltered until the next RHS evaluation. There is no advection or dealiasing
+selector in the case schema or command line.
 
 For neutral runs that deliberately freeze the passive scalar at zero, LASD
 offers two independent performance controls in the `[sgs]` table:
@@ -125,14 +113,11 @@ python -m applications.abl \
   cases/Andren1994/config.toml --max-steps 10 --overwrite
 ```
 
-Run the same reference-backed case with rotational momentum advection and
-two-thirds filtering in a separate output directory:
+Run the same reference-backed case in a separate output directory:
 
 ```bash
 python -m applications.abl cases/Andren1994/config.toml \
-  --advection rotational \
-  --dealiasing two_thirds \
-  --output outputs/andren1994_lasd_rotational_two_thirds_40x40x40
+  --output outputs/andren1994_lasd_40x40x40_trial
 ```
 
 Nieuwstadt uses that same ABL command and schema. Its scalar profile, surface

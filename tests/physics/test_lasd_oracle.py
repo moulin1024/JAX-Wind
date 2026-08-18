@@ -47,7 +47,7 @@ from jaxwind.physics import (  # noqa: E402
     BoussinesqFields,
     BoussinesqModel,
     BoussinesqVectorField,
-    ConservativeAdvection,
+    RotationalAdvection,
     ConservativeScalarAdvection,
     ConcurrentPrecursorEnvironment,
     ConcurrentPrecursorFringe,
@@ -80,7 +80,7 @@ class LasdReferenceTests(unittest.TestCase):
         self.scalar_lasd = LagrangianScaleDependentScalarFlux()
         self.model = BoussinesqModel(
             DryFlowModel(
-                ConservativeAdvection(),
+                RotationalAdvection(),
                 KinematicPressureGradient(0.0, 0.0),
                 NeutralLogWall(0.01),
                 self.momentum_lasd,

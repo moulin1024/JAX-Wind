@@ -242,6 +242,26 @@ def test_playback_reads_a_clock_matched_plane_and_broadcasts_it_on_device(
         )
 
 
+def test_playback_applies_a_periodic_spanwise_shift(tmp_path) -> None:
+    runtime = _runtime(processes=1, process=0)
+    path = tmp_path / "shifted-playback.h5"
+    with HDF5PrecursorRecorder(path, runtime=runtime) as recorder:
+        recorder.record(_state(runtime, 4))
+
+    main = _state(runtime, 4)
+    with HDF5PrecursorPlayback(
+        path,
+        runtime=runtime,
+        state=main,
+        config=PrecursorPlaybackConfig(spanwise_shift_cells=1),
+    ) as playback:
+        target = playback.environment(main).velocity.x.payload[..., 0]
+
+    grid = main.fields.velocity.x.regions[0].grid
+    expected = _global_value(grid, 4, 0.0)[:, :, 0]
+    np.testing.assert_array_equal(target, np.roll(expected[None, ...], 1, axis=-1))
+
+
 def test_main_runner_supplies_each_clock_matched_environment(tmp_path) -> None:
     runtime = _runtime(processes=1, process=0)
     path = tmp_path / "main-playback.h5"

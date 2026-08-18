@@ -459,10 +459,13 @@ program main
                 ! end if
 
                 if (mod(t-1,turb_count)==0) then
-                    ! call turbine_force(Fx,Fy,Fz,CTF,power,u,v,w,turb_loc,t)
+                    #ifdef WIRELES_TURBINE_ADMNR
+                    call turbine_force(Fx,Fy,Fz,CTF,power,u,v,w,turb_loc,t)
+                    #else
                     call turbine_force(Fx,Fy,Fz,CTF_alm,power,displacement_host,moment_host,velocity_host,u,v,w,turb_loc,t)
                     CTF_alm_host = CTF_alm
                     call write_turb(CTF_alm_host,displacement_host,moment_host,velocity_host,me)
+                    #endif
                 end if
 
                 call turbine_force_rhs<<<grid, tBlock>>>(rhsx,fx)

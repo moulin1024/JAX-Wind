@@ -32,7 +32,6 @@ from jaxwind._jax.discretization import (  # noqa: E402
 )
 from jaxwind.operators import VelocityVector  # noqa: E402
 from jaxwind.physics import (  # noqa: E402
-    ConservativeAdvection,
     CoriolisGeostrophic,
     FilteredNeutralLogWall,
     KinematicPressureGradient,
@@ -119,7 +118,7 @@ def main() -> int:
             "advection",
             reference.advection_tendency,
             production.advection_tendency,
-            ConservativeAdvection(),
+            RotationalAdvection(),
         ),
         (
             "pressure_gradient",

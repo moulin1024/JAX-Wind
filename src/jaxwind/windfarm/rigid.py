@@ -10,12 +10,16 @@ unsteady aerodynamics are not reimplemented here.
 from __future__ import annotations
 
 from bisect import bisect_right
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 import math
 from pathlib import Path
 
 from jaxwind.domain import ScaleSystem
-from jaxwind.physics import BladeElementActuatorLine
+from jaxwind.physics import (
+    BladeElementActuatorDisk,
+    BladeElementActuatorLine,
+    NacelleTowerDrag,
+)
 
 from .errors import OpenFASTInputError
 from .parser import (
@@ -175,6 +179,88 @@ class OpenFASTRigidTurbine:
             ),
             tip_loss=self.tip_loss if tip_loss is None else bool(tip_loss),
             root_loss=self.root_loss if root_loss is None else bool(root_loss),
+        )
+
+    def to_actuator_disk_bem(self, **kwargs) -> BladeElementActuatorDisk:
+        """Lower the rigid rotor to an azimuthally averaged AD-BEM disk.
+
+        Shaft tilt, precone, and instantaneous azimuth do not survive the
+        annular average.  Blade geometry, polars, operating point, physical
+        blade count, and Prandtl loss settings are identical to the ALM form.
+        """
+
+        line = self.to_actuator_line(**kwargs)
+        values = {
+            field.name: getattr(line, field.name)
+            for field in fields(BladeElementActuatorLine)
+        }
+        values.update(
+            tilt_degrees=0.0,
+            precone_degrees=0.0,
+            initial_azimuth_degrees=0.0,
+        )
+        return BladeElementActuatorDisk(**values)
+
+
+@dataclass(frozen=True, slots=True)
+class RigidBladeElementDisk:
+    """A positioned SI-unit AD-BEM turbine backed by an OpenFAST rotor deck."""
+
+    rotor: OpenFASTRigidTurbine
+    x_m: float
+    y_m: float
+    smoothing_width_m: float
+    hub_height_m: float
+    rotor_speed_rpm: float | None = None
+    pitch_degrees: float | None = None
+    nacelle_length_m: float = 15.0
+    nacelle_diameter_m: float = 6.0
+    nacelle_drag_coefficient: float = 1.0
+    tower_base_diameter_m: float = 8.3
+    tower_top_diameter_m: float = 5.5
+    tower_drag_coefficient: float = 1.0
+    body_smoothing_width_m: float | None = None
+
+    model_name = "DTU-10MW azimuthally averaged AD-BEM"
+
+    @property
+    def rotor_diameter_m(self) -> float:
+        return 2.0 * self.rotor.tip_radius_m
+
+    def to_actuator_disk(self, *, scales: ScaleSystem) -> BladeElementActuatorDisk:
+        return self.rotor.to_actuator_disk_bem(
+            scales=scales,
+            x_m=self.x_m,
+            y_m=self.y_m,
+            smoothing_width_m=self.smoothing_width_m,
+            hub_height_m=self.hub_height_m,
+            rotor_speed_rpm=self.rotor_speed_rpm,
+            pitch_degrees=self.pitch_degrees,
+            yaw_degrees=0.0,
+        )
+
+    def to_nacelle_tower(self, *, scales: ScaleSystem) -> NacelleTowerDrag:
+        """Lower the configured nacelle and tower to solver execution units."""
+
+        return NacelleTowerDrag(
+            x=scales.to_execution_length(self.x_m),
+            y=scales.to_execution_length(self.y_m),
+            hub_height=scales.to_execution_length(self.hub_height_m),
+            nacelle_length=scales.to_execution_length(self.nacelle_length_m),
+            nacelle_diameter=scales.to_execution_length(self.nacelle_diameter_m),
+            nacelle_drag_coefficient=self.nacelle_drag_coefficient,
+            tower_base_diameter=scales.to_execution_length(
+                self.tower_base_diameter_m
+            ),
+            tower_top_diameter=scales.to_execution_length(
+                self.tower_top_diameter_m
+            ),
+            tower_drag_coefficient=self.tower_drag_coefficient,
+            smoothing_width=scales.to_execution_length(
+                self.smoothing_width_m
+                if self.body_smoothing_width_m is None
+                else self.body_smoothing_width_m
+            ),
         )
 
 

@@ -299,7 +299,7 @@ def main() -> int:
         ],
         "extract_identity": distributed_gradient.extract_owned()
         is distributed_gradient.owned,
-        "state_bandwidth_error": float(
+        "terminal_state_error": float(
             jnp.max(jnp.abs(aligned_velocity.x.payload - expected_aligned_u))
         ),
     }

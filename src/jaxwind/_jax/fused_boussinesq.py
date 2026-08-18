@@ -20,19 +20,13 @@ def build_fused_neutral_boussinesq_kernels(
     pad_horizontal_local,
     truncate_padded_local,
     wall_filter_local,
-    exchange_local,
     dry_flow_context_local,
-    dry_advection_from_padded_local,
-    padded_momentum_gradients_local,
     dry_sgs_from_padded_gradients_local,
-    reuse_state_filtered_context,
 ):
     if not isinstance(frozen_zero_scalar, bool):
         raise TypeError("frozen zero scalar flag must be boolean")
-    if not isinstance(reuse_state_filtered_context, bool):
-        raise TypeError("state-filtered context flag must be boolean")
 
-    def dealiased_rotational_advection_local(
+    def rotational_advection_local(
         momentum,
         padded_momentum,
         padded_lower,
@@ -42,7 +36,7 @@ def build_fused_neutral_boussinesq_kernels(
         padded_wall_v,
         wall_gradient_factor,
     ):
-        """Evaluate ``-omega x u`` on the padded staggered layout."""
+        """Evaluate legacy ``-omega x u`` on the base staggered layout."""
 
         padded_u, padded_v, padded_w_upper = padded_momentum[:3]
         padded_u_upper, padded_v_upper = padded_momentum[3:5]
@@ -91,142 +85,45 @@ def build_fused_neutral_boussinesq_kernels(
         wall_filtered,
         wall_filter_width,
         wall_gradient_factor,
-        rotational_advection,
     ):
-        # Horizontal padding is linear, so vertical shifts and averages commute
-        # with it.  Pad only the three independent velocity fields and rebuild
-        # the interpolated fields in padded space.  Besides avoiding seven
-        # redundant base-to-padded transform batches, exchanging the padded
-        # boundary planes keeps this construction valid across z partitions.
-        padded_u, padded_v, padded_w_upper = pad_horizontal_local(
-            jnp.stack((momentum.u, momentum.v, momentum.w_upper), axis=0)
-        )
-        padded_halo = exchange_local(
-            jnp.stack((padded_u, padded_v, padded_w_upper), axis=0)
-        )
-        previous_u = jnp.where(
-            padded_halo.lower_is_physical,
-            padded_u[0],
-            padded_halo.lower[0],
-        )
-        previous_v = jnp.where(
-            padded_halo.lower_is_physical,
-            padded_v[0],
-            padded_halo.lower[1],
-        )
-        next_u_plane = jnp.where(
-            padded_halo.upper_is_physical,
-            padded_u[-1],
-            padded_halo.upper[0],
-        )
-        next_v_plane = jnp.where(
-            padded_halo.upper_is_physical,
-            padded_v[-1],
-            padded_halo.upper[1],
-        )
-        next_w_upper = jnp.where(
-            padded_halo.upper_is_physical,
-            padded_w_upper[-1],
-            padded_halo.upper[2],
-        )
-        padded_lower_boundary = jnp.full_like(
-            padded_w_upper[0],
-            momentum.w_lower[0, 0],
-        )
-        padded_w_lower = jnp.where(
-            padded_halo.lower_is_physical,
-            padded_lower_boundary,
-            padded_halo.lower[2],
-        )
-        padded_lower_faces = jnp.concatenate(
-            (padded_w_lower[None], padded_w_upper[:-1]),
-            axis=0,
-        )
-        padded_next_u = jnp.concatenate(
-            (padded_u[1:], next_u_plane[None]),
-            axis=0,
-        )
-        padded_next_v = jnp.concatenate(
-            (padded_v[1:], next_v_plane[None]),
-            axis=0,
-        )
-        padded_w_at_cells = 0.5 * (padded_lower_faces + padded_w_upper)
-        padded_next_w_cell = jnp.concatenate(
-            (
-                padded_w_at_cells[1:],
-                (0.5 * (padded_w_upper[-1] + next_w_upper))[None],
-            ),
-            axis=0,
-        )
-        padded_u_upper = 0.5 * (padded_u + padded_next_u)
-        padded_v_upper = 0.5 * (padded_v + padded_next_v)
-        padded_u_lower = 0.5 * (previous_u + padded_u[0])
-        padded_v_lower = 0.5 * (previous_v + padded_v[0])
         padded_momentum = jnp.stack(
             (
-                padded_u,
-                padded_v,
-                padded_w_upper,
-                padded_u_upper,
-                padded_v_upper,
-                padded_w_at_cells,
-                padded_next_w_cell,
+                momentum.u,
+                momentum.v,
+                momentum.w_upper,
+                momentum.u_upper,
+                momentum.v_upper,
+                momentum.w_at_cells,
+                momentum.w_next_cell,
             ),
             axis=0,
         )
         padded_lower = jnp.stack(
-            (padded_w_lower, padded_u_lower, padded_v_lower),
+            (momentum.w_lower, momentum.u_lower, momentum.v_lower),
             axis=0,
         )
-        cell_gradients, face_gradients = padded_momentum_gradients_local(
-            padded_momentum,
-            padded_lower,
+        cell_gradients = (
+            momentum.dudx,
+            momentum.dudy,
+            momentum.dudz_at_cells,
+            momentum.dvdx,
+            momentum.dvdy,
+            momentum.dvdz_at_cells,
+            momentum.dwdx_at_cells,
+            momentum.dwdy_at_cells,
+            momentum.dwdz,
         )
-        if reuse_state_filtered_context and rotational_advection:
-            # The legacy path sharply filters every accepted velocity state.
-            # Its existing interpolation and derivative context is therefore
-            # already the exact base-grid context needed by rotational
-            # advection and SGS; rebuilding it through pad/FFT/truncate is
-            # redundant.  The generic values above become dead under this
-            # static branch and XLA removes them.
-            padded_momentum = jnp.stack(
-                (
-                    momentum.u,
-                    momentum.v,
-                    momentum.w_upper,
-                    momentum.u_upper,
-                    momentum.v_upper,
-                    momentum.w_at_cells,
-                    momentum.w_next_cell,
-                ),
-                axis=0,
-            )
-            padded_lower = jnp.stack(
-                (momentum.w_lower, momentum.u_lower, momentum.v_lower),
-                axis=0,
-            )
-            cell_gradients = (
-                momentum.dudx,
-                momentum.dudy,
-                momentum.dudz_at_cells,
-                momentum.dvdx,
-                momentum.dvdy,
-                momentum.dvdz_at_cells,
-                momentum.dwdx_at_cells,
-                momentum.dwdy_at_cells,
-                momentum.dwdz,
-            )
-            face_gradients = (
-                momentum.dudx_upper,
-                momentum.dudy_upper,
-                momentum.dudz_upper,
-                momentum.dvdx_upper,
-                momentum.dvdy_upper,
-                momentum.dvdz_upper,
-                momentum.dwdx_upper,
-                momentum.dwdy_upper,
-                momentum.dwdz_upper,
-            )
+        face_gradients = (
+            momentum.dudx_upper,
+            momentum.dudy_upper,
+            momentum.dudz_upper,
+            momentum.dvdx_upper,
+            momentum.dvdy_upper,
+            momentum.dvdz_upper,
+            momentum.dwdx_upper,
+            momentum.dwdy_upper,
+            momentum.dwdz_upper,
+        )
         wall_velocity = wall_filter_local(
             jnp.stack((momentum.u[0], momentum.v[0])),
             wall_filter_width,
@@ -236,23 +133,16 @@ def build_fused_neutral_boussinesq_kernels(
         padded_wall_u, padded_wall_v = pad_horizontal_local(
             jnp.stack((wall_u, wall_v), axis=0)
         )
-        if rotational_advection:
-            advection = dealiased_rotational_advection_local(
-                momentum,
-                padded_momentum,
-                padded_lower,
-                cell_gradients,
-                face_gradients,
-                padded_wall_u,
-                padded_wall_v,
-                wall_gradient_factor,
-            )
-        else:
-            advection = dry_advection_from_padded_local(
-                momentum,
-                padded_momentum,
-                padded_lower,
-            )
+        advection = rotational_advection_local(
+            momentum,
+            padded_momentum,
+            padded_lower,
+            cell_gradients,
+            face_gradients,
+            padded_wall_u,
+            padded_wall_v,
+            wall_gradient_factor,
+        )
         wall_speed = jnp.hypot(padded_wall_u, padded_wall_v)
         wall_x, wall_y = truncate_padded_local(
             jnp.stack(
@@ -292,7 +182,6 @@ def build_fused_neutral_boussinesq_kernels(
         wall_filtered,
         wall_filter_width,
         wall_gradient_factor,
-        rotational_advection,
     ):
         momentum = dry_flow_context_local(u, v, w_upper, lower_boundary)
         return shared_momentum_from_context_local(
@@ -301,7 +190,6 @@ def build_fused_neutral_boussinesq_kernels(
             wall_filtered,
             wall_filter_width,
             wall_gradient_factor,
-            rotational_advection,
         )
 
     def combine_local(advection, wall, sgs, pressure_x, pressure_y):
@@ -382,7 +270,6 @@ def build_fused_neutral_boussinesq_kernels(
         maximum_abs_zeta,
         surface_iterations,
         source_mode,
-        rotational_advection,
     ):
         (
             momentum,
@@ -398,7 +285,6 @@ def build_fused_neutral_boussinesq_kernels(
             wall_filtered,
             wall_filter_width,
             wall_gradient_factor,
-            rotational_advection,
         )
         u = momentum.u
         v = momentum.v
@@ -515,27 +401,12 @@ def build_fused_neutral_boussinesq_kernels(
         *arguments,
     ):
         momentum = dry_flow_context_local(u, v, w_upper, lower_boundary)
-        return fused_lasd_from_context_core_local(momentum, *arguments, False)
+        return fused_lasd_from_context_core_local(momentum, *arguments)
 
     def fused_lasd_from_context_local(momentum, *arguments):
-        return fused_lasd_from_context_core_local(momentum, *arguments, False)
-
-    def fused_rotational_lasd_local(
-        u,
-        v,
-        w_upper,
-        lower_boundary,
-        *arguments,
-    ):
-        momentum = dry_flow_context_local(u, v, w_upper, lower_boundary)
-        return fused_lasd_from_context_core_local(momentum, *arguments, True)
-
-    def fused_rotational_lasd_from_context_local(momentum, *arguments):
-        return fused_lasd_from_context_core_local(momentum, *arguments, True)
+        return fused_lasd_from_context_core_local(momentum, *arguments)
 
     return (
         fused_lasd_local,
         fused_lasd_from_context_local,
-        fused_rotational_lasd_local,
-        fused_rotational_lasd_from_context_local,
     )

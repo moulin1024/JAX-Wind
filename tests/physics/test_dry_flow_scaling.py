@@ -22,7 +22,7 @@ from jaxwind.domain import (  # noqa: E402
 from tests.support.jax_oracle import JaxOracleProjection  # noqa: E402
 from jaxwind.operators import VelocityVector  # noqa: E402
 from jaxwind.physics import (  # noqa: E402
-    ConservativeAdvection,
+    RotationalAdvection,
     CoriolisGeostrophic,
     FilteredNeutralLogWall,
     KinematicPressureGradient,
@@ -82,8 +82,8 @@ class DryFlowScalingNaturalityTests(unittest.TestCase):
         cases = (
             (
                 reference.advection_tendency,
-                ConservativeAdvection(),
-                ConservativeAdvection(),
+                RotationalAdvection(),
+                RotationalAdvection(),
             ),
             (
                 reference.pressure_gradient_tendency,

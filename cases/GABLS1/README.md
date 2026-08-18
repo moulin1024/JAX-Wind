@@ -47,6 +47,5 @@ window:
 ```bash
 PYTHONPATH=src:. JAX_PLATFORMS=cuda XLA_PYTHON_CLIENT_PREALLOCATE=false \
   python -m applications.abl cases/GABLS1/config_64.toml \
-  --advection rotational --dealiasing two_thirds \
   --lasd-filter-backend cufft
 ```

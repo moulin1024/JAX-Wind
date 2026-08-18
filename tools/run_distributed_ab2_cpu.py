@@ -168,7 +168,7 @@ def _worker(args: argparse.Namespace) -> int:
         )
         from jaxwind.operators import VelocityVector
         from jaxwind.physics import (
-            ConservativeAdvection,
+            RotationalAdvection,
             DryFlowModel,
             DryFlowVectorField,
             KinematicPressureGradient,
@@ -303,7 +303,7 @@ def _worker(args: argparse.Namespace) -> int:
             vector_field = DryFlowVectorField(
                 algebra,
                 DryFlowModel(
-                    ConservativeAdvection(),
+                    RotationalAdvection(),
                     KinematicPressureGradient(0.002),
                     NeutralLogWall(0.01),
                     StaticSmagorinsky(0.16),

@@ -41,6 +41,7 @@ from jaxwind.physics.wind_tunnel import BladeElementActuatorLine
 
 from .flow import ZSlabFlowMixin
 from .lasd import ZSlabLasdMixin
+from .diagnostics import ActuatorLineDiagnostic
 
 
 class PackedHaloArrays(NamedTuple):
@@ -123,22 +124,6 @@ class ZSlabProjectionPreparation:
     lower_boundary: Any
 
 
-class ActuatorLineDiagnostic(NamedTuple):
-    """Replicated per-element aerodynamic data from a distributed evaluation."""
-
-    force_on_fluid_per_density: Any
-    positions: Any
-    tangents: Any
-    normals: Any
-    span_directions: Any
-    blade_velocity: Any
-    sampled_velocity: Any
-    alpha_degrees: Any
-    lift_coefficients: Any
-    drag_coefficients: Any
-    loss_factors: Any
-
-
 @dataclass(frozen=True, slots=True)
 class _ProjectionKernels:
     exchange_packed: Callable
@@ -149,7 +134,9 @@ class _ProjectionKernels:
     finish: Callable
     horizontal_divergence: Callable
     horizontal_gradient: Callable
+    filter_state: Callable
     filter_horizontal: Callable
+    filter_scalar: Callable
     filter_boundary: Callable
     correct: Callable
 
@@ -160,7 +147,6 @@ class _FlowKernels:
     ab2_update_velocity: Callable
     combine_payloads: Callable
     context: Callable
-    advection: Callable
     rotational_advection: Callable
     wall: Callable
     sgs: Callable
@@ -168,8 +154,6 @@ class _FlowKernels:
     sgs_tke_transfer: Callable
     fused_boussinesq: Callable
     fused_boussinesq_from_context: Callable
-    fused_rotational_boussinesq: Callable
-    fused_rotational_boussinesq_from_context: Callable
 
 
 @dataclass(frozen=True, slots=True)
@@ -196,6 +180,8 @@ class _ScalarKernels:
 class _WindKernels:
     tendency: Callable
     actuator_line: Callable
+    actuator_disk_bem: Callable
+    nacelle_tower: Callable
 
 
 @dataclass(frozen=True, slots=True)
@@ -424,6 +410,86 @@ class _JaxDiscretization(ZSlabLasdMixin, ZSlabFlowMixin):
                 owned,
                 lower_boundary,
             ),
+        )
+
+    def legacy_fortran_filter_fields(
+        self,
+        fields: BoussinesqFields,
+    ) -> BoussinesqFields:
+        """Apply legacy ``ddxy_filter`` to prognostic fields at the step boundary.
+
+        WIRE-LES filters all three velocity components in place immediately
+        before evaluating derivatives and the RHS.  Its scalar-enabled path
+        batches transported scalars into the same operation.  In particular,
+        this also filters inflow values inserted after the preceding projection
+        while leaving the post-step/checkpoint state unfiltered.
+        """
+        if not isinstance(fields, BoussinesqFields):
+            raise TypeError("legacy Fortran filtering requires Boussinesq fields")
+        velocity = fields.velocity
+        self._validate_velocity_cell(velocity.x, XVelocity)
+        self._validate_velocity_cell(velocity.y, YVelocity)
+        self._validate_field(velocity.z.owned, ZFace)
+        if velocity.z.owned.quantity is not VerticalVelocity:
+            raise TypeError("legacy Fortran filtering requires vertical velocity")
+        if not (
+            velocity.x.phase is Projected
+            and velocity.y.phase is Projected
+            and velocity.z.owned.phase is Projected
+        ):
+            raise TypeError("legacy Fortran filtering requires projected velocity")
+        x_payload, y_payload, z_payload = self.projection.filter_state(
+            velocity.x.payload,
+            velocity.y.payload,
+            velocity.z.owned.payload,
+        )
+        filtered_velocity = VelocityVector(
+            AddressableField(
+                XVelocity,
+                Cell,
+                velocity.x.regions,
+                Projected,
+                x_payload,
+            ),
+            AddressableField(
+                YVelocity,
+                Cell,
+                velocity.y.regions,
+                Projected,
+                y_payload,
+            ),
+            VerticalFaceField(
+                AddressableField(
+                    VerticalVelocity,
+                    ZFace,
+                    velocity.z.owned.regions,
+                    Projected,
+                    z_payload,
+                ),
+                velocity.z.lower_boundary,
+            ),
+        )
+        scalar = fields.potential_temperature
+        if self.frozen_zero_scalar:
+            filtered_scalar = scalar
+        else:
+            self._validate_field(scalar, Cell)
+            if scalar.quantity not in (
+                PotentialTemperaturePerturbation,
+                PassiveScalarConcentration,
+            ):
+                raise TypeError("legacy Fortran filtering requires a scalar field")
+            filtered_scalar = AddressableField(
+                scalar.quantity,
+                Cell,
+                scalar.regions,
+                scalar.phase,
+                self.projection.filter_scalar(scalar.payload),
+            )
+        return BoussinesqFields(
+            filtered_velocity,
+            filtered_scalar,
+            fields.closure,
         )
 
     def prepare_projection(
@@ -907,8 +973,6 @@ def build_discretization(
     addressable_partitions: tuple[int, ...] | None = None,
     axis_name: str = "jaxwind_z",
     porte_agel_wall_correction: bool = True,
-    nonlinear_padding_ratio: float = 1.5,
-    nonlinear_dealiasing: str = "three_halves",
     frozen_zero_scalar: bool = False,
     lasd_filter_backend: str = "jax",
 ) -> _JaxDiscretization:
@@ -930,8 +994,6 @@ def build_discretization(
         addressable_partitions=addressable_partitions,
         axis_name=axis_name,
         porte_agel_wall_correction=porte_agel_wall_correction,
-        nonlinear_padding_ratio=nonlinear_padding_ratio,
-        nonlinear_dealiasing=nonlinear_dealiasing,
         frozen_zero_scalar=frozen_zero_scalar,
         lasd_filter_backend=lasd_filter_backend,
     )

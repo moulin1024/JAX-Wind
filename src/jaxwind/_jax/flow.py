@@ -19,7 +19,6 @@ from jaxwind.domain import (
 )
 from jaxwind.operators import VelocityVector
 from jaxwind.physics.dry_flow import (
-    ConservativeAdvection,
     CoriolisGeostrophic,
     FilteredNeutralLogWall,
     KinematicPressureGradient,
@@ -33,9 +32,11 @@ from jaxwind.physics.lasd import (
     LasdClosureMemory,
 )
 from jaxwind.physics.wind_tunnel import (
+    BladeElementActuatorDisk,
     BladeElementActuatorLine,
     ConcurrentPrecursorEnvironment,
     ConcurrentPrecursorFringe,
+    NacelleTowerDrag,
     NoActuatorDisk,
     NoActuatorLine,
     NoFringe,
@@ -55,18 +56,15 @@ class ZSlabFlowMixin:
     def advection_tendency(
         self,
         context: ZSlabDryFlowContext,
-        config: ConservativeAdvection | RotationalAdvection,
+        config: RotationalAdvection,
         wall: NeutralLogWall | FilteredNeutralLogWall | None = None,
     ) -> VelocityVector:
-        if isinstance(config, ConservativeAdvection):
-            x, y, z = self.flow.advection(context.arrays)
-        elif isinstance(config, RotationalAdvection):
-            x, y, z = self.flow.rotational_advection(
-                context.arrays,
-                *self._wall_gradient_parameters(wall),
-            )
-        else:
-            raise TypeError("unsupported distributed advection choice")
+        if not isinstance(config, RotationalAdvection):
+            raise TypeError("only legacy rotational advection is supported")
+        x, y, z = self.flow.rotational_advection(
+            context.arrays,
+            *self._wall_gradient_parameters(wall),
+        )
         return self._dry_tendency(x, y, z)
 
     def pressure_gradient_tendency(
@@ -152,9 +150,8 @@ class ZSlabFlowMixin:
     ):
         """Return signed SGS transfer from resolved TKE at owned cell centres.
 
-        Forward transfer to unresolved scales is negative. Horizontal nonlinear
-        products use the solver's padded path and the first cell uses the
-        configured log wall.
+        Forward transfer to unresolved scales is negative. Nonlinear products
+        use the legacy base grid and the first cell uses the configured log wall.
         """
         wall_gradient_factor = self._diagnostic_wall_gradient_factor(wall)
         if isinstance(config, (StaticSmagorinsky, LagrangianScaleDependentDynamic)):
@@ -286,8 +283,10 @@ class ZSlabFlowMixin:
                 disk.transverse_smoothing_width,
                 disk.yaw_degrees,
                 disk.filtered_velocity_correction,
+                disk.prescribed_inflow_velocity,
+                disk.prescribed_thrust_coefficient,
             )
-        elif isinstance(disk, NoActuatorDisk):
+        elif isinstance(disk, (NoActuatorDisk, BladeElementActuatorDisk)):
             disk_parameters = (
                 False,
                 0.0,
@@ -300,6 +299,8 @@ class ZSlabFlowMixin:
                 1.0,
                 0.0,
                 False,
+                0.0,
+                0.0,
             )
         else:
             raise TypeError("unsupported actuator-disk choice")
@@ -342,6 +343,54 @@ class ZSlabFlowMixin:
             *disk_parameters,
             *fringe_parameters,
         )
+        if isinstance(disk, BladeElementActuatorDisk):
+            dtype = velocity.x.payload.dtype
+            disk_values = self.wind.actuator_disk_bem(
+                velocity.x.payload,
+                velocity.y.payload,
+                velocity.z.owned.payload,
+                disk.x,
+                disk.y,
+                disk.z,
+                disk.blade_count,
+                disk.hub_radius,
+                disk.tip_radius,
+                disk.angular_velocity,
+                disk.smoothing_width,
+                jnp.asarray(disk.element_radii, dtype=dtype),
+                jnp.asarray(disk.element_widths, dtype=dtype),
+                jnp.asarray(disk.element_chords, dtype=dtype),
+                jnp.asarray(disk.element_twist_degrees, dtype=dtype),
+                jnp.asarray(disk.element_airfoil_ids, dtype=jnp.int32),
+                jnp.asarray(disk.polar_alpha_degrees, dtype=dtype),
+                jnp.asarray(disk.polar_lift_coefficients, dtype=dtype),
+                jnp.asarray(disk.polar_drag_coefficients, dtype=dtype),
+                disk.pitch_degrees,
+                disk.tip_loss,
+                disk.root_loss,
+            )
+            x = x + disk_values[0]
+            y = y + disk_values[1]
+            z = z + disk_values[2]
+        body = model.turbine_body
+        if isinstance(body, NacelleTowerDrag):
+            body_values = self.wind.nacelle_tower(
+                velocity.x.payload,
+                velocity.y.payload,
+                body.x,
+                body.y,
+                body.hub_height,
+                body.nacelle_length,
+                body.nacelle_diameter,
+                body.nacelle_drag_coefficient,
+                body.tower_base_diameter,
+                body.tower_top_diameter,
+                body.tower_drag_coefficient,
+                body.smoothing_width,
+            )
+            x = x + body_values[0]
+            y = y + body_values[1]
+            z = z + body_values[2]
         line = model.actuator_line
         if isinstance(line, BladeElementActuatorLine):
             dtype = velocity.x.payload.dtype

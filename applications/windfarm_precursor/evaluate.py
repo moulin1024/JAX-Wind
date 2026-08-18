@@ -61,15 +61,86 @@ def _fringe_fingerprint(problem: PressureDrivenProblem, fringe: Any) -> str:
 def _turbine_fingerprint(turbine: Any | None) -> str:
     if turbine is None:
         return ""
-    return (
-        "|turbine=simple-adm-dtu-10mw-v1"
+    value = (
+        f"|turbine={getattr(turbine, 'model_name', type(turbine).__name__)}"
         f"|x={float(turbine.x_m).hex()}"
         f"|y={float(turbine.y_m).hex()}"
         f"|hub-height={float(turbine.hub_height_m).hex()}"
         f"|diameter={float(turbine.rotor_diameter_m).hex()}"
-        f"|ct-prime={float(turbine.thrust_coefficient_prime).hex()}"
         f"|epsilon={float(turbine.smoothing_width_m).hex()}"
     )
+    if hasattr(turbine, "thrust_coefficient_prime"):
+        value += f"|ct-prime={float(turbine.thrust_coefficient_prime).hex()}"
+    if getattr(turbine, "prescribed_inflow_velocity_m_s", 0.0) > 0.0:
+        value += (
+            f"|prescribed-uinf={float(turbine.prescribed_inflow_velocity_m_s).hex()}"
+            f"|prescribed-ct={float(turbine.prescribed_thrust_coefficient).hex()}"
+        )
+        value += (
+            f"|force-x-offset={float(turbine.force_x_offset_m).hex()}"
+            f"|force-y-offset={float(turbine.force_y_offset_m).hex()}"
+        )
+    if hasattr(turbine, "rotor_speed_rpm"):
+        speed = turbine.rotor.rotor_speed_rpm if turbine.rotor_speed_rpm is None else turbine.rotor_speed_rpm
+        pitch = turbine.rotor.pitch_degrees if turbine.pitch_degrees is None else turbine.pitch_degrees
+        value += f"|rpm={float(speed).hex()}|pitch={float(pitch).hex()}"
+    if hasattr(turbine, "nacelle_length_m"):
+        value += (
+            f"|nacelle-length={float(turbine.nacelle_length_m).hex()}"
+            f"|nacelle-diameter={float(turbine.nacelle_diameter_m).hex()}"
+            f"|nacelle-cd={float(turbine.nacelle_drag_coefficient).hex()}"
+            f"|tower-base-diameter={float(turbine.tower_base_diameter_m).hex()}"
+            f"|tower-top-diameter={float(turbine.tower_top_diameter_m).hex()}"
+            f"|tower-cd={float(turbine.tower_drag_coefficient).hex()}"
+            f"|body-epsilon={float(turbine.smoothing_width_m if turbine.body_smoothing_width_m is None else turbine.body_smoothing_width_m).hex()}"
+        )
+    return value
+
+
+def _turbine_summary(turbine: Any | None) -> dict[str, Any] | None:
+    if turbine is None:
+        return None
+    result = {
+        "model": getattr(turbine, "model_name", type(turbine).__name__),
+        "x_m": turbine.x_m,
+        "y_m": turbine.y_m,
+        "hub_height_m": turbine.hub_height_m,
+        "rotor_diameter_m": turbine.rotor_diameter_m,
+        "smoothing_width_m": turbine.smoothing_width_m,
+    }
+    if hasattr(turbine, "thrust_coefficient_prime"):
+        result["thrust_coefficient_prime"] = turbine.thrust_coefficient_prime
+    if getattr(turbine, "prescribed_inflow_velocity_m_s", 0.0) > 0.0:
+        result["prescribed_inflow_velocity_m_s"] = turbine.prescribed_inflow_velocity_m_s
+        result["prescribed_thrust_coefficient"] = turbine.prescribed_thrust_coefficient
+        result["force_location_m"] = [turbine.force_x_m, turbine.force_y_m]
+    if hasattr(turbine, "rotor"):
+        result.update(
+            blade_count=turbine.rotor.blade_count,
+            radial_stations=len(turbine.rotor.element_radii_m),
+            rotor_speed_rpm=(turbine.rotor.rotor_speed_rpm if turbine.rotor_speed_rpm is None else turbine.rotor_speed_rpm),
+            pitch_degrees=(turbine.rotor.pitch_degrees if turbine.pitch_degrees is None else turbine.pitch_degrees),
+            openfast_source=str(turbine.rotor.source),
+        )
+    if hasattr(turbine, "nacelle_length_m"):
+        result.update(
+            nacelle_length_m=turbine.nacelle_length_m,
+            nacelle_diameter_m=turbine.nacelle_diameter_m,
+            nacelle_drag_coefficient=turbine.nacelle_drag_coefficient,
+            tower_base_diameter_m=turbine.tower_base_diameter_m,
+            tower_top_diameter_m=turbine.tower_top_diameter_m,
+            tower_drag_coefficient=turbine.tower_drag_coefficient,
+            body_smoothing_width_m=(
+                turbine.smoothing_width_m
+                if turbine.body_smoothing_width_m is None
+                else turbine.body_smoothing_width_m
+            ),
+        )
+    return result
+
+
+def _shift_fingerprint(spanwise_shift_cells: int) -> str:
+    return f"|offline-spanwise-shift-cells={spanwise_shift_cells}"
 
 
 def evaluate(
@@ -84,6 +155,7 @@ def evaluate(
     section: str,
     sample_buffer: int,
     read_buffer: int,
+    spanwise_shift_cells: int,
     compression: str | None,
     frame_count: int,
     gif_fps: int,
@@ -197,10 +269,19 @@ def evaluate(
         if turbine is not None
         else None
     )
+    turbine_body = (
+        turbine.to_nacelle_tower(scales=precursor_problem.scales)
+        if turbine is not None and hasattr(turbine, "to_nacelle_tower")
+        else None
+    )
     wind_tunnel = (
         WindTunnelModel(fringe=fringe)
         if actuator_disk is None
-        else WindTunnelModel(actuator_disk=actuator_disk, fringe=fringe)
+        else WindTunnelModel(
+            actuator_disk=actuator_disk,
+            fringe=fringe,
+            **({} if turbine_body is None else {"turbine_body": turbine_body}),
+        )
     )
     main_problem = build_pressure_driven_problem(
         case,
@@ -220,6 +301,7 @@ def evaluate(
         config=PrecursorPlaybackConfig(
             section=section,
             buffer_samples=read_buffer,
+            spanwise_shift_cells=spanwise_shift_cells,
         ),
     ) as playback:
         initial_environment = playback.environment(main)
@@ -259,6 +341,7 @@ def evaluate(
     main_elapsed = time.perf_counter() - started - precursor_elapsed
     main_fingerprint = (
         _fringe_fingerprint(main_problem, fringe) + _turbine_fingerprint(turbine)
+        + _shift_fingerprint(spanwise_shift_cells)
     )
     _save_state(
         output_dir / "main_final.npz",
@@ -322,19 +405,15 @@ def evaluate(
             "fringe_start_fraction": fringe_start_fraction,
             "fringe_relaxation_seconds": fringe_relaxation_seconds,
             "source_section": section,
-            "turbine": (
+            "spanwise_shift_cells": spanwise_shift_cells,
+            "spanwise_shift_m": spanwise_shift_cells * case.domain.dy_m,
+            "spanwise_shift_recurrence_flowthroughs": (
                 None
-                if turbine is None
-                else {
-                    "model": "DTU-10MW simple ADM",
-                    "x_m": turbine.x_m,
-                    "y_m": turbine.y_m,
-                    "hub_height_m": turbine.hub_height_m,
-                    "rotor_diameter_m": turbine.rotor_diameter_m,
-                    "thrust_coefficient_prime": turbine.thrust_coefficient_prime,
-                    "smoothing_width_m": turbine.smoothing_width_m,
-                }
+                if spanwise_shift_cells == 0
+                else case.domain.ny
+                // math.gcd(abs(spanwise_shift_cells), case.domain.ny)
             ),
+            "turbine": _turbine_summary(turbine),
             "initial_local_target_delta": local_target_delta,
             "local_difference_from_unforced_precursor": comparison,
             "frame_count": frame_count,

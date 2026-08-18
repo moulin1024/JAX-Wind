@@ -25,20 +25,15 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-steps", type=int)
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument(
-        "--advection",
-        choices=("conservative", "rotational"),
-        help="override momentum advection while retaining the physical case data",
-    )
-    parser.add_argument(
-        "--dealiasing",
-        choices=("three_halves", "two_thirds", "legacy_two_thirds"),
-        help="override the horizontal nonlinear dealiasing rule",
-    )
-    parser.add_argument(
         "--lasd-filter-backend",
         choices=("jax", "cufft"),
         default="jax",
         help="select the LASD test-filter implementation",
+    )
+    parser.add_argument(
+        "--lasd-update-interval",
+        type=int,
+        help="override the number of timesteps between LASD coefficient updates",
     )
     return parser
 
@@ -46,23 +41,22 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     case = load_abl(args.config)
-    if args.advection is not None:
-        from jaxwind.physics import ConservativeAdvection, RotationalAdvection
-
-        advection = (
-            RotationalAdvection()
-            if args.advection == "rotational"
-            else ConservativeAdvection()
-        )
+    if args.lasd_update_interval is not None:
+        if args.lasd_update_interval <= 0:
+            raise SystemExit("--lasd-update-interval must be positive")
         case = replace(
             case,
             model=replace(
                 case.model,
-                momentum=replace(case.model.momentum, advection=advection),
+                momentum=replace(
+                    case.model.momentum,
+                    sgs=replace(
+                        case.model.momentum.sgs,
+                        update_interval=args.lasd_update_interval,
+                    ),
+                ),
             ),
         )
-    if args.dealiasing is not None:
-        case = replace(case, nonlinear_dealiasing=args.dealiasing)
     if args.dry_run:
         print(json.dumps(resolved(case), indent=2))
         return 0

@@ -534,9 +534,8 @@ def evaluate(
     summary = {
         **case.resolved(),
         "physics": {
-            "momentum_advection": case.flow.advection,
-            "dealiasing": case.numerics.nonlinear_dealiasing,
-            "nonlinear_padding_ratio": 1.5,
+            "momentum_advection": "legacy-rotational",
+            "nonlinear_scheme": "legacy-fortran-pre-rhs-filtering",
             "fingerprint": physics_fingerprint,
         },
         "runtime": {

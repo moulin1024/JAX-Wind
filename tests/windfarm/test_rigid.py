@@ -8,6 +8,7 @@ import pytest
 from jaxwind.domain import ScaleSystem
 from jaxwind.windfarm import (
     OpenFASTInputError,
+    RigidBladeElementDisk,
     load_openfast_rigid_turbine,
 )
 
@@ -176,6 +177,30 @@ def test_lowers_openfast_si_data_to_execution_units(tmp_path: Path) -> None:
     assert line.yaw_degrees == 3.0
     assert line.tilt_degrees == -5.0
     assert line.precone_degrees == -2.0
+
+    disk = turbine.to_actuator_disk_bem(
+        scales=scales,
+        x_m=400.0,
+        y_m=100.0,
+        smoothing_width_m=4.0,
+        yaw_degrees=0.0,
+    )
+    assert disk.blade_count == line.blade_count
+    assert disk.element_chords == line.element_chords
+    assert disk.tilt_degrees == 0.0
+    assert disk.precone_degrees == 0.0
+
+    configured = RigidBladeElementDisk(
+        rotor=turbine,
+        x_m=400.0,
+        y_m=100.0,
+        smoothing_width_m=4.0,
+        hub_height_m=turbine.hub_height_m,
+    )
+    body = configured.to_nacelle_tower(scales=scales)
+    assert body.nacelle_length == 0.15
+    assert body.tower_base_diameter == pytest.approx(0.083)
+    assert body.tower_top_diameter == pytest.approx(0.055)
 
 
 def test_rejects_per_blade_operating_point_difference(tmp_path: Path) -> None:

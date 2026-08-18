@@ -29,6 +29,26 @@ class SimpleActuatorDisk:
     rotor_diameter_m: float
     thrust_coefficient_prime: float
     smoothing_width_m: float
+    prescribed_inflow_velocity_m_s: float = 0.0
+    prescribed_thrust_coefficient: float = 0.0
+    force_x_offset_m: float = 0.0
+    force_y_offset_m: float = 0.0
+
+    @property
+    def force_x_m(self) -> float:
+        return self.x_m + self.force_x_offset_m
+
+    @property
+    def force_y_m(self) -> float:
+        return self.y_m + self.force_y_offset_m
+
+    @property
+    def model_name(self) -> str:
+        return (
+            "DTU-10MW prescribed ADM"
+            if self.prescribed_inflow_velocity_m_s > 0.0
+            else "DTU-10MW simple ADM"
+        )
 
     def __post_init__(self) -> None:
         values = (
@@ -38,6 +58,10 @@ class SimpleActuatorDisk:
             self.rotor_diameter_m,
             self.thrust_coefficient_prime,
             self.smoothing_width_m,
+            self.prescribed_inflow_velocity_m_s,
+            self.prescribed_thrust_coefficient,
+            self.force_x_offset_m,
+            self.force_y_offset_m,
         )
         if not all(math.isfinite(value) for value in values):
             raise ValueError("simple actuator-disk parameters must be finite")
@@ -49,6 +73,11 @@ class SimpleActuatorDisk:
             raise ValueError("actuator-disk thrust coefficient must be nonnegative")
         if self.smoothing_width_m <= 0.0:
             raise ValueError("actuator-disk smoothing width must be positive")
+        prescribed = self.prescribed_inflow_velocity_m_s > 0.0
+        if prescribed != (self.prescribed_thrust_coefficient > 0.0):
+            raise ValueError(
+                "prescribed inflow velocity and thrust coefficient must both be positive or both zero"
+            )
 
     def to_actuator_disk(self, *, scales: ScaleSystem) -> PureThrustActuatorDisk:
         """Lower the SI turbine to the solver's execution-unit forcing choice."""
@@ -56,9 +85,10 @@ class SimpleActuatorDisk:
         if not isinstance(scales, ScaleSystem):
             raise TypeError("simple actuator-disk lowering requires ScaleSystem")
         smoothing_width = scales.to_execution_length(self.smoothing_width_m)
+        prescribed = self.prescribed_inflow_velocity_m_s > 0.0
         return PureThrustActuatorDisk(
-            x=scales.to_execution_length(self.x_m),
-            y=scales.to_execution_length(self.y_m),
+            x=scales.to_execution_length(self.force_x_m),
+            y=scales.to_execution_length(self.force_y_m),
             z=scales.to_execution_length(self.hub_height_m),
             diameter=scales.to_execution_length(self.rotor_diameter_m),
             thrust_coefficient_prime=self.thrust_coefficient_prime,
@@ -66,7 +96,11 @@ class SimpleActuatorDisk:
             transverse_smoothing_width=smoothing_width,
             hub_diameter=0.0,
             yaw_degrees=0.0,
-            filtered_velocity_correction=True,
+            filtered_velocity_correction=not prescribed,
+            prescribed_inflow_velocity=scales.to_execution_velocity(
+                self.prescribed_inflow_velocity_m_s
+            ),
+            prescribed_thrust_coefficient=self.prescribed_thrust_coefficient,
         )
 
 
@@ -95,9 +129,36 @@ def dtu_10mw_reference_actuator_disk(
     )
 
 
+def dtu_10mw_prescribed_actuator_disk(
+    *,
+    x_m: float,
+    y_m: float,
+    smoothing_width_m: float = 32.0,
+    inflow_velocity_m_s: float = 11.08514881,
+    thrust_coefficient: float = 0.840,
+    force_x_offset_m: float = 0.0,
+    force_y_offset_m: float = 0.0,
+) -> SimpleActuatorDisk:
+    """Return the fixed-freestream DTU 10-MW ADM used by the legacy comparison."""
+
+    return SimpleActuatorDisk(
+        x_m=x_m,
+        y_m=y_m,
+        hub_height_m=DTU_10MW_HUB_HEIGHT_M,
+        rotor_diameter_m=DTU_10MW_ROTOR_DIAMETER_M,
+        thrust_coefficient_prime=0.0,
+        smoothing_width_m=smoothing_width_m,
+        prescribed_inflow_velocity_m_s=inflow_velocity_m_s,
+        prescribed_thrust_coefficient=thrust_coefficient,
+        force_x_offset_m=force_x_offset_m,
+        force_y_offset_m=force_y_offset_m,
+    )
+
+
 __all__ = [
     "DTU_10MW_HUB_HEIGHT_M",
     "DTU_10MW_ROTOR_DIAMETER_M",
     "SimpleActuatorDisk",
     "dtu_10mw_reference_actuator_disk",
+    "dtu_10mw_prescribed_actuator_disk",
 ]

@@ -34,6 +34,8 @@ module turbine
     use control
     use cudafor
 
+    integer :: i_phi, i_turb
+
     real(fp), parameter :: dang = 2.0_fp*pi/real(n_phi)
     real(fp), dimension(n_turb), parameter :: dr = [(turb_r(idx1)/real(n_r), idx1=1,n_turb)]
     real(fp), dimension(n_r,n_turb), parameter :: r  = reshape([((real(idx2-0.5_fp)*dr(idx1), idx2=1,n_r), idx1=1,n_turb)],(/n_r,n_turb/))
@@ -42,14 +44,6 @@ module turbine
     real(fp), dimension(n_phi), parameter :: cos_Tang = [(cos(dble(i_phi-1)*dang), i_phi=1,n_phi)]
     real(fp), dimension(n_phi), parameter :: sin_Tang = [(sin(dble(i_phi-1)*dang), i_phi=1,n_phi)]
 
-    integer, parameter :: mask_x = 16
-    integer, parameter :: mask_y = 32
-    integer, parameter :: mask_z = 32
-
-    integer, parameter :: ker_d_x = 32
-    integer, parameter :: ker_d_y = 32
-    integer, parameter :: ker_d_z = 16
-    
     real(fp), dimension(n_turb), parameter :: dA_tower = [(2.d0*tow_r(i_turb)*dz,i_turb = 1,n_turb)]
     real(fp), dimension(n_turb), parameter :: dA_nacell = [(pi*nac_r(i_turb)**2.d0, i_turb=1,n_turb)]
     ! real(fp), dimension(n_turb), parameter :: turb_i = ((/1.28,2.03,2.78/)/z_i)/dx
@@ -63,6 +57,13 @@ module turbine
     
     real(fp),parameter :: hub_tower_gap  = 0!turb_r(1)/3 ! The gap between the tower and the hub (2 cm for WiRE-01)
     real(fp),parameter :: hub_tower_gap1 = turb_r(1)/3 ! The gap between the tower and the hub (2 cm for WiRE-01)
+    ! DTU 10 MW prescribed ADM operating point.  The incoming speed is the
+    ! rotor-area average measured from the completed 10 h legacy warmup at
+    ! x=1000 m.  Ct is the freestream-based DTU RANS value at 11 m/s.
+    real(fp), parameter :: prescribed_uinf = 11.08514881_fp
+    real(fp), parameter :: prescribed_ct = 0.840_fp
+    integer, parameter :: adm_mask_x = 16
+    integer, parameter :: adm_mask_y = 32
     contains
     
     Subroutine turbine_force(Fx,Fy,Fz,CTF,power,u,v,w,turb_loc,t)
@@ -71,50 +72,56 @@ module turbine
     !---------------------------------------------------------------------------    
         implicit none
         real(fp),dimension(nx,ny,nz2),intent(out),device :: fx,fy,fz
-        real(fp),dimension(nx,ny,nz2,2),intent(out),device :: CTF
+        real(fp),dimension(n_phi,n_r,n_turb,2),intent(out),device :: CTF
         real(fp),dimension(n_turb),intent(out),device    :: power
         real(fp),dimension(nx,ny,nz2),intent(in),device :: u,v,w
         real(fp),dimension(n_turb,5),intent(in),device :: turb_loc
         real(fp),dimension(n_turb,5) :: turb_loc_host
-        real(fp), dimension(:),allocatable,device :: CTUin,CTU_local,turb_rpm  
-        real(fp), dimension(n_turb) :: CTUin_host,mean_CTUin
-        real(fp), dimension(n_turb) :: turb_rpm_host
-        real(fp) :: tsp,ct 
+        real(fp), dimension(:,:,:,:),allocatable,device :: sum_ker
+        type(dim3) :: grid_be,block_be,grid_full,block_full
         integer :: i,j,k,t,counter,i_turb
     
-        save CTUin,CTU_local,turb_rpm,counter
+        save sum_ker
     !---------------------------------------------------------------------------
     ! code
     !---------------------------------------------------------------------------
         if (t == 1) then
-            allocate(CTUin(n_turb))
-            allocate(CTU_local(n_turb))
-            allocate(turb_rpm(n_turb))
+            allocate(sum_ker(n_phi,n_r,n_turb,2))
+            sum_ker = 0._fp
         end if
         fx = 0._fp
         fy = 0._fp
         fz = 0._fp
         power = 0._fp
-        !---------------------------------------------------------------------------
-        ! compute models
+
+        block_be = dim3(8,8,1)
+        grid_be = dim3(n_phi/8,n_r/8,n_turb)
+        block_full = dim3(adm_mask_x,adm_mask_y,1)
+        grid_full = dim3(n_phi,n_r,nzb)
         if(turbine_model == 1)then
-            ! call tower(fx,fy,fz,u,v,w,turb_loc,t) ! Somehow it do more harms than good for power prediction!
-            ! call controller_fix(turb_rpm,CTUin,u,turb_loc,t)
-            ! call nacelle(fx,fy,fz,CTUin,u,v,w,turb_loc,t)
-            call admryaw(fx,fy,fz,CTF,power,u,v,w,turb_loc,turb_rpm,CTU_local,CTUin,t,me,nall)
-            ! if (t>4000) then
-            ! turb_rpm_host = turb_rpm
-            ! CTUin_host = power
-            ! do i_turb = 1,n_turb
-            !     tsp = (turb_rpm_host(i_turb)/60*2*pi*turb_r(i_turb))/CTUin_host(i_turb)
-            !     ct = -0.01772839*tsp**2 + 0.17479856*tsp**1 + 0.4567472 + -0.01774664*CTUin_host(i_turb)
-            ! end do
-            ! mean_CTUin = mean_CTUin + CTUin_host
-            ! print *,mean_CTUin/counter
-            ! counter = counter + 1
+            if (t == 1) then
+                call force_projection_pre<<<grid_full,block_full>>>(sum_ker,turb_loc)
+            end if
+            call prescribed_adm_elements<<<grid_be,block_be>>>(CTF,power)
+            call force_projection<<<grid_full,block_full>>>(fx,fy,fz,CTF,sum_ker,turb_loc)
         end if
         
     end Subroutine turbine_force
+
+    attributes(global) subroutine prescribed_adm_elements(CTF,power)
+        implicit none
+        real(fp),dimension(n_phi,n_r,n_turb,2),intent(out) :: CTF
+        real(fp),dimension(n_turb),intent(out) :: power
+        integer :: i_phi,i_r,i_turb
+
+        i_phi = (blockIdx%x-1)*blockDim%x+threadIdx%x
+        i_r = (blockIdx%y-1)*blockDim%y+threadIdx%y
+        i_turb = (blockIdx%z-1)*blockDim%z+threadIdx%z
+        CTF(i_phi,i_r,i_turb,1) = 0.5_fp*prescribed_uinf**2*prescribed_ct &
+                                  *dA(i_r,i_turb)/(dx*dy*dz)
+        CTF(i_phi,i_r,i_turb,2) = 0._fp
+        if (i_phi == 1 .and. i_r == 1) power(i_turb) = 0._fp
+    end subroutine prescribed_adm_elements
 
     Subroutine tower(Fx,Fy,Fz,u,v,w,turb_loc,t)
     !---------------------------------------------------------------------------
@@ -242,7 +249,7 @@ module turbine
         tBlock_be   = dim3(8,8,1)
         grid_be     = dim3(n_phi/8,n_r/8,n_turb)
         ! kernel config for force prejection on cartesian grid
-        tBlock_full = dim3(mask_x,mask_y,1)
+        tBlock_full = dim3(adm_mask_x,adm_mask_y,1)
         grid_full   = dim3(n_phi,n_r,nzb)
     
         save coeff,blade_ijk,twist_angle,solidity,sum_ker,turb_aerodyn,turb_geo,turb_rpm_new,torque,CTU_local_
@@ -364,11 +371,11 @@ module turbine
         j      = threadIdx%y
         i_turb = blockIdx%x
 
-        i_global = int(turb_i(i_turb)) + i - ker_d_x/2
-        j_global = int(turb_j(i_turb)) + j - ker_d_y/2 
+        i_global = int(turb_loc(i_turb,1)/dx) + i - ker_d_x/2
+        j_global = int(turb_loc(i_turb,2)/dy) + j - ker_d_y/2
 
-        coord_x = i_global*dx-(turb_i(i_turb)*dx+hub_tower_gap1*cos(turb_loc(i_turb,4)))
-        coord_y = j_global*dy-(turb_j(i_turb)*dy+hub_tower_gap1*sin(turb_loc(i_turb,4)))
+        coord_x = i_global*dx-(turb_loc(i_turb,1)+hub_tower_gap1*cos(turb_loc(i_turb,4)))
+        coord_y = j_global*dy-(turb_loc(i_turb,2)+hub_tower_gap1*sin(turb_loc(i_turb,4)))
 
         ! Formulate the gaussian kernel
         tmp3 = -0.5_fp*((coord_x/sigma_x)**2 +(coord_y/sigma_y)**2)
@@ -407,10 +414,10 @@ module turbine
 
         kk = dble(k-1.5d0)*dz
         if( kk < (turb_loc(i_turb,3)) ) then    
-            i_global = int(turb_i(i_turb)) + i - ker_d_x/2
-            j_global = int(turb_j(i_turb)) + j - ker_d_y/2 
+            i_global = int(turb_loc(i_turb,1)/dx) + i - ker_d_x/2
+            j_global = int(turb_loc(i_turb,2)/dy) + j - ker_d_y/2
             k_global = k + 1  
-            CTU = u(nint((turb_i(i_turb)*dx+hub_tower_gap1*cos(turb_loc(i_turb,4)))/dx),nint((turb_j(i_turb)*dy+hub_tower_gap1*sin(turb_loc(i_turb,4)))/dy),k_global)
+            CTU = u(nint((turb_loc(i_turb,1)+hub_tower_gap1*cos(turb_loc(i_turb,4)))/dx),nint((turb_loc(i_turb,2)+hub_tower_gap1*sin(turb_loc(i_turb,4)))/dy),k_global)
             
             ! Drag force of the nacelle
             CTFx = 0.5d0*(CTU**2.d0)*tow_c(i_turb)*dA_tower(i_turb)/(dx*dy*dz)
@@ -447,12 +454,12 @@ module turbine
         i_turb = blockIdx%x
         k = blockIdx%y
 
-        i_global = int(turb_i(i_turb)) + i - ker_d_x/2
-        j_global = int(turb_j(i_turb)) + j - ker_d_y/2 
+        i_global = int(turb_loc(i_turb,1)/dx) + i - ker_d_x/2
+        j_global = int(turb_loc(i_turb,2)/dy) + j - ker_d_y/2
         k_global = k + 1  
 
-        coord_x = i_global*dx-(turb_i(i_turb)*dx-hub_tower_gap*cos(turb_loc(i_turb,4)))
-        coord_y = j_global*dy-(turb_j(i_turb)*dy-hub_tower_gap*sin(turb_loc(i_turb,4)))
+        coord_x = i_global*dx-(turb_loc(i_turb,1)-hub_tower_gap*cos(turb_loc(i_turb,4)))
+        coord_y = j_global*dy-(turb_loc(i_turb,2)-hub_tower_gap*sin(turb_loc(i_turb,4)))
         coord_z = (k_global-1.5)*dz-turb_z(i_turb)
 
         ! Formulate the gaussian kernel
@@ -498,8 +505,8 @@ module turbine
         lz1(i_turb) = dble(hub_kk-hub_k(i_turb))
         lz2(i_turb) = (1.d0-lz1(i_turb))
         ! Streamwise velocity at the nacelle
-        CTU = u(nint((turb_i(i_turb)*dx-hub_tower_gap*cos(turb_loc(i_turb,4)))/dx),nint((turb_j(i_turb)*dy-hub_tower_gap*sin(turb_loc(i_turb,4)))/dy),hub_k(i_turb))*lz1(i_turb) + &
-              u(nint((turb_i(i_turb)*dx-hub_tower_gap*cos(turb_loc(i_turb,4)))/dx),nint((turb_j(i_turb)*dy-hub_tower_gap*sin(turb_loc(i_turb,4)))/dy),hub_k(i_turb)+1)*lz2(i_turb)
+        CTU = u(nint((turb_loc(i_turb,1)-hub_tower_gap*cos(turb_loc(i_turb,4)))/dx),nint((turb_loc(i_turb,2)-hub_tower_gap*sin(turb_loc(i_turb,4)))/dy),hub_k(i_turb))*lz1(i_turb) + &
+              u(nint((turb_loc(i_turb,1)-hub_tower_gap*cos(turb_loc(i_turb,4)))/dx),nint((turb_loc(i_turb,2)-hub_tower_gap*sin(turb_loc(i_turb,4)))/dy),hub_k(i_turb)+1)*lz2(i_turb)
 
         ! Streamwise velocity i0 grid in front of the nacelle
         ! CTUin(i_turb) = u(nint(nint(turb_loc(i_turb,1)/dx)*dx/dx)-i0,nint(nint(turb_loc(i_turb,2)/dy)*dy/dy),hub_k(i_turb))*lz1(i_turb) + &
@@ -509,8 +516,8 @@ module turbine
         CTFx = 0.5_fp*(CTU**2)*nac_c(i_turb)*dA_nacell(i_turb)/(dx*dy*dz)
         
         ! Global index 
-        i_global = int(turb_i(i_turb)) + i - ker_d_x/2
-        j_global = int(turb_j(i_turb)) + j - ker_d_y/2 
+        i_global = int(turb_loc(i_turb,1)/dx) + i - ker_d_x/2
+        j_global = int(turb_loc(i_turb,2)/dy) + j - ker_d_y/2
         k_global = k + 1  
 
         ! Apply 
@@ -553,8 +560,8 @@ module turbine
     
         ! blade element centre location
         ! print *,0.7/z_i/dx
-        blade_ii    = turb_i(i_turb)-(hub_tower_gap*cos(turb_loc(i_turb,4)))/dx - r(i_r,i_turb)*cos_Tang(i_phi)/dx*sin(turb_loc(i_turb,4))
-        blade_jj    = turb_j(i_turb)-(hub_tower_gap*sin(turb_loc(i_turb,4)))/dy + r(i_r,i_turb)*cos_Tang(i_phi)/dy*cos(turb_loc(i_turb,4))
+        blade_ii    = turb_loc(i_turb,1)/dx-(hub_tower_gap*cos(turb_loc(i_turb,4)))/dx - r(i_r,i_turb)*cos_Tang(i_phi)/dx*sin(turb_loc(i_turb,4))
+        blade_jj    = turb_loc(i_turb,2)/dy-(hub_tower_gap*sin(turb_loc(i_turb,4)))/dy + r(i_r,i_turb)*cos_Tang(i_phi)/dy*cos(turb_loc(i_turb,4))
         blade_kk_w  = turb_loc(i_turb,3)/dz + r(i_r,i_turb)*sin_Tang(i_phi)/dz + 2._fp
         blade_kk_uv = blade_kk_w - 0.5_fp
 
@@ -666,13 +673,13 @@ module turbine
                 mu_z = r(i_r,i_turb)*sin_Tang(i_phi)                           ! Why +1: z = 2 to nzb+1
    
                 ! global index for kernel
-                i_global = int(turb_i(i_turb)-(hub_tower_gap*cos(turb_loc(i_turb,4)))/dx) + i - mask_x/2
-                j_global = int(turb_j(i_turb)-(hub_tower_gap*sin(turb_loc(i_turb,4)))/dy) + j - mask_y/2
+                i_global = int(turb_loc(i_turb,1)/dx-(hub_tower_gap*cos(turb_loc(i_turb,4)))/dx) + i - adm_mask_x/2
+                j_global = int(turb_loc(i_turb,2)/dy-(hub_tower_gap*sin(turb_loc(i_turb,4)))/dy) + j - adm_mask_y/2
                 k_global = k 
 
                 ! Grid coordinates in the hub-centered reference frame
-                coord_x = i_global*dx-(turb_i(i_turb)*dx-hub_tower_gap*cos(turb_loc(i_turb,4)))
-                coord_y = j_global*dy-(turb_j(i_turb)*dy-hub_tower_gap*sin(turb_loc(i_turb,4)))
+                coord_x = i_global*dx-(turb_loc(i_turb,1)-hub_tower_gap*cos(turb_loc(i_turb,4)))
+                coord_y = j_global*dy-(turb_loc(i_turb,2)-hub_tower_gap*sin(turb_loc(i_turb,4)))
                 coord_z_u = (k_global-1.5)*dz-turb_loc(i_turb,3)
                 coord_z_w = coord_z_u - 0.5*dz
 
@@ -806,13 +813,13 @@ module turbine
                 mu_z =  r(i_r,i_turb)*sin_Tang(i_phi)
 
                 ! global index for kernel
-                i_global = int(turb_i(i_turb)-(hub_tower_gap*cos(turb_loc(i_turb,4)))/dx) + i - mask_x/2
-                j_global = int(turb_j(i_turb)-(hub_tower_gap*sin(turb_loc(i_turb,4)))/dy) + j - mask_y/2
+                i_global = int(turb_loc(i_turb,1)/dx-(hub_tower_gap*cos(turb_loc(i_turb,4)))/dx) + i - adm_mask_x/2
+                j_global = int(turb_loc(i_turb,2)/dy-(hub_tower_gap*sin(turb_loc(i_turb,4)))/dy) + j - adm_mask_y/2
                 k_global = k 
 
                 ! Grid coordinates in the hub-centered reference frame
-                coord_x = i_global*dx-(turb_i(i_turb)*dx-hub_tower_gap*cos(turb_loc(i_turb,4)))
-                coord_y = j_global*dy-(turb_j(i_turb)*dy-hub_tower_gap*sin(turb_loc(i_turb,4)))
+                coord_x = i_global*dx-(turb_loc(i_turb,1)-hub_tower_gap*cos(turb_loc(i_turb,4)))
+                coord_y = j_global*dy-(turb_loc(i_turb,2)-hub_tower_gap*sin(turb_loc(i_turb,4)))
                 coord_z_u = (k_global-1.5)*dz-turb_loc(i_turb,3)
                 coord_z_w = coord_z_u - 0.5*dz
 

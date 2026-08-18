@@ -70,7 +70,7 @@ class JaxZSlabCommutingTests(unittest.TestCase):
                     [False] * (devices - 1) + [True],
                 )
                 self.assertTrue(result["extract_identity"])
-                self.assertLess(result["state_bandwidth_error"], tolerance)
+                self.assertLess(result["terminal_state_error"], tolerance)
 
 
 if __name__ == "__main__":

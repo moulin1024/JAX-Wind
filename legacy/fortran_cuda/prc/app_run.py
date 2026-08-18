@@ -154,7 +154,7 @@ def run(PATH, case_name):
     _prepare_input(case_path, runtime_path, config)
     _ensure_relative_symlink(os.path.join(runtime_path, 'output'), '../output')
 
-    command = [binary]
+    command = ['mpiexec', '-n', str(nprocs), binary]
     print('Run command:')
     print('  ' + ' '.join(command))
     print('Working directory:')

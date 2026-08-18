@@ -53,19 +53,6 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="bracket only the eager timing loop with cudaProfilerStart/Stop",
     )
-    parser.add_argument("--padding-ratio", type=float, default=1.5)
-    parser.add_argument(
-        "--dealiasing",
-        choices=("three_halves", "two_thirds", "legacy_two_thirds"),
-        default=None,
-        help="override the configured horizontal nonlinear dealiasing rule",
-    )
-    parser.add_argument(
-        "--advection",
-        choices=("conservative", "rotational"),
-        default=None,
-        help="override the configured momentum-advection form",
-    )
     parser.add_argument(
         "--reuse-rhs-momentum-context",
         choices=("true", "false"),
@@ -137,7 +124,6 @@ def main() -> int:
         runtime=runtime,
         pressure_tridiag=args.tridiag,
         pressure_thomas_chunk=args.thomas_chunk,
-        nonlinear_padding_ratio=args.padding_ratio,
         lasd_filter_backend=args.lasd_filter_backend,
     )
     checkpoint_state = load_boussinesq_checkpoint(
@@ -147,10 +133,6 @@ def main() -> int:
         scale_fingerprint=checkpoint_problem.scales.fingerprint,
         closure_fingerprint=checkpoint_problem.closure_fingerprint,
         physics_fingerprint=checkpoint_problem.physics_fingerprint,
-    )
-    selected_advection = args.advection or case.flow.advection
-    selected_dealiasing = (
-        args.dealiasing or case.numerics.nonlinear_dealiasing
     )
     selected_context_reuse = (
         case.sgs.reuse_rhs_momentum_context
@@ -164,15 +146,12 @@ def main() -> int:
     )
     if (
         args.checkpoint_update_interval is None
-        and selected_advection == case.flow.advection
-        and selected_dealiasing == case.numerics.nonlinear_dealiasing
         and selected_context_reuse == case.sgs.reuse_rhs_momentum_context
     ):
         problem = checkpoint_problem
     else:
         benchmark_case = replace(
             case,
-            flow=replace(case.flow, advection=selected_advection),
             sgs=replace(
                 case.sgs,
                 reuse_rhs_momentum_context=selected_context_reuse,
@@ -183,14 +162,10 @@ def main() -> int:
             runtime=runtime,
             pressure_tridiag=args.tridiag,
             pressure_thomas_chunk=args.thomas_chunk,
-            nonlinear_padding_ratio=args.padding_ratio,
-            nonlinear_dealiasing=selected_dealiasing,
             lasd_filter_backend=args.lasd_filter_backend,
         )
     reset_integrator_history = (
-        args.advection is not None
-        or args.dealiasing is not None
-        or args.checkpoint_update_interval is not None
+        args.checkpoint_update_interval is not None
     )
     benchmark_fields = checkpoint_state.fields
     if args.checkpoint_update_interval is not None:
@@ -272,9 +247,7 @@ def main() -> int:
                 "steps": args.steps,
                 "tridiag": args.tridiag,
                 "thomas_chunk": args.thomas_chunk,
-                "padding_ratio": args.padding_ratio,
-                "dealiasing": selected_dealiasing,
-                "advection": selected_advection,
+                "nonlinear_scheme": "legacy-fortran-pre-rhs-filtering",
                 "reuse_rhs_momentum_context": selected_context_reuse,
                 "lasd_filter_backend": selected_lasd_filter_backend,
                 "update_interval_steps": case.sgs.update_interval_steps,

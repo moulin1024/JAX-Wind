@@ -15,7 +15,6 @@ velocity_m_s = 10.0
 scalar = 1.0
 
 [flow]
-advection = "conservative"
 pressure_acceleration_m_s2 = [0.0, 0.0]
 geostrophic_velocity_m_s = [10.0, 0.0]
 advection_frame_velocity_m_s = [0.0, 0.0]
@@ -54,7 +53,6 @@ thomas_chunk = 20
 cfl_warning = 0.25
 cfl_abort = 1.0
 trajectory_cfl_abort = 1.0
-nonlinear_padding_ratio = 1.5
 
 [diagnostics]
 sample_start_step = 87500

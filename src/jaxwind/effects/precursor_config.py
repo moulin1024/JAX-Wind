@@ -42,6 +42,7 @@ class PrecursorPlaybackConfig:
 
     section: str = "inflow"
     buffer_samples: int = 16
+    spanwise_shift_cells: int = 0
 
     def __post_init__(self) -> None:
         if self.section not in SECTION_NAMES:
@@ -52,6 +53,11 @@ class PrecursorPlaybackConfig:
             or self.buffer_samples <= 0
         ):
             raise ValueError("precursor playback buffer must be a positive integer")
+        if (
+            isinstance(self.spanwise_shift_cells, bool)
+            or not isinstance(self.spanwise_shift_cells, int)
+        ):
+            raise TypeError("precursor spanwise shift must be an integer cell count")
 
 
 __all__ = ["PrecursorPlaybackConfig", "PrecursorRecordingConfig", "SECTION_NAMES"]

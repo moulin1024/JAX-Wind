@@ -12,11 +12,11 @@ from applications.abl.__main__ import main
 from applications.abl.config import load_abl
 from applications.abl.evaluate import ProfileStatistics, _bulk_metrics, _write_spectra
 from jaxwind.physics import (
-    ConservativeAdvection,
     LagrangianScaleDependentDynamic,
     LagrangianScaleDependentScalarFlux,
     LinearBoussinesqBuoyancy,
     NoRotation,
+    RotationalAdvection,
 )
 
 
@@ -47,7 +47,7 @@ def test_case_uses_the_uniform_abl_schema_without_regime_selection() -> None:
 
 
 def test_case_composes_the_same_generic_solver_products() -> None:
-    assert isinstance(CASE.model.momentum.advection, ConservativeAdvection)
+    assert isinstance(CASE.model.momentum.advection, RotationalAdvection)
     assert isinstance(CASE.model.momentum.rotation, NoRotation)
     assert isinstance(CASE.model.momentum.sgs, LagrangianScaleDependentDynamic)
     assert isinstance(CASE.model.scalar_sgs, LagrangianScaleDependentScalarFlux)

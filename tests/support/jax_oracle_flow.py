@@ -34,7 +34,6 @@ from jaxwind.domain import (
 )
 from jaxwind.operators import VelocityVector
 from jaxwind.physics.dry_flow import (
-    ConservativeAdvection,
     CoriolisGeostrophic,
     FilteredNeutralLogWall,
     KinematicPressureGradient,
@@ -83,88 +82,38 @@ class OracleFlowMixin:
     def advection_tendency(
         self,
         context: OracleDryFlowContext,
-        config: ConservativeAdvection | RotationalAdvection,
+        config: RotationalAdvection,
         wall: NeutralLogWall | FilteredNeutralLogWall | None = None,
     ) -> VelocityVector:
-        if isinstance(config, RotationalAdvection):
-            velocity = context.velocity
-            dudz = context.dudz_on_faces
-            dvdz = context.dvdz_on_faces
-            if wall is not None:
-                wall_gradient = self._wall_gradient(context, wall)
-                dudz = dudz.at[0].set(wall_gradient[0])
-                dvdz = dvdz.at[0].set(wall_gradient[1])
-            convection_x = context.velocity.y.payload * (context.dudy - context.dvdx)
-            convection_x += 0.5 * (
-                velocity.z.payload[1:] * (dudz[1:] - context.dwdx_on_faces[1:])
-                + velocity.z.payload[:-1] * (dudz[:-1] - context.dwdx_on_faces[:-1])
-            )
-            convection_y = context.velocity.x.payload * (context.dvdx - context.dudy)
-            convection_y += 0.5 * (
-                velocity.z.payload[1:] * (dvdz[1:] - context.dwdy_on_faces[1:])
-                + velocity.z.payload[:-1] * (dvdz[:-1] - context.dwdy_on_faces[:-1])
-            )
-            convection_z = context.u_on_faces * (
-                context.dwdx_on_faces - dudz
-            ) + context.v_on_faces * (context.dwdy_on_faces - dvdz)
-            convection_z = convection_z.at[0].set(0.0).at[-1].set(0.0)
-            return _oracle_tendency(
-                context,
-                -convection_x,
-                -convection_y,
-                -convection_z,
-            )
-        if not isinstance(config, ConservativeAdvection):
+        if not isinstance(config, RotationalAdvection):
             raise TypeError("unsupported reference advection choice")
         velocity = context.velocity
-        grid = velocity.x.ownership.grid
-        u = velocity.x.payload
-        v = velocity.y.payload
-        w = velocity.z.payload
-        vertical_u_flux = _padded_product(w, context.u_on_faces, grid=grid)
-        vertical_v_flux = _padded_product(w, context.v_on_faces, grid=grid)
-        x_tendency = -(
-            _horizontal_derivative(
-                _padded_product(u, u, grid=grid), grid=grid, axis="x"
-            )
-            + _horizontal_derivative(
-                _padded_product(v, u, grid=grid), grid=grid, axis="y"
-            )
-            + (vertical_u_flux[1:] - vertical_u_flux[:-1]) / grid.dz
+        dudz = context.dudz_on_faces
+        dvdz = context.dvdz_on_faces
+        if wall is not None:
+            wall_gradient = self._wall_gradient(context, wall)
+            dudz = dudz.at[0].set(wall_gradient[0])
+            dvdz = dvdz.at[0].set(wall_gradient[1])
+        convection_x = context.velocity.y.payload * (context.dudy - context.dvdx)
+        convection_x += 0.5 * (
+            velocity.z.payload[1:] * (dudz[1:] - context.dwdx_on_faces[1:])
+            + velocity.z.payload[:-1] * (dudz[:-1] - context.dwdx_on_faces[:-1])
         )
-        y_tendency = -(
-            _horizontal_derivative(
-                _padded_product(u, v, grid=grid), grid=grid, axis="x"
-            )
-            + _horizontal_derivative(
-                _padded_product(v, v, grid=grid), grid=grid, axis="y"
-            )
-            + (vertical_v_flux[1:] - vertical_v_flux[:-1]) / grid.dz
+        convection_y = context.velocity.x.payload * (context.dvdx - context.dudy)
+        convection_y += 0.5 * (
+            velocity.z.payload[1:] * (dvdz[1:] - context.dwdy_on_faces[1:])
+            + velocity.z.payload[:-1] * (dvdz[:-1] - context.dwdy_on_faces[:-1])
         )
-        vertical_w_flux = _padded_product(
-            context.w_at_cells,
-            context.w_at_cells,
-            grid=grid,
+        convection_z = context.u_on_faces * (
+            context.dwdx_on_faces - dudz
+        ) + context.v_on_faces * (context.dwdy_on_faces - dvdz)
+        convection_z = convection_z.at[0].set(0.0).at[-1].set(0.0)
+        return _oracle_tendency(
+            context,
+            -convection_x,
+            -convection_y,
+            -convection_z,
         )
-        vertical_w_derivative = _cell_gradient_on_full_faces(
-            vertical_w_flux,
-            grid.dz,
-        )
-        z_tendency = -(
-            _horizontal_derivative(
-                _padded_product(context.u_on_faces, w, grid=grid),
-                grid=grid,
-                axis="x",
-            )
-            + _horizontal_derivative(
-                _padded_product(context.v_on_faces, w, grid=grid),
-                grid=grid,
-                axis="y",
-            )
-            + vertical_w_derivative
-        )
-        z_tendency = z_tendency.at[0].set(0.0).at[-1].set(0.0)
-        return _oracle_tendency(context, x_tendency, y_tendency, z_tendency)
 
     def pressure_gradient_tendency(
         self,
@@ -533,11 +482,20 @@ class OracleFlowMixin:
                 1.0,
             )
             disk_velocity = correction * disk_velocity
+            prescribed = disk.prescribed_inflow_velocity > 0.0
+            loading_velocity = (
+                disk.prescribed_inflow_velocity if prescribed else disk_velocity
+            )
+            loading_coefficient = (
+                disk.prescribed_thrust_coefficient
+                if prescribed
+                else disk.thrust_coefficient_prime
+            )
             acceleration = (
                 -0.5
-                * disk.thrust_coefficient_prime
-                * disk_velocity
-                * jnp.abs(disk_velocity)
+                * loading_coefficient
+                * loading_velocity
+                * jnp.abs(loading_velocity)
                 * kernel
             )
             source_x = source_x + acceleration * normal_x

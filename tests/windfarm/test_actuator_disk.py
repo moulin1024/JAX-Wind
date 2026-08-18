@@ -9,6 +9,7 @@ from jaxwind.windfarm import (
     DTU_10MW_ROTOR_DIAMETER_M,
     SimpleActuatorDisk,
     dtu_10mw_reference_actuator_disk,
+    dtu_10mw_prescribed_actuator_disk,
 )
 
 
@@ -72,3 +73,13 @@ def test_dtu_10mw_factory_uses_reference_geometry_and_explicit_loading() -> None
     assert disk.hub_height_m == DTU_10MW_HUB_HEIGHT_M == 119.0
     assert disk.rotor_diameter_m == DTU_10MW_ROTOR_DIAMETER_M == 178.3
     assert disk.thrust_coefficient_prime == pytest.approx(4.0 / 3.0)
+
+
+def test_dtu_10mw_prescribed_factory_matches_legacy_loading() -> None:
+    disk = dtu_10mw_prescribed_actuator_disk(x_m=1000.0, y_m=512.0)
+    lowered = disk.to_actuator_disk(scales=ScaleSystem(100.0, 10.0))
+
+    assert lowered.thrust_coefficient_prime == 0.0
+    assert lowered.prescribed_inflow_velocity == pytest.approx(1.108514881)
+    assert lowered.prescribed_thrust_coefficient == pytest.approx(0.840)
+    assert not lowered.filtered_velocity_correction or lowered.prescribed_inflow_velocity > 0.0
