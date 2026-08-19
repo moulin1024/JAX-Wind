@@ -11,6 +11,8 @@ and output effects.
   reference data for comparison.
 - [`Nieuwstadt1993`](Nieuwstadt1993/README.md) is a shear-free, buoyancy-driven
   ABL case using the same application schema and solver transition.
+- [`DTU10MWPrecursor`](DTU10MWPrecursor/README.md) contains the three-stage
+  strict-inlet DTU 10-MW AD-BEM wake benchmark.
 
 Select the appropriate application explicitly and pass the case TOML:
 
@@ -21,6 +23,7 @@ python -m applications.abl \
   cases/Andren1994/config.toml --dry-run
 python -m applications.abl \
   cases/Nieuwstadt1993/config.toml --dry-run
+python -m applications.windfarm_precursor.benchmark --dry-run
 ```
 
 JAX-Wind does not contain case names, a registry, or a universal case schema.

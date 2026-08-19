@@ -7,8 +7,15 @@ import jax.numpy as jnp
 import numpy as np
 
 from applications.windfarm_precursor.__main__ import main
+from applications.windfarm_precursor.benchmark import (
+    load_benchmark,
+    main as benchmark_main,
+)
 from applications.windfarm_precursor.replay import _legacy_force_inflow_component
 from applications.pressure_driven_lasd.config import load_case
+from tools.compare_hub_height_gaussian_wake import (
+    precursor_rotor_turbulence_intensity,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -41,8 +48,6 @@ def test_replay_dry_run_resolves_dtu_10mw_adm(capsys) -> None:
             "dtu-10mw-adm",
             "--turbine-x-m",
             "1000",
-            "--spanwise-shift-cells",
-            "31",
         ]
     ) == 0
 
@@ -52,15 +57,22 @@ def test_replay_dry_run_resolves_dtu_10mw_adm(capsys) -> None:
     assert resolved["turbine"] == "dtu-10mw-adm"
     assert resolved["thrust_coefficient_prime"] == 4.0 / 3.0
     assert resolved["turbine_x_m"] == 1000.0
-    assert resolved["spanwise_shift_cells"] == 31
+    assert resolved["compatibility"] == "strict-cuda-fortran"
+    assert resolved["inflow_enforcement"] == "legacy-overwrite"
+    assert resolved["inflow_start_plane"] == 10
+    assert resolved["inflow_end_plane"] == 20
+    assert resolved["inflow_update_steps"] == 10
+    assert resolved["spanwise_cycle_updates"] == 4
     assert resolved["main_pressure_gradient"] == "off"
 
 
-def test_replay_dry_run_accepts_explicit_main_pressure_gradient(capsys) -> None:
-    assert main(["--dry-run", "--main-pressure-gradient", "on"]) == 0
+def test_removed_nonlegacy_inlet_options_are_rejected() -> None:
+    import pytest
 
-    resolved = json.loads(capsys.readouterr().out)
-    assert resolved["main_pressure_gradient"] == "on"
+    with pytest.raises(SystemExit):
+        main(["--dry-run", "--main-pressure-gradient", "on"])
+    with pytest.raises(SystemExit):
+        main(["--dry-run", "--fringe-start-fraction", "0.75"])
 
 
 def test_legacy_inflow_blend_matches_fortran_k_plus_one_write_to_k() -> None:
@@ -129,3 +141,96 @@ def test_dtu_10mw_lasd_benchmark_matches_the_production_grid() -> None:
     assert case.sgs.update_interval_steps == 4
     assert not case.sgs.scalar_lasd_enabled
     assert case.sgs.reuse_rhs_momentum_context
+
+
+def test_dtu_10mw_adbem_benchmark_resolves_all_three_stages() -> None:
+    benchmark = load_benchmark(
+        ROOT / "cases" / "DTU10MWPrecursor" / "benchmark_adbem.toml"
+    )
+
+    grid = (
+        benchmark.case.domain.nx,
+        benchmark.case.domain.ny,
+        benchmark.case.domain.nz,
+    )
+    assert grid == (
+        128,
+        64,
+        256,
+    )
+    assert benchmark.case.time.dt_seconds == 0.1
+    assert benchmark.case.time.duration_hours == 10.0
+    assert benchmark.case.time.steps == 360_000
+    assert benchmark.precursor_steps == 36_000
+    assert benchmark.main_steps == 36_000
+    assert benchmark.turbine.model == "dtu-10mw-ad-bem"
+    assert benchmark.turbine.x_m == 1000.0
+    assert benchmark.turbine.blade_count == 3
+    assert benchmark.turbine.radial_stations == 38
+    assert benchmark.turbine.rotor_speed_rpm == 9.6
+    assert benchmark.turbine.blade_pitch_degrees == 0.0
+    assert benchmark.turbine.smearing_azimuthal_elements == 64
+    assert benchmark.turbine.body_smoothing_width_m == 96.0
+    assert benchmark.wake_model.maximum_deficit_rmse == 0.03
+
+
+def test_dtu_10mw_adbem_benchmark_dry_run_is_self_contained(
+    capsys,
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("JAXWIND_DTU10MW_FAST", raising=False)
+
+    assert benchmark_main(["--dry-run"]) == 0
+
+    resolved = json.loads(capsys.readouterr().out)
+    assert resolved["schema"] == "jaxwind.windfarm-benchmark.v1"
+    assert resolved["warmup"]["steps"] == 360_000
+    assert resolved["precursor"]["steps"] == 36_000
+    assert resolved["main"]["steps"] == 36_000
+    assert resolved["main"]["compatibility"] == "strict-cuda-fortran"
+    assert not resolved["main"]["pressure_gradient"]
+    assert not resolved["main"]["fringe"]
+    assert resolved["turbine"]["openfast_model"] == "${JAXWIND_DTU10MW_FAST}"
+    command = resolved["commands"]["precursor_main"]
+    assert command[command.index("--rotor-speed-rpm") + 1] == "9.6"
+    assert command[command.index("--blade-pitch-degrees") + 1] == "0.0"
+
+
+def test_precursor_ti_uses_the_configured_time_window(tmp_path: Path) -> None:
+    import h5py
+
+    recording = tmp_path / "precursor.h5"
+    with h5py.File(recording, "w") as archive:
+        archive.attrs["ly"] = 1.0
+        archive.attrs["lz"] = 1.0
+        archive.create_dataset("sections/name", data=np.asarray([b"inflow"]))
+        archive.create_dataset("step", data=np.asarray([0, 10, 20]))
+        archive.create_dataset("coordinates/y", data=np.asarray([0.25, 0.75]))
+        archive.create_dataset(
+            "coordinates/z_cell", data=np.asarray([0.25, 0.75])
+        )
+        velocity = np.zeros((3, 1, 3, 2, 2, 2), dtype=np.float32)
+        velocity[0, 0, 0] = 100.0
+        velocity[1, 0, 0] = 1.0
+        velocity[2, 0, 0] = 3.0
+        archive.create_dataset(
+            "velocity",
+            data=velocity,
+            chunks=(1, 1, 3, 2, 2, 2),
+        )
+
+    intensity, details = precursor_rotor_turbulence_intensity(
+        recording,
+        section="inflow",
+        dt_seconds=0.1,
+        spinup_seconds=1.0,
+        ly_m=4.0,
+        lz_m=4.0,
+        turbine_y_m=2.0,
+        hub_height_m=2.0,
+        rotor_diameter_m=5.0,
+    )
+
+    assert intensity == 0.5
+    assert details["samples"] == 2
+    assert details["time_window_seconds"] == [1.0, 2.0]

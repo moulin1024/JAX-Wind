@@ -1,4 +1,4 @@
-"""Generate an offline precursor and test its fringe-enforced main domain."""
+"""Run the strict CUDA-Fortran offline-precursor wind-farm workflow."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from pathlib import Path
 from applications.pressure_driven_lasd.config import load_case
 
 from .evaluate import evaluate
+from .legacy_inflow import STRICT_LEGACY_INFLOW
 from .replay import replay_main
 
 
@@ -33,36 +34,15 @@ def _parser() -> argparse.ArgumentParser:
         help="reuse an existing precursor HDF5 file and run only the main domain",
     )
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
-    parser.add_argument("--precursor-steps", type=int, default=4)
+    parser.add_argument("--precursor-steps", type=int, default=100)
     parser.add_argument("--main-steps", type=int)
-    parser.add_argument("--fringe-start-fraction", type=float, default=0.75)
-    parser.add_argument("--fringe-relaxation-seconds", type=float, default=1.0)
-    parser.add_argument(
-        "--inflow-enforcement",
-        choices=("fringe", "legacy-overwrite"),
-        default="fringe",
-    )
-    parser.add_argument("--legacy-inflow-update-steps", type=int, default=8)
-    parser.add_argument(
-        "--main-pressure-gradient",
-        choices=("on", "off"),
-        default="off",
-        help="pressure forcing in the inlet-enforced main domain (default: off)",
-    )
     parser.add_argument(
         "--legacy-inflow-directory",
         type=Path,
         help="directory containing p000_inflow_[uvw].bin from legacy Fortran",
     )
-    parser.add_argument("--section", choices=("inflow", "outflow"), default="inflow")
-    parser.add_argument("--sample-buffer", type=int, default=512)
-    parser.add_argument("--read-buffer", type=int, default=512)
-    parser.add_argument(
-        "--spanwise-shift-cells",
-        type=int,
-        default=0,
-        help="cyclic y-grid shift applied to every fringe target plane",
-    )
+    parser.add_argument("--sample-buffer", type=int, default=8)
+    parser.add_argument("--read-buffer", type=int, default=8)
     parser.add_argument("--frames", type=int, default=100)
     parser.add_argument("--gif-fps", type=int, default=12)
     parser.add_argument(
@@ -76,6 +56,12 @@ def _parser() -> argparse.ArgumentParser:
         help="OpenFAST .fst deck used by dtu-10mw-ad-bem",
     )
     parser.add_argument("--rotor-speed-rpm", type=float)
+    parser.add_argument(
+        "--ad-bem-smearing-azimuthal-elements",
+        type=int,
+        default=64,
+        help="virtual azimuthal element count in the legacy ADMR width formula",
+    )
     parser.add_argument("--blade-pitch-degrees", type=float)
     parser.add_argument("--nacelle-drag-coefficient", type=float, default=1.0)
     parser.add_argument("--tower-drag-coefficient", type=float, default=1.0)
@@ -85,7 +71,14 @@ def _parser() -> argparse.ArgumentParser:
         type=float,
         help="streamwise turbine position; defaults to the domain midpoint",
     )
-    parser.add_argument("--disk-smoothing-width-m", type=float)
+    parser.add_argument(
+        "--disk-smoothing-width-m",
+        type=float,
+        help=(
+            "fixed width for the simple ADM; retained only as actuator-line "
+            "metadata for AD-BEM, whose width follows the legacy element-size formula"
+        ),
+    )
     parser.add_argument(
         "--body-smoothing-width-m",
         type=float,
@@ -104,6 +97,7 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     case = load_case(args.config)
+    contract = STRICT_LEGACY_INFLOW
     main_steps = args.precursor_steps if args.main_steps is None else args.main_steps
     resolved = {
         "case": case.name,
@@ -111,18 +105,19 @@ def main(argv: list[str] | None = None) -> int:
         "output": str(args.output),
         "precursor_steps": args.precursor_steps,
         "main_steps": main_steps,
-        "fringe_start_fraction": args.fringe_start_fraction,
-        "fringe_relaxation_seconds": args.fringe_relaxation_seconds,
-        "inflow_enforcement": args.inflow_enforcement,
-        "legacy_inflow_update_steps": args.legacy_inflow_update_steps,
-        "main_pressure_gradient": args.main_pressure_gradient,
+        "compatibility": "strict-cuda-fortran",
+        "inflow_enforcement": "legacy-overwrite",
+        "inflow_start_plane": contract.start_plane,
+        "inflow_end_plane": contract.end_plane,
+        "inflow_update_steps": contract.update_interval_steps,
+        "spanwise_cycle_updates": contract.cycle_interval_updates,
+        "main_pressure_gradient": "off",
         "legacy_inflow_directory": (
             None if args.legacy_inflow_directory is None else str(args.legacy_inflow_directory)
         ),
-        "section": args.section,
+        "section": "inflow",
         "sample_buffer": args.sample_buffer,
         "read_buffer": args.read_buffer,
-        "spanwise_shift_cells": args.spanwise_shift_cells,
         "frames": args.frames,
         "gif_fps": args.gif_fps,
         "compression": args.compression,
@@ -134,6 +129,9 @@ def main(argv: list[str] | None = None) -> int:
         "body_smoothing_width_m": args.body_smoothing_width_m,
         "openfast_model": None if args.openfast_model is None else str(args.openfast_model),
         "rotor_speed_rpm": args.rotor_speed_rpm,
+        "ad_bem_smearing_azimuthal_elements": (
+            args.ad_bem_smearing_azimuthal_elements
+        ),
         "blade_pitch_degrees": args.blade_pitch_degrees,
         "nacelle_drag_coefficient": args.nacelle_drag_coefficient,
         "tower_drag_coefficient": args.tower_drag_coefficient,
@@ -201,6 +199,9 @@ def main(argv: list[str] | None = None) -> int:
             smoothing_width_m=smoothing_width_m,
             hub_height_m=rotor.hub_height_m,
             rotor_speed_rpm=args.rotor_speed_rpm,
+            smearing_azimuthal_elements=(
+                args.ad_bem_smearing_azimuthal_elements
+            ),
             pitch_degrees=args.blade_pitch_degrees,
             body_smoothing_width_m=args.body_smoothing_width_m,
             nacelle_drag_coefficient=args.nacelle_drag_coefficient,
@@ -213,15 +214,8 @@ def main(argv: list[str] | None = None) -> int:
             recording=args.recording,
             output_dir=args.output,
             main_steps=main_steps,
-            fringe_start_fraction=args.fringe_start_fraction,
-            fringe_relaxation_seconds=args.fringe_relaxation_seconds,
-            inflow_enforcement=args.inflow_enforcement,
-            legacy_inflow_update_steps=args.legacy_inflow_update_steps,
-            main_pressure_gradient=args.main_pressure_gradient,
             legacy_inflow_directory=args.legacy_inflow_directory,
-            section=args.section,
             read_buffer=args.read_buffer,
-            spanwise_shift_cells=args.spanwise_shift_cells,
             frame_count=args.frames,
             gif_fps=args.gif_fps,
             turbine=turbine,
@@ -234,12 +228,8 @@ def main(argv: list[str] | None = None) -> int:
         output_dir=args.output,
         precursor_steps=args.precursor_steps,
         main_steps=main_steps,
-        fringe_start_fraction=args.fringe_start_fraction,
-        fringe_relaxation_seconds=args.fringe_relaxation_seconds,
-        section=args.section,
         sample_buffer=args.sample_buffer,
         read_buffer=args.read_buffer,
-        spanwise_shift_cells=args.spanwise_shift_cells,
         compression=None if args.compression == "none" else args.compression,
         frame_count=args.frames,
         gif_fps=args.gif_fps,

@@ -125,24 +125,24 @@ def test_run_precursor_buffers_pre_step_sections_in_one_hdf5_file(tmp_path) -> N
 
     assert final.clock.step == 7
     with h5py.File(path, "r") as recording:
-        assert recording.attrs["schema"] == "jaxwind.precursor-sections.v1"
+        assert recording.attrs["schema"] == "jaxwind.precursor-sections.v2"
         assert recording.attrs["storage"] == "single-file"
         assert bool(recording.attrs["complete"])
         np.testing.assert_array_equal(recording["step"], [4, 6])
         np.testing.assert_allclose(recording["time"], [2.0, 3.0])
-        assert recording["velocity"].shape == (2, 2, 3, 4, 3)
-        assert recording["scalar"].shape == (2, 2, 4, 3)
+        assert recording["velocity"].shape == (2, 2, 3, 4, 3, 1)
+        assert recording["scalar"].shape == (2, 2, 4, 3, 1)
         grid = _state(runtime, 4).fields.velocity.x.regions[0].grid
         initial_u = _global_value(grid, 4, 0.0)
         np.testing.assert_array_equal(
-            recording["velocity"][0, 0, 0], initial_u[:, :, 0]
+            recording["velocity"][0, 0, 0, ..., 0], initial_u[:, :, 0]
         )
         np.testing.assert_array_equal(
-            recording["velocity"][0, 1, 0], initial_u[:, :, -1]
+            recording["velocity"][0, 1, 0, ..., 0], initial_u[:, :, -1]
         )
         initial_scalar = _global_value(grid, 4, 3_000.0)
         np.testing.assert_array_equal(
-            recording["scalar"][0, 0], initial_scalar[:, :, 0]
+            recording["scalar"][0, 0, ..., 0], initial_scalar[:, :, 0]
         )
 
 
@@ -187,14 +187,14 @@ def test_rank_shards_publish_a_global_virtual_dataset_catalog(
     with h5py.File(path, "r") as catalog:
         assert catalog.attrs["storage"] == "virtual-dataset-catalog"
         assert catalog["velocity"].is_virtual
-        assert catalog["velocity"].shape == (1, 2, 3, 4, 3)
+        assert catalog["velocity"].shape == (1, 2, 3, 4, 3, 1)
         grid = _state(runtimes[0], 8).fields.velocity.x.regions[0].grid
         expected = _global_value(grid, 8, 0.0)
         np.testing.assert_array_equal(
-            catalog["velocity"][0, 0, 0], expected[:, :, 0]
+            catalog["velocity"][0, 0, 0, ..., 0], expected[:, :, 0]
         )
         np.testing.assert_array_equal(
-            catalog["velocity"][0, 1, 0], expected[:, :, -1]
+            catalog["velocity"][0, 1, 0, ..., 0], expected[:, :, -1]
         )
         assert sorted(catalog["shards"]) == [
             "process_00000",
@@ -260,6 +260,64 @@ def test_playback_applies_a_periodic_spanwise_shift(tmp_path) -> None:
     grid = main.fields.velocity.x.regions[0].grid
     expected = _global_value(grid, 4, 0.0)[:, :, 0]
     np.testing.assert_array_equal(target, np.roll(expected[None, ...], 1, axis=-1))
+
+
+def test_multiplane_sections_preserve_distinct_x_values_and_sample_cadence(
+    tmp_path,
+) -> None:
+    runtime = _runtime(processes=1, process=0)
+    path = tmp_path / "slab.h5"
+    config = PrecursorRecordingConfig(
+        sample_every=2,
+        section_width=2,
+        inflow_start_index=1,
+    )
+    with HDF5PrecursorRecorder(path, runtime=runtime, config=config) as recorder:
+        for step in range(4, 8):
+            recorder.record(_state(runtime, step))
+
+    with h5py.File(path, "r") as recording:
+        assert int(recording.attrs["sample_every"]) == 2
+        assert int(recording.attrs["section_width"]) == 2
+        np.testing.assert_array_equal(recording["step"], [4, 6])
+        np.testing.assert_array_equal(recording["sections/x_index"], [[1, 2], [2, 3]])
+        grid = _state(runtime, 4).fields.velocity.x.regions[0].grid
+        expected = _global_value(grid, 4, 0.0)
+        np.testing.assert_array_equal(
+            recording["velocity"][0, 0, 0], expected[:, :, 1:3]
+        )
+
+    main = _state(runtime, 5)
+    with HDF5PrecursorPlayback(path, runtime=runtime, state=main) as playback:
+        assert playback.covered_steps == 4
+        target = playback.environment(main).velocity.x.payload
+    expected = _global_value(grid, 4, 0.0)[:, :, 1:3]
+    np.testing.assert_array_equal(target[..., :2], expected[None, ...])
+    np.testing.assert_array_equal(target[..., 2:], 0.0)
+
+
+def test_compiled_style_batch_accepts_nonunit_recording_cadence(tmp_path) -> None:
+    runtime = _runtime(processes=1, process=0)
+    path = tmp_path / "compiled-cadence.h5"
+    config = PrecursorRecordingConfig(sample_every=2, buffer_samples=2)
+    state = _state(runtime, 4)
+    with HDF5PrecursorRecorder(path, runtime=runtime, config=config) as recorder:
+        velocity, scalar = recorder._initialize(state)
+        first = recorder._extract_sections(velocity, scalar)
+        velocity_6, scalar_6 = recorder._extract_sections(
+            _state(runtime, 6).fields.velocity,
+            _state(runtime, 6).fields.potential_temperature,
+        )
+        recorder.record_batch(
+            state,
+            np.stack((first[0], velocity_6)),
+            np.stack((first[1], scalar_6)),
+            steps=np.asarray((4, 6)),
+            times=np.asarray((2.0, 3.0)),
+        )
+
+    with h5py.File(path, "r") as recording:
+        np.testing.assert_array_equal(recording["step"], [4, 6])
 
 
 def test_main_runner_supplies_each_clock_matched_environment(tmp_path) -> None:

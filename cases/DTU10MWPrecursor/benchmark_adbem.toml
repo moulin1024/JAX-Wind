@@ -1,0 +1,104 @@
+[case]
+name = "dtu10mw_adbem_strict_inlet_benchmark_128x64x256"
+
+[domain]
+nx = 128
+ny = 64
+nz = 256
+lx_m = 4096.0
+ly_m = 1024.0
+lz_m = 1024.0
+
+[flow]
+friction_velocity_m_s = 0.4
+roughness_length_m = 0.001
+forcing_height_m = 1024.0
+von_karman = 0.4
+initial_perturbation_rms_m_s = 0.1
+initial_correlation_length_m = 32.0
+
+[wall]
+filter_grid_ratio = 1.5
+test_filter_ratio = 2.0
+porte_agel_correction = true
+
+[sgs]
+closure = "lasd"
+static_coefficient = 0.16
+turbulent_prandtl = 0.4
+update_interval_steps = 4
+filter_grid_ratio = 1.5
+test_filter_ratio = 2.0
+timescale_coefficient = 1.5
+initial_coefficient = 0.03
+minimum_coefficient = 1.0e-6
+maximum_coefficient = 0.81
+scalar_lasd_enabled = false
+reuse_rhs_momentum_context = true
+lasd_filter_backend = "cufft"
+
+[time]
+dt_seconds = 0.1
+duration_hours = 10.0
+
+[numerics]
+dtype = "float32"
+pressure_method = "transpose"
+pressure_tridiag = "pcr"
+pressure_thomas_chunk = 1
+seed = 2025
+cfl_abort = 0.5
+lasd_trajectory_cfl_abort = 1.0
+
+[output]
+directory = "outputs/dtu10mw_adbem_benchmark/warmup"
+log_every_steps = 1000
+sample_start_hours = 9.0
+sample_every_steps = 1000
+checkpoint_every_steps = 36000
+
+[execution]
+overwrite = false
+
+[benchmark]
+schema = "jaxwind.windfarm-benchmark.v1"
+output_directory = "outputs/dtu10mw_adbem_benchmark/precursor_main"
+precursor_duration_hours = 1.0
+main_duration_hours = 1.0
+sample_buffer = 8
+read_buffer = 8
+compression = "none"
+frame_count = 100
+gif_fps = 12
+
+[benchmark.compatibility]
+mode = "strict-cuda-fortran"
+inflow_start_plane = 10
+inflow_end_plane = 20
+inflow_update_steps = 10
+spanwise_cycle_updates = 4
+main_pressure_gradient = false
+fringe = false
+
+[benchmark.turbine]
+model = "dtu-10mw-ad-bem"
+openfast_model_environment = "JAXWIND_DTU10MW_FAST"
+x_m = 1000.0
+hub_height_m = 117.76719422649163
+rotor_diameter_m = 178.4
+blade_count = 3
+radial_stations = 38
+rotor_speed_rpm = 9.6
+blade_pitch_degrees = 0.0
+smearing_azimuthal_elements = 64
+body_smoothing_width_m = 96.0
+nacelle_drag_coefficient = 1.0
+tower_drag_coefficient = 1.0
+
+[benchmark.wake_model]
+thrust_coefficient = 0.75
+spinup_seconds = 600.0
+fit_min_d = 4.0
+fit_max_d = 10.0
+maximum_deficit_rmse = 0.03
+maximum_expansion_rate_relative_error = 0.15

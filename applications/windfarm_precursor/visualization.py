@@ -72,11 +72,11 @@ def write_flow_gif(
     elapsed_seconds: list[float],
     *,
     grid: Any,
-    fringe_start_x_m: float,
+    inlet_end_x_m: float,
     fps: int,
     turbine: Any | None = None,
 ) -> Path:
-    """Render fixed-scale X--Z streamwise velocity with the fringe annotated."""
+    """Render fixed-scale X--Z velocity with the legacy inlet annotated."""
 
     if not frames or len(frames) != len(elapsed_seconds):
         raise ValueError("flow frames and elapsed times must be nonempty and aligned")
@@ -104,17 +104,17 @@ def write_flow_gif(
         vmin=vmin,
         vmax=vmax,
     )
-    axis.axvspan(fringe_start_x_m, grid.lx, color="white", alpha=0.12)
+    axis.axvspan(0.0, inlet_end_x_m, color="white", alpha=0.12)
     axis.axvline(
-        fringe_start_x_m,
+        inlet_end_x_m,
         color="white",
         linestyle="--",
         linewidth=1.2,
     )
     axis.text(
-        0.5 * (fringe_start_x_m + grid.lx),
+        0.5 * inlet_end_x_m,
         0.96 * grid.lz,
-        "offline precursor fringe",
+        "legacy precursor inlet",
         color="white",
         ha="center",
         va="top",
@@ -156,7 +156,7 @@ def write_flow_gif(
     def update(index: int):
         image.set_data(values[index])
         title.set_text(
-            "Fringe-enforced main domain, centre-y X–Z plane\n"
+            "Legacy-inlet main domain, centre-y X–Z plane\n"
             f"elapsed time = {elapsed_seconds[index] / 60.0:.1f} min"
         )
         return image, title

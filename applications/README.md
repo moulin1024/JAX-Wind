@@ -20,6 +20,9 @@ python -m applications.windfarm_precursor --dry-run
 ```
 
 `windfarm_precursor` starts from a developed pressure-driven LASD checkpoint,
-records rank-local HDF5 inflow/outflow planes, and runs a second main domain
-whose downstream fringe replays the recorded inflow at the same accepted
-clock.
+records rank-local 11-plane HDF5 inflow/outflow slabs every 10 steps, and runs
+a second main domain with the CUDA-Fortran cosine-blend/direct-overwrite inlet.
+The main pressure gradient is disabled exactly as in Fortran `sim_flag = 3`.
+The complete warmup/precursor/main AD-BEM benchmark is configured by
+[`cases/DTU10MWPrecursor/benchmark_adbem.toml`](../cases/DTU10MWPrecursor/benchmark_adbem.toml)
+and launched with `python -m applications.windfarm_precursor.benchmark`.

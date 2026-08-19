@@ -1,4 +1,4 @@
-"""Offline precursor generation and fringe-enforced main simulation."""
+"""Strict CUDA-Fortran offline precursor and inlet-enforced main simulation."""
 
 from .evaluate import evaluate
 

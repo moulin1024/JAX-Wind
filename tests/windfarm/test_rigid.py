@@ -189,6 +189,12 @@ def test_lowers_openfast_si_data_to_execution_units(tmp_path: Path) -> None:
     assert disk.element_chords == line.element_chords
     assert disk.tilt_degrees == 0.0
     assert disk.precone_degrees == 0.0
+    assert disk.smearing_azimuthal_elements == 64
+    expected_widths = tuple(
+        math.hypot(radius * 2.0 * math.pi / 64.0, width)
+        for radius, width in zip(disk.element_radii, disk.element_widths)
+    )
+    assert disk.element_smoothing_widths == pytest.approx(expected_widths)
 
     configured = RigidBladeElementDisk(
         rotor=turbine,
@@ -196,6 +202,9 @@ def test_lowers_openfast_si_data_to_execution_units(tmp_path: Path) -> None:
         y_m=100.0,
         smoothing_width_m=4.0,
         hub_height_m=turbine.hub_height_m,
+    )
+    assert configured.element_smoothing_widths_m == pytest.approx(
+        tuple(value * 100.0 for value in expected_widths)
     )
     body = configured.to_nacelle_tower(scales=scales)
     assert body.nacelle_length == 0.15

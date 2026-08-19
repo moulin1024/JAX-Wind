@@ -188,9 +188,9 @@ discovery and is never imported or linked by JAX-Wind.
 ## Offline precursor sections
 
 A developed checkpoint can be advanced as a standalone precursor while its
-inflow and outflow planes are recorded in HDF5. The initial state must retain
-its previous AB2 tendency, so recording starts without an Euler cold-start
-step:
+inflow and outflow x-normal sections are recorded in HDF5. The initial state
+must retain its previous AB2 tendency, so recording starts without an Euler
+cold-start step:
 
 ```python
 from jaxwind.effects import PrecursorRecordingConfig, run_precursor
@@ -202,17 +202,20 @@ state = run_precursor(
     path="outputs/precursor.h5",
     runtime=solver.runtime,
     recording=PrecursorRecordingConfig(
-        sample_every=1,
-        buffer_samples=16,
+        sample_every=10,
+        buffer_samples=8,
+        section_width=11,
+        inflow_start_index=9,
         compression=None,
     ),
 )
 ```
 
 Each sample is the accepted pre-step state. `/velocity` has layout
-`(sample, section, component, z, y)`, with sections `inflow` and `outflow` at
-x indices `0` and `nx - 1`; `/scalar`, `/step`, `/time`, and staggered
-coordinates are stored alongside it.
+`(sample, section, component, z, y, x_section)`. The generic defaults record
+one plane; the strict Fortran workflow records the distinct 11-plane slab at
+one-based planes 10--20. `/scalar`, `/step`, `/time`, and staggered coordinates
+are stored alongside it.
 
 On one process, the requested path is the data file. On multiple processes,
 each rank writes only its owned z slab to
@@ -237,9 +240,19 @@ JAX_PLATFORMS=cuda XLA_PYTHON_CLIENT_PREALLOCATE=false \
 
 The workflow reloads the developed checkpoint for both domains, writes
 `precursor.h5` and `precursor_final.npz`, then replays the clock-matched inflow
-plane through a downstream fringe and writes `main_final.npz`. Playback reads
-each rank's local shard in time chunks and broadcasts the two-dimensional
-plane across x on device; only the configured fringe region applies it.
+slab and writes `main_final.npz`. Playback reads each rank's local shard in
+bounded time chunks. The main run reproduces the CUDA-Fortran
+`force_inflow` operation: a cosine blend over planes 1--9, direct overwrite of
+planes 10--20 every 10 steps, and one-cell progressive spanwise cycling every
+four inlet updates. The main pressure gradient is disabled, and no downstream
+fringe or alternative inlet mode is available in this application.
+
+Here, strict compatibility means the same staggered-grid equations, operation
+ordering, spectral cutoffs, AB2/projection sequence, inlet indices, and update
+cadences as CUDA-Fortran. HDF5 replaces the legacy per-component binary files
+as the intentional I/O difference. Floating-point fields are not expected to
+be bitwise identical because JAX/XLA and the Fortran executable may choose
+different FFT, fusion, and parallel-reduction orders.
 
 ## Package structure
 

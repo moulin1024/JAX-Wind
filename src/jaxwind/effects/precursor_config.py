@@ -20,6 +20,8 @@ class PrecursorRecordingConfig:
 
     sample_every: int = 1
     buffer_samples: int = 8
+    section_width: int = 1
+    inflow_start_index: int = 0
     compression: str | None = None
     overwrite: bool = False
 
@@ -27,9 +29,16 @@ class PrecursorRecordingConfig:
         for value, name in (
             (self.sample_every, "sample interval"),
             (self.buffer_samples, "sample buffer"),
+            (self.section_width, "section width"),
         ):
             if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
                 raise ValueError(f"precursor {name} must be a positive integer")
+        if (
+            isinstance(self.inflow_start_index, bool)
+            or not isinstance(self.inflow_start_index, int)
+            or self.inflow_start_index < 0
+        ):
+            raise ValueError("precursor inflow start index must be nonnegative")
         if self.compression not in (None, "lzf", "gzip"):
             raise ValueError("precursor compression must be None, 'lzf', or 'gzip'")
         if not isinstance(self.overwrite, bool):

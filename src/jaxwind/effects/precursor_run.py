@@ -49,7 +49,8 @@ def run_main_with_precursor(
             raise ValueError("main observer steps must be sorted and unique")
     current = state
     host_step = int(state.clock.step)
-    host_time = float(state.clock.time)
+    initial_host_time = float(state.clock.time)
+    host_time = initial_host_time
     scheduled_observers = None if observer_steps is None else set(observer_steps)
     if observer is not None and (
         scheduled_observers is None or 0 in scheduled_observers
@@ -89,14 +90,20 @@ def run_main_with_precursor(
         if accepted_state_transform is not None:
             current = accepted_state_transform(current, environment, completed)
         host_step += 1
-        host_time += dt
+        host_time = initial_host_time + completed * dt
         if observer is not None and (
             scheduled_observers is None or completed in scheduled_observers
         ):
             observer(current, completed)
         if progress is not None and (
             completed == steps
-            or completed % playback.config.buffer_samples == 0
+            or completed
+            % getattr(
+                playback,
+                "progress_interval_steps",
+                playback.config.buffer_samples,
+            )
+            == 0
         ):
             progress(current, completed, steps)
     return current
@@ -145,50 +152,67 @@ def run_precursor(
             jax = runtime.jax
             compiled_blocks: dict[int, Callable[..., Any]] = {}
             recorder._initialize(current)
+            interval = recording.sample_every
+            if steps % interval:
+                raise ValueError(
+                    "compiled precursor steps must be divisible by the sample interval"
+                )
 
-            def compiled_block(count: int) -> Callable[..., Any]:
-                cached = compiled_blocks.get(count)
+            def compiled_block(sample_count: int) -> Callable[..., Any]:
+                cached = compiled_blocks.get(sample_count)
                 if cached is not None:
                     return cached
 
                 def block(current_state):
-                    def body(carry, _unused):
+                    def sample_body(carry, _unused):
                         velocity, scalar = _state_payloads(carry)
                         sections = recorder._extract_sections(velocity, scalar)
-                        next_state = advance(
+
+                        def step_body(_index, state_at_step):
+                            return advance(
+                                state_at_step,
+                                compute_projection_residual=(
+                                    compute_projection_residual
+                                ),
+                            ).state
+
+                        next_state = jax.lax.fori_loop(
+                            0,
+                            interval,
+                            step_body,
                             carry,
-                            compute_projection_residual=(
-                                compute_projection_residual
-                            ),
-                        ).state
+                        )
                         return next_state, sections
 
                     return jax.lax.scan(
-                        body,
+                        sample_body,
                         current_state,
                         xs=None,
-                        length=count,
+                        length=sample_count,
                     )
 
                 cached = jax.jit(block)
-                compiled_blocks[count] = cached
+                compiled_blocks[sample_count] = cached
                 return cached
 
             completed = 0
             while completed < steps:
-                count = min(recording.buffer_samples, steps - completed)
+                remaining_samples = (steps - completed) // interval
+                sample_count = min(recording.buffer_samples, remaining_samples)
+                physical_count = sample_count * interval
                 block_start = current
-                current, sections = compiled_block(count)(current)
+                current, sections = compiled_block(sample_count)(current)
                 velocity, scalar = sections
                 block_steps = np.arange(
                     host_step,
-                    host_step + count,
+                    host_step + physical_count,
+                    interval,
                     dtype=np.int64,
                 )
-                block_times = np.empty(count, dtype=np.float64)
-                for index in range(count):
-                    block_times[index] = host_time
-                    host_time += dt
+                block_times = host_time + np.arange(
+                    sample_count,
+                    dtype=np.float64,
+                ) * (interval * dt)
                 recorder.record_batch(
                     block_start,
                     velocity,
@@ -196,8 +220,9 @@ def run_precursor(
                     steps=block_steps,
                     times=block_times,
                 )
-                host_step += count
-                completed += count
+                host_step += physical_count
+                host_time += physical_count * dt
+                completed += physical_count
                 if progress is not None:
                     progress(current, completed, steps)
     finalize_precursor_recording(

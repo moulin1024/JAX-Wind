@@ -8,7 +8,7 @@ case_file="cases/DTU10MWPrecursor/config_optimized.toml"
 warmup_dir="outputs/dtu10mw_warmup_optimized_cufft_lasd4_128x64x256"
 latest_checkpoint="$warmup_dir/checkpoint_latest.npz"
 final_checkpoint="$warmup_dir/checkpoint_final.npz"
-chain_output="outputs/dtu10mw_adbem_main_shift31_optimized_cufft_lasd4_1h_x1000_128x64x256"
+chain_output="outputs/dtu10mw_adbem_strict_fortran_inlet_optimized_1h_x1000_128x64x256"
 python_executable="${JAXWIND_PYTHON:-python}"
 openfast_model="${JAXWIND_DTU10MW_FAST:-}"
 
@@ -42,19 +42,16 @@ echo "optimized_precursor_started_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     --output "$chain_output" \
     --precursor-steps 18000 \
     --main-steps 18000 \
-    --fringe-start-fraction 0.75 \
-    --fringe-relaxation-seconds 4.0 \
-    --section inflow \
-    --sample-buffer 128 \
-    --read-buffer 128 \
-    --spanwise-shift-cells 31 \
+    --sample-buffer 8 \
+    --read-buffer 8 \
     --compression none \
     --frames 100 \
     --gif-fps 12 \
     --turbine dtu-10mw-ad-bem \
     --openfast-model "$openfast_model" \
     --turbine-x-m 1000 \
-    --disk-smoothing-width-m 32.0 \
+    --rotor-speed-rpm 9.6 \
+    --ad-bem-smearing-azimuthal-elements 64 \
     --overwrite
 
 echo "optimized_chain_completed_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"

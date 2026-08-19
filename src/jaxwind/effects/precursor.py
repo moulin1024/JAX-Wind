@@ -19,7 +19,7 @@ from .precursor_config import SECTION_NAMES
 from .runtime import JaxRuntime
 
 
-SCHEMA = "jaxwind.precursor-sections.v1"
+SCHEMA = "jaxwind.precursor-sections.v2"
 VELOCITY_COMPONENTS = ("u", "v", "w")
 _TARGET_CHUNK_BYTES = 32 * 1024 * 1024
 
@@ -127,7 +127,7 @@ def _chunk_samples(
 
 
 class HDF5PrecursorRecorder:
-    """Append local planes to a rank shard without gathering global fields."""
+    """Append local x-normal slabs to a rank shard without global gathers."""
 
     def __init__(
         self,
@@ -187,6 +187,18 @@ class HDF5PrecursorRecorder:
         )
 
         grid = layout.grid
+        width = self.config.section_width
+        inflow_start = self.config.inflow_start_index
+        if inflow_start + width > grid.nx:
+            raise ValueError("precursor inflow section exceeds the x domain")
+        if width > grid.nx:
+            raise ValueError("precursor section width exceeds the x domain")
+        section_indices = np.stack(
+            (
+                np.arange(inflow_start, inflow_start + width, dtype=np.int64),
+                np.arange(grid.nx - width, grid.nx, dtype=np.int64),
+            )
+        )
         attrs = handle.attrs
         attrs["schema"] = SCHEMA
         attrs["storage"] = (
@@ -195,7 +207,7 @@ class HDF5PrecursorRecorder:
         attrs["complete"] = False
         attrs["snapshot_semantics"] = "pre-step accepted state"
         attrs["value_units"] = "solver execution units"
-        attrs["layout"] = "sample,section,component,z_local,y"
+        attrs["layout"] = "sample,section,component,z_local,y,x_section"
         attrs["process_index"] = self.runtime.process_index
         attrs["process_count"] = self.runtime.process_count
         attrs["global_devices"] = self.runtime.global_devices
@@ -203,6 +215,8 @@ class HDF5PrecursorRecorder:
         attrs["backend"] = self.runtime.backend
         attrs["sample_every"] = self.config.sample_every
         attrs["buffer_samples"] = self.config.buffer_samples
+        attrs["section_width"] = width
+        attrs["inflow_start_index"] = inflow_start
         attrs["compression"] = self.config.compression or "none"
         attrs["nx"] = grid.nx
         attrs["ny"] = grid.ny
@@ -225,10 +239,10 @@ class HDF5PrecursorRecorder:
             "name", data=np.asarray(SECTION_NAMES, dtype=strings), dtype=strings
         )
         sections.create_dataset(
-            "x_index", data=np.asarray((0, grid.nx - 1), dtype=np.int64)
+            "x_index", data=section_indices
         )
         sections.create_dataset(
-            "x", data=(np.asarray((0, grid.nx - 1)) + 0.5) * grid.dx
+            "x", data=(section_indices + 0.5) * grid.dx
         )
         coordinates = handle.create_group("coordinates")
         coordinates.create_dataset(
@@ -276,7 +290,7 @@ class HDF5PrecursorRecorder:
         velocity_dtype = np.dtype(velocity.x.payload.dtype)
         velocity_chunk = _chunk_samples(
             itemsize=velocity_dtype.itemsize,
-            values_per_section=3 * layout.local_nz * grid.ny,
+            values_per_section=3 * layout.local_nz * grid.ny * width,
             buffer_samples=self.config.buffer_samples,
         )
         dataset_options = {
@@ -285,9 +299,16 @@ class HDF5PrecursorRecorder:
         }
         handle.create_dataset(
             "velocity",
-            shape=(0, len(SECTION_NAMES), 3, layout.local_nz, grid.ny),
-            maxshape=(None, len(SECTION_NAMES), 3, layout.local_nz, grid.ny),
-            chunks=(velocity_chunk, 1, 3, layout.local_nz, grid.ny),
+            shape=(0, len(SECTION_NAMES), 3, layout.local_nz, grid.ny, width),
+            maxshape=(
+                None,
+                len(SECTION_NAMES),
+                3,
+                layout.local_nz,
+                grid.ny,
+                width,
+            ),
+            chunks=(velocity_chunk, 1, 3, layout.local_nz, grid.ny, width),
             dtype=velocity_dtype,
             **dataset_options,
         )
@@ -295,14 +316,20 @@ class HDF5PrecursorRecorder:
             scalar_dtype = np.dtype(scalar.payload.dtype)
             scalar_chunk = _chunk_samples(
                 itemsize=scalar_dtype.itemsize,
-                values_per_section=layout.local_nz * grid.ny,
+                values_per_section=layout.local_nz * grid.ny * width,
                 buffer_samples=self.config.buffer_samples,
             )
             scalar_dataset = handle.create_dataset(
                 "scalar",
-                shape=(0, len(SECTION_NAMES), layout.local_nz, grid.ny),
-                maxshape=(None, len(SECTION_NAMES), layout.local_nz, grid.ny),
-                chunks=(scalar_chunk, 1, layout.local_nz, grid.ny),
+                shape=(0, len(SECTION_NAMES), layout.local_nz, grid.ny, width),
+                maxshape=(
+                    None,
+                    len(SECTION_NAMES),
+                    layout.local_nz,
+                    grid.ny,
+                    width,
+                ),
+                chunks=(scalar_chunk, 1, layout.local_nz, grid.ny, width),
                 dtype=scalar_dtype,
                 **dataset_options,
             )
@@ -340,28 +367,41 @@ class HDF5PrecursorRecorder:
         scalar: Any | None,
     ) -> tuple[Any, Any | None]:
         assert self._layout is not None
-        indices = self.runtime.jnp.asarray((0, self._layout.grid.nx - 1))
+        width = self.config.section_width
+        inflow_start = self.config.inflow_start_index
+        indices = self.runtime.jnp.stack(
+            (
+                self.runtime.jnp.arange(inflow_start, inflow_start + width),
+                self.runtime.jnp.arange(
+                    self._layout.grid.nx - width,
+                    self._layout.grid.nx,
+                ),
+            )
+        )
         components = (
             velocity.x.payload[..., indices],
             velocity.y.payload[..., indices],
             velocity.z.owned.payload[..., indices],
         )
         device_velocity = self.runtime.jnp.stack(components, axis=0)
-        # (component, device, z, y, section) -> (section, component, z_local, y)
-        device_velocity = self.runtime.jnp.moveaxis(device_velocity, -1, 0).reshape(
+        # (component, device, z, y, section, x) ->
+        # (section, component, z_local, y, x)
+        device_velocity = self.runtime.jnp.moveaxis(device_velocity, -2, 0).reshape(
             len(SECTION_NAMES),
             len(VELOCITY_COMPONENTS),
             self._layout.local_nz,
             self._layout.grid.ny,
+            width,
         )
         if scalar is None:
             return device_velocity, None
         device_scalar = scalar.payload[..., indices]
-        # (device, z, y, section) -> (section, z_local, y)
-        device_scalar = self.runtime.jnp.moveaxis(device_scalar, -1, 0).reshape(
+        # (device, z, y, section, x) -> (section, z_local, y, x)
+        device_scalar = self.runtime.jnp.moveaxis(device_scalar, -2, 0).reshape(
             len(SECTION_NAMES),
             self._layout.local_nz,
             self._layout.grid.ny,
+            width,
         )
         return device_velocity, device_scalar
 
@@ -492,14 +532,16 @@ class HDF5PrecursorRecorder:
 
         if self._closed:
             raise RuntimeError("cannot record into a closed precursor recorder")
-        if self.config.sample_every != 1:
-            raise ValueError("compiled precursor blocks require sample_every=1")
         steps = np.asarray(steps, dtype=np.int64)
         times = np.asarray(times, dtype=np.float64)
         if steps.ndim != 1 or times.shape != steps.shape or len(steps) == 0:
             raise ValueError("precursor batch clocks must be nonempty vectors")
-        if not np.all(np.diff(steps) == 1) or not np.all(np.diff(times) > 0.0):
-            raise ValueError("precursor batch clocks must be strictly consecutive")
+        if not np.all(np.diff(steps) == self.config.sample_every) or not np.all(
+            np.diff(times) > 0.0
+        ):
+            raise ValueError(
+                "precursor batch clocks must match the recording cadence"
+            )
         if self._last_clock is not None:
             if steps[0] <= self._last_clock[0] or times[0] <= self._last_clock[1]:
                 raise ValueError("precursor batch clocks are not increasing")
@@ -515,6 +557,7 @@ class HDF5PrecursorRecorder:
             len(VELOCITY_COMPONENTS),
             self._layout.local_nz,
             self._layout.grid.ny,
+            self.config.section_width,
         )
         if tuple(velocity.shape) != velocity_shape:
             raise ValueError("compiled precursor velocity batch shape is invalid")
@@ -523,12 +566,13 @@ class HDF5PrecursorRecorder:
             len(SECTION_NAMES),
             self._layout.local_nz,
             self._layout.grid.ny,
+            self.config.section_width,
         )
         if scalar is not None and tuple(scalar.shape) != scalar_shape:
             raise ValueError("compiled precursor scalar batch shape is invalid")
         self.flush()
         self._append_device_batch(velocity, scalar, steps, times)
-        self._states_seen += count
+        self._states_seen += count * self.config.sample_every
         self._last_clock = (int(steps[-1]), float(times[-1]))
 
     def close(self, *, complete: bool = True) -> None:
@@ -586,6 +630,8 @@ def _validate_shards(path: Path, runtime: JaxRuntime):
             "process_count",
             "global_devices",
             "sample_every",
+            "section_width",
+            "inflow_start_index",
             "nx",
             "ny",
             "nz",
@@ -632,14 +678,15 @@ def _create_catalog(path: Path, runtime: JaxRuntime, *, overwrite: bool) -> None
         section_count = len(SECTION_NAMES)
         nz = int(attrs["nz"])
         ny = int(attrs["ny"])
+        width = int(attrs["section_width"])
         velocity_layout = h5py.VirtualLayout(
-            shape=(sample_count, section_count, 3, nz, ny),
+            shape=(sample_count, section_count, 3, nz, ny, width),
             dtype=first["velocity"].dtype,
         )
         scalar_layout = None
         if "scalar" in first:
             scalar_layout = h5py.VirtualLayout(
-                shape=(sample_count, section_count, nz, ny),
+                shape=(sample_count, section_count, nz, ny, width),
                 dtype=first["scalar"].dtype,
             )
         for handle in handles:
@@ -649,14 +696,14 @@ def _create_catalog(path: Path, runtime: JaxRuntime, *, overwrite: bool) -> None
             velocity_source = h5py.VirtualSource(
                 filename, "velocity", shape=handle["velocity"].shape
             )
-            velocity_layout[:, :, :, z_start:z_stop, :] = velocity_source
+            velocity_layout[:, :, :, z_start:z_stop, :, :] = velocity_source
             if scalar_layout is not None:
                 if "scalar" not in handle:
                     raise ValueError("precursor scalar datasets are inconsistent")
                 scalar_source = h5py.VirtualSource(
                     filename, "scalar", shape=handle["scalar"].shape
                 )
-                scalar_layout[:, :, z_start:z_stop, :] = scalar_source
+                scalar_layout[:, :, z_start:z_stop, :, :] = scalar_source
 
         with h5py.File(temporary, "w", libver="latest") as catalog:
             for name, value in attrs.items():
@@ -664,7 +711,9 @@ def _create_catalog(path: Path, runtime: JaxRuntime, *, overwrite: bool) -> None
                     catalog.attrs[name] = value
             catalog.attrs["storage"] = "virtual-dataset-catalog"
             catalog.attrs["complete"] = True
-            catalog.attrs["layout"] = "sample,section,component,z,y"
+            catalog.attrs["layout"] = (
+                "sample,section,component,z,y,x_section"
+            )
             catalog.create_dataset("step", data=steps)
             catalog.create_dataset("time", data=times)
             first.copy("sections", catalog)
@@ -815,8 +864,12 @@ class HDF5PrecursorPlayback:
             raise ValueError("precursor playback z ownership does not match main state")
         if attrs.get("integrator_fingerprint") != self._fingerprint:
             raise ValueError("precursor playback integrator does not match main state")
-        if int(attrs.get("sample_every", -1)) != 1:
-            raise ValueError("per-step fringe playback requires sample_every=1")
+        self._sample_every = int(attrs.get("sample_every", -1))
+        if self._sample_every <= 0:
+            raise ValueError("precursor sample interval is invalid")
+        self._section_width = int(attrs.get("section_width", -1))
+        if self._section_width <= 0:
+            raise ValueError("precursor section width is invalid")
 
         names = tuple(_text(value) for value in self._file["sections/name"][:])
         if names != SECTION_NAMES:
@@ -826,8 +879,8 @@ class HDF5PrecursorPlayback:
         self._times = np.asarray(self._file["time"], dtype=np.float64)
         if self._steps.size == 0:
             raise ValueError("precursor playback contains no samples")
-        if not np.all(np.diff(self._steps) == 1):
-            raise ValueError("precursor playback steps must be contiguous")
+        if not np.all(np.diff(self._steps) == self._sample_every):
+            raise ValueError("precursor playback steps do not match its cadence")
         if not np.all(np.diff(self._times) > 0.0):
             raise ValueError("precursor playback times must be strictly increasing")
         expected_shape = (
@@ -836,6 +889,7 @@ class HDF5PrecursorPlayback:
             len(VELOCITY_COMPONENTS),
             self._layout.local_nz,
             grid.ny,
+            self._section_width,
         )
         if self._file["velocity"].shape != expected_shape:
             raise ValueError("precursor playback velocity shape is inconsistent")
@@ -852,6 +906,18 @@ class HDF5PrecursorPlayback:
     @property
     def final_step(self) -> int:
         return int(self._steps[-1])
+
+    @property
+    def covered_steps(self) -> int:
+        """Number of main steps covered when each sample is held by cadence."""
+
+        return self.sample_count * self._sample_every
+
+    @property
+    def progress_interval_steps(self) -> int:
+        """Physical steps represented by one playback cache buffer."""
+
+        return self.config.buffer_samples * self._sample_every
 
     def _planes(self, index: int) -> Any:
         return self._plane_batch(index, 1)[0]
@@ -889,18 +955,29 @@ class HDF5PrecursorPlayback:
         velocity, _scalar = _state_payloads(state)
         if _local_layout(velocity, self.runtime) != self._layout:
             raise ValueError("main layout changed during precursor playback")
-        index = step - self._first_step
+        relative_step = step - self._first_step
+        index = relative_step // self._sample_every
         if (
             count <= 0
-            or index < 0
+            or relative_step < 0
             or index + count > self.sample_count
-            or self._steps[index] != step
+            or self._steps[index] != step - relative_step % self._sample_every
         ):
             raise IndexError(f"no precursor sample exists for main step {step}")
         recorded_time = float(self._times[index])
         current_time = float(time)
+        if relative_step % self._sample_every:
+            sample_dt = (
+                float(self._times[1] - self._times[0]) / self._sample_every
+                if self.sample_count > 1
+                else 0.0
+            )
+            recorded_time += (relative_step % self._sample_every) * sample_dt
         tolerance = 32.0 * np.finfo(np.float64).eps * max(
-            1.0, abs(recorded_time), abs(current_time)
+            1.0,
+            abs(recorded_time),
+            abs(current_time),
+            abs(relative_step),
         )
         if not math.isclose(
             recorded_time,
@@ -934,26 +1011,40 @@ class HDF5PrecursorPlayback:
         state: Any,
         plane: Any,
     ) -> ConcurrentPrecursorEnvironment:
-        """Broadcast one local ``(component,z,y)`` plane over x on device."""
+        """Place one local ``(component,z,y,x_section)`` slab at inlet x."""
 
         velocity, _scalar = _state_payloads(state)
-        plane = self.runtime.jnp.roll(
+        slab = self.runtime.jnp.roll(
             plane,
             shift=self.config.spanwise_shift_cells,
-            axis=-1,
+            axis=-2,
         )
         local_shape = tuple(int(extent) for extent in velocity.x.payload.shape)
-        planes = plane.reshape(
+        slabs = slab.reshape(
             len(VELOCITY_COMPONENTS),
             local_shape[0],
             local_shape[1],
             local_shape[2],
-            1,
+            self._section_width,
         )
-        target = self.runtime.jnp.broadcast_to(
-            planes,
-            (len(VELOCITY_COMPONENTS),) + local_shape,
-        )
+        if self._section_width == 1:
+            target = self.runtime.jnp.broadcast_to(
+                slabs,
+                (len(VELOCITY_COMPONENTS),) + local_shape,
+            )
+        else:
+            target = self.runtime.jnp.concatenate(
+                (
+                    slabs,
+                    self.runtime.jnp.zeros(
+                        (len(VELOCITY_COMPONENTS),)
+                        + local_shape[:-1]
+                        + (local_shape[-1] - self._section_width,),
+                        dtype=slabs.dtype,
+                    ),
+                ),
+                axis=-1,
+            )
         target_velocity = replace(
             velocity,
             x=replace(velocity.x, payload=target[0]),

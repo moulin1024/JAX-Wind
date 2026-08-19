@@ -356,7 +356,7 @@ class ZSlabFlowMixin:
                 disk.hub_radius,
                 disk.tip_radius,
                 disk.angular_velocity,
-                disk.smoothing_width,
+                jnp.asarray(disk.element_smoothing_widths, dtype=dtype),
                 jnp.asarray(disk.element_radii, dtype=dtype),
                 jnp.asarray(disk.element_widths, dtype=dtype),
                 jnp.asarray(disk.element_chords, dtype=dtype),

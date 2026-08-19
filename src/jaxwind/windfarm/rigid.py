@@ -219,15 +219,23 @@ class RigidBladeElementDisk:
     tower_top_diameter_m: float = 5.5
     tower_drag_coefficient: float = 1.0
     body_smoothing_width_m: float | None = None
+    smearing_azimuthal_elements: int = 64
 
     model_name = "DTU-10MW azimuthally averaged AD-BEM"
+
+    def __post_init__(self) -> None:
+        if (
+            isinstance(self.smearing_azimuthal_elements, bool)
+            or self.smearing_azimuthal_elements <= 0
+        ):
+            raise ValueError("AD-BEM requires a positive azimuthal smearing count")
 
     @property
     def rotor_diameter_m(self) -> float:
         return 2.0 * self.rotor.tip_radius_m
 
     def to_actuator_disk(self, *, scales: ScaleSystem) -> BladeElementActuatorDisk:
-        return self.rotor.to_actuator_disk_bem(
+        disk = self.rotor.to_actuator_disk_bem(
             scales=scales,
             x_m=self.x_m,
             y_m=self.y_m,
@@ -236,6 +244,24 @@ class RigidBladeElementDisk:
             rotor_speed_rpm=self.rotor_speed_rpm,
             pitch_degrees=self.pitch_degrees,
             yaw_degrees=0.0,
+        )
+        values = {
+            field.name: getattr(disk, field.name)
+            for field in fields(BladeElementActuatorDisk)
+        }
+        values["smearing_azimuthal_elements"] = self.smearing_azimuthal_elements
+        return BladeElementActuatorDisk(**values)
+
+    @property
+    def element_smoothing_widths_m(self) -> tuple[float, ...]:
+        """Legacy ADMR Gaussian widths in physical units."""
+
+        angle = 2.0 * math.pi / self.smearing_azimuthal_elements
+        return tuple(
+            math.hypot(radius * angle, radial_width)
+            for radius, radial_width in zip(
+                self.rotor.element_radii_m, self.rotor.element_widths_m
+            )
         )
 
     def to_nacelle_tower(self, *, scales: ScaleSystem) -> NacelleTowerDrag:

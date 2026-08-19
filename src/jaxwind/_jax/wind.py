@@ -182,7 +182,7 @@ def build_blade_element_disk_kernel(
         hub_radius,
         tip_radius,
         angular_velocity,
-        smoothing_width,
+        element_smoothing_widths,
         element_radii,
         element_widths,
         element_chords,
@@ -199,7 +199,7 @@ def build_blade_element_disk_kernel(
         local_nz = u.shape[0]
         partition_index = lax.axis_index(axis_name)
         tiny = jnp.finfo(dtype).tiny
-        width = jnp.asarray(smoothing_width, dtype)
+        widths = jnp.asarray(element_smoothing_widths, dtype)
 
         x = (jnp.arange(grid.nx, dtype=dtype) + 0.5) * grid.dx
         y = (jnp.arange(grid.ny, dtype=dtype) + 0.5) * grid.dy
@@ -209,14 +209,22 @@ def build_blade_element_disk_kernel(
         dx = jnp.mod(x - disk_x + 0.5 * grid.lx, grid.lx) - 0.5 * grid.lx
         dy = jnp.mod(y - disk_y + 0.5 * grid.ly, grid.ly) - 0.5 * grid.ly
 
-        raw_x = jnp.exp(-(dx / width) ** 2)
-        weights_x = raw_x / jnp.maximum(jnp.sum(raw_x), tiny)
+        raw_x = jnp.exp(-(dx[None, :] / widths[:, None]) ** 2)
+        weights_x = raw_x / jnp.maximum(
+            jnp.sum(raw_x, axis=1, keepdims=True), tiny
+        )
 
         def ring_geometry(z_coordinates):
             yy = dy[None, None, :]
             zz = z_coordinates[None, :, None] - jnp.asarray(disk_z, dtype)
             radius = jnp.sqrt(yy * yy + zz * zz)
-            raw = jnp.exp(-((radius - element_radii[:, None, None]) / width) ** 2)
+            raw = jnp.exp(
+                -(
+                    (radius - element_radii[:, None, None])
+                    / widths[:, None, None]
+                )
+                ** 2
+            )
             denominator = lax.psum(jnp.sum(raw, axis=(1, 2)), axis_name)
             weights = raw / jnp.maximum(denominator[:, None, None], tiny)
             # Positive rotation points along +y at the top of the rotor.
@@ -228,10 +236,10 @@ def build_blade_element_disk_kernel(
         rings_upper, _, tangent_z_upper = ring_geometry(z_upper)
 
         sampled_u_local = jnp.einsum(
-            "rzy,x,zyx->r", rings_cell, weights_x, u, optimize="optimal"
+            "rzy,rx,zyx->r", rings_cell, weights_x, u, optimize="optimal"
         )
         sampled_vt_local = jnp.einsum(
-            "rzy,zy,x,zyx->r",
+            "rzy,zy,rx,zyx->r",
             rings_cell,
             tangent_y_cell,
             weights_x,
@@ -239,7 +247,7 @@ def build_blade_element_disk_kernel(
             optimize="optimal",
         )
         sampled_wt_local = jnp.einsum(
-            "rzy,zy,x,zyx->r",
+            "rzy,zy,rx,zyx->r",
             rings_upper,
             tangent_z_upper,
             weights_x,
@@ -285,15 +293,15 @@ def build_blade_element_disk_kernel(
         tangent_force = forces[:, 1]
         inverse_volume = 1.0 / (grid.dx * grid.dy * grid.dz)
         source_x = inverse_volume * jnp.einsum(
-            "r,rzy,x->zyx", axial_force, rings_cell, weights_x,
+            "r,rzy,rx->zyx", axial_force, rings_cell, weights_x,
             optimize="optimal",
         )
         source_y = inverse_volume * jnp.einsum(
-            "r,rzy,zy,x->zyx", tangent_force, rings_cell,
+            "r,rzy,zy,rx->zyx", tangent_force, rings_cell,
             tangent_y_cell, weights_x, optimize="optimal",
         )
         source_z = inverse_volume * jnp.einsum(
-            "r,rzy,zy,x->zyx", tangent_force, rings_upper,
+            "r,rzy,zy,rx->zyx", tangent_force, rings_upper,
             tangent_z_upper, weights_x, optimize="optimal",
         )
         source_z = source_z.at[-1].set(

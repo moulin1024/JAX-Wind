@@ -259,7 +259,17 @@ class BladeElementActuatorLine:
 
 @dataclass(frozen=True, slots=True)
 class BladeElementActuatorDisk(BladeElementActuatorLine):
-    """Azimuthally averaged blade-element disk with thrust and swirl loading."""
+    """Azimuthally averaged blade-element disk with thrust and swirl loading.
+
+    The force-projection width follows the legacy WIRE-LES ADMR convention.
+    For radial element ``i`` it is
+    ``hypot(r_i * 2*pi/N_phi, delta_r_i)``, where ``N_phi`` is the number of
+    virtual azimuthal elements used to form the disk average.  The inherited
+    scalar ``smoothing_width`` remains the actuator-line width and is not used
+    by the disk projection.
+    """
+
+    smearing_azimuthal_elements: int = 64
 
     def __post_init__(self) -> None:
         super(BladeElementActuatorDisk, self).__post_init__()
@@ -267,6 +277,11 @@ class BladeElementActuatorDisk(BladeElementActuatorLine):
             raise ValueError("AD-BEM currently supports an upright rotor axis")
         if self.yaw_degrees != 0.0:
             raise ValueError("AD-BEM currently supports zero yaw")
+        if (
+            isinstance(self.smearing_azimuthal_elements, bool)
+            or self.smearing_azimuthal_elements <= 0
+        ):
+            raise ValueError("AD-BEM requires a positive azimuthal smearing count")
         if any(
             (
                 self.element_flap_displacements,
@@ -278,6 +293,18 @@ class BladeElementActuatorDisk(BladeElementActuatorLine):
             )
         ):
             raise ValueError("AD-BEM does not accept blade deformation state")
+
+    @property
+    def element_smoothing_widths(self) -> tuple[float, ...]:
+        """Legacy ADMR Gaussian widths, one for each radial element."""
+
+        angle = 2.0 * math.pi / self.smearing_azimuthal_elements
+        return tuple(
+            math.hypot(radius * angle, radial_width)
+            for radius, radial_width in zip(
+                self.element_radii, self.element_widths
+            )
+        )
 
 
 @dataclass(frozen=True, slots=True)

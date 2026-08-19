@@ -1,9 +1,8 @@
-"""Pressure-driven offline precursor and main-domain fringe workflow."""
+"""Strict CUDA-Fortran precursor and main-domain inlet workflow."""
 
 from __future__ import annotations
 
 import json
-import math
 from pathlib import Path
 import time
 from typing import Any
@@ -19,6 +18,10 @@ from .visualization import (
     evenly_spaced_frame_offsets,
     save_flow_frames,
     write_flow_gif,
+)
+from .legacy_inflow import (
+    STRICT_LEGACY_INFLOW,
+    build_accepted_state_transform,
 )
 
 
@@ -49,15 +52,6 @@ def _save_state(path, state, problem, *, runtime, physics_fingerprint=None):
     )
 
 
-def _fringe_fingerprint(problem: PressureDrivenProblem, fringe: Any) -> str:
-    return (
-        problem.physics_fingerprint
-        + "|offline-fringe=v1"
-        + f"|start={float(fringe.start_x).hex()}"
-        + f"|relaxation={float(fringe.relaxation_time).hex()}"
-    )
-
-
 def _turbine_fingerprint(turbine: Any | None) -> str:
     if turbine is None:
         return ""
@@ -67,8 +61,9 @@ def _turbine_fingerprint(turbine: Any | None) -> str:
         f"|y={float(turbine.y_m).hex()}"
         f"|hub-height={float(turbine.hub_height_m).hex()}"
         f"|diameter={float(turbine.rotor_diameter_m).hex()}"
-        f"|epsilon={float(turbine.smoothing_width_m).hex()}"
     )
+    if not hasattr(turbine, "smearing_azimuthal_elements"):
+        value += f"|epsilon={float(turbine.smoothing_width_m).hex()}"
     if hasattr(turbine, "thrust_coefficient_prime"):
         value += f"|ct-prime={float(turbine.thrust_coefficient_prime).hex()}"
     if getattr(turbine, "prescribed_inflow_velocity_m_s", 0.0) > 0.0:
@@ -84,6 +79,13 @@ def _turbine_fingerprint(turbine: Any | None) -> str:
         speed = turbine.rotor.rotor_speed_rpm if turbine.rotor_speed_rpm is None else turbine.rotor_speed_rpm
         pitch = turbine.rotor.pitch_degrees if turbine.pitch_degrees is None else turbine.pitch_degrees
         value += f"|rpm={float(speed).hex()}|pitch={float(pitch).hex()}"
+    if hasattr(turbine, "smearing_azimuthal_elements"):
+        widths = turbine.element_smoothing_widths_m
+        value += (
+            f"|smearing-azimuthal-elements={turbine.smearing_azimuthal_elements}"
+            f"|element-epsilon-min={float(min(widths)).hex()}"
+            f"|element-epsilon-max={float(max(widths)).hex()}"
+        )
     if hasattr(turbine, "nacelle_length_m"):
         value += (
             f"|nacelle-length={float(turbine.nacelle_length_m).hex()}"
@@ -106,8 +108,9 @@ def _turbine_summary(turbine: Any | None) -> dict[str, Any] | None:
         "y_m": turbine.y_m,
         "hub_height_m": turbine.hub_height_m,
         "rotor_diameter_m": turbine.rotor_diameter_m,
-        "smoothing_width_m": turbine.smoothing_width_m,
     }
+    if not hasattr(turbine, "smearing_azimuthal_elements"):
+        result["smoothing_width_m"] = turbine.smoothing_width_m
     if hasattr(turbine, "thrust_coefficient_prime"):
         result["thrust_coefficient_prime"] = turbine.thrust_coefficient_prime
     if getattr(turbine, "prescribed_inflow_velocity_m_s", 0.0) > 0.0:
@@ -121,6 +124,14 @@ def _turbine_summary(turbine: Any | None) -> dict[str, Any] | None:
             rotor_speed_rpm=(turbine.rotor.rotor_speed_rpm if turbine.rotor_speed_rpm is None else turbine.rotor_speed_rpm),
             pitch_degrees=(turbine.rotor.pitch_degrees if turbine.pitch_degrees is None else turbine.pitch_degrees),
             openfast_source=str(turbine.rotor.source),
+        )
+    if hasattr(turbine, "smearing_azimuthal_elements"):
+        widths = turbine.element_smoothing_widths_m
+        result.update(
+            smearing_model="legacy-admr-element-size",
+            smearing_azimuthal_elements=turbine.smearing_azimuthal_elements,
+            element_smoothing_width_min_m=min(widths),
+            element_smoothing_width_max_m=max(widths),
         )
     if hasattr(turbine, "nacelle_length_m"):
         result.update(
@@ -139,10 +150,6 @@ def _turbine_summary(turbine: Any | None) -> dict[str, Any] | None:
     return result
 
 
-def _shift_fingerprint(spanwise_shift_cells: int) -> str:
-    return f"|offline-spanwise-shift-cells={spanwise_shift_cells}"
-
-
 def evaluate(
     case: CaseConfig,
     *,
@@ -150,32 +157,26 @@ def evaluate(
     output_dir: Path,
     precursor_steps: int,
     main_steps: int,
-    fringe_start_fraction: float,
-    fringe_relaxation_seconds: float,
-    section: str,
     sample_buffer: int,
     read_buffer: int,
-    spanwise_shift_cells: int,
     compression: str | None,
     frame_count: int,
     gif_fps: int,
     turbine: Any | None,
     overwrite: bool,
 ) -> dict[str, Any]:
-    """Generate offline planes, then replay them through the production fringe."""
+    """Run the strict CUDA-Fortran precursor/inlet workflow through HDF5."""
 
     if min(precursor_steps, main_steps) <= 0:
         raise ValueError("precursor and main steps must be positive")
     if main_steps > precursor_steps:
         raise ValueError("main steps cannot exceed recorded precursor steps")
+    contract = STRICT_LEGACY_INFLOW
+    if precursor_steps % contract.update_interval_steps:
+        raise ValueError(
+            "precursor steps must be divisible by the legacy inlet interval"
+        )
     frame_offsets = evenly_spaced_frame_offsets(main_steps, frame_count)
-    if not 0.0 < fringe_start_fraction < 1.0:
-        raise ValueError("fringe start fraction must lie strictly inside the domain")
-    if (
-        not math.isfinite(fringe_relaxation_seconds)
-        or fringe_relaxation_seconds <= 0.0
-    ):
-        raise ValueError("fringe relaxation time must be finite and positive")
 
     _configure_source_paths()
     import jax
@@ -190,7 +191,7 @@ def evaluate(
         run_main_with_precursor,
         run_precursor,
     )
-    from jaxwind.physics import ConcurrentPrecursorFringe, WindTunnelModel
+    from jaxwind.physics import WindTunnelModel
 
     runtime = JaxRuntime.from_initialized_jax(jax)
     local_restart = runtime.checkpoint_path(restart)
@@ -240,8 +241,10 @@ def evaluate(
         path=recording_path,
         runtime=runtime,
         recording=PrecursorRecordingConfig(
-            sample_every=1,
+            sample_every=contract.update_interval_steps,
             buffer_samples=sample_buffer,
+            section_width=contract.width,
+            inflow_start_index=contract.zero_based_start,
             compression=compression,
             overwrite=overwrite,
         ),
@@ -257,13 +260,6 @@ def evaluate(
     )
     precursor_elapsed = time.perf_counter() - started
 
-    start_x = precursor_problem.scales.to_execution_length(
-        fringe_start_fraction * case.domain.lx_m
-    )
-    relaxation_time = precursor_problem.scales.to_execution_time(
-        fringe_relaxation_seconds
-    )
-    fringe = ConcurrentPrecursorFringe(start_x, relaxation_time)
     actuator_disk = (
         turbine.to_actuator_disk(scales=precursor_problem.scales)
         if turbine is not None
@@ -275,11 +271,10 @@ def evaluate(
         else None
     )
     wind_tunnel = (
-        WindTunnelModel(fringe=fringe)
+        WindTunnelModel()
         if actuator_disk is None
         else WindTunnelModel(
             actuator_disk=actuator_disk,
-            fringe=fringe,
             **({} if turbine_body is None else {"turbine_body": turbine_body}),
         )
     )
@@ -287,6 +282,7 @@ def evaluate(
         case,
         runtime=runtime,
         wind_tunnel_model=wind_tunnel,
+        pressure_acceleration_m_s2=0.0,
     )
     main = _load_developed_state(
         main_problem,
@@ -299,9 +295,8 @@ def evaluate(
         runtime=runtime,
         state=main,
         config=PrecursorPlaybackConfig(
-            section=section,
+            section="inflow",
             buffer_samples=read_buffer,
-            spanwise_shift_cells=spanwise_shift_cells,
         ),
     ) as playback:
         initial_environment = playback.environment(main)
@@ -325,6 +320,13 @@ def evaluate(
                 frames.append(frame)
                 frame_times.append(completed * case.time.dt_seconds)
 
+        legacy_transform = build_accepted_state_transform(
+            contract=contract,
+            jax=jax,
+            jnp=jnp,
+            ny=case.domain.ny,
+        )
+
         main = run_main_with_precursor(
             main,
             steps=main_steps,
@@ -336,12 +338,20 @@ def evaluate(
             compile_step=True,
             dt=main_problem.integrator.dt,
             observer_steps=frame_offsets,
+            accepted_state_transform=legacy_transform,
         )
     main.fields.velocity.x.payload.block_until_ready()
     main_elapsed = time.perf_counter() - started - precursor_elapsed
     main_fingerprint = (
-        _fringe_fingerprint(main_problem, fringe) + _turbine_fingerprint(turbine)
-        + _shift_fingerprint(spanwise_shift_cells)
+        main_problem.physics_fingerprint
+        + "|legacy-inlet-overwrite=strict"
+        + f"|inflow-start-plane={contract.start_plane}"
+        + f"|inflow-end-plane={contract.end_plane}"
+        + f"|inflow-update-steps={contract.update_interval_steps}"
+        + f"|inflow-cycle-updates={contract.cycle_interval_updates}"
+        + "|main-pressure-acceleration-m-s2="
+        + float(0.0).hex()
+        + _turbine_fingerprint(turbine)
     )
     _save_state(
         output_dir / "main_final.npz",
@@ -364,7 +374,7 @@ def evaluate(
             frames,
             frame_times,
             grid=main_problem.physical_grid,
-            fringe_start_x_m=fringe_start_fraction * case.domain.lx_m,
+            inlet_end_x_m=contract.end_plane * case.domain.dx_m,
             fps=gif_fps,
             turbine=turbine,
         )
@@ -381,7 +391,7 @@ def evaluate(
         )
     elapsed = time.perf_counter() - started
     summary = {
-        "schema": "jaxwind.offline-precursor-main.v1",
+        "schema": "jaxwind.strict-fortran-precursor-main.v1",
         "case": case.name,
         "restart": str(restart),
         "recording": str(recording_path),
@@ -394,25 +404,27 @@ def evaluate(
             "initial_step": initial_step,
             "steps": precursor_steps,
             "final_step": int(precursor_final.clock.step),
-            "section_samples": precursor_steps,
+            "section_samples": (
+                precursor_steps // contract.update_interval_steps
+            ),
+            "section_width_planes": contract.width,
+            "sample_interval_steps": contract.update_interval_steps,
             "elapsed_seconds": precursor_elapsed,
             "steps_per_second": precursor_steps / precursor_elapsed,
         },
         "main": {
             "steps": main_steps,
             "final_step": int(main.clock.step),
-            "fringe_enabled": True,
-            "fringe_start_fraction": fringe_start_fraction,
-            "fringe_relaxation_seconds": fringe_relaxation_seconds,
-            "source_section": section,
-            "spanwise_shift_cells": spanwise_shift_cells,
-            "spanwise_shift_m": spanwise_shift_cells * case.domain.dy_m,
-            "spanwise_shift_recurrence_flowthroughs": (
-                None
-                if spanwise_shift_cells == 0
-                else case.domain.ny
-                // math.gcd(abs(spanwise_shift_cells), case.domain.ny)
-            ),
+            "compatibility": "strict-cuda-fortran",
+            "fringe_enabled": False,
+            "inflow_enforcement": "legacy-overwrite",
+            "inflow_start_plane": contract.start_plane,
+            "inflow_end_plane": contract.end_plane,
+            "inflow_update_steps": contract.update_interval_steps,
+            "spanwise_cycle_updates": contract.cycle_interval_updates,
+            "pressure_gradient_enabled": False,
+            "pressure_acceleration_m_s2": 0.0,
+            "source_section": "inflow",
             "turbine": _turbine_summary(turbine),
             "initial_local_target_delta": local_target_delta,
             "local_difference_from_unforced_precursor": comparison,

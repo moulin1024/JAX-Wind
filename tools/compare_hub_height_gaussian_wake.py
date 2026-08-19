@@ -20,6 +20,89 @@ def gaussian_centerline_deficit(x_over_d: np.ndarray, ct: float, k: float) -> np
     return np.where(radicand >= 0.0, 1.0 - np.sqrt(np.maximum(radicand, 0.0)), np.nan)
 
 
+def precursor_rotor_turbulence_intensity(
+    path: Path,
+    *,
+    section: str,
+    dt_seconds: float,
+    spinup_seconds: float,
+    ly_m: float,
+    lz_m: float,
+    turbine_y_m: float,
+    hub_height_m: float,
+    rotor_diameter_m: float,
+) -> tuple[float, dict[str, object]]:
+    """Measure streamwise rotor-area TI from a precursor HDF5 recording."""
+
+    import h5py
+
+    if dt_seconds <= 0.0:
+        raise ValueError("precursor time step must be positive")
+    with h5py.File(path, "r") as archive:
+        names = tuple(
+            value.decode() if isinstance(value, bytes) else str(value)
+            for value in archive["sections/name"][:]
+        )
+        if section not in names:
+            raise ValueError(
+                f"precursor section {section!r} is not one of {names}"
+            )
+        section_index = names.index(section)
+        step = np.asarray(archive["step"], dtype=np.int64)
+        elapsed = (step - step[0]) * dt_seconds
+        selected = np.flatnonzero(elapsed >= spinup_seconds)
+        if selected.size == 0:
+            raise ValueError("precursor spinup excludes every recorded sample")
+        sample_start = int(selected[0])
+        execution_ly = float(archive.attrs["ly"])
+        execution_lz = float(archive.attrs["lz"])
+        y = np.asarray(archive["coordinates/y"]) * ly_m / execution_ly
+        z = np.asarray(archive["coordinates/z_cell"]) * lz_m / execution_lz
+        y_distance = np.abs(y - turbine_y_m)
+        y_distance = np.minimum(y_distance, ly_m - y_distance)
+        rotor_radius = 0.5 * rotor_diameter_m
+        rotor = (
+            (z[:, None] - hub_height_m) ** 2 + y_distance[None, :] ** 2
+            <= rotor_radius**2
+        )
+        if not np.any(rotor):
+            raise ValueError("precursor grid contains no rotor-area cells")
+        velocity = archive["velocity"]
+        plane_count = velocity.shape[-1]
+        total = np.zeros((z.size, y.size, plane_count), dtype=np.float64)
+        total_square = np.zeros_like(total)
+        sample_count = 0
+        batch_size = 1 if velocity.chunks is None else velocity.chunks[0]
+        for lower in range(sample_start, len(step), batch_size):
+            upper = min(lower + batch_size, len(step))
+            values = np.asarray(
+                velocity[lower:upper, section_index, 0, :, :, :],
+                dtype=np.float64,
+            )
+            sample_count += values.shape[0]
+            total += values.sum(axis=0)
+            total_square += np.square(values).sum(axis=0)
+        mean = total / sample_count
+        variance = np.maximum(total_square / sample_count - mean * mean, 0.0)
+        rotor_mean = float(mean[rotor, :].mean())
+        turbulence_intensity = float(
+            np.sqrt(variance[rotor, :].mean()) / rotor_mean
+        )
+        details: dict[str, object] = {
+            "recording": str(path),
+            "section": section,
+            "samples": sample_count,
+            "time_window_seconds": [
+                float(elapsed[sample_start]),
+                float(elapsed[-1]),
+            ],
+            "section_planes": plane_count,
+            "rotor_cells_per_plane": int(rotor.sum()),
+            "streamwise_turbulence_intensity": turbulence_intensity,
+        }
+        return turbulence_intensity, details
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("frames", type=Path)
@@ -44,17 +127,40 @@ def main() -> None:
     parser.add_argument("--fit-min-d", type=float, default=4.0)
     parser.add_argument("--fit-max-d", type=float, default=10.0)
     parser.add_argument("--reference-k", type=float, default=0.05)
-    parser.add_argument(
+    turbulence = parser.add_mutually_exclusive_group()
+    turbulence.add_argument(
         "--incoming-ti",
         type=float,
         help="incoming streamwise turbulence intensity as a fraction; when set, use k=0.38 Iu+0.004",
     )
-    parser.add_argument("--fringe-start-fraction", type=float, default=0.75)
+    turbulence.add_argument(
+        "--precursor-recording",
+        type=Path,
+        help="measure rotor-area incoming TI from this precursor HDF5 file",
+    )
+    parser.add_argument("--precursor-section", default="inflow")
+    parser.add_argument("--precursor-dt-seconds", type=float, default=0.1)
+    parser.add_argument("--turbine-y-m", type=float, default=512.0)
+    parser.add_argument("--ly-m", type=float, default=1024.0)
     args = parser.parse_args()
+    incoming_ti = args.incoming_ti
+    precursor_statistics = None
+    if args.precursor_recording is not None:
+        incoming_ti, precursor_statistics = precursor_rotor_turbulence_intensity(
+            args.precursor_recording,
+            section=args.precursor_section,
+            dt_seconds=args.precursor_dt_seconds,
+            spinup_seconds=args.spinup_seconds,
+            ly_m=args.ly_m,
+            lz_m=args.lz_m,
+            turbine_y_m=args.turbine_y_m,
+            hub_height_m=args.hub_height_m,
+            rotor_diameter_m=args.rotor_diameter_m,
+        )
     reference_k = (
         args.reference_k
-        if args.incoming_ti is None
-        else 0.38 * args.incoming_ti + 0.004
+        if incoming_ti is None
+        else 0.38 * incoming_ti + 0.004
     )
 
     with np.load(args.frames) as archive:
@@ -114,13 +220,13 @@ def main() -> None:
 
     figure, axis = plt.subplots(figsize=(8.4, 4.8), constrained_layout=True)
     downstream = x_over_d >= 0.0
-    fringe_start_d = (
-        args.fringe_start_fraction * args.lx_m - args.turbine_x_m
+    domain_end_d = (
+        args.lx_m - args.turbine_x_m
     ) / args.rotor_diameter_m
     axis.plot(x_over_d[downstream], les_deficit[downstream], label="LES time mean", linewidth=2.2)
     reference_label = (
         f"TI-based Gaussian, k={reference_k:.3f}"
-        if args.incoming_ti is not None
+        if incoming_ti is not None
         else f"Gaussian, k={reference_k:.3f}"
     )
     axis.plot(x_over_d[downstream], reference_model[downstream], "--", label=reference_label)
@@ -131,7 +237,7 @@ def main() -> None:
         xlabel=r"downstream distance $(x-x_T)/D$",
         ylabel=r"hub-height centerline deficit $1-\overline{u}/U_{ref}$",
         title="DTU 10-MW wake: LES vs Gaussian centerline model",
-        xlim=(0.0, fringe_start_d),
+        xlim=(0.0, domain_end_d),
     )
     axis.grid(alpha=0.25)
     axis.legend()
@@ -147,8 +253,9 @@ def main() -> None:
         "ct_prime": args.ct_prime,
         "ct": ct,
         "fit_interval_D": [args.fit_min_d, args.fit_max_d],
-        "fringe_start_D": fringe_start_d,
-        "incoming_turbulence_intensity": args.incoming_ti,
+        "domain_end_D": domain_end_d,
+        "incoming_turbulence_intensity": incoming_ti,
+        "precursor_inflow_statistics": precursor_statistics,
         "reference_gaussian": {"k": reference_k, "rmse_deficit": reference_rmse},
         "fitted_gaussian": {"k": fitted_k, "rmse_deficit": fitted_rmse},
     }

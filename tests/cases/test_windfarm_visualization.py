@@ -32,7 +32,7 @@ def test_two_frames_are_saved_and_rendered(tmp_path) -> None:
         frames,
         times,
         grid=grid,
-        fringe_start_x_m=30.0,
+        inlet_end_x_m=10.0,
         fps=2,
         turbine=SimpleNamespace(
             x_m=20.0,
