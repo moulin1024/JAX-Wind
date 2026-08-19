@@ -14,10 +14,17 @@ from pathlib import Path
 import numpy as np
 
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "legacy" / "jax"))
 
 from run_single import RUN_DEFAULTS, load_config_file, params_from_settings  # noqa: E402
+
+
+LIQUID_NITROGEN_DENSITY_KG_M3 = 806.11
+LEGACY_EFFECTIVE_NOZZLE_SPEED_M_S = 8.0
+NITROGEN_GAS_CONSTANT = 296.80
+NITROGEN_BOILING_TEMPERATURE = 77.34
+ATMOSPHERIC_PRESSURE = 100_000.0
 
 
 def parse_args() -> argparse.Namespace:
@@ -68,7 +75,36 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument("--ln2-mass-flow-kg-s", type=float, default=0.020)
-    parser.add_argument("--ln2-injection-speed", type=float, default=8.0)
+    parser.add_argument(
+        "--ln2-injection-speed",
+        type=float,
+        help=(
+            "Liquid exit speed in m/s. With --ln2-radius, the default is "
+            "mdot/(rho_LN2*pi*r^2); otherwise the legacy effective-nozzle "
+            "value of 8 m/s is retained."
+        ),
+    )
+    parser.add_argument(
+        "--ln2-radius",
+        type=float,
+        help=(
+            "Physical nozzle radius in metres. Defaults to --ln2-sigma-r "
+            "for compatibility with older equivalent-source cases."
+        ),
+    )
+    parser.add_argument(
+        "--ln2-vapor-quality",
+        type=float,
+        default=0.0,
+        help=(
+            "Mass fraction of the nitrogen that has already flashed to gas "
+            "before the nozzle, in [0,1). That fraction is injected as cold "
+            "nitrogen vapour rather than as droplets, because its latent heat "
+            "was supplied upstream and re-evaporating it in the domain would "
+            "double-count that heat as ambient cooling. It also lowers the "
+            "mixture density and so raises the exit speed sharply."
+        ),
+    )
     parser.add_argument("--ln2-x", type=float, default=12.15)
     parser.add_argument("--ln2-y", type=float, default=3.0)
     parser.add_argument("--ln2-z", type=float, default=0.876)
@@ -92,6 +128,71 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ln2-carrier-density", type=float, default=1.225)
     parser.add_argument("--ln2-carrier-heat-capacity", type=float, default=1005.0)
     return parser.parse_args()
+
+
+def liquid_nitrogen_bulk_speed(
+    mass_flow_rate: float,
+    radius: float,
+    density: float = LIQUID_NITROGEN_DENSITY_KG_M3,
+) -> float:
+    """Return the incompressible liquid speed implied by mass flow and radius."""
+
+    if mass_flow_rate <= 0.0:
+        raise ValueError("mass_flow_rate must be positive")
+    if radius <= 0.0:
+        raise ValueError("radius must be positive")
+    if density <= 0.0:
+        raise ValueError("density must be positive")
+    return mass_flow_rate / (density * math.pi * radius**2)
+
+
+def two_phase_nitrogen_speed(
+    mass_flow_rate: float,
+    radius: float,
+    quality: float,
+    density: float = LIQUID_NITROGEN_DENSITY_KG_M3,
+) -> float:
+    """Return the homogeneous liquid/gas mixture exit speed [m/s].
+
+    Saturated nitrogen vapour is ~185x lighter than the liquid, so even a few
+    percent of flash quality collapses the mixture density and multiplies the
+    exit speed. No-slip between the phases is assumed.
+    """
+
+    if not 0.0 <= quality < 1.0:
+        raise ValueError("quality must lie in [0, 1)")
+    vapor_density = ATMOSPHERIC_PRESSURE / (
+        NITROGEN_GAS_CONSTANT * NITROGEN_BOILING_TEMPERATURE
+    )
+    mixture_density = 1.0 / (
+        quality / vapor_density + (1.0 - quality) / density
+    )
+    return mass_flow_rate / (mixture_density * math.pi * radius**2)
+
+
+def resolve_liquid_nitrogen_nozzle(args: argparse.Namespace) -> None:
+    """Resolve backward-compatible nozzle radius and speed defaults in place."""
+
+    quality = float(getattr(args, "ln2_vapor_quality", 0.0) or 0.0)
+    if not 0.0 <= quality < 1.0:
+        raise SystemExit("--ln2-vapor-quality must lie in [0, 1)")
+    args.ln2_vapor_quality = quality
+    # Droplets carry only the still-liquid share; the rest enters as cold gas.
+    args.ln2_liquid_mass_flow_kg_s = (1.0 - quality) * args.ln2_mass_flow_kg_s
+    args.ln2_vapor_mass_flow_kg_s = quality * args.ln2_mass_flow_kg_s
+
+    explicit_radius = getattr(args, "ln2_radius", None) is not None
+    if not explicit_radius:
+        args.ln2_radius = args.ln2_sigma_r
+    if args.ln2_injection_speed is None:
+        if explicit_radius:
+            args.ln2_injection_speed = two_phase_nitrogen_speed(
+                args.ln2_mass_flow_kg_s,
+                args.ln2_radius,
+                quality,
+            )
+        else:
+            args.ln2_injection_speed = LEGACY_EFFECTIVE_NOZZLE_SPEED_M_S
 
 
 def rank_and_size(args: argparse.Namespace) -> tuple[int, int]:
@@ -745,6 +846,7 @@ def make_water_fog_gif(
 
 def main() -> None:
     args = parse_args()
+    resolve_liquid_nitrogen_nozzle(args)
     rank, size = rank_and_size(args)
     selected_local_device_id = local_device_id(args)
     if size <= 0:
@@ -755,6 +857,7 @@ def main() -> None:
         positive = {
             "--ln2-mass-flow-kg-s": args.ln2_mass_flow_kg_s,
             "--ln2-injection-speed": args.ln2_injection_speed,
+            "--ln2-radius": args.ln2_radius,
             "--ln2-sigma-x": args.ln2_sigma_x,
             "--ln2-sigma-r": args.ln2_sigma_r,
             "--ln2-specific-cooling-j-kg": args.ln2_specific_cooling_j_kg,
@@ -935,12 +1038,17 @@ def main() -> None:
             material="nitrogen",
             max_parcels=int(settings["cryogenic_max_parcels_per_shard"]),
             parcels_per_step=int(settings["cryogenic_parcels_per_step"]),
-            mass_flow_rate=args.ln2_mass_flow_kg_s,
+            # Only the still-liquid share becomes droplets; any flashed
+            # fraction is deposited separately as cold nitrogen gas.
+            mass_flow_rate=args.ln2_liquid_mass_flow_kg_s,
+            turbulent_dispersion_enabled=bool(
+                settings["cryogenic_turbulent_dispersion_enabled"]
+            ),
             injection_end_time=injection_end_time,
             injection_x=params.cold_source_x,
             injection_y=params.cold_source_y,
             injection_z=params.cold_source_z,
-            injection_radius=params.cold_source_sigma_r,
+            injection_radius=args.ln2_radius,
             injection_streamwise_thickness=(
                 float(
                     settings[
@@ -977,6 +1085,16 @@ def main() -> None:
             liquid_heat_capacity=outlet_config.liquid_nitrogen_heat_capacity,
             latent_heat=outlet_config.liquid_nitrogen_latent_heat,
             surface_tension=8.85e-3,
+            shortwave_flux=float(settings["cryogenic_shortwave_flux"]),
+            shortwave_absorption_efficiency=float(
+                settings["cryogenic_shortwave_absorption_efficiency"]
+            ),
+            sky_temperature=float(
+                settings["cryogenic_radiation_temperature"]
+            ),
+            liquid_emissivity=float(
+                settings["cryogenic_liquid_emissivity"]
+            ),
         )
         cryogenic_manifest = (
             None
@@ -1012,6 +1130,8 @@ def main() -> None:
             params,
             ops,
             mesh,
+            vapor_mass_flow_rate=args.ln2_vapor_mass_flow_kg_s,
+            vapor_injection_speed=args.ln2_injection_speed,
         )
     else:
         start_step = int(jax.device_get(state.step))
@@ -1059,10 +1179,16 @@ def main() -> None:
                     f"{params.cold_source_z:g}) m, +x injection; "
                     f"mass_flow={args.ln2_mass_flow_kg_s:g} kg/s, "
                     f"speed={args.ln2_injection_speed:g} m/s, "
+                    f"radius={args.ln2_radius:g} m, "
+                    f"quality={args.ln2_vapor_quality:g} "
+                    f"(liquid={args.ln2_liquid_mass_flow_kg_s:g}, "
+                    f"vapour={args.ln2_vapor_mass_flow_kg_s:g} kg/s), "
                     f"thickness={spray_config.injection_streamwise_thickness:g} m, "
                     f"ramp={spray_config.injection_ramp_time:g} s, "
                     f"d50={spray_config.initial_diameter:.3e} m, "
                     f"substeps={spray_config.substeps}; "
+                    f"turbulent_dispersion="
+                    f"{'on' if spray_config.turbulent_dispersion_enabled else 'off'}; "
                     f"mass_outlet={'on' if mass_outlet_enabled else 'off'}; "
                     f"checkpoint_transition={checkpoint_transition}",
                     flush=True,
@@ -1284,6 +1410,11 @@ def main() -> None:
                 "spray_fields": list(state.spray._fields),
                 "material": spray_config.material,
                 "mass_flow_rate_kg_s": spray_config.mass_flow_rate,
+                "injection_radius_m": spray_config.injection_radius,
+                "injection_speed_m_s": spray_config.injection_u,
+                "turbulent_dispersion_enabled": (
+                    spray_config.turbulent_dispersion_enabled
+                ),
                 "max_parcels_per_shard": spray_config.max_parcels,
             }
             (
@@ -1513,8 +1644,12 @@ def main() -> None:
                     params.cold_source_y,
                     params.cold_source_z,
                 ],
+                "nozzle_radius_m": args.ln2_radius,
+                "vapor_quality": args.ln2_vapor_quality,
+                "liquid_mass_flow_kg_s": args.ln2_liquid_mass_flow_kg_s,
+                "vapor_mass_flow_kg_s": args.ln2_vapor_mass_flow_kg_s,
                 "sigma_x_m": params.cold_source_sigma_x,
-                "sigma_r_m": params.cold_source_sigma_r,
+                "equivalent_source_sigma_r_m": params.cold_source_sigma_r,
                 "specific_cooling_j_kg": args.ln2_specific_cooling_j_kg,
                 "momentum_flux_n": params.cold_source_momentum_flux,
                 "cooling_power_w": params.cold_source_cooling_power,
@@ -1548,6 +1683,14 @@ def main() -> None:
                 ),
                 "outlet_velocity_relaxation": False,
                 "water_vapor_initial_kg_kg": params.qv0,
+                "turbulent_dispersion_enabled": (
+                    spray_config.turbulent_dispersion_enabled
+                    if multiphase_enabled
+                    else False
+                ),
+                "droplet_radiation_enabled": multiphase_enabled,
+                "fog_phase_change_enabled": multiphase_enabled,
+                "nitrogen_composition_buoyancy_enabled": multiphase_enabled,
                 "cryogenic_checkpoint_sidecars": (
                     "cryogenic_rankNNNNN.npz"
                     if multiphase_enabled

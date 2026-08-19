@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
+import tomllib
 
 import jax.numpy as jnp
 import numpy as np
+import pytest
 
 from applications.windfarm_precursor.__main__ import main
 from applications.windfarm_precursor.benchmark import (
@@ -234,3 +237,125 @@ def test_precursor_ti_uses_the_configured_time_window(tmp_path: Path) -> None:
     assert intensity == 0.5
     assert details["samples"] == 2
     assert details["time_window_seconds"] == [1.0, 2.0]
+
+
+def test_hitsz_active_case_resolves_wind_tunnel_scale() -> None:
+    path = ROOT / "cases" / "HITSZWindTunnel" / "config.toml"
+    case = load_case(path)
+    with path.open("rb") as stream:
+        document = tomllib.load(stream)
+
+    assert (case.domain.nx, case.domain.ny, case.domain.nz) == (256, 64, 128)
+    assert (case.domain.lx_m, case.domain.ly_m, case.domain.lz_m) == (
+        24.0,
+        6.0,
+        3.6,
+    )
+    assert (case.domain.dx_m, case.domain.dy_m, case.domain.dz_m) == (
+        0.09375,
+        0.09375,
+        0.028125,
+    )
+    assert case.time.dt_seconds == 0.0025
+    assert case.time.duration_hours == 0.025
+    assert case.time.steps == 36_000
+    assert case.sgs.update_interval_steps == 4
+    assert case.sgs.lasd_filter_backend == "cufft"
+    assert case.estimated_startup_cfl < case.numerics.cfl_abort
+    experiment = document["experiment"]
+    assert experiment["condition"] == "R9"
+    assert experiment["rotor_diameter_m"] == 1.26
+    assert experiment["hub_height_m"] == 0.876
+    assert experiment["rotor_speed_rpm"] == 480.0
+    assert experiment["measured_thrust_coefficient"] == 0.810
+    assert case.flow.friction_velocity_m_s == 0.12294132680014663
+    assert case.flow.roughness_length_m == 1.6100320416141182e-5
+    assert experiment["fitted_hub_height_wind_speed_m_s"] == (
+        3.3514673026030772
+    )
+    assert experiment["fitted_hub_height_tip_speed_ratio"] == (
+        9.448773056383162
+    )
+    workflow = document["workflow"]
+    assert workflow["coarse_warmup_seconds"] == 900.0
+    assert workflow["fine_extension_seconds"] == 90.0
+    assert workflow["coarse_grid"] == [128, 32, 64]
+    assert workflow["fine_grid"] == [256, 64, 128]
+    assert workflow["precursor_duration_seconds"] == 90.0
+    assert workflow["main_duration_seconds"] == 90.0
+    assert workflow["turbine_model"] == "hitsz-r9-ad-bem"
+    assert not workflow["main_pressure_gradient"]
+    assert not workflow["fringe"]
+
+
+def test_hitsz_adbem_dry_run_retains_operating_point(capsys) -> None:
+    config = ROOT / "cases" / "HITSZWindTunnel" / "config.toml"
+    assert main(
+        [
+            str(config),
+            "--dry-run",
+            "--precursor-steps",
+            "36000",
+            "--main-steps",
+            "36000",
+            "--turbine",
+            "hitsz-r9-ad-bem",
+            "--turbine-x-m",
+            "12.0",
+            "--rotor-speed-rpm",
+            "480.0",
+            "--blade-pitch-degrees",
+            "0.0",
+        ]
+    ) == 0
+
+    resolved = json.loads(capsys.readouterr().out)
+    assert resolved["case"] == "hitsz_r9_fine_extension_adbem_256x64x128"
+    assert resolved["turbine"] == "hitsz-r9-ad-bem"
+    assert resolved["rotor_speed_rpm"] == 480.0
+    assert resolved["blade_pitch_degrees"] == 0.0
+
+
+def test_hitsz_coarse_warmup_preserves_cfl_similarity() -> None:
+    fine = load_case(ROOT / "cases" / "HITSZWindTunnel" / "config.toml")
+    coarse = load_case(
+        ROOT / "cases" / "HITSZWindTunnel" / "config_coarse.toml"
+    )
+
+    assert (coarse.domain.nx, coarse.domain.ny, coarse.domain.nz) == (
+        128,
+        32,
+        64,
+    )
+    assert coarse.time.duration_hours == 0.25
+    assert coarse.time.steps == 180_000
+    assert coarse.time.dt_seconds == 2.0 * fine.time.dt_seconds
+    assert coarse.estimated_startup_cfl == pytest.approx(
+        fine.estimated_startup_cfl,
+        rel=5.0e-4,
+    )
+    assert coarse.sgs.update_interval_steps == fine.sgs.update_interval_steps
+
+
+def test_hitsz_inflow_fit_reproduces_versioned_log_law() -> None:
+    profile = (
+        ROOT / "cases" / "HITSZWindTunnel" / "reference" / "inflow_profile.csv"
+    )
+    import csv
+
+    with profile.open(newline="") as stream:
+        rows = list(csv.DictReader(stream))
+    x = [math.log(float(row["height_mm"]) * 1.0e-3) for row in rows]
+    velocity = [float(row["wind_speed_m_s"]) for row in rows]
+    mean_x = sum(x) / len(x)
+    mean_velocity = sum(velocity) / len(velocity)
+    slope = sum(
+        (xx - mean_x) * (uu - mean_velocity)
+        for xx, uu in zip(x, velocity, strict=True)
+    ) / sum((xx - mean_x) ** 2 for xx in x)
+    intercept = mean_velocity - slope * mean_x
+
+    assert 0.4 * slope == pytest.approx(0.12294132680014663)
+    assert math.exp(-intercept / slope) == pytest.approx(
+        1.6100320416141182e-5
+    )

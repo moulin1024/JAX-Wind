@@ -56,6 +56,34 @@ def test_saturation_adjustment_conserves_total_water_and_moist_enthalpy() -> Non
     assert np.all(np.asarray(final_qi) >= 0.0)
 
 
+def test_saturation_adjustment_removes_supersaturation_and_forms_fog() -> None:
+    jnp = pytest.importorskip("jax.numpy")
+
+    from wireles_jax.cryogenic_microphysics import (
+        CryogenicMicrophysicsConfig,
+        saturation_adjustment,
+        saturation_mixing_ratio,
+    )
+
+    config = CryogenicMicrophysicsConfig(saturation_iterations=10)
+    adjusted = saturation_adjustment(
+        jnp.asarray(280.0),
+        jnp.asarray(0.011),
+        jnp.asarray(0.0),
+        jnp.asarray(0.0),
+        config,
+    )
+    temperature, vapor, liquid, ice = adjusted
+    saturation = saturation_mixing_ratio(
+        temperature,
+        config.pressure,
+        config,
+    )
+
+    assert float(liquid + ice) > 0.0
+    assert float(vapor / saturation) == pytest.approx(1.0, rel=2.0e-4)
+
+
 def test_finite_rate_fog_microphysics_conserves_water_and_enthalpy() -> None:
     jnp = pytest.importorskip("jax.numpy")
 
@@ -392,3 +420,136 @@ def test_one_step_sharded_ln2_droplet_routes_mass_away_from_qv() -> None:
         rtol=3.0e-5,
         atol=2.0,
     )
+
+
+def _flashing_jet_case(vapor_mass_flow_rate: float, vapor_injection_speed: float):
+    """Build one cryogenic step with a prescribed pre-boiled vapour fraction."""
+    import jax
+    import jax.numpy as jnp
+
+    from wireles_jax import Params, SprayDPMConfig
+    from wireles_jax.cryogenic_microphysics import CryogenicMicrophysicsConfig
+    from wireles_jax.cryogenic_sharded import (
+        ShardedCryogenicState,
+        initial_cryogenic_scalar_state,
+        make_step_cryogenic_sharded,
+    )
+    from wireles_jax.sharding import make_single_node_mesh
+    from wireles_jax.spray_dpm_sharded import initialize_sharded_spray
+    from wireles_jax.timestep_sharded import (
+        initial_sharded_state,
+        make_sharded_operators,
+    )
+
+    params = Params(
+        nx=8, ny=4, nz=8, lx=8.0, ly=4.0, lz=2.0, z_i=1.0, dt=1.0e-3,
+        initial_condition="geostrophic", geostrophic_u=0.0,
+        momentum_wall_model="free_slip", initial_velocity_noise=0.0,
+        thermo_enabled=True, moisture_enabled=True, theta0=300.0, qv0=0.011,
+        scalar_sgs_model="fixed_prandtl", scalar_vertical_scheme="centered",
+        sgs_model="smagorinsky", pressure_filter_nyquist=True,
+        dtype=jnp.float32,
+    )
+    spray_config = SprayDPMConfig(
+        material="nitrogen", max_parcels=8, parcels_per_step=1,
+        mass_flow_rate=0.02, injection_end_time=1.0,
+        injection_x=1.0, injection_y=2.0, injection_z=1.0,
+        injection_radius=0.15, injection_streamwise_thickness=0.2,
+        injection_ramp_time=0.001, injection_u=8.0,
+        initial_diameter=150.0e-6, minimum_diameter=50.0e-6,
+        maximum_diameter=300.0e-6, initial_temperature=77.34,
+        boiling_temperature=77.34, liquid_density=806.11, water_density=806.11,
+        liquid_heat_capacity=2040.0, latent_heat=199_180.0,
+        surface_tension=8.85e-3, substeps=2,
+    )
+    microphysics = CryogenicMicrophysicsConfig(
+        outlet_start_x=7.0, outlet_end_x=8.0
+    )
+    mesh = make_single_node_mesh(1)
+    operators = make_sharded_operators(params, mesh)
+    flow = initial_sharded_state(params, mesh)
+    state = ShardedCryogenicState(
+        flow=flow,
+        spray=initialize_sharded_spray(spray_config, params, mesh),
+        scalars=initial_cryogenic_scalar_state(flow),
+    )
+    step = jax.jit(
+        make_step_cryogenic_sharded(
+            spray_config, microphysics, params, operators, mesh,
+            vapor_mass_flow_rate=vapor_mass_flow_rate,
+            vapor_injection_speed=vapor_injection_speed,
+        )
+    )
+    advanced, diagnostics = jax.block_until_ready(
+        step(state, operators.pressure, operators.pressure_spike)
+    )
+    return params, microphysics, state, advanced, diagnostics
+
+
+def test_flashed_vapour_fraction_adds_exactly_the_prescribed_nitrogen_mass() -> None:
+    jax = pytest.importorskip("jax")
+    jnp = pytest.importorskip("jax.numpy")
+
+    vapor_rate = 0.004
+    params, micro, state, advanced, _ = _flashing_jet_case(vapor_rate, 8.0)
+    _, _, _, baseline, _ = _flashing_jet_case(0.0, 0.0)
+
+    cell_air_mass = micro.dry_air_density * (
+        params.dx * params.dy * params.dz * params.z_i**3
+    )
+    extra = float(
+        jnp.sum(advanced.scalars.yn2 - baseline.scalars.yn2)
+    ) * cell_air_mass
+    # One step must deposit exactly mdot_vapour * dt of nitrogen gas.
+    assert extra == pytest.approx(vapor_rate * params.dt_physical, rel=2.0e-3)
+
+
+def test_flashed_vapour_enters_the_carrier_at_the_boiling_point() -> None:
+    """Pre-boiled nitrogen must not re-spend latent heat it lost upstream.
+
+    The rate is deliberately large: the carrier holds ~3.0e5 J/kg of enthalpy,
+    so a realistic vapour flow perturbs it by only a few parts per million and
+    the difference vanishes into float32 cancellation. Sums are restricted to
+    the near field because the outlet vents the extra gas, and venting mass
+    lowers a volume-integrated total regardless of temperature.
+    """
+    jnp = pytest.importorskip("jax.numpy")
+
+    rate = 4.0
+    params, micro, _, as_vapour, _ = _flashing_jet_case(rate, 0.0)
+    _, _, _, baseline, _ = _flashing_jet_case(0.0, 0.0)
+
+    x = (np.arange(params.nx) + 0.5) * params.dx * params.z_i
+    near = x < 5.0                      # nozzle at x=1, outlet strip at x=7..8
+    dy = np.asarray(as_vapour.scalars.yn2 - baseline.scalars.yn2)[near]
+    dh = np.asarray(as_vapour.scalars.enthalpy - baseline.scalars.enthalpy)[near]
+    dtheta = np.asarray(baseline.flow.theta - as_vapour.flow.theta)[near]
+
+    enthalpy_per_kg = dh.sum() / dy.sum()
+    cooling_per_kg = (
+        dtheta.sum() * micro.dry_air_heat_capacity / dy.sum()
+    )
+    sensible = micro.nitrogen_gas_heat_capacity * (
+        300.0 - micro.nitrogen_boiling_temperature
+    )
+
+    # Gas arrives carrying only cp_N2 * T_boil ...
+    assert enthalpy_per_kg == pytest.approx(
+        micro.nitrogen_gas_heat_capacity * micro.nitrogen_boiling_temperature,
+        rel=0.02,
+    )
+    # ... so it cools the carrier by the sensible warming alone.
+    assert cooling_per_kg == pytest.approx(sensible, rel=0.10)
+    # Decisively below what a droplet of the same mass would draw.
+    assert cooling_per_kg < 0.6 * (
+        sensible + micro.liquid_nitrogen_latent_heat
+    )
+
+
+def test_flashed_vapour_adds_streamwise_jet_momentum() -> None:
+    jnp = pytest.importorskip("jax.numpy")
+
+    _, _, _, fast, _ = _flashing_jet_case(0.004, 20.0)
+    _, _, _, slow, _ = _flashing_jet_case(0.004, 0.0)
+
+    assert float(jnp.sum(fast.flow.u)) > float(jnp.sum(slow.flow.u))

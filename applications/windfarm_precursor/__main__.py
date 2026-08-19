@@ -47,7 +47,13 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--gif-fps", type=int, default=12)
     parser.add_argument(
         "--turbine",
-        choices=("none", "dtu-10mw-adm", "dtu-10mw-prescribed-adm", "dtu-10mw-ad-bem"),
+        choices=(
+            "none",
+            "dtu-10mw-adm",
+            "dtu-10mw-prescribed-adm",
+            "dtu-10mw-ad-bem",
+            "hitsz-r9-ad-bem",
+        ),
         default="none",
     )
     parser.add_argument(
@@ -113,7 +119,9 @@ def main(argv: list[str] | None = None) -> int:
         "spanwise_cycle_updates": contract.cycle_interval_updates,
         "main_pressure_gradient": "off",
         "legacy_inflow_directory": (
-            None if args.legacy_inflow_directory is None else str(args.legacy_inflow_directory)
+            None
+            if args.legacy_inflow_directory is None
+            else str(args.legacy_inflow_directory)
         ),
         "section": "inflow",
         "sample_buffer": args.sample_buffer,
@@ -127,7 +135,9 @@ def main(argv: list[str] | None = None) -> int:
         "turbine_x_m": args.turbine_x_m,
         "disk_smoothing_width_m": args.disk_smoothing_width_m,
         "body_smoothing_width_m": args.body_smoothing_width_m,
-        "openfast_model": None if args.openfast_model is None else str(args.openfast_model),
+        "openfast_model": (
+            None if args.openfast_model is None else str(args.openfast_model)
+        ),
         "rotor_speed_rpm": args.rotor_speed_rpm,
         "ad_bem_smearing_azimuthal_elements": (
             args.ad_bem_smearing_azimuthal_elements
@@ -203,6 +213,37 @@ def main(argv: list[str] | None = None) -> int:
                 args.ad_bem_smearing_azimuthal_elements
             ),
             pitch_degrees=args.blade_pitch_degrees,
+            body_smoothing_width_m=args.body_smoothing_width_m,
+            nacelle_drag_coefficient=args.nacelle_drag_coefficient,
+            tower_drag_coefficient=args.tower_drag_coefficient,
+        )
+    elif args.turbine == "hitsz-r9-ad-bem":
+        from jaxwind.windfarm import HITSZR9BladeElementDisk
+
+        smoothing_width_m = (
+            case.domain.lx_m / case.domain.nx
+            if args.disk_smoothing_width_m is None
+            else args.disk_smoothing_width_m
+        )
+        turbine = HITSZR9BladeElementDisk(
+            x_m=(
+                0.5 * case.domain.lx_m
+                if args.turbine_x_m is None
+                else args.turbine_x_m
+            ),
+            y_m=0.5 * case.domain.ly_m,
+            smoothing_width_m=smoothing_width_m,
+            rotor_speed_rpm=(
+                480.0 if args.rotor_speed_rpm is None else args.rotor_speed_rpm
+            ),
+            pitch_degrees=(
+                0.0
+                if args.blade_pitch_degrees is None
+                else args.blade_pitch_degrees
+            ),
+            smearing_azimuthal_elements=(
+                args.ad_bem_smearing_azimuthal_elements
+            ),
             body_smoothing_width_m=args.body_smoothing_width_m,
             nacelle_drag_coefficient=args.nacelle_drag_coefficient,
             tower_drag_coefficient=args.tower_drag_coefficient,

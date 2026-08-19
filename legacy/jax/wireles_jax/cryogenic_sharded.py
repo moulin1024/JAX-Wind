@@ -440,6 +440,9 @@ def make_step_cryogenic_sharded(
     operators: ShardedOperators,
     mesh: Mesh,
     axis_name: str = "z",
+    *,
+    vapor_mass_flow_rate: float = 0.0,
+    vapor_injection_speed: float = 0.0,
 ):
     """Return one coupled LN2-droplet, humid-carrier, and fog step.
 
@@ -447,6 +450,15 @@ def make_step_cryogenic_sharded(
     increment is routed to ``yn2`` instead of water vapour.  Water vapour,
     liquid fog, and ice fog then undergo a local saturation adjustment at
     fixed moist enthalpy.
+
+    ``vapor_mass_flow_rate`` covers nitrogen that already flashed to gas
+    upstream of the nozzle, so the jet leaves as a liquid/gas mixture. That
+    fraction must not be injected as droplets: its latent heat was supplied by
+    the transfer line, not by the carrier air, and re-evaporating it in the
+    domain would double-count that heat as ambient cooling. It is instead
+    deposited directly as cold nitrogen gas at the boiling point, which cools
+    the carrier only by the sensible warming it then undergoes -- the same
+    route the evaporated droplet mass already takes.
     """
 
     if spray_config.material != "nitrogen":
@@ -495,6 +507,54 @@ def make_step_cryogenic_sharded(
     ) * params.dx * params.z_i
     zero_floor = jnp.asarray(0.0, dtype=params.dtype)
 
+    if vapor_mass_flow_rate < 0.0:
+        raise ValueError("vapor_mass_flow_rate must be non-negative")
+    vapor_yn2_increment = None
+    vapor_u_increment = None
+    if vapor_mass_flow_rate > 0.0:
+        # Deposit the pre-boiled fraction over the same Gaussian support the
+        # equivalent source uses. The widths are floored at 1.5 cells because
+        # the physical nozzle is subgrid, and a delta-function source in a
+        # spectral solver rings across the periodic domain.
+        domain_x = params.lx * params.z_i
+        domain_y = params.ly * params.z_i
+        sigma_x = max(
+            spray_config.injection_streamwise_thickness,
+            1.5 * params.dx * params.z_i,
+        )
+        sigma_r = max(
+            spray_config.injection_radius,
+            1.5 * max(params.dy, params.dz) * params.z_i,
+        )
+        xs = (jnp.arange(params.nx, dtype=params.dtype) + 0.5) * params.dx * params.z_i
+        ys = (jnp.arange(params.ny, dtype=params.dtype) + 0.5) * params.dy * params.z_i
+        zs = (jnp.arange(params.nz, dtype=params.dtype) + 0.5) * params.dz * params.z_i
+        offset_x = (
+            jnp.mod(
+                xs - spray_config.injection_x + 0.5 * domain_x, domain_x
+            ) - 0.5 * domain_x
+        )[:, None, None]
+        offset_y = (
+            jnp.mod(
+                ys - spray_config.injection_y + 0.5 * domain_y, domain_y
+            ) - 0.5 * domain_y
+        )[None, :, None]
+        offset_z = (zs - spray_config.injection_z)[None, None, :]
+        kernel = jnp.exp(
+            -0.5 * (offset_x / sigma_x) ** 2
+            - 0.5 * (offset_y**2 + offset_z**2) / sigma_r**2
+        )
+        weight = kernel / jnp.sum(kernel)
+        # Nitrogen mass added per unit dry-air mass in each cell this step, so
+        # the totals match the prescribed vapour flow exactly.
+        vapor_yn2_increment = (
+            vapor_mass_flow_rate * params.dt_physical * weight / cell_air_mass
+        ).astype(params.dtype)
+        # The vapour also carries the jet's momentum for its share of the mass.
+        vapor_u_increment = (
+            vapor_yn2_increment * vapor_injection_speed
+        ).astype(params.dtype)
+
     def step(
         state: ShardedCryogenicState,
         runtime_pressure_ops=None,
@@ -504,7 +564,10 @@ def make_step_cryogenic_sharded(
         spray, increments, spray_diagnostics = exchange(
             state.flow, injected
         )
-        yn2_forced = state.scalars.yn2 + increments.qv
+        added_nitrogen = increments.qv
+        if vapor_yn2_increment is not None:
+            added_nitrogen = added_nitrogen + vapor_yn2_increment
+        yn2_forced = state.scalars.yn2 + added_nitrogen
         carrier_heat_capacity = (
             microphysics_config.dry_air_heat_capacity
             + state.scalars.yn2
@@ -519,7 +582,7 @@ def make_step_cryogenic_sharded(
             state.scalars.enthalpy
             + increments.theta
             * microphysics_config.dry_air_heat_capacity
-            + jnp.maximum(increments.qv, 0.0)
+            + jnp.maximum(added_nitrogen, 0.0)
             * microphysics_config.nitrogen_gas_heat_capacity
             * microphysics_config.nitrogen_boiling_temperature
         )
@@ -535,15 +598,20 @@ def make_step_cryogenic_sharded(
             + microphysics_config.water_fusion_latent_heat
             * state.scalars.qi
         ) / mixed_heat_capacity
+        jet_u = state.flow.u + increments.u
+        if vapor_u_increment is not None:
+            jet_u = jet_u + vapor_u_increment
         forced_flow = state.flow._replace(
-            u=state.flow.u + increments.u,
+            u=jet_u,
             v=state.flow.v + increments.v,
             w=state.flow.w + increments.w,
             theta=mixed_theta.astype(params.dtype),
         )
 
+        # Both the evaporated droplet mass and the pre-boiled vapour expand
+        # into the domain, so the outlet has to vent the sum of the two.
         evaporation_mass_rate = (
-            increments.qv
+            added_nitrogen
             * microphysics_config.dry_air_density
             / params.dt_physical
         )

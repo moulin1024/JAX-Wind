@@ -8,6 +8,12 @@ from .actuator_disk import (
     dtu_10mw_prescribed_actuator_disk,
 )
 from .errors import OpenFASTInputError
+from .hitsz import (
+    HITSZ_HUB_HEIGHT_M,
+    HITSZ_R9_ROTOR_SPEED_RPM,
+    HITSZ_ROTOR_DIAMETER_M,
+    HITSZR9BladeElementDisk,
+)
 from .rigid import (
     OpenFASTAirfoilPolar,
     OpenFASTRigidTurbine,
@@ -34,6 +40,10 @@ __all__ = [
     "OpenFASTModalTurbine",
     "OpenFASTRigidTurbine",
     "RigidBladeElementDisk",
+    "HITSZ_HUB_HEIGHT_M",
+    "HITSZ_R9_ROTOR_SPEED_RPM",
+    "HITSZ_ROTOR_DIAMETER_M",
+    "HITSZR9BladeElementDisk",
     "DTU_10MW_HUB_HEIGHT_M",
     "DTU_10MW_ROTOR_DIAMETER_M",
     "SimpleActuatorDisk",

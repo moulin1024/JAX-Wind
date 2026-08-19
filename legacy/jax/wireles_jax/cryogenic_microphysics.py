@@ -14,6 +14,15 @@ import jax
 import jax.numpy as jnp
 
 
+# Bracket for the fixed-enthalpy saturation solve. The floor is below the
+# 77.34 K nitrogen boiling point so that air chilled by an LN2 source is
+# bracketed rather than clipped; note that the Murphy-Koop ice saturation fit
+# is only calibrated down to about 110 K, so temperatures below that are an
+# extrapolation (saturation vapour pressure there is negligible in any case).
+CRYOGENIC_TEMPERATURE_FLOOR = 50.0
+CRYOGENIC_TEMPERATURE_CEILING = 450.0
+
+
 @dataclass(frozen=True)
 class CryogenicMicrophysicsConfig:
     pressure: float = 100_000.0
@@ -201,42 +210,86 @@ def saturation_adjustment(
     qv = jnp.maximum(qv, 0.0)
     ql = jnp.maximum(ql, 0.0)
     qi = jnp.maximum(qi, 0.0)
+    total_water = qv + ql + qi
+    enthalpy = cp * temperature + lv * qv - (
+        ls - lv
+    ) * qi
 
-    def iteration(_, state):
-        temp, vapor, liquid, ice = state
-        qsat = saturation_mixing_ratio(temp, pressure_value, config)
-        excess = vapor - qsat
+    def phases_at(temp):
+        vapor = jnp.minimum(
+            total_water,
+            saturation_mixing_ratio(temp, pressure_value, config),
+        )
+        condensate = jnp.maximum(total_water - vapor, 0.0)
         cold = temp < freezing
+        liquid = jnp.where(cold, 0.0, condensate)
+        ice = jnp.where(cold, condensate, 0.0)
+        modeled_enthalpy = cp * temp + lv * vapor - (
+            ls - lv
+        ) * ice
+        return vapor, liquid, ice, modeled_enthalpy
 
-        condense = jnp.maximum(excess, 0.0)
-        liquid_condense = jnp.where(cold, 0.0, condense)
-        ice_deposit = jnp.where(cold, condense, 0.0)
-        vapor = vapor - condense
-        liquid = liquid + liquid_condense
-        ice = ice + ice_deposit
-        temp = temp + (
-            lv * liquid_condense + ls * ice_deposit
-        ) / cp
+    # Solve the monotone fixed-enthalpy saturation problem. The former
+    # condense/evaporate iteration could form condensate, warm past the new
+    # saturation point, evaporate it all, and return unchanged after every
+    # even iteration. Bisection cannot enter that two-cycle.
+    #
+    # The bracket is absolute rather than a window around the incoming
+    # temperature: a strong cryogenic source can pull a cell far colder than
+    # any fixed offset would allow, and a bracket that does not contain the
+    # root silently returns its own endpoint as the answer. The lower bound
+    # sits below the nitrogen boiling point so LN2-cooled air is bracketed
+    # rather than clipped. Bisection cost is fixed by the iteration count, so
+    # a wide bracket costs nothing but a few more halvings.
+    lower = jnp.full_like(temperature, CRYOGENIC_TEMPERATURE_FLOOR)
+    upper = jnp.full_like(temperature, CRYOGENIC_TEMPERATURE_CEILING)
 
-        qsat = saturation_mixing_ratio(temp, pressure_value, config)
-        deficit = jnp.maximum(qsat - vapor, 0.0)
-        liquid_evaporation = jnp.minimum(deficit, liquid)
-        remaining = deficit - liquid_evaporation
-        ice_sublimation = jnp.minimum(remaining, ice)
-        vapor = vapor + liquid_evaporation + ice_sublimation
-        liquid = liquid - liquid_evaporation
-        ice = ice - ice_sublimation
-        temp = temp - (
-            lv * liquid_evaporation + ls * ice_sublimation
-        ) / cp
-        return temp, vapor, liquid, ice
+    def bisect(_, bounds):
+        low, high = bounds
+        mid = 0.5 * (low + high)
+        residual = phases_at(mid)[3] - enthalpy
+        return (
+            jnp.where(residual <= 0.0, mid, low),
+            jnp.where(residual > 0.0, mid, high),
+        )
 
-    return jax.lax.fori_loop(
+    lower, upper = jax.lax.fori_loop(
         0,
-        config.saturation_iterations,
-        iteration,
-        (temperature, qv, ql, qi),
+        4 * config.saturation_iterations,
+        bisect,
+        (lower, upper),
     )
+    adjusted_temperature = 0.5 * (lower + upper)
+    vapor, liquid, ice, _ = phases_at(adjusted_temperature)
+
+    # At the freezing point, a liquid/ice mixture spans the fusion-enthalpy
+    # discontinuity and is the conservative equilibrium state.
+    freezing_vapor = jnp.minimum(
+        total_water,
+        saturation_mixing_ratio(freezing, pressure_value, config),
+    )
+    freezing_condensate = jnp.maximum(total_water - freezing_vapor, 0.0)
+    liquid_enthalpy = cp * freezing + lv * freezing_vapor
+    ice_enthalpy = liquid_enthalpy - (ls - lv) * freezing_condensate
+    mixed = (
+        (freezing_condensate > 0.0)
+        & (enthalpy >= ice_enthalpy)
+        & (enthalpy <= liquid_enthalpy)
+    )
+    mixed_ice = jnp.clip(
+        (liquid_enthalpy - enthalpy)
+        / jnp.maximum(
+            ls - lv,
+            jnp.asarray(jnp.finfo(temperature.dtype).tiny),
+        ),
+        0.0,
+        freezing_condensate,
+    )
+    adjusted_temperature = jnp.where(mixed, freezing, adjusted_temperature)
+    vapor = jnp.where(mixed, freezing_vapor, vapor)
+    ice = jnp.where(mixed, mixed_ice, ice)
+    liquid = jnp.where(mixed, freezing_condensate - mixed_ice, liquid)
+    return adjusted_temperature, vapor, liquid, ice
 
 
 def advance_fog_microphysics(
@@ -249,12 +302,30 @@ def advance_fog_microphysics(
     pressure: jax.Array | float | None = None,
     heat_capacity: jax.Array | float | None = None,
 ) -> FogMicrophysicsUpdate:
-    """Finite-rate vapour/fog/ice exchange with conservative phase change."""
+    """Vapour/fog/ice exchange via the enthalpy-conserving equilibrium.
 
+    Water-phase change is treated as fast relative to the LES timestep (valid
+    for typical LES dt on the order of milliseconds), so the state jumps
+    directly to the `saturation_adjustment` equilibrium every call instead of
+    relaxing toward it. Relaxing `temperature` and `qv` independently by the
+    same exponential factor does not preserve `qv <= qsat(T)` at intermediate
+    steps, because `qsat(T)` is a steeply convex function of temperature: a
+    state partway between a supersaturated point and its correctly-saturated
+    equilibrium can still read as strongly supersaturated. `dt` is accepted
+    for interface compatibility but is otherwise unused.
+
+    This intentionally drops any nucleation-delay physics (how long it takes
+    supersaturated vapour to actually nucleate into droplets/crystals) in
+    favour of getting the bulk sensible/latent heat budget - and hence the
+    buoyancy it drives - right without depending on an under-resolved
+    relaxation timescale.
+    """
+
+    del dt
     initial_qv = jnp.maximum(qv, 0.0)
     initial_ql = jnp.maximum(ql, 0.0)
     initial_qi = jnp.maximum(qi, 0.0)
-    equilibrium = saturation_adjustment(
+    temp, vapor, liquid, ice = saturation_adjustment(
         temperature,
         initial_qv,
         initial_ql,
@@ -263,42 +334,10 @@ def advance_fog_microphysics(
         pressure,
         heat_capacity,
     )
-    alpha = 1.0 - jnp.exp(
-        -jnp.asarray(dt, dtype=temperature.dtype)
-        / config.saturation_relaxation_timescale
-    )
-    temp = temperature + alpha * (equilibrium[0] - temperature)
-    vapor = initial_qv + alpha * (equilibrium[1] - initial_qv)
-    liquid = initial_ql + alpha * (equilibrium[2] - initial_ql)
-    ice = initial_qi + alpha * (equilibrium[3] - initial_qi)
-
-    freezing = temp < config.freezing_temperature
-    freeze_alpha = 1.0 - jnp.exp(
-        -jnp.asarray(dt, dtype=temperature.dtype)
-        / config.freezing_timescale
-    )
-    melt_alpha = 1.0 - jnp.exp(
-        -jnp.asarray(dt, dtype=temperature.dtype)
-        / config.melting_timescale
-    )
-    frozen = jnp.where(freezing, freeze_alpha * liquid, 0.0)
-    melted = jnp.where(~freezing, melt_alpha * ice, 0.0)
-    liquid = liquid - frozen + melted
-    ice = ice + frozen - melted
-    cp = jnp.asarray(
-        (
-            config.dry_air_heat_capacity
-            if heat_capacity is None
-            else heat_capacity
-        ),
-        dtype=temperature.dtype,
-    )
-    temp = temp + (
-        config.water_fusion_latent_heat * (frozen - melted)
-        / cp
-    )
 
     vapor_change = vapor - initial_qv
+    frozen = jnp.maximum(ice - initial_qi, 0.0)
+    melted = jnp.maximum(initial_qi - ice, 0.0)
     return FogMicrophysicsUpdate(
         temperature=temp,
         qv=vapor,

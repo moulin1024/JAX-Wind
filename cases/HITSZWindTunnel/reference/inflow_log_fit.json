@@ -1,0 +1,16 @@
+{
+  "model": "U(z) = u_star / kappa * ln(z / z0)",
+  "source": "inflow_profile.csv",
+  "height_input_unit": "mm",
+  "fit_height_range_m": [0.1, 2.0],
+  "sample_count": 20,
+  "von_karman": 0.4,
+  "friction_velocity_m_s": 0.12294132680014663,
+  "roughness_length_m": 1.6100320416141182e-05,
+  "intercept_m_s": 3.3921575586839223,
+  "slope_m_s": 0.30735331700036655,
+  "r_squared": 0.9055750243770762,
+  "rmse_m_s": 0.07861727702650917,
+  "maximum_absolute_residual_m_s": 0.15256652037141638,
+  "fitted_hub_height_velocity_m_s": 3.3514673026030772
+}

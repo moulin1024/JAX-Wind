@@ -13,6 +13,9 @@ and output effects.
   ABL case using the same application schema and solver transition.
 - [`DTU10MWPrecursor`](DTU10MWPrecursor/README.md) contains the three-stage
   strict-inlet DTU 10-MW AD-BEM wake benchmark.
+- [`HITSZWindTunnel`](HITSZWindTunnel/README.md) scales the same three-stage
+  workflow to the HITSZ R9 wind-tunnel experiment using fitted measured inflow
+  and a 480 RPM HITSZ001 AD-BEM rotor.
 
 Select the appropriate application explicitly and pass the case TOML:
 

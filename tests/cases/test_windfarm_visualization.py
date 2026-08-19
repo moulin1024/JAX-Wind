@@ -39,6 +39,7 @@ def test_two_frames_are_saved_and_rendered(tmp_path) -> None:
             hub_height_m=10.0,
             rotor_diameter_m=8.0,
         ),
+        equal_physical_scale=True,
     )
 
     with np.load(archive) as values:

@@ -76,9 +76,27 @@ def _turbine_fingerprint(turbine: Any | None) -> str:
             f"|force-y-offset={float(turbine.force_y_offset_m).hex()}"
         )
     if hasattr(turbine, "rotor_speed_rpm"):
-        speed = turbine.rotor.rotor_speed_rpm if turbine.rotor_speed_rpm is None else turbine.rotor_speed_rpm
-        pitch = turbine.rotor.pitch_degrees if turbine.pitch_degrees is None else turbine.pitch_degrees
-        value += f"|rpm={float(speed).hex()}|pitch={float(pitch).hex()}"
+        if hasattr(turbine, "rotor"):
+            speed = (
+                turbine.rotor.rotor_speed_rpm
+                if turbine.rotor_speed_rpm is None
+                else turbine.rotor_speed_rpm
+            )
+            pitch = (
+                turbine.rotor.pitch_degrees
+                if turbine.pitch_degrees is None
+                else turbine.pitch_degrees
+            )
+            value += f"|rpm={float(speed).hex()}|pitch={float(pitch).hex()}"
+        elif getattr(turbine, "rotating_blade_element", False):
+            value += (
+                f"|rpm={float(turbine.rotor_speed_rpm).hex()}"
+                f"|pitch={float(turbine.pitch_degrees).hex()}"
+            )
+        elif turbine.rotor_speed_rpm is not None:
+            value += f"|rpm-metadata={float(turbine.rotor_speed_rpm).hex()}"
+    if getattr(turbine, "power_coefficient", None) is not None:
+        value += f"|cp-metadata={float(turbine.power_coefficient).hex()}"
     if hasattr(turbine, "smearing_azimuthal_elements"):
         widths = turbine.element_smoothing_widths_m
         value += (
@@ -87,6 +105,11 @@ def _turbine_fingerprint(turbine: Any | None) -> str:
             f"|element-epsilon-max={float(max(widths)).hex()}"
         )
     if hasattr(turbine, "nacelle_length_m"):
+        body_width = (
+            turbine.smoothing_width_m
+            if turbine.body_smoothing_width_m is None
+            else turbine.body_smoothing_width_m
+        )
         value += (
             f"|nacelle-length={float(turbine.nacelle_length_m).hex()}"
             f"|nacelle-diameter={float(turbine.nacelle_diameter_m).hex()}"
@@ -94,7 +117,7 @@ def _turbine_fingerprint(turbine: Any | None) -> str:
             f"|tower-base-diameter={float(turbine.tower_base_diameter_m).hex()}"
             f"|tower-top-diameter={float(turbine.tower_top_diameter_m).hex()}"
             f"|tower-cd={float(turbine.tower_drag_coefficient).hex()}"
-            f"|body-epsilon={float(turbine.smoothing_width_m if turbine.body_smoothing_width_m is None else turbine.body_smoothing_width_m).hex()}"
+            f"|body-epsilon={float(body_width).hex()}"
         )
     return value
 
@@ -114,17 +137,42 @@ def _turbine_summary(turbine: Any | None) -> dict[str, Any] | None:
     if hasattr(turbine, "thrust_coefficient_prime"):
         result["thrust_coefficient_prime"] = turbine.thrust_coefficient_prime
     if getattr(turbine, "prescribed_inflow_velocity_m_s", 0.0) > 0.0:
-        result["prescribed_inflow_velocity_m_s"] = turbine.prescribed_inflow_velocity_m_s
+        result["prescribed_inflow_velocity_m_s"] = (
+            turbine.prescribed_inflow_velocity_m_s
+        )
         result["prescribed_thrust_coefficient"] = turbine.prescribed_thrust_coefficient
         result["force_location_m"] = [turbine.force_x_m, turbine.force_y_m]
     if hasattr(turbine, "rotor"):
         result.update(
             blade_count=turbine.rotor.blade_count,
             radial_stations=len(turbine.rotor.element_radii_m),
-            rotor_speed_rpm=(turbine.rotor.rotor_speed_rpm if turbine.rotor_speed_rpm is None else turbine.rotor_speed_rpm),
-            pitch_degrees=(turbine.rotor.pitch_degrees if turbine.pitch_degrees is None else turbine.pitch_degrees),
+            rotor_speed_rpm=(
+                turbine.rotor.rotor_speed_rpm
+                if turbine.rotor_speed_rpm is None
+                else turbine.rotor_speed_rpm
+            ),
+            pitch_degrees=(
+                turbine.rotor.pitch_degrees
+                if turbine.pitch_degrees is None
+                else turbine.pitch_degrees
+            ),
             openfast_source=str(turbine.rotor.source),
         )
+    elif getattr(turbine, "rotating_blade_element", False):
+        result.update(
+            blade_count=turbine.blade_count,
+            radial_stations=turbine.radial_stations,
+            rotor_speed_rpm=turbine.rotor_speed_rpm,
+            pitch_degrees=turbine.pitch_degrees,
+            rotor_source=turbine.rotor_source,
+        )
+    elif getattr(turbine, "rotor_speed_rpm", None) is not None:
+        result.update(
+            rotor_speed_rpm=turbine.rotor_speed_rpm,
+            rotor_speed_usage="metadata-only for non-rotating prescribed ADM",
+        )
+    if getattr(turbine, "power_coefficient", None) is not None:
+        result["measured_power_coefficient"] = turbine.power_coefficient
     if hasattr(turbine, "smearing_azimuthal_elements"):
         widths = turbine.element_smoothing_widths_m
         result.update(

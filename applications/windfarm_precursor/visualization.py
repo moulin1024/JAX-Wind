@@ -75,6 +75,7 @@ def write_flow_gif(
     inlet_end_x_m: float,
     fps: int,
     turbine: Any | None = None,
+    equal_physical_scale: bool = False,
 ) -> Path:
     """Render fixed-scale X--Z velocity with the legacy inlet annotated."""
 
@@ -94,12 +95,13 @@ def write_flow_gif(
     import matplotlib.pyplot as plt
 
     target = Path(path)
-    figure, axis = plt.subplots(figsize=(10.8, 4.2), constrained_layout=True)
+    figure_size = (12.8, 3.2) if equal_physical_scale else (10.8, 4.2)
+    figure, axis = plt.subplots(figsize=figure_size, constrained_layout=True)
     image = axis.imshow(
         values[0],
         origin="lower",
         extent=(0.0, grid.lx, 0.0, grid.lz),
-        aspect="auto",
+        aspect="equal" if equal_physical_scale else "auto",
         interpolation="bilinear",
         vmin=vmin,
         vmax=vmax,

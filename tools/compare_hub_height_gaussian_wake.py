@@ -127,6 +127,10 @@ def main() -> None:
     parser.add_argument("--fit-min-d", type=float, default=4.0)
     parser.add_argument("--fit-max-d", type=float, default=10.0)
     parser.add_argument("--reference-k", type=float, default=0.05)
+    parser.add_argument(
+        "--title",
+        default="Wake recovery: LES vs Gaussian centerline model",
+    )
     turbulence = parser.add_mutually_exclusive_group()
     turbulence.add_argument(
         "--incoming-ti",
@@ -236,7 +240,7 @@ def main() -> None:
     axis.set(
         xlabel=r"downstream distance $(x-x_T)/D$",
         ylabel=r"hub-height centerline deficit $1-\overline{u}/U_{ref}$",
-        title="DTU 10-MW wake: LES vs Gaussian centerline model",
+        title=args.title,
         xlim=(0.0, domain_end_d),
     )
     axis.grid(alpha=0.25)

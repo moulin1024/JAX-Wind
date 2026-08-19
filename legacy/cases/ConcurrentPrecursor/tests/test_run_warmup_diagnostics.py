@@ -13,14 +13,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from run_warmup_diagnostics import (  # noqa: E402
     cold_plume_centerline,
     configured_run_params,
+    liquid_nitrogen_bulk_speed,
+    two_phase_nitrogen_speed,
     liquid_nitrogen_cooling_power,
     local_device_id,
     make_diagnostic_figure,
     make_water_fog_gif,
+    resolve_liquid_nitrogen_nozzle,
 )
 
 
-ROOT = Path(__file__).resolve().parents[3]
+ROOT = Path(__file__).resolve().parents[4]
 
 
 def _args(**overrides) -> Namespace:
@@ -29,6 +32,8 @@ def _args(**overrides) -> Namespace:
         "ln2_multiphase": False,
         "ln2_mass_flow_kg_s": 0.020,
         "ln2_injection_speed": 8.0,
+        "ln2_radius": None,
+        "ln2_vapor_quality": 0.0,
         "ln2_x": 12.15,
         "ln2_y": 3.0,
         "ln2_z": 0.876,
@@ -84,6 +89,88 @@ def test_explicit_ln2_cooling_power_overrides_enthalpy_estimate() -> None:
     assert liquid_nitrogen_cooling_power(
         _args(ln2_cooling_power_w=12_000.0)
     ) == pytest.approx(12_000.0)
+
+
+def test_physical_ln2_radius_derives_mass_consistent_liquid_speed() -> None:
+    args = _args(
+        ln2_mass_flow_kg_s=0.0125,
+        ln2_radius=0.005,
+        ln2_injection_speed=None,
+    )
+
+    resolve_liquid_nitrogen_nozzle(args)
+
+    assert args.ln2_injection_speed == pytest.approx(0.1974357632232516)
+    assert liquid_nitrogen_bulk_speed(0.0125, 0.005) == pytest.approx(
+        args.ln2_injection_speed
+    )
+
+
+def test_flashing_quality_raises_exit_speed_and_splits_the_mass_flow() -> None:
+    """A 20% flash gives the ~8 m/s the legacy HITSZ case used."""
+    args = _args(
+        ln2_mass_flow_kg_s=0.0125,
+        ln2_radius=0.005,
+        ln2_injection_speed=None,
+        ln2_vapor_quality=0.20,
+    )
+
+    resolve_liquid_nitrogen_nozzle(args)
+
+    assert args.ln2_liquid_mass_flow_kg_s == pytest.approx(0.0100)
+    assert args.ln2_vapor_mass_flow_kg_s == pytest.approx(0.0025)
+    # Vapour is ~185x lighter, so 20% quality lifts 0.197 m/s to ~7.5 m/s.
+    assert args.ln2_injection_speed == pytest.approx(7.49, rel=1.0e-2)
+    assert args.ln2_injection_speed > 30.0 * liquid_nitrogen_bulk_speed(
+        0.0125, 0.005
+    )
+
+
+def test_two_phase_speed_is_monotone_and_reduces_to_the_liquid_limit() -> None:
+    speeds = [
+        two_phase_nitrogen_speed(0.0125, 0.005, q)
+        for q in (0.0, 0.05, 0.2, 0.5)
+    ]
+    assert speeds == sorted(speeds)
+    assert speeds[0] == pytest.approx(
+        liquid_nitrogen_bulk_speed(0.0125, 0.005)
+    )
+    with pytest.raises(ValueError):
+        two_phase_nitrogen_speed(0.0125, 0.005, 1.0)
+
+
+def test_legacy_ln2_source_without_radius_retains_effective_speed() -> None:
+    args = _args(ln2_injection_speed=None, ln2_radius=None, ln2_sigma_r=0.15)
+
+    resolve_liquid_nitrogen_nozzle(args)
+
+    assert args.ln2_radius == pytest.approx(0.15)
+    assert args.ln2_injection_speed == pytest.approx(8.0)
+
+
+def test_hitsz_full_physics_ln2_config_enables_all_couplings() -> None:
+    from run_single import RUN_DEFAULTS, load_config_file
+
+    config = (
+        ROOT
+        / "legacy"
+        / "cases"
+        / "LiquidNitrogenHubJet"
+        / "configs"
+        / "hitsz_256x64x128_full_physics.toml"
+    )
+    settings = dict(RUN_DEFAULTS)
+    settings.update(load_config_file(config))
+
+    assert (settings["nx"], settings["ny"], settings["nz"]) == (256, 64, 128)
+    assert settings["cold_source_z"] == pytest.approx(0.876)
+    assert settings["cold_source_sigma_r"] == pytest.approx(0.005)
+    assert settings["thermo_enabled"] is True
+    assert settings["moisture_enabled"] is True
+    assert settings["cryogenic_enabled"] is True
+    assert settings["cryogenic_turbulent_dispersion_enabled"] is True
+    assert settings["mass_outlet_enabled"] is True
+    assert settings["cryogenic_radiation_temperature"] == pytest.approx(300.0)
 
 
 def test_multiphase_ln2_enables_humid_carrier_transport() -> None:
@@ -227,7 +314,8 @@ def test_8x4x2_ln2_experiment_config_resolves() -> None:
 
     config = (
         ROOT
-        / "benchmark"
+        / "legacy"
+        / "cases"
         / "LiquidNitrogenHubJet"
         / "configs"
         / "warmup_8x4x2_256x128x256.toml.example"
@@ -276,7 +364,8 @@ def test_4x2x2_smoothed_ln2_config_resolves() -> None:
 
     config = (
         ROOT
-        / "benchmark"
+        / "legacy"
+        / "cases"
         / "LiquidNitrogenHubJet"
         / "configs"
         / "warmup_4x2x2_128x64x256_cpu_dt00025.toml.example"

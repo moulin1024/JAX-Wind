@@ -1,0 +1,90 @@
+[case]
+name = "hitsz_r9_fine_extension_360s_adbem_256x64x128"
+
+[domain]
+nx = 256
+ny = 64
+nz = 128
+lx_m = 24.0
+ly_m = 6.0
+lz_m = 3.6
+
+[flow]
+friction_velocity_m_s = 0.12294132680014663
+roughness_length_m = 1.6100320416141182e-5
+forcing_height_m = 3.6
+von_karman = 0.4
+initial_perturbation_rms_m_s = 0.02
+initial_correlation_length_m = 0.125
+
+[wall]
+filter_grid_ratio = 1.5
+test_filter_ratio = 2.0
+porte_agel_correction = true
+
+[sgs]
+closure = "lasd"
+static_coefficient = 0.16
+turbulent_prandtl = 0.4
+update_interval_steps = 4
+filter_grid_ratio = 1.5
+test_filter_ratio = 2.0
+timescale_coefficient = 1.5
+initial_coefficient = 0.03
+minimum_coefficient = 1.0e-6
+maximum_coefficient = 0.81
+scalar_lasd_enabled = false
+reuse_rhs_momentum_context = true
+lasd_filter_backend = "cufft"
+
+[time]
+dt_seconds = 0.0025
+duration_hours = 0.1
+
+[numerics]
+dtype = "float32"
+pressure_method = "transpose"
+pressure_tridiag = "pcr"
+pressure_thomas_chunk = 1
+seed = 2024
+cfl_abort = 0.5
+lasd_trajectory_cfl_abort = 1.0
+
+[output]
+directory = "outputs/hitsz_r9_adbem_benchmark/warmup_fine_extension_360s"
+log_every_steps = 400
+sample_start_hours = 0.095
+sample_every_steps = 400
+checkpoint_every_steps = 18000
+
+[execution]
+overwrite = false
+
+[experiment]
+source = "Yang, Lin & Zhou, Renewable Energy 220 (2024), 119625"
+doi = "10.1016/j.renene.2023.119625"
+condition = "R9"
+length_scale = 0.01
+time_scale = 0.025
+rotor_diameter_m = 1.26
+hub_height_m = 0.876
+turbine_x_m = 12.0
+turbine_y_m = 3.0
+wind_speed_m_s = 4.4
+rotor_speed_rpm = 480.0
+measured_thrust_coefficient = 0.810
+measured_power_coefficient = 0.459
+mean_thrust_n = 12.21
+mean_torque_n_m = 0.61
+reported_turbulence_ceiling = 0.01
+fitted_hub_height_wind_speed_m_s = 3.3514673026030772
+fitted_hub_height_tip_speed_ratio = 9.448773056383162
+inflow_fit_r_squared = 0.9055750243770762
+inflow_fit_rmse_m_s = 0.07861727702650917
+
+[workflow]
+compatibility = "strict-cuda-fortran"
+stage = "fine-extension-180-to-360-seconds"
+restart = "warmup_fine_extension_180s/checkpoint_final.npz"
+segment_duration_seconds = 180.0
+total_fine_duration_seconds = 360.0

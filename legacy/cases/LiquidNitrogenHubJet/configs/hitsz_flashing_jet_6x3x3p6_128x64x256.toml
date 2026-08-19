@@ -1,0 +1,156 @@
+# HITSZ flashing LN2 jet: 6 x 3 x 3.6 m on 128 x 64 x 256 cells, 10 s.
+#
+# Jet condition (see HITSZ.md): 0.0125 kg/s through a 10 mm bore with 20%
+# of the nitrogen already flashed to vapour in the transfer line. The mixture
+# is ~185x lighter than pure liquid, so the exit speed is 7.5 m/s rather than
+# the 0.197 m/s a pure-liquid discharge would give. That figure is supported
+# three ways: the legacy 8 m/s value this case originally used, the measured
+# lack of gravitational droop in the test video, and a line heat leak of
+# ~470 W which is plausible for the visibly frosted, uninsulated pipe.
+#
+# The flashed fraction is injected as cold nitrogen gas rather than droplets
+# (--ln2-vapor-quality), because its latent heat came from the transfer line,
+# not from the tunnel air. Liquid to parcels 0.0100 kg/s, vapour 0.0025 kg/s,
+# total cooling 4883 W against 5381 W if it were all still liquid.
+#
+# dt = 0.0005 s holds CFL at 0.08 streamwise (7.5 m/s against dx = 0.0469 m)
+# and 0.09 vertical (buoyant downdraft against dz = 0.0141 m).
+#
+# The fringe is ENABLED here, unlike the earlier buoyancy-only cases: the jet
+# crosses the 6 m box in 0.8 s, so without damping it would recirculate
+# through the periodic x boundary and contaminate its own inflow. The nozzle
+# sits at x = 1.5 m, leaving 3 m of free development before the fringe.
+#
+# There is no tunnel freestream in this configuration (pressure_force = 0,
+# zero geostrophic wind) so the jet is seen against still air. Set a non-zero
+# geostrophic_u to add the ~3.35 m/s tunnel flow.
+#
+# The initial condition must be "geostrophic" with zero wind, not
+# "uniform_flow": initial_sharded_state has no uniform_flow branch, so that
+# value silently falls through to a u_fric log-law profile.
+
+[grid]
+nx = 128
+ny = 64
+nz = 256
+lx = 6.0
+ly = 3.0
+lz = 3.6
+z_i = 1.0
+
+[time]
+scheme = "ab2"
+steps = 20000
+log_every = 2000
+dt = 0.0005
+
+[physics]
+u_fric = 0.12294132680014663
+zo = 1.6100320416141182e-5
+bl_height = 3.6
+vonk = 0.4
+pressure_force = 0.0
+pressure_force_height = 3.6
+horizontal_homogeneous = true
+initial_condition = "geostrophic"
+coriolis_f = 0.0
+geostrophic_u = 0.0
+geostrophic_v = 0.0
+uniform_u = 0.0
+uniform_v = 0.0
+momentum_wall_model = "abl"
+wall_stress_model = "dynamic_neutral"
+initial_velocity_noise = 0.02
+molecular_viscosity = 1.5e-5
+molecular_diffusivity = 2.5e-5
+
+[wall_filter]
+fgr = 1.5
+tfr = 2.0
+
+[sgs]
+model = "lasd"
+cs_count = 4
+scale_dependent = true
+precision = "float32"
+
+[numerics]
+projection_mode = "stage"
+horizontal_dealias = true
+pressure_filter_nyquist = true
+sharded_pressure_solver = "transpose"
+top_boundary_condition = "rigid_lid"
+
+[thermo]
+enabled = true
+moisture_enabled = true
+theta0 = 300.0
+g = 9.81
+buoyancy_reference = "ambient"
+theta_bc = "flux"
+theta_profile = "uniform"
+surface_theta_flux = 0.0
+qv0 = 0.011
+surface_qv_flux = 0.0
+qv_floor = 0.0
+surface_pressure = 100000.0
+scalar_sgs_model = "fixed_prandtl"
+prandtl_t = 0.74
+schmidt_t = 0.74
+scalar_vertical_scheme = "centered"
+
+[actuator_disk]
+enabled = false
+
+[cold_source]
+enabled = false
+x = 1.5
+y = 1.5
+z = 0.876
+sigma_x = 0.046875
+sigma_r = 0.005
+momentum_flux = 0.0
+cooling_power = 0.0
+density = 1.225
+heat_capacity = 1005.0
+
+[fringe]
+enabled = true
+start_x = 4.5
+timescale = 0.1
+target_u = 0.0
+target_v = 0.0
+target_theta = 300.0
+
+[mass_outlet]
+enabled = true
+start_x = 5.25
+end_x = 6.0
+timescale = 1.0
+
+[cryogenic]
+enabled = true
+max_parcels_per_shard = 16384
+parcels_per_step = 8
+turbulent_dispersion_enabled = true
+injection_streamwise_cells = 0.0
+injection_ramp_time = 0.05
+initial_diameter = 0.000150
+minimum_diameter = 0.000050
+maximum_diameter = 0.000300
+rosin_rammler_spread = 3.0
+substeps = 4
+saturation_timescale = 0.01
+freezing_timescale = 0.05
+melting_timescale = 0.05
+liquid_fog_diameter = 0.000010
+ice_fog_diameter = 0.000020
+shortwave_flux = 0.0
+shortwave_absorption_efficiency = 0.0
+radiation_temperature = 300.0
+liquid_emissivity = 0.96
+
+[runtime]
+precision = "float32"
+sgs_precision = "float32"
+use_jit = true

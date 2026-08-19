@@ -1,0 +1,125 @@
+# Half-length HITSZ LN2 smoke case. The 12 x 6 x 3.6 m domain preserves the
+# production spacings on 128 x 64 x 128 cells and puts the nozzle at x = 6 m.
+
+[grid]
+nx = 128
+ny = 64
+nz = 128
+lx = 12.0
+ly = 6.0
+lz = 3.6
+z_i = 1.0
+
+[time]
+scheme = "ab2"
+steps = 400
+log_every = 40
+dt = 0.0025
+
+[physics]
+u_fric = 0.12294132680014663
+zo = 1.6100320416141182e-5
+bl_height = 3.6
+vonk = 0.4
+pressure_force = 0.004198491620939015
+pressure_force_height = 3.6
+horizontal_homogeneous = true
+initial_condition = "pressure_driven"
+uniform_u = 3.3514673026030772
+uniform_v = 0.0
+momentum_wall_model = "abl"
+wall_stress_model = "dynamic_neutral"
+initial_velocity_noise = 0.02
+molecular_viscosity = 1.5e-5
+molecular_diffusivity = 2.5e-5
+
+[wall_filter]
+fgr = 1.5
+tfr = 2.0
+
+[sgs]
+model = "lasd"
+cs_count = 4
+scale_dependent = true
+precision = "float32"
+
+[numerics]
+projection_mode = "stage"
+horizontal_dealias = true
+pressure_filter_nyquist = true
+sharded_pressure_solver = "transpose"
+top_boundary_condition = "rigid_lid"
+
+[thermo]
+enabled = true
+moisture_enabled = true
+theta0 = 300.0
+g = 9.81
+buoyancy_reference = "ambient"
+theta_bc = "flux"
+theta_profile = "uniform"
+surface_theta_flux = 0.0
+qv0 = 0.011
+surface_qv_flux = 0.0
+qv_floor = 0.0
+surface_pressure = 100000.0
+scalar_sgs_model = "fixed_prandtl"
+prandtl_t = 0.74
+schmidt_t = 0.74
+scalar_vertical_scheme = "centered"
+
+[actuator_disk]
+enabled = false
+
+[cold_source]
+enabled = false
+x = 6.0
+y = 3.0
+z = 0.876
+sigma_x = 0.09375
+sigma_r = 0.005
+momentum_flux = 0.0
+cooling_power = 0.0
+density = 1.225
+heat_capacity = 1005.0
+
+[fringe]
+enabled = false
+start_x = 11.25
+timescale = 0.1
+target_u = 3.3514673026030772
+target_v = 0.0
+target_theta = 300.0
+
+[mass_outlet]
+enabled = true
+start_x = 11.25
+end_x = 12.0
+timescale = 1.0
+
+[cryogenic]
+enabled = true
+max_parcels_per_shard = 8192
+parcels_per_step = 8
+turbulent_dispersion_enabled = true
+injection_streamwise_cells = 0.0
+injection_ramp_time = 0.05
+initial_diameter = 0.000150
+minimum_diameter = 0.000050
+maximum_diameter = 0.000300
+rosin_rammler_spread = 3.0
+substeps = 4
+saturation_timescale = 0.01
+freezing_timescale = 0.05
+melting_timescale = 0.05
+liquid_fog_diameter = 0.000010
+ice_fog_diameter = 0.000020
+shortwave_flux = 0.0
+shortwave_absorption_efficiency = 0.0
+radiation_temperature = 300.0
+liquid_emissivity = 0.96
+
+[runtime]
+precision = "float32"
+sgs_precision = "float32"
+use_jit = true
