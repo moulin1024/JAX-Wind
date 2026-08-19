@@ -11,6 +11,10 @@ dependencies = ["h5py>=3.10", "jax>=0.4.30"]
 
 [project.optional-dependencies]
 pressure = ["spectral-fd>=0.2.0"]
+# The finite-volume solver's GPU pressure solve. The package lives in the
+# external/jax-amg submodule; install it with 'pip install -e external/jax-amg'
+# for a checkout, and note that it needs AmgX and a CUDA-enabled jaxlib.
+amg = ["jaxamg>=0.1.4"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -5,3 +5,6 @@
 	path = src/jaxwind/windfarm/reference/openfast
 	url = https://github.com/OpenFAST/openfast.git
 	shallow = true
+[submodule "external/jax-amg"]
+	path = external/jax-amg
+	url = https://github.com/jx-wang-s-group/JAX-AMG.git
