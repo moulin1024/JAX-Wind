@@ -39,7 +39,7 @@ class AdvectionTest(unittest.TestCase):
             .at[-1]
             .set(0.0),
         )
-        poisson = build_pressure_poisson(self.grid, backend="cg")
+        poisson = build_pressure_poisson(self.grid, backend="fft")
         projected, _ = project(candidate, poisson, 0.1)
         return projected
 

@@ -48,7 +48,7 @@ def turbulent_velocity(grid: UniformGrid, seed: int) -> StaggeredVelocity:
         .at[-1]
         .set(0.0),
     )
-    poisson = build_pressure_poisson(grid, backend="cg")
+    poisson = build_pressure_poisson(grid, backend="fft")
     projected, _ = project(candidate, poisson, 0.1)
     return projected
 
@@ -191,7 +191,7 @@ class LargeEddyRunTest(unittest.TestCase):
         self.assertGreater(difference, 0.0)
 
     def test_a_large_eddy_run_stays_solenoidal_and_finite(self) -> None:
-        poisson = build_pressure_poisson(self.grid, backend="cg")
+        poisson = build_pressure_poisson(self.grid, backend="fft")
         model = FlowModel(
             viscosity=0.005,
             body_force=(1.0, 0.0, 0.0),
@@ -209,7 +209,7 @@ class LargeEddyRunTest(unittest.TestCase):
     def test_the_model_leaves_laminar_poiseuille_flow_alone(self) -> None:
         """AMD must not thicken a resolved laminar profile."""
         grid = UniformGrid(4, 4, 16, 1.0, 1.0, 1.0)
-        poisson = build_pressure_poisson(grid, backend="cg")
+        poisson = build_pressure_poisson(grid, backend="fft")
         viscosity, forcing, end_time = 0.1, 1.0, 20.0
         model = FlowModel(
             viscosity=viscosity,

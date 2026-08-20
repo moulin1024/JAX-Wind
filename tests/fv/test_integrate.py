@@ -61,7 +61,7 @@ def run_taylor_green(
     scheme: str = "rk3",
 ) -> tuple[jnp.ndarray, StaggeredVelocity, StaggeredVelocity]:
     grid = taylor_green_grid(cells)
-    poisson = build_pressure_poisson(grid, backend="cg")
+    poisson = build_pressure_poisson(grid, backend="fft")
     model = FlowModel(viscosity=viscosity)
     step = build_step(grid, FREE_SLIP_WALLS, poisson, model, scheme=scheme)
     run = build_run(step)
@@ -160,7 +160,7 @@ class LaminarChannelTest(unittest.TestCase):
 
     def run_to_steady_state(self, cells: int) -> tuple[UniformGrid, jnp.ndarray]:
         grid = UniformGrid(4, 4, cells, 1.0, 1.0, 1.0)
-        poisson = build_pressure_poisson(grid, backend="cg")
+        poisson = build_pressure_poisson(grid, backend="fft")
         model = FlowModel(viscosity=self.viscosity, body_force=(self.forcing, 0.0, 0.0))
         step = build_step(grid, Boundaries(), poisson, model, scheme="ab2")
         run = build_run(step)
@@ -195,7 +195,7 @@ class LaminarChannelTest(unittest.TestCase):
 
     def test_the_flow_stays_one_dimensional(self) -> None:
         grid = UniformGrid(4, 4, 8, 1.0, 1.0, 1.0)
-        poisson = build_pressure_poisson(grid, backend="cg")
+        poisson = build_pressure_poisson(grid, backend="fft")
         model = FlowModel(viscosity=self.viscosity, body_force=(self.forcing, 0.0, 0.0))
         step = build_step(grid, Boundaries(), poisson, model, scheme="ab2")
         final = build_run(step)(initial_solution(grid), 0.01, 200)
@@ -215,7 +215,7 @@ class FastRungeKuttaTest(unittest.TestCase):
         """A pressure solver that records how often it is invoked."""
         from jaxwind.fv.poisson import PressurePoisson
 
-        base = build_pressure_poisson(grid, backend="cg")
+        base = build_pressure_poisson(grid, backend="fft")
         calls: list[int] = []
 
         def counted(right_hand_side):
@@ -235,7 +235,7 @@ class FastRungeKuttaTest(unittest.TestCase):
 
     def test_the_step_still_ends_solenoidal(self) -> None:
         grid = taylor_green_grid(16)
-        poisson = build_pressure_poisson(grid, backend="cg")
+        poisson = build_pressure_poisson(grid, backend="fft")
         step = build_step(
             grid,
             FREE_SLIP_WALLS,
@@ -284,7 +284,7 @@ class FastRungeKuttaTest(unittest.TestCase):
 
     def test_walls_stay_impermeable(self) -> None:
         grid = UniformGrid(8, 8, 8, 1.0, 1.0, 0.5)
-        poisson = build_pressure_poisson(grid, backend="cg")
+        poisson = build_pressure_poisson(grid, backend="fft")
         step = build_step(
             grid,
             Boundaries(),
@@ -301,7 +301,7 @@ class FastRungeKuttaTest(unittest.TestCase):
     def test_a_converged_steady_state_needs_no_correction(self) -> None:
         """With the carried pressure right, the final solve has nothing to do."""
         grid = UniformGrid(4, 4, 8, 1.0, 1.0, 1.0)
-        poisson = build_pressure_poisson(grid, backend="cg")
+        poisson = build_pressure_poisson(grid, backend="fft")
         model = FlowModel(viscosity=0.1, body_force=(1.0, 0.0, 0.0))
         step = build_step(grid, Boundaries(), poisson, model, scheme="fast-rk3")
         solution = build_run(step)(initial_solution(grid), 0.004, 5000)
@@ -315,7 +315,7 @@ class StepTest(unittest.TestCase):
     grid = UniformGrid(8, 8, 4, 1.0, 1.0, 0.5)
 
     def build(self, scheme: str):
-        poisson = build_pressure_poisson(self.grid, backend="cg")
+        poisson = build_pressure_poisson(self.grid, backend="fft")
         model = FlowModel(viscosity=0.01, body_force=(1.0, 0.0, 0.0))
         return build_step(self.grid, Boundaries(), poisson, model, scheme=scheme)
 
@@ -349,7 +349,7 @@ class StepTest(unittest.TestCase):
         self.assertEqual(int(looped.step), 4)
 
     def test_rejects_an_unknown_scheme(self) -> None:
-        poisson = build_pressure_poisson(self.grid, backend="cg")
+        poisson = build_pressure_poisson(self.grid, backend="fft")
         with self.assertRaises(ValueError):
             build_step(self.grid, Boundaries(), poisson, FlowModel(), scheme="euler")
 

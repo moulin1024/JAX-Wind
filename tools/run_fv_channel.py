@@ -2,9 +2,12 @@
 
 The default case is a forced plane channel with no-slip walls and the AMD
 subfilter model, which exercises every part of the solver: conservative
-transport, the wall closure, the subfilter stress and the algebraic pressure
-solve.  Use ``--backend amg`` for the JAX-AMG pressure solve on a GPU and
-``--backend cg`` for the portable conjugate-gradient fallback.
+transport, the wall closure, the subfilter stress and the pressure solve.
+Use ``--backend amg`` for the JAX-AMG pressure solve on a GPU, ``--backend
+gmg`` for a
+matrix-free geometric multigrid V-cycle built straight from the mesh, or
+``--backend fft`` for a direct solve that is exact but only valid because the
+horizontal boundary is periodic (which it always is here).
 
     python tools/run_fv_channel.py --cells 64 64 48 --steps 200 --backend amg
 
@@ -13,6 +16,8 @@ because AmgX allocates on the device outside the JAX memory pool:
 
     export XLA_PYTHON_CLIENT_PREALLOCATE=false
     export LD_LIBRARY_PATH=$AMGX_BUILD:$CUDA_HOME/lib64:$LD_LIBRARY_PATH
+
+Neither ``gmg`` nor ``fft`` needs any of that -- both run on plain JAX.
 """
 
 from __future__ import annotations
@@ -73,7 +78,7 @@ def parse_arguments() -> argparse.Namespace:
         help="fixed step size; defaults to the stability limit of the start field",
     )
     parser.add_argument("--report-every", type=int, default=20)
-    parser.add_argument("--backend", choices=("amg", "cg"), default="amg")
+    parser.add_argument("--backend", choices=("amg", "gmg", "fft"), default="amg")
     parser.add_argument("--scheme", choices=("rk3", "fast-rk3", "ab2"), default="rk3")
     parser.add_argument("--direct", action="store_true", help="disable the AMD model")
     parser.add_argument(

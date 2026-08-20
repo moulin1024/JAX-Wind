@@ -91,7 +91,7 @@ class PressureMatrixTest(unittest.TestCase):
 class PoissonSolveTest(unittest.TestCase):
     def test_solution_reproduces_a_manufactured_right_hand_side(self) -> None:
         grid = UniformGrid(16, 12, 8, 2.0, 1.5, 1.0)
-        poisson = build_pressure_poisson(grid, backend="cg")
+        poisson = build_pressure_poisson(grid, backend="fft")
         x, y, z = (jnp.asarray(axis) for axis in _cell_axes(grid))
         exact = (
             jnp.cos(2.0 * jnp.pi * x[None, None, :] / grid.lx)
@@ -107,7 +107,7 @@ class PoissonSolveTest(unittest.TestCase):
 
     def test_residual_of_the_solve_is_negligible(self) -> None:
         grid = UniformGrid(8, 8, 8, 1.0, 1.0, 1.0)
-        poisson = build_pressure_poisson(grid, backend="cg")
+        poisson = build_pressure_poisson(grid, backend="fft")
         velocity = random_velocity(grid, 11)
         right_hand_side = divergence(velocity, grid)
         pressure = poisson.solve(right_hand_side)
@@ -115,9 +115,11 @@ class PoissonSolveTest(unittest.TestCase):
         residual = float(poisson.residual_norm(pressure, right_hand_side))
         self.assertLess(residual, 1.0e-9 * scale)
 
-    def test_rejects_an_unknown_backend(self) -> None:
-        with self.assertRaises(ValueError):
-            build_pressure_poisson(UniformGrid(4, 4, 4, 1.0, 1.0, 1.0), backend="fft")
+    def test_rejects_removed_and_unknown_backends(self) -> None:
+        grid = UniformGrid(4, 4, 4, 1.0, 1.0, 1.0)
+        for backend in ("cg", "multigrid"):
+            with self.subTest(backend=backend), self.assertRaises(ValueError):
+                build_pressure_poisson(grid, backend=backend)
 
 
 class SinglePrecisionTest(unittest.TestCase):
@@ -133,7 +135,7 @@ class SinglePrecisionTest(unittest.TestCase):
         self.assertEqual(matrix.data.dtype, np.dtype("float32"))
 
     def test_the_solve_neither_promotes_nor_loses_accuracy(self) -> None:
-        poisson = build_pressure_poisson(self.grid, backend="cg", dtype="float32")
+        poisson = build_pressure_poisson(self.grid, backend="gmg", dtype="float32")
         velocity = random_velocity(self.grid, 21)
         single = StaggeredVelocity(
             velocity.x.astype(jnp.float32),
@@ -148,7 +150,7 @@ class SinglePrecisionTest(unittest.TestCase):
         self.assertLess(residual, 1.0e-5 * scale)
 
     def test_the_projection_reaches_single_precision_round_off(self) -> None:
-        poisson = build_pressure_poisson(self.grid, backend="cg", dtype="float32")
+        poisson = build_pressure_poisson(self.grid, backend="gmg", dtype="float32")
         velocity = random_velocity(self.grid, 22)
         single = StaggeredVelocity(
             velocity.x.astype(jnp.float32),
@@ -165,7 +167,7 @@ class ProjectionTest(unittest.TestCase):
     grid = UniformGrid(12, 10, 8, 1.5, 1.25, 1.0)
 
     def test_projection_removes_divergence_to_round_off(self) -> None:
-        poisson = build_pressure_poisson(self.grid, backend="cg")
+        poisson = build_pressure_poisson(self.grid, backend="fft")
         velocity = random_velocity(self.grid, 5)
         before = float(jnp.max(jnp.abs(divergence(velocity, self.grid))))
         projected, _ = project(velocity, poisson, 0.05)
@@ -174,13 +176,13 @@ class ProjectionTest(unittest.TestCase):
         self.assertLess(after, 1.0e-9 * before)
 
     def test_projection_keeps_the_walls_impermeable(self) -> None:
-        poisson = build_pressure_poisson(self.grid, backend="cg")
+        poisson = build_pressure_poisson(self.grid, backend="fft")
         projected, _ = project(random_velocity(self.grid, 7), poisson, 0.05)
         self.assertLess(float(jnp.max(jnp.abs(projected.z[0]))), 1.0e-14)
         self.assertLess(float(jnp.max(jnp.abs(projected.z[-1]))), 1.0e-14)
 
     def test_projection_leaves_a_solenoidal_field_alone(self) -> None:
-        poisson = build_pressure_poisson(self.grid, backend="cg")
+        poisson = build_pressure_poisson(self.grid, backend="fft")
         solenoidal, _ = project(random_velocity(self.grid, 9), poisson, 0.05)
         again, pressure = project(solenoidal, poisson, 0.05)
         self.assertLess(

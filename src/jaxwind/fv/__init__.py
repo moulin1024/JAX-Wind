@@ -1,10 +1,14 @@
-"""A staggered-mesh finite-volume incompressible solver with an AMG pressure solve.
+"""A staggered-mesh finite-volume incompressible solver with a pressure solve.
 
 The discretisation is the classical marker-and-cell arrangement on a uniform
 Cartesian box: periodic in x and y, impermeable walls in z.  Its discrete
 divergence and gradient are exact adjoints, so the pressure Poisson operator
-is the compact seven-point Laplacian and can be handed to a sparse algebraic
-solver -- :mod:`jaxamg` on the GPU, or conjugate gradients anywhere.
+is the compact seven-point Laplacian and can be handed to any of three
+backends -- :mod:`jaxamg` on the GPU (needs AmgX and a CUDA build); ``gmg``, a
+JAX-native,
+matrix-free geometric multigrid V-cycle built straight from the mesh, also
+preconditioning conjugate gradients; or ``fft``, a direct diagonalisation
+that is exact but only valid because of the periodic horizontal boundary.
 """
 
 from .integrate import (
@@ -32,7 +36,8 @@ from .poisson import (
     SparseMatrix,
     assemble_pressure_matrix,
     build_amg_solver,
-    build_cg_solver,
+    build_fft_solver,
+    build_gmg_solver,
     build_pressure_poisson,
     default_tolerance,
     matrix_vector_product,
@@ -44,6 +49,11 @@ from .sgs import (
     edge_gradients,
     stress_divergence,
     subfilter_tendency,
+)
+from .sponge import (
+    PLANE_MEAN,
+    REST,
+    rayleigh_sponge_tendency,
 )
 from .wall import (
     CELL_AVERAGE,
@@ -82,6 +92,8 @@ __all__ = [
     "AnisotropicMinimumDissipation",
     "MoninObukhovWall",
     "NO_SLIP",
+    "PLANE_MEAN",
+    "REST",
     "Boundaries",
     "FlowModel",
     "PressurePoisson",
@@ -92,7 +104,8 @@ __all__ = [
     "advection",
     "assemble_pressure_matrix",
     "build_amg_solver",
-    "build_cg_solver",
+    "build_fft_solver",
+    "build_gmg_solver",
     "build_pressure_poisson",
     "build_run",
     "build_step",
@@ -116,6 +129,7 @@ __all__ = [
     "monin_obukhov_boundaries",
     "pressure_gradient",
     "project",
+    "rayleigh_sponge_tendency",
     "stable_timestep",
     "stress_divergence",
     "subfilter_tendency",

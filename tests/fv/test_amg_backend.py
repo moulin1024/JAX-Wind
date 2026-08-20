@@ -17,7 +17,6 @@ from jaxwind.fv import (
     divergence,
     project,
 )
-from jaxwind.fv.poisson import assemble_pressure_matrix
 
 
 HAS_JAXAMG = importlib.util.find_spec("jaxamg") is not None
@@ -51,15 +50,6 @@ class AmgConfigurationTest(unittest.TestCase):
             build_pressure_poisson(grid, backend="amg")
         self.assertIn("external/jax-amg", str(raised.exception))
 
-    def test_the_amg_and_reference_backends_share_one_matrix(self) -> None:
-        """Both backends must solve the same assembled system."""
-        grid = UniformGrid(6, 6, 4, 1.0, 1.0, 1.0)
-        reference = build_pressure_poisson(grid, backend="cg")
-        assembled = assemble_pressure_matrix(grid)
-        self.assertEqual(reference.matrix.reference_cell, assembled.reference_cell)
-        self.assertEqual(reference.matrix.data.tolist(), assembled.data.tolist())
-        self.assertEqual(reference.matrix.indptr.tolist(), assembled.indptr.tolist())
-
 
 @unittest.skipUnless(ON_GPU, "the AMG backend needs jaxamg on a GPU")
 class AmgSolveTest(unittest.TestCase):
@@ -83,7 +73,7 @@ class AmgSolveTest(unittest.TestCase):
     def test_amgx_reproduces_the_reference_solution(self) -> None:
         right_hand_side = divergence(self.velocity(), self.grid)
         amg = build_pressure_poisson(self.grid, backend="amg").solve(right_hand_side)
-        reference = build_pressure_poisson(self.grid, backend="cg").solve(
+        reference = build_pressure_poisson(self.grid, backend="fft").solve(
             right_hand_side
         )
         scale = float(jnp.max(jnp.abs(reference)))
