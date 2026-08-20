@@ -1,0 +1,9 @@
+{
+  "case": "HITSZ R9 fitted-ABL FV warmup",
+  "source": "Yang, Lin & Zhou, Renewable Energy 220 (2024), 119625",
+  "inflow_fit": "reference/inflow_log_fit.json",
+  "rotor_diameter_m": 1.26,
+  "hub_height_m": 0.876,
+  "measured_thrust_coefficient": 0.810,
+  "measured_power_coefficient": 0.459
+}

@@ -11,6 +11,8 @@ and output effects.
   reference data for comparison.
 - [`Nieuwstadt1993`](Nieuwstadt1993/README.md) is a shear-free, buoyancy-driven
   ABL case using the same application schema and solver transition.
+- [`GABLS1`](GABLS1/README.md) is the stable nine-hour ABL
+  intercomparison with an evolving surface temperature.
 - [`DTU10MWPrecursor`](DTU10MWPrecursor/README.md) contains the three-stage
   strict-inlet DTU 10-MW AD-BEM wake benchmark.
 - [`HITSZWindTunnel`](HITSZWindTunnel/README.md) scales the same three-stage
@@ -26,6 +28,8 @@ python -m applications.abl \
   cases/Andren1994/config.toml --dry-run
 python -m applications.abl \
   cases/Nieuwstadt1993/config.toml --dry-run
+python -m applications.fv_abl \
+  cases/GABLS1/config.toml --dry-run
 python -m applications.windfarm_precursor.benchmark --dry-run
 ```
 

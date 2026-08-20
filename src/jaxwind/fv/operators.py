@@ -14,31 +14,53 @@ import jax.numpy as jnp
 
 from jaxwind.domain.grid import UniformGrid
 
-from .state import FREE_SLIP, Boundaries, StaggeredVelocity, Wall
+from .state import (
+    FREE_SLIP,
+    Boundaries,
+    StaggeredVelocity,
+    Wall,
+    streamwise_is_periodic,
+)
 
 
 def divergence(velocity: StaggeredVelocity, grid: UniformGrid) -> jnp.ndarray:
     """Cell-centred divergence of the face-normal velocity."""
+    if streamwise_is_periodic(velocity, grid):
+        x_divergence = (
+            jnp.roll(velocity.x, -1, axis=2) - velocity.x
+        ) / grid.dx
+    else:
+        x_divergence = (velocity.x[..., 1:] - velocity.x[..., :-1]) / grid.dx
     return (
-        (jnp.roll(velocity.x, -1, axis=2) - velocity.x) / grid.dx
+        x_divergence
         + (jnp.roll(velocity.y, -1, axis=1) - velocity.y) / grid.dy
         + (velocity.z[1:] - velocity.z[:-1]) / grid.dz
     )
 
 
-def pressure_gradient(pressure: jnp.ndarray, grid: UniformGrid) -> StaggeredVelocity:
-    """Face-normal gradient of a cell-centred field.
-
-    The wall-normal gradient vanishes on both walls, which is the homogeneous
-    Neumann condition that keeps the corrected normal velocity impermeable.
-    """
-    x_gradient = (pressure - jnp.roll(pressure, 1, axis=2)) / grid.dx
+def pressure_gradient(
+    pressure: jnp.ndarray,
+    grid: UniformGrid,
+    *,
+    periodic_x: bool = True,
+) -> StaggeredVelocity:
+    """Face-normal gradient of a cell-centred field."""
+    if periodic_x:
+        x_gradient = (pressure - jnp.roll(pressure, 1, axis=2)) / grid.dx
+    else:
+        inlet = jnp.zeros_like(pressure[..., :1])
+        interior = (pressure[..., 1:] - pressure[..., :-1]) / grid.dx
+        outlet = -2.0 * pressure[..., -1:] / grid.dx
+        x_gradient = jnp.concatenate((inlet, interior, outlet), axis=2)
     y_gradient = (pressure - jnp.roll(pressure, 1, axis=1)) / grid.dy
     wall = jnp.zeros_like(pressure[:1])
     z_gradient = jnp.concatenate(
         (wall, (pressure[1:] - pressure[:-1]) / grid.dz, wall),
         axis=0,
     )
+    if not periodic_x:
+        y_gradient = y_gradient.at[..., 0].set(0.0).at[..., -1].set(0.0)
+        z_gradient = z_gradient.at[..., 0].set(0.0).at[..., -1].set(0.0)
     return StaggeredVelocity(x_gradient, y_gradient, z_gradient)
 
 
@@ -106,13 +128,25 @@ def _tangential_z_curvature(
     return (gradient[1:] - gradient[:-1]) / grid.dz
 
 
-def _periodic_horizontal_curvature(
+def _horizontal_curvature(
     field: jnp.ndarray,
     grid: UniformGrid,
+    *,
+    periodic_x: bool,
 ) -> jnp.ndarray:
-    return (
-        jnp.roll(field, -1, axis=2) - 2.0 * field + jnp.roll(field, 1, axis=2)
-    ) / grid.dx**2 + (
+    if periodic_x:
+        x_curvature = (
+            jnp.roll(field, -1, axis=2)
+            - 2.0 * field
+            + jnp.roll(field, 1, axis=2)
+        ) / grid.dx**2
+    else:
+        interior = (
+            field[..., 2:] - 2.0 * field[..., 1:-1] + field[..., :-2]
+        ) / grid.dx**2
+        edge = jnp.zeros_like(field[..., :1])
+        x_curvature = jnp.concatenate((edge, interior, edge), axis=2)
+    return x_curvature + (
         jnp.roll(field, -1, axis=1) - 2.0 * field + jnp.roll(field, 1, axis=1)
     ) / grid.dy**2
 
@@ -125,12 +159,13 @@ def diffusion(
 ) -> StaggeredVelocity:
     """Viscous tendency ``nu * laplacian(u)`` with wall mirror closures."""
     nu = jnp.asarray(viscosity, velocity.x.dtype)
+    periodic_x = streamwise_is_periodic(velocity, grid)
     x_tendency = nu * (
-        _periodic_horizontal_curvature(velocity.x, grid)
+        _horizontal_curvature(velocity.x, grid, periodic_x=periodic_x)
         + _tangential_z_curvature(velocity.x, grid, boundaries, "x_velocity")
     )
     y_tendency = nu * (
-        _periodic_horizontal_curvature(velocity.y, grid)
+        _horizontal_curvature(velocity.y, grid, periodic_x=periodic_x)
         + _tangential_z_curvature(velocity.y, grid, boundaries, "y_velocity")
     )
     interior = velocity.z[1:-1]
@@ -138,7 +173,7 @@ def diffusion(
         velocity.z[2:] - 2.0 * interior + velocity.z[:-2]
     ) / grid.dz**2
     z_interior = nu * (
-        _periodic_horizontal_curvature(interior, grid) + z_curvature
+        _horizontal_curvature(interior, grid, periodic_x=periodic_x) + z_curvature
     )
     wall = jnp.zeros_like(velocity.z[:1])
     return StaggeredVelocity(
@@ -148,32 +183,41 @@ def diffusion(
     )
 
 
+def _cells_to_open_x_faces(field: jnp.ndarray) -> jnp.ndarray:
+    """Interpolate x-cell values to distinct inlet/interior/outlet faces."""
+    interior = 0.5 * (field[..., :-1] + field[..., 1:])
+    return jnp.concatenate((field[..., :1], interior, field[..., -1:]), axis=2)
+
+
 def _edge_fluxes(
     velocity: StaggeredVelocity,
+    grid: UniformGrid,
 ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
-    """Momentum fluxes on the three families of mesh edges.
-
-    Each edge flux is shared by the two momentum control volumes that meet
-    there, so using it for both components makes the discrete transport
-    conservative and free of spurious momentum production.
-    """
+    """Momentum fluxes shared by the staggered control volumes."""
     x_velocity, y_velocity, z_velocity = velocity
-    wall = jnp.zeros_like(z_velocity[:1])
-
-    xy_edge = (
-        0.5 * (x_velocity + jnp.roll(x_velocity, 1, axis=1))
-        * 0.5 * (y_velocity + jnp.roll(y_velocity, 1, axis=2))
-    )
+    periodic_x = streamwise_is_periodic(velocity, grid)
+    if periodic_x:
+        y_on_x_faces = 0.5 * (y_velocity + jnp.roll(y_velocity, 1, axis=2))
+        z_on_x_faces = 0.5 * (
+            z_velocity[1:-1] + jnp.roll(z_velocity[1:-1], 1, axis=2)
+        )
+        wall_x = jnp.zeros_like(z_velocity[:1])
+    else:
+        y_on_x_faces = _cells_to_open_x_faces(y_velocity)
+        z_on_x_faces = _cells_to_open_x_faces(z_velocity[1:-1])
+        wall_x = jnp.zeros_like(x_velocity[:1])
+    xy_edge = 0.5 * (
+        x_velocity + jnp.roll(x_velocity, 1, axis=1)
+    ) * y_on_x_faces
     xz_edge = jnp.concatenate(
         (
-            wall,
-            0.5 * (x_velocity[:-1] + x_velocity[1:])
-            * 0.5
-            * (z_velocity[1:-1] + jnp.roll(z_velocity[1:-1], 1, axis=2)),
-            wall,
+            wall_x,
+            0.5 * (x_velocity[:-1] + x_velocity[1:]) * z_on_x_faces,
+            wall_x,
         ),
         axis=0,
     )
+    wall = jnp.zeros_like(z_velocity[:1])
     yz_edge = jnp.concatenate(
         (
             wall,
@@ -188,26 +232,44 @@ def _edge_fluxes(
 
 
 def advection(velocity: StaggeredVelocity, grid: UniformGrid) -> StaggeredVelocity:
-    """Convective tendency ``-div(u u)`` in conservative flux form."""
+    """Convective momentum tendency in conservative flux form."""
     x_velocity, y_velocity, z_velocity = velocity
-    xy_edge, xz_edge, yz_edge = _edge_fluxes(velocity)
+    periodic_x = streamwise_is_periodic(velocity, grid)
+    xy_edge, xz_edge, yz_edge = _edge_fluxes(velocity, grid)
 
-    xx_cell = (0.5 * (x_velocity + jnp.roll(x_velocity, -1, axis=2))) ** 2
+    if periodic_x:
+        xx_cell = (
+            0.5 * (x_velocity + jnp.roll(x_velocity, -1, axis=2))
+        ) ** 2
+        xx_divergence = (xx_cell - jnp.roll(xx_cell, 1, axis=2)) / grid.dx
+        xy_x_divergence = (
+            jnp.roll(xy_edge, -1, axis=2) - xy_edge
+        ) / grid.dx
+        xz_x_divergence = (
+            jnp.roll(xz_edge, -1, axis=2) - xz_edge
+        ) / grid.dx
+    else:
+        xx_cell = (0.5 * (x_velocity[..., :-1] + x_velocity[..., 1:])) ** 2
+        interior = (xx_cell[..., 1:] - xx_cell[..., :-1]) / grid.dx
+        edge = jnp.zeros_like(x_velocity[..., :1])
+        xx_divergence = jnp.concatenate((edge, interior, edge), axis=2)
+        xy_x_divergence = (xy_edge[..., 1:] - xy_edge[..., :-1]) / grid.dx
+        xz_x_divergence = (xz_edge[..., 1:] - xz_edge[..., :-1]) / grid.dx
     yy_cell = (0.5 * (y_velocity + jnp.roll(y_velocity, -1, axis=1))) ** 2
     zz_cell = (0.5 * (z_velocity[:-1] + z_velocity[1:])) ** 2
 
     x_flux_divergence = (
-        (xx_cell - jnp.roll(xx_cell, 1, axis=2)) / grid.dx
+        xx_divergence
         + (jnp.roll(xy_edge, -1, axis=1) - xy_edge) / grid.dy
         + (xz_edge[1:] - xz_edge[:-1]) / grid.dz
     )
     y_flux_divergence = (
-        (jnp.roll(xy_edge, -1, axis=2) - xy_edge) / grid.dx
+        xy_x_divergence
         + (yy_cell - jnp.roll(yy_cell, 1, axis=1)) / grid.dy
         + (yz_edge[1:] - yz_edge[:-1]) / grid.dz
     )
     z_flux_divergence = (
-        (jnp.roll(xz_edge, -1, axis=2) - xz_edge)[1:-1] / grid.dx
+        xz_x_divergence[1:-1]
         + (jnp.roll(yz_edge, -1, axis=1) - yz_edge)[1:-1] / grid.dy
         + (zz_cell[1:] - zz_cell[:-1]) / grid.dz
     )
@@ -223,8 +285,13 @@ def cell_velocity(
     velocity: StaggeredVelocity,
 ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """Interpolate the staggered components to cell centres for diagnostics."""
+    x_velocity = (
+        0.5 * (velocity.x + jnp.roll(velocity.x, -1, axis=2))
+        if velocity.x.shape[-1] == velocity.y.shape[-1]
+        else 0.5 * (velocity.x[..., :-1] + velocity.x[..., 1:])
+    )
     return (
-        0.5 * (velocity.x + jnp.roll(velocity.x, -1, axis=2)),
+        x_velocity,
         0.5 * (velocity.y + jnp.roll(velocity.y, -1, axis=1)),
         0.5 * (velocity.z[:-1] + velocity.z[1:]),
     )

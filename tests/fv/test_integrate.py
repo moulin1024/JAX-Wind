@@ -17,8 +17,10 @@ from jaxwind.fv import (
     StaggeredVelocity,
     Wall,
     build_pressure_poisson,
+    build_adaptive_run,
     build_run,
     build_step,
+    courant_number,
     divergence,
     initial_solution,
     kinetic_energy,
@@ -309,6 +311,35 @@ class FastRungeKuttaTest(unittest.TestCase):
         exact = 1.0 / 0.2 * height * (grid.lz - height)
         error = float(jnp.max(jnp.abs(solution.velocity.x[:, 0, 0] - exact)))
         self.assertLess(error, 1.0e-5 * float(jnp.max(exact)))
+
+    def test_adaptive_rk_hits_target_time_and_respects_the_ceiling(self) -> None:
+        grid = UniformGrid(8, 8, 4, 1.0, 1.0, 0.5)
+        shape = (grid.nz, grid.ny, grid.nx)
+        velocity = StaggeredVelocity(
+            jnp.full(shape, 2.0),
+            jnp.zeros(shape),
+            jnp.zeros((grid.nz + 1, grid.ny, grid.nx)),
+        )
+        step = build_step(
+            grid,
+            Boundaries(),
+            build_pressure_poisson(grid, backend="fft"),
+            FlowModel(),
+            scheme="fast-rk3",
+        )
+        run = build_adaptive_run(
+            step,
+            grid,
+            cfl_ceiling=0.8,
+            maximum_dt=0.1,
+        )
+        final = run(initial_solution(grid, velocity), 0.12, 8)
+        self.assertEqual(int(final.step), 3)
+        self.assertAlmostEqual(float(final.time), 0.12, places=12)
+        self.assertLessEqual(
+            float(courant_number(final.velocity, grid, 0.05)),
+            0.8 + 1.0e-12,
+        )
 
 
 class StepTest(unittest.TestCase):

@@ -5,8 +5,10 @@ These are clean crops of Figures 1–19 from the article scan identified in
 JAX-Wind result is baked into the reference images.
 
 The manifest records the rendered page size and crop box for every figure. It
-also records plot-frame registrations for Figures 4, 5, and 7, which are the
-panels directly supported by the active `profiles.csv` output.
+also records plot-frame registrations for Figures 2--8, 11, 14, and 15. The
+extended `history.csv`, `profiles.csv`, and `spectra.csv` outputs supply those
+ten directly comparable panels; the other nine remain reference-only because
+they do not yet have a faithful active observable and registered axis.
 
 Generate result overlays without modifying these reference files:
 

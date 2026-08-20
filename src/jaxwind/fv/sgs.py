@@ -29,7 +29,7 @@ import jax.numpy as jnp
 from jaxwind.domain.grid import UniformGrid
 
 from .operators import tangential_z_gradient
-from .state import Boundaries, StaggeredVelocity
+from .state import Boundaries, StaggeredVelocity, streamwise_is_periodic
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,14 +54,28 @@ class AnisotropicMinimumDissipation:
 EdgeGradients = dict[str, jnp.ndarray]
 
 
-def _to_cell_from_xy_edge(field: jnp.ndarray) -> jnp.ndarray:
+def _to_cell_from_xy_edge(
+    field: jnp.ndarray,
+    *,
+    open_x: bool = False,
+) -> jnp.ndarray:
+    if open_x:
+        x_average = 0.5 * (field[..., :-1] + field[..., 1:])
+        return 0.5 * (x_average + jnp.roll(x_average, -1, axis=1))
     rolled = jnp.roll(field, -1, axis=2)
     return 0.25 * (
         field + rolled + jnp.roll(field, -1, axis=1) + jnp.roll(rolled, -1, axis=1)
     )
 
 
-def _to_cell_from_xz_edge(field: jnp.ndarray) -> jnp.ndarray:
+def _to_cell_from_xz_edge(
+    field: jnp.ndarray,
+    *,
+    open_x: bool = False,
+) -> jnp.ndarray:
+    if open_x:
+        x_average = 0.5 * (field[..., :-1] + field[..., 1:])
+        return 0.5 * (x_average[:-1] + x_average[1:])
     rolled = jnp.roll(field, -1, axis=2)
     return 0.25 * (field[:-1] + field[1:] + rolled[:-1] + rolled[1:])
 
@@ -71,18 +85,39 @@ def _to_cell_from_yz_edge(field: jnp.ndarray) -> jnp.ndarray:
     return 0.25 * (field[:-1] + field[1:] + rolled[:-1] + rolled[1:])
 
 
-def _to_xy_edge_from_cell(field: jnp.ndarray) -> jnp.ndarray:
+def _cells_to_open_x_faces(field: jnp.ndarray) -> jnp.ndarray:
+    interior = 0.5 * (field[..., :-1] + field[..., 1:])
+    return jnp.concatenate((field[..., :1], interior, field[..., -1:]), axis=2)
+
+
+def _to_xy_edge_from_cell(
+    field: jnp.ndarray,
+    *,
+    open_x: bool = False,
+) -> jnp.ndarray:
+    if open_x:
+        faces = _cells_to_open_x_faces(field)
+        return 0.5 * (faces + jnp.roll(faces, 1, axis=1))
     rolled = jnp.roll(field, 1, axis=2)
     return 0.25 * (
         field + rolled + jnp.roll(field, 1, axis=1) + jnp.roll(rolled, 1, axis=1)
     )
 
 
-def _to_xz_edge_from_cell(field: jnp.ndarray) -> jnp.ndarray:
-    """Interpolate to the x-z edges, with a vanishing value on both walls."""
-    rolled = jnp.roll(field, 1, axis=2)
-    interior = 0.25 * (field[:-1] + field[1:] + rolled[:-1] + rolled[1:])
-    wall = jnp.zeros_like(field[:1])
+def _to_xz_edge_from_cell(
+    field: jnp.ndarray,
+    *,
+    open_x: bool = False,
+) -> jnp.ndarray:
+    """Interpolate to x-z edges, with zero wall values."""
+    if open_x:
+        faces = _cells_to_open_x_faces(field)
+        interior = 0.5 * (faces[:-1] + faces[1:])
+        wall = jnp.zeros_like(faces[:1])
+    else:
+        rolled = jnp.roll(field, 1, axis=2)
+        interior = 0.25 * (field[:-1] + field[1:] + rolled[:-1] + rolled[1:])
+        wall = jnp.zeros_like(field[:1])
     return jnp.concatenate((wall, interior, wall), axis=0)
 
 
@@ -93,6 +128,12 @@ def _to_yz_edge_from_cell(field: jnp.ndarray) -> jnp.ndarray:
     return jnp.concatenate((wall, interior, wall), axis=0)
 
 
+def _cell_x_derivative_to_open_faces(field: jnp.ndarray, dx: float) -> jnp.ndarray:
+    interior = (field[..., 1:] - field[..., :-1]) / dx
+    zero = jnp.zeros_like(field[..., :1])
+    return jnp.concatenate((zero, interior, zero), axis=2)
+
+
 def edge_gradients(
     velocity: StaggeredVelocity,
     grid: UniformGrid,
@@ -100,14 +141,23 @@ def edge_gradients(
 ) -> EdgeGradients:
     """Return every velocity gradient at its natural staggered location."""
     x_velocity, y_velocity, z_velocity = velocity
+    periodic_x = streamwise_is_periodic(velocity, grid)
+    if periodic_x:
+        xx = (jnp.roll(x_velocity, -1, axis=2) - x_velocity) / grid.dx
+        yx = (y_velocity - jnp.roll(y_velocity, 1, axis=2)) / grid.dx
+        zx = (z_velocity - jnp.roll(z_velocity, 1, axis=2)) / grid.dx
+    else:
+        xx = (x_velocity[..., 1:] - x_velocity[..., :-1]) / grid.dx
+        yx = _cell_x_derivative_to_open_faces(y_velocity, grid.dx)
+        zx = _cell_x_derivative_to_open_faces(z_velocity, grid.dx)
     return dict(
-        xx=(jnp.roll(x_velocity, -1, axis=2) - x_velocity) / grid.dx,
+        xx=xx,
         yy=(jnp.roll(y_velocity, -1, axis=1) - y_velocity) / grid.dy,
         zz=(z_velocity[1:] - z_velocity[:-1]) / grid.dz,
         xy=(x_velocity - jnp.roll(x_velocity, 1, axis=1)) / grid.dy,
-        yx=(y_velocity - jnp.roll(y_velocity, 1, axis=2)) / grid.dx,
+        yx=yx,
         xz=tangential_z_gradient(x_velocity, grid, boundaries, "x_velocity"),
-        zx=(z_velocity - jnp.roll(z_velocity, 1, axis=2)) / grid.dx,
+        zx=zx,
         yz=tangential_z_gradient(y_velocity, grid, boundaries, "y_velocity"),
         zy=(z_velocity - jnp.roll(z_velocity, 1, axis=1)) / grid.dy,
     )
@@ -115,19 +165,20 @@ def edge_gradients(
 
 def cell_gradients(gradients: EdgeGradients) -> list[list[jnp.ndarray]]:
     """Collect the full gradient tensor at cell centres as ``g[i][k]``."""
+    open_x = gradients["xy"].shape[-1] == gradients["xx"].shape[-1] + 1
     return [
         [
             gradients["xx"],
-            _to_cell_from_xy_edge(gradients["xy"]),
-            _to_cell_from_xz_edge(gradients["xz"]),
+            _to_cell_from_xy_edge(gradients["xy"], open_x=open_x),
+            _to_cell_from_xz_edge(gradients["xz"], open_x=open_x),
         ],
         [
-            _to_cell_from_xy_edge(gradients["yx"]),
+            _to_cell_from_xy_edge(gradients["yx"], open_x=open_x),
             gradients["yy"],
             _to_cell_from_yz_edge(gradients["yz"]),
         ],
         [
-            _to_cell_from_xz_edge(gradients["zx"]),
+            _to_cell_from_xz_edge(gradients["zx"], open_x=open_x),
             _to_cell_from_yz_edge(gradients["zy"]),
             gradients["zz"],
         ],
@@ -184,18 +235,19 @@ def stress_divergence(
     """
     if gradients is None:
         gradients = edge_gradients(velocity, grid, boundaries)
+    open_x = not streamwise_is_periodic(velocity, grid)
     normal_x = 2.0 * viscosity * gradients["xx"]
     normal_y = 2.0 * viscosity * gradients["yy"]
     normal_z = 2.0 * viscosity * gradients["zz"]
     shear_xy = (
         2.0
-        * _to_xy_edge_from_cell(viscosity)
+        * _to_xy_edge_from_cell(viscosity, open_x=open_x)
         * 0.5
         * (gradients["xy"] + gradients["yx"])
     )
     shear_xz = (
         2.0
-        * _to_xz_edge_from_cell(viscosity)
+        * _to_xz_edge_from_cell(viscosity, open_x=open_x)
         * 0.5
         * (gradients["xz"] + gradients["zx"])
     )
@@ -205,18 +257,44 @@ def stress_divergence(
         * 0.5
         * (gradients["yz"] + gradients["zy"])
     )
+    if open_x:
+        edge = jnp.zeros_like(velocity.x[..., :1])
+        normal_x_divergence = jnp.concatenate(
+            (
+                edge,
+                (normal_x[..., 1:] - normal_x[..., :-1]) / grid.dx,
+                edge,
+            ),
+            axis=2,
+        )
+        shear_xy_divergence = (
+            shear_xy[..., 1:] - shear_xy[..., :-1]
+        ) / grid.dx
+        shear_xz_divergence = (
+            shear_xz[..., 1:] - shear_xz[..., :-1]
+        ) / grid.dx
+    else:
+        normal_x_divergence = (
+            normal_x - jnp.roll(normal_x, 1, axis=2)
+        ) / grid.dx
+        shear_xy_divergence = (
+            jnp.roll(shear_xy, -1, axis=2) - shear_xy
+        ) / grid.dx
+        shear_xz_divergence = (
+            jnp.roll(shear_xz, -1, axis=2) - shear_xz
+        ) / grid.dx
     x_tendency = (
-        (normal_x - jnp.roll(normal_x, 1, axis=2)) / grid.dx
+        normal_x_divergence
         + (jnp.roll(shear_xy, -1, axis=1) - shear_xy) / grid.dy
         + (shear_xz[1:] - shear_xz[:-1]) / grid.dz
     )
     y_tendency = (
-        (jnp.roll(shear_xy, -1, axis=2) - shear_xy) / grid.dx
+        shear_xy_divergence
         + (normal_y - jnp.roll(normal_y, 1, axis=1)) / grid.dy
         + (shear_yz[1:] - shear_yz[:-1]) / grid.dz
     )
     z_interior = (
-        (jnp.roll(shear_xz, -1, axis=2) - shear_xz)[1:-1] / grid.dx
+        shear_xz_divergence[1:-1]
         + (jnp.roll(shear_yz, -1, axis=1) - shear_yz)[1:-1] / grid.dy
         + (normal_z[1:] - normal_z[:-1]) / grid.dz
     )

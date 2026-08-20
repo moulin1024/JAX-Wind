@@ -32,7 +32,7 @@ def test_case_is_strict_toml_without_implementation_selectors() -> None:
 
     assert CONFIG.is_file()
     assert not (CASE_DIR / "case.py").exists()
-    for selector in ("runner", "workflow", "model", "integrator", "stability"):
+    for selector in ("runner", "model", "integrator", "stability"):
         assert selector not in text
 
 

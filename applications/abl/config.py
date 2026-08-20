@@ -310,7 +310,12 @@ def load_abl(path: str | Path) -> BoussinesqCase:
         "diagnostics",
         "output",
     }
-    optional_tables = {"surface_scalar"}
+    optional_tables = {
+        "finite_volume",
+        "finite_volume_turbine",
+        "finite_volume_workflow",
+        "surface_scalar",
+    }
     if not expected_tables <= document.keys() or not document.keys() <= (
         expected_tables | optional_tables
     ):

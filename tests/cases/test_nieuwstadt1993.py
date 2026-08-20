@@ -41,7 +41,7 @@ def test_case_uses_the_uniform_abl_schema_without_regime_selection() -> None:
     }
     lower = CONFIG.read_text().lower()
 
-    assert tables == andren_tables
+    assert tables == andren_tables - {"finite_volume_workflow"}
     for selector in ("runner", "workflow", "model", "integrator", "stability"):
         assert selector not in lower
 

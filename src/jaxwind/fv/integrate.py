@@ -16,8 +16,9 @@ import jax.numpy as jnp
 
 from jaxwind.domain.grid import UniformGrid
 
-from .operators import advection, diffusion, pressure_gradient
+from .operators import advection, diffusion, pressure_gradient, stable_timestep
 from .poisson import PressurePoisson, project
+from .rotation import CoriolisGeostrophic, coriolis_tendency
 from .sgs import AnisotropicMinimumDissipation, subfilter_tendency
 from .state import Boundaries, StaggeredVelocity, enforce_impermeability, zeros
 from .wall import MoninObukhovWall, wall_tendency
@@ -54,6 +55,7 @@ class FlowModel:
     forcing: Callable[[StaggeredVelocity, jnp.ndarray], StaggeredVelocity] | None = None
     subfilter: AnisotropicMinimumDissipation | None = None
     surface: MoninObukhovWall | None = None
+    rotation: CoriolisGeostrophic | None = None
 
 
 def initial_solution(
@@ -128,6 +130,8 @@ def build_tendency(
             )
         if model.surface is not None:
             total = _add(total, wall_tendency(velocity, grid, model.surface))
+        if model.rotation is not None:
+            total = _add(total, coriolis_tendency(velocity, model.rotation))
         if model.subfilter is not None:
             subfilter, _ = subfilter_tendency(
                 velocity,
@@ -299,9 +303,59 @@ def build_run(
     return jax.jit(run, static_argnums=2) if jit else run
 
 
+def build_adaptive_run(
+    step: Callable[[Solution, float], Solution],
+    grid: UniformGrid,
+    *,
+    cfl_ceiling: float,
+    maximum_dt: float,
+) -> Callable[[Solution, float, int], Solution]:
+    """JIT an RK block whose individual steps respect a CFL ceiling.
+
+    target_time is absolute. Once it is reached, unused iterations in the
+    compiled block leave the state unchanged. maximum_dt is an upper bound,
+    and the final active step is shortened to land exactly on the target.
+    """
+    ceiling = float(cfl_ceiling)
+    largest_step = float(maximum_dt)
+    if not 0.0 < ceiling:
+        raise ValueError("cfl_ceiling must be positive")
+    if not 0.0 < largest_step:
+        raise ValueError("maximum_dt must be positive")
+
+    def run(solution: Solution, target_time: float, steps: int) -> Solution:
+        target = jnp.asarray(target_time, solution.time.dtype)
+        maximum = jnp.asarray(largest_step, solution.time.dtype)
+
+        def body(_: int, state: Solution) -> Solution:
+            remaining = target - state.time
+
+            def advance(current: Solution) -> Solution:
+                stable = stable_timestep(
+                    current.velocity,
+                    grid,
+                    0.0,
+                    courant=ceiling,
+                )
+                dt = jnp.minimum(jnp.minimum(stable, maximum), remaining)
+                return step(current, dt)
+
+            return jax.lax.cond(
+                remaining > 0.0,
+                advance,
+                lambda current: current,
+                state,
+            )
+
+        return jax.lax.fori_loop(0, steps, body, solution)
+
+    return jax.jit(run, static_argnums=2)
+
+
 __all__ = [
     "FlowModel",
     "Solution",
+    "build_adaptive_run",
     "build_run",
     "build_step",
     "build_tendency",

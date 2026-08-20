@@ -11,13 +11,35 @@ preconditioning conjugate gradients; or ``fft``, a direct diagonalisation
 that is exact but only valid because of the periodic horizontal boundary.
 """
 
+from .abl import (
+    AtmosphericSolution,
+    build_adaptive_atmospheric_run,
+    build_atmospheric_run,
+    build_atmospheric_step,
+    initial_atmospheric_solution,
+)
+from .buoyancy import LinearBoussinesqBuoyancy, boussinesq_tendency
+from .diagnostics import (
+    atmospheric_history_diagnostics,
+    atmospheric_profile_diagnostics,
+)
 from .integrate import (
     FlowModel,
     Solution,
+    build_adaptive_run,
     build_run,
     build_step,
     build_tendency,
     initial_solution,
+)
+from .open_abl import build_open_atmospheric_run, build_open_atmospheric_step
+from .open_boundary import (
+    InflowPlane,
+    enforce_open_scalar,
+    enforce_open_velocity,
+    extract_inflow_plane,
+    periodic_to_open_velocity,
+    validate_inflow_plane,
 )
 from .operators import (
     advection,
@@ -43,6 +65,8 @@ from .poisson import (
     matrix_vector_product,
     project,
 )
+from .rotation import CoriolisGeostrophic, coriolis_tendency
+from .scalar import PassiveScalar, scalar_tendency
 from .sgs import (
     AnisotropicMinimumDissipation,
     eddy_viscosity,
@@ -50,6 +74,13 @@ from .sgs import (
     stress_divergence,
     subfilter_tendency,
 )
+from .surface import (
+    MoninObukhovSurface,
+    SurfaceExchange,
+    coupled_surface_exchange,
+    surface_momentum_tendency,
+)
+from .turbine import build_adbem_forcing
 from .sponge import (
     PLANE_MEAN,
     REST,
@@ -70,6 +101,8 @@ from .wall import (
 from .state import (
     FREE_SLIP,
     NO_SLIP,
+    OPEN,
+    PERIODIC,
     Boundaries,
     StaggeredVelocity,
     Wall,
@@ -77,7 +110,9 @@ from .state import (
     cell_shape,
     enforce_impermeability,
     face_coordinates,
+    streamwise_is_periodic,
     validate,
+    x_face_shape,
     z_face_shape,
     zeros,
 )
@@ -88,22 +123,41 @@ __all__ = [
     "CLASSICAL_AMG_PCG",
     "FREE_SLIP",
     "LOCAL",
+    "LinearBoussinesqBuoyancy",
     "PLANAR",
     "AnisotropicMinimumDissipation",
+    "AtmosphericSolution",
+    "CoriolisGeostrophic",
+    "MoninObukhovSurface",
     "MoninObukhovWall",
     "NO_SLIP",
+    "OPEN",
+    "PERIODIC",
+    "InflowPlane",
     "PLANE_MEAN",
     "REST",
     "Boundaries",
     "FlowModel",
     "PressurePoisson",
+    "PassiveScalar",
     "Solution",
     "SparseMatrix",
+    "SurfaceExchange",
     "StaggeredVelocity",
     "Wall",
     "advection",
     "assemble_pressure_matrix",
+    "atmospheric_history_diagnostics",
+    "atmospheric_profile_diagnostics",
     "build_amg_solver",
+    "build_adbem_forcing",
+    "build_adaptive_atmospheric_run",
+    "build_adaptive_run",
+    "build_atmospheric_run",
+    "build_atmospheric_step",
+    "build_open_atmospheric_run",
+    "build_open_atmospheric_step",
+    "boussinesq_tendency",
     "build_fft_solver",
     "build_gmg_solver",
     "build_pressure_poisson",
@@ -114,28 +168,40 @@ __all__ = [
     "cell_shape",
     "cell_velocity",
     "courant_number",
+    "coriolis_tendency",
+    "coupled_surface_exchange",
     "default_tolerance",
     "diffusion",
     "divergence",
     "eddy_viscosity",
     "edge_gradients",
     "enforce_impermeability",
+    "enforce_open_scalar",
+    "enforce_open_velocity",
+    "extract_inflow_plane",
     "face_coordinates",
     "friction_velocity",
     "initial_solution",
+    "initial_atmospheric_solution",
     "kinetic_energy",
     "logarithmic_profile",
     "matrix_vector_product",
     "monin_obukhov_boundaries",
+    "periodic_to_open_velocity",
     "pressure_gradient",
     "project",
     "rayleigh_sponge_tendency",
+    "scalar_tendency",
     "stable_timestep",
     "stress_divergence",
     "subfilter_tendency",
+    "surface_momentum_tendency",
     "surface_stress",
     "tangential_z_gradient",
+    "streamwise_is_periodic",
     "validate",
+    "validate_inflow_plane",
+    "x_face_shape",
     "wall_tendency",
     "z_face_shape",
     "zeros",

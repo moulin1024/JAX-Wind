@@ -199,6 +199,10 @@ def _model_profile_values(result_dir: Path, model: np.ndarray) -> dict[str, np.n
         "vw_sgs": "sgs_vw_m2_s2",
         "wtheta_resolved": "resolved_scalar_flux",
         "wtheta_sgs": "sgs_scalar_flux",
+        "utheta_resolved": "resolved_uc",
+        "utheta_sgs": "sgs_uc",
+        "vtheta_resolved": "resolved_vc",
+        "vtheta_sgs": "sgs_vc",
     }
     for reference_name, model_name in direct.items():
         if model_name in names:
@@ -294,6 +298,7 @@ def _model_time_values(result_dir: Path) -> dict[str, tuple[np.ndarray, np.ndarr
         "surface_heat_flux": "surface_scalar_flux",
         "friction_velocity": "ustar_m_s",
         "obukhov_length": "obukhov_length_m",
+        "maximum_abs_w": "maximum_abs_w_m_s",
     }
     return {
         reference_name: (time_s, np.asarray(history[model_name], dtype=float))
@@ -435,6 +440,7 @@ def _style_profile_axis(
     model: np.ndarray | None,
     label: str,
     max_height: float,
+    model_label: str,
 ) -> None:
     axis.fill_betweenx(
         z,
@@ -446,7 +452,7 @@ def _style_profile_axis(
     )
     axis.plot(stats["mean"], z, "k--", lw=1.6, label="official ensemble mean")
     if model is not None:
-        axis.plot(model, z, color="#d62728", lw=2.1, label="JAX-Wind")
+        axis.plot(model, z, color="#d62728", lw=2.1, label=model_label)
     else:
         axis.text(
             0.98,
@@ -475,6 +481,7 @@ def _render_profile_group(
     *,
     max_height: float,
     columns: int = 3,
+    model_label: str = "JAX-Wind",
 ) -> None:
     rows = math.ceil(len(panels) / columns)
     figure, axes = plt.subplots(
@@ -492,6 +499,7 @@ def _render_profile_group(
             model_values.get(name),
             label,
             max_height,
+            model_label,
         )
     for axis in axes.flat[len(panels) :]:
         axis.set_visible(False)
@@ -507,6 +515,7 @@ def _render_time_group(
     time_s: np.ndarray,
     references: dict[str, dict[str, np.ndarray]],
     model_values: dict[str, tuple[np.ndarray, np.ndarray]],
+    model_label: str = "JAX-Wind",
 ) -> None:
     figure, axes = plt.subplots(
         2,
@@ -540,7 +549,7 @@ def _render_time_group(
                 model[1],
                 color="#d62728",
                 lw=2.1,
-                label="JAX-Wind",
+                label=model_label,
             )
         else:
             axis.text(
@@ -649,6 +658,18 @@ def _checkout(
     }
 
 
+def _result_model_label(result_dir: Path) -> str:
+    summary_path = result_dir / "summary.json"
+    if not summary_path.exists():
+        return "JAX-Wind"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    solver = summary.get("solver", {})
+    if solver.get("discretization") != "finite-volume":
+        return "JAX-Wind"
+    backend = str(solver.get("pressure_backend", "")).upper()
+    return f"JAX-Wind FV-{backend}" if backend else "JAX-Wind FV"
+
+
 def overlay_results(
     result_dir: Path,
     reference_dir: Path,
@@ -657,6 +678,7 @@ def overlay_results(
     max_height: float = 250.0,
 ) -> dict[str, Path]:
     model = _read_csv(result_dir / "profiles.csv")
+    model_label = _result_model_label(result_dir)
     z = np.asarray(model["z_m"], dtype=float)
     metadata = _reference_metadata(reference_dir)
     reference_resolution = float(metadata["resolution_m"])
@@ -692,7 +714,7 @@ def overlay_results(
             label="official participant range",
         )
         axis.plot(stats["mean"], z, "k--", lw=1.6, label="official ensemble mean")
-        axis.plot(model[model_name], z, color="#d62728", lw=2.2, label="JAX-Wind")
+        axis.plot(model[model_name], z, color="#d62728", lw=2.2, label=model_label)
         axis.set(xlabel=label, ylabel="z (m)", ylim=(0.0, max_height))
         axis.xaxis.set_major_locator(MaxNLocator(5))
         finite = np.asarray(model[model_name], dtype=float)
@@ -703,7 +725,7 @@ def overlay_results(
         axis.grid(alpha=0.24)
     axes.flat[0].legend(fontsize=8, loc="best")
     figure.suptitle(
-        "GABLS1 hours 8–9: uniform JAX-Wind ABL solver vs official "
+        f"GABLS1 hours 8–9: {model_label} vs official "
         f"{reference_resolution:g} m LES ensemble"
     )
     figure.savefig(figure_path, dpi=200)
@@ -728,6 +750,7 @@ def overlay_results(
             model_profile_values,
             max_height=max_height,
             columns=columns,
+            model_label=model_label,
         )
         group_paths[set_name] = path
     time_figure_path = output_dir / "gabls1_set_e_time_series_overlay.png"
@@ -737,6 +760,7 @@ def overlay_results(
         complete_time_s,
         time_references,
         model_time_values,
+        model_label=model_label,
     )
     complete_figure_path = output_dir / "gabls1_complete_overlay.png"
     _vertical_montage(

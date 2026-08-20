@@ -107,7 +107,11 @@ def _first_level_speed(
     y_velocity: jnp.ndarray,
 ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """Cell-centred wind components and speed on the wall-adjacent level."""
-    centred_x = 0.5 * (x_velocity + jnp.roll(x_velocity, -1, axis=1))
+    centred_x = (
+        0.5 * (x_velocity[..., :-1] + x_velocity[..., 1:])
+        if x_velocity.shape[-1] == y_velocity.shape[-1] + 1
+        else 0.5 * (x_velocity + jnp.roll(x_velocity, -1, axis=1))
+    )
     centred_y = 0.5 * (y_velocity + jnp.roll(y_velocity, -1, axis=0))
     speed = jnp.sqrt(centred_x**2 + centred_y**2)
     return centred_x, centred_y, speed
@@ -131,8 +135,15 @@ def surface_stress(
     coefficient = model.drag_coefficient(grid)
     stress_x = coefficient * speed * centred_x
     stress_y = coefficient * speed * centred_y
+    if velocity.x.shape[-1] == stress_x.shape[-1] + 1:
+        interior = 0.5 * (stress_x[..., :-1] + stress_x[..., 1:])
+        stress_x_faces = jnp.concatenate(
+            (stress_x[..., :1], interior, stress_x[..., -1:]), axis=1
+        )
+    else:
+        stress_x_faces = 0.5 * (stress_x + jnp.roll(stress_x, 1, axis=1))
     return (
-        0.5 * (stress_x + jnp.roll(stress_x, 1, axis=1)),
+        stress_x_faces,
         0.5 * (stress_y + jnp.roll(stress_y, 1, axis=0)),
     )
 

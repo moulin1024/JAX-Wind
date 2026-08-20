@@ -72,3 +72,12 @@ spectrum_heights_m = [25.0, 75.0, 150.0]
 
 [output]
 directory = "outputs/gabls1_lasd_32x32x32"
+
+[finite_volume]
+pressure_backend = "gmg"
+time_integration = "ab2"
+momentum_closure = "amd"
+turbulent_prandtl = 1.0
+chunk_steps = 240
+spectrum_diagnostic = "none"
+output_directory = "outputs/gabls1_fv_{pressure_backend}_32x32x32"

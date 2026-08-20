@@ -6,10 +6,10 @@ build; ``gmg`` runs conjugate gradients preconditioned by a geometric
 multigrid V-cycle built directly from the mesh (see :func:`build_gmg_solver`)
 -- pure JAX and matrix-free, with a mesh-independent iteration count and, being
 built from local stencils rather than a global FFT, friendlier to a
-domain-decomposed, multi-GPU mesh; and ``fft`` solves it exactly, in one shot,
-by diagonalising the operator with a 2-D FFT and a one-time eigendecomposition
--- valid only because the mesh is periodic in x and y (see below), but then
-exact to floating point with no iteration at all.
+domain-decomposed, multi-GPU mesh; and ``fft`` transforms the periodic
+horizontal directions and solves the remaining Neumann tridiagonal
+systems directly in one shot -- valid only because the mesh is periodic in x
+and y (see below), but then exact to floating point with no iteration at all.
 
 On the MAC arrangement the composition of the discrete divergence with the
 discrete gradient is the compact seven-point Laplacian: periodic in x and y,
@@ -126,6 +126,7 @@ def assemble_pressure_matrix(
     grid: UniformGrid,
     *,
     dtype: str = "float64",
+    periodic_x: bool = True,
     reference_cell: int | None = 0,
 ) -> SparseMatrix:
     """Assemble ``-D G`` for the staggered mesh, optionally pinning the gauge.
@@ -156,22 +157,43 @@ def assemble_pressure_matrix(
 
     has_lower = k > 0
     has_upper = k < nz - 1
-    diagonal = np.full(rows.size, 2.0 * (inverse_dx2 + inverse_dy2))
-    diagonal += inverse_dz2 * (has_lower.astype(np.float64) + has_upper)
+    if periodic_x:
+        x_diagonal = np.full(rows.size, 2.0 * inverse_dx2)
+    else:
+        x_diagonal = np.full(rows.size, 2.0 * inverse_dx2)
+        x_diagonal[i == 0] = inverse_dx2
+        x_diagonal[i == nx - 1] = 3.0 * inverse_dx2
+    transverse = np.ones(rows.size, dtype=bool) if periodic_x else (
+        (i > 0) & (i < nx - 1)
+    )
+    diagonal = x_diagonal + 2.0 * inverse_dy2 * transverse
+    diagonal += inverse_dz2 * (
+        has_lower.astype(np.float64) + has_upper
+    ) * transverse
 
     row_blocks = [rows]
     column_blocks = [rows]
     value_blocks = [diagonal]
 
+    if periodic_x:
+        for shift in (-1, 1):
+            row_blocks.append(rows)
+            column_blocks.append(k * plane + j * nx + (i + shift) % nx)
+            value_blocks.append(np.full(rows.size, -inverse_dx2))
+    else:
+        for mask, shift in ((i > 0, -1), (i < nx - 1, 1)):
+            row_blocks.append(rows[mask])
+            column_blocks.append(rows[mask] + shift)
+            value_blocks.append(np.full(int(mask.sum()), -inverse_dx2))
     for shift in (-1, 1):
-        row_blocks.append(rows)
-        column_blocks.append(k * plane + j * nx + (i + shift) % nx)
-        value_blocks.append(np.full(rows.size, -inverse_dx2))
-        row_blocks.append(rows)
-        column_blocks.append(k * plane + ((j + shift) % ny) * nx + i)
-        value_blocks.append(np.full(rows.size, -inverse_dy2))
+        row_blocks.append(rows[transverse])
+        column_blocks.append(
+            (k * plane + ((j + shift) % ny) * nx + i)[transverse]
+        )
+        value_blocks.append(np.full(int(transverse.sum()), -inverse_dy2))
 
-    for mask, shift in ((has_lower, -1), (has_upper, 1)):
+    for vertical_mask, shift in ((has_lower, -1), (has_upper, 1)):
+        mask = vertical_mask & transverse
         row_blocks.append(rows[mask])
         column_blocks.append(rows[mask] + shift * plane)
         value_blocks.append(np.full(int(mask.sum()), -inverse_dz2))
@@ -287,20 +309,18 @@ def build_fft_solver(
     *,
     dtype: str = "float64",
 ) -> LinearSolver:
-    """Solve the pressure system exactly by diagonalising the operator.
+    """Solve with a horizontal FFT and batched vertical tridiagonal solves.
 
     The mesh is always periodic in x and y and Neumann in z (see the module
-    docstring), so the seven-point Laplacian is the Kronecker sum of a
-    periodic horizontal operator and a Neumann vertical one, and the two
-    commute.  A real 2-D FFT diagonalises the horizontal part exactly; the
-    vertical operator is a fixed ``nz x nz`` tridiagonal matrix, diagonalised
-    once by a dense eigendecomposition.  The 3-D solve then reduces to one
-    elementwise division per mode -- exact up to floating point, with no
-    iteration and no setup-time tuning.
+    docstring), so a real 2-D FFT diagonalises the horizontal part exactly.
+    Each horizontal mode leaves one ``nz x nz`` Neumann tridiagonal system,
+    solved directly by vectorized Thomas sweeps. This avoids a dense vertical
+    eigenbasis, whose roundoff is amplified by the nearly singular low modes
+    in single precision.
 
-    This is only valid because of that periodicity: unlike ``amg``, which solves whatever sparse matrix it is handed, this
-    diagonalisation stops being correct the moment the horizontal boundary
-    is not periodic.
+    This is only valid because of that periodicity: unlike ``amg``, which
+    solves whatever sparse matrix it is handed, this diagonalisation stops
+    being correct the moment the horizontal boundary is not periodic.
     """
     nx, ny, nz = grid.nx, grid.ny, grid.nz
     resolved = np.dtype(dtype)
@@ -316,66 +336,93 @@ def build_fft_solver(
     lambda_y = 2.0 * (1.0 - np.cos(2.0 * np.pi * ky / ny)) * inverse_dy2
     horizontal = lambda_y[:, None] + lambda_x[None, :]
 
-    # The dense vertical operator, matching assemble_pressure_matrix's
-    # one-sided stencil at the walls exactly.
-    diag_index = np.arange(nz)
-    vertical = np.zeros((nz, nz))
-    vertical[diag_index, diag_index] = inverse_dz2 * (
-        (diag_index > 0).astype(np.float64) + (diag_index < nz - 1)
-    )
-    if nz > 1:
-        off_diagonal = -inverse_dz2 * np.ones(nz - 1)
-        vertical[diag_index[:-1], diag_index[:-1] + 1] = off_diagonal
-        vertical[diag_index[:-1] + 1, diag_index[:-1]] = off_diagonal
-
-    # eigh is ascending, so mode 0 is the constant, null-space eigenvector;
-    # clip its eigenvalue to exactly zero to avoid dividing by round-off.
-    eigenvalues, eigenvectors = np.linalg.eigh(vertical)
-    eigenvalues[0] = 0.0
-
-    eigenvalues = jnp.asarray(eigenvalues, resolved)
-    eigenvectors = jnp.asarray(eigenvectors, resolved)
+    # The vertical diagonal matches the one-sided wall stencil of the
+    # assembled operator. Horizontal eigenvalues are added after the FFT.
+    vertical_diagonal = np.full(nz, 2.0 * inverse_dz2, dtype=resolved)
+    if nz == 1:
+        vertical_diagonal[0] = 0.0
+    else:
+        vertical_diagonal[0] = inverse_dz2
+        vertical_diagonal[-1] = inverse_dz2
+    vertical_diagonal = jnp.asarray(vertical_diagonal)
     horizontal = jnp.asarray(horizontal, resolved)
+    off_diagonal = jnp.asarray(-inverse_dz2, resolved)
 
     def solve(right_hand_side: jnp.ndarray) -> jnp.ndarray:
         field = right_hand_side.reshape(nz, ny, nx)
         spectrum = jnp.fft.rfft2(field, axes=(1, 2))
-        modal = jnp.einsum("mz,zyx->myx", eigenvectors.T, spectrum)
-        denominator = eigenvalues[:, None, None] + horizontal[None, :, :]
-        # The single all-zero mode is the null space; the caller has already
-        # made the right-hand side compatible (zero mean), so its coefficient
-        # is already zero and dividing by one there just leaves it alone.
-        safe = jnp.where(denominator == 0.0, 1.0, denominator)
-        modal = jnp.where(denominator == 0.0, 0.0, modal / safe)
-        spectrum = jnp.einsum("zm,myx->zyx", eigenvectors, modal)
-        solution = jnp.fft.irfft2(spectrum, s=(ny, nx), axes=(1, 2))
+        spectrum = spectrum.transpose(1, 2, 0)
+        diagonal = (
+            vertical_diagonal[None, None, :] + horizontal[:, :, None]
+        ).astype(spectrum.dtype)
+        off = off_diagonal.astype(spectrum.dtype)
+        lower = jnp.full_like(diagonal, off).at[:, :, 0].set(0.0)
+        upper = jnp.full_like(diagonal, off).at[:, :, -1].set(0.0)
+
+        # The sole singular system is the horizontally constant mode. Pin its
+        # first vertical unknown; compatibility makes the omitted equation
+        # redundant, and PressurePoisson restores the zero-mean gauge.
+        spectrum = spectrum.at[0, 0, 0].set(0.0)
+        diagonal = diagonal.at[0, 0, 0].set(1.0)
+        upper = upper.at[0, 0, 0].set(0.0)
+        solution_spectrum = jax.lax.linalg.tridiagonal_solve(
+            lower,
+            diagonal,
+            upper,
+            spectrum[..., None],
+        )[..., 0].transpose(2, 0, 1)
+        solution = jnp.fft.irfft2(
+            solution_spectrum, s=(ny, nx), axes=(1, 2)
+        )
         return solution.reshape(-1)
 
     return solve
 
 
-def _apply_laplacian(pressure: jnp.ndarray, grid: UniformGrid) -> jnp.ndarray:
-    """Matrix-free ``-D G p`` on ``grid``, matching :func:`assemble_pressure_matrix`."""
-    return -divergence(pressure_gradient(pressure, grid), grid)
+def _apply_laplacian(
+    pressure: jnp.ndarray,
+    grid: UniformGrid,
+    *,
+    periodic_x: bool = True,
+) -> jnp.ndarray:
+    """Apply the matrix-free negative pressure Laplacian."""
+    return -divergence(
+        pressure_gradient(pressure, grid, periodic_x=periodic_x),
+        grid,
+    )
 
 
-def _diagonal_stencil(grid: UniformGrid, dtype: np.dtype) -> jnp.ndarray:
-    """The diagonal of ``-D G`` on ``grid``, broadcastable over ``(nz, ny, nx)``.
-
-    Independent of x and y (the horizontal directions are periodic, so every
-    cell sees the same two neighbours); only the wall-adjacent z-layers differ,
-    carrying one vertical neighbour instead of two.
-    """
+def _diagonal_stencil(
+    grid: UniformGrid,
+    dtype: np.dtype,
+    *,
+    periodic_x: bool = True,
+) -> jnp.ndarray:
+    """Diagonal of the periodic or mixed-boundary negative Laplacian."""
     inverse_dx2 = 1.0 / grid.dx**2
     inverse_dy2 = 1.0 / grid.dy**2
     inverse_dz2 = 1.0 / grid.dz**2
     k = np.arange(grid.nz)
     has_lower = k > 0
     has_upper = k < grid.nz - 1
-    diagonal = 2.0 * (inverse_dx2 + inverse_dy2) + inverse_dz2 * (
+    vertical = inverse_dz2 * (
         has_lower.astype(np.float64) + has_upper.astype(np.float64)
     )
-    return jnp.asarray(diagonal, dtype).reshape(grid.nz, 1, 1)
+    if periodic_x:
+        horizontal_x = np.full(grid.nx, 2.0 * inverse_dx2)
+    else:
+        horizontal_x = np.full(grid.nx, 2.0 * inverse_dx2)
+        horizontal_x[0] = inverse_dx2
+        horizontal_x[-1] = 3.0 * inverse_dx2
+    transverse = (
+        np.ones(grid.nx)
+        if periodic_x
+        else ((np.arange(grid.nx) > 0) & (np.arange(grid.nx) < grid.nx - 1))
+    )
+    diagonal = horizontal_x[None, None, :] + transverse[None, None, :] * (
+        vertical[:, None, None] + 2.0 * inverse_dy2
+    )
+    return jnp.asarray(diagonal, dtype)
 
 
 def _coarsening_factors(grid: UniformGrid) -> tuple[int, int, int]:
@@ -387,6 +434,23 @@ def _coarsening_factors(grid: UniformGrid) -> tuple[int, int, int]:
     direction that cannot be halved evenly.
     """
     return tuple(2 if n > 1 and n % 2 == 0 else 1 for n in (grid.nx, grid.ny, grid.nz))
+
+
+def _anisotropy_aware_coarsening_factors(
+    grid: UniformGrid,
+) -> tuple[int, int, int]:
+    """Coarsen the finest physical directions before the wider ones."""
+    counts = (grid.nx, grid.ny, grid.nz)
+    spacings = (grid.dx, grid.dy, grid.dz)
+    eligible = tuple(n > 1 and n % 2 == 0 for n in counts)
+    if not any(eligible):
+        return (1, 1, 1)
+    finest = min(h for h, can_coarsen in zip(spacings, eligible) if can_coarsen)
+    threshold = finest * (1.0 + 32.0 * np.finfo(float).eps)
+    return tuple(
+        2 if can_coarsen and h <= threshold else 1
+        for h, can_coarsen in zip(spacings, eligible)
+    )
 
 
 def _coarsen_grid(grid: UniformGrid, factors: tuple[int, int, int]) -> UniformGrid:
@@ -401,13 +465,21 @@ def _coarsen_grid(grid: UniformGrid, factors: tuple[int, int, int]) -> UniformGr
     )
 
 
-def _build_gmg_levels(grid: UniformGrid) -> tuple[list[UniformGrid], list[tuple[int, int, int]]]:
+def _build_gmg_levels(
+    grid: UniformGrid,
+    *,
+    anisotropy_aware: bool = True,
+) -> tuple[list[UniformGrid], list[tuple[int, int, int]]]:
     """Coarsen by cell-agglomeration until no axis can be halved further."""
     levels = [grid]
     factors = []
     current = grid
     while True:
-        current_factors = _coarsening_factors(current)
+        current_factors = (
+            _anisotropy_aware_coarsening_factors(current)
+            if anisotropy_aware
+            else _coarsening_factors(current)
+        )
         if current_factors == (1, 1, 1):
             return levels, factors
         current = _coarsen_grid(current, current_factors)
@@ -430,7 +502,9 @@ def _neighbor(
     if offset == 1:
         edge[axis] = slice(0, 1)
         interior[axis] = slice(0, -1)
-        return jnp.concatenate((values[tuple(edge)], values[tuple(interior)]), axis=axis)
+        return jnp.concatenate(
+            (values[tuple(edge)], values[tuple(interior)]), axis=axis
+        )
     edge[axis] = slice(-1, None)
     interior[axis] = slice(1, None)
     return jnp.concatenate((values[tuple(interior)], values[tuple(edge)]), axis=axis)
@@ -470,7 +544,12 @@ def _restrict_axis(
     return 0.375 * (lower + upper) + 0.125 * (previous_upper + next_lower)
 
 
-def _restrict(residual: jnp.ndarray, factors: tuple[int, int, int]) -> jnp.ndarray:
+def _restrict(
+    residual: jnp.ndarray,
+    factors: tuple[int, int, int],
+    *,
+    periodic_x: bool = True,
+) -> jnp.ndarray:
     """Cell-centred full weighting, scaled-adjoint to :func:`_prolong`."""
     factor_x, factor_y, factor_z = factors
     if factor_z == 2:
@@ -478,7 +557,7 @@ def _restrict(residual: jnp.ndarray, factors: tuple[int, int, int]) -> jnp.ndarr
     if factor_y == 2:
         residual = _restrict_axis(residual, 1, periodic=True)
     if factor_x == 2:
-        residual = _restrict_axis(residual, 2, periodic=True)
+        residual = _restrict_axis(residual, 2, periodic=periodic_x)
     return residual
 
 
@@ -498,7 +577,12 @@ def _prolong_axis(
     return jnp.stack((lower, upper), axis=axis + 1).reshape(shape)
 
 
-def _prolong(correction: jnp.ndarray, factors: tuple[int, int, int]) -> jnp.ndarray:
+def _prolong(
+    correction: jnp.ndarray,
+    factors: tuple[int, int, int],
+    *,
+    periodic_x: bool = True,
+) -> jnp.ndarray:
     """Cell-centred trilinear interpolation with Neumann extension in z."""
     factor_x, factor_y, factor_z = factors
     if factor_z == 2:
@@ -506,7 +590,7 @@ def _prolong(correction: jnp.ndarray, factors: tuple[int, int, int]) -> jnp.ndar
     if factor_y == 2:
         correction = _prolong_axis(correction, 1, periodic=True)
     if factor_x == 2:
-        correction = _prolong_axis(correction, 2, periodic=True)
+        correction = _prolong_axis(correction, 2, periodic=periodic_x)
     return correction
 
 
@@ -514,12 +598,14 @@ def build_gmg_solver(
     grid: UniformGrid,
     *,
     dtype: str = "float64",
+    periodic_x: bool = True,
     tolerance: float | None = None,
     max_iterations: int = 200,
     presweeps: int = 2,
     postsweeps: int = 2,
     omega: float = 0.8,
     cycles_per_precondition: int = 1,
+    anisotropy_aware: bool = True,
 ) -> LinearSolver:
     """Solve the pressure system with PCG preconditioned by a geometric V-cycle.
 
@@ -550,8 +636,13 @@ def build_gmg_solver(
         tolerance = default_tolerance(resolved)
     from jax.scipy.sparse.linalg import cg
 
-    levels, factors = _build_gmg_levels(grid)
-    diagonals = [_diagonal_stencil(level, resolved) for level in levels[:-1]]
+    levels, factors = _build_gmg_levels(
+        grid, anisotropy_aware=anisotropy_aware
+    )
+    diagonals = [
+        _diagonal_stencil(level, resolved, periodic_x=periodic_x)
+        for level in levels[:-1]
+    ]
     coarse_grid = levels[-1]
     coarse_shape = (coarse_grid.nz, coarse_grid.ny, coarse_grid.nx)
     shape = (grid.nz, grid.ny, grid.nx)
@@ -561,14 +652,20 @@ def build_gmg_solver(
         # A one-cell Neumann grid contains only the constant null mode. Its
         # compatible right-hand side and correction are identically zero, so
         # tracing five vacuous CG passes would only add launch overhead.
-        if coarse_grid.cell_count == 1:
+        if periodic_x and coarse_grid.cell_count == 1:
             return jnp.zeros_like(rhs)
         # Restriction preserves compatibility analytically; remove reduction
         # round-off from the constant null mode before applying CG.
-        compatible = (rhs - jnp.mean(rhs)).reshape(-1)
+        compatible = (
+            rhs - jnp.mean(rhs) if periodic_x else rhs
+        ).reshape(-1)
 
         def matvec(flat: jnp.ndarray) -> jnp.ndarray:
-            return _apply_laplacian(flat.reshape(coarse_shape), coarse_grid).reshape(-1)
+            return _apply_laplacian(
+                flat.reshape(coarse_shape),
+                coarse_grid,
+                periodic_x=periodic_x,
+            ).reshape(-1)
 
         def iteration(_, state):
             solution, residual, direction, residual_norm = state
@@ -579,7 +676,8 @@ def build_gmg_solver(
             step = jnp.where(active, residual_norm / safe_denominator, 0.0)
             solution = solution + step * direction
             next_residual = residual - step * applied
-            next_residual = next_residual - jnp.mean(next_residual)
+            if periodic_x:
+                next_residual = next_residual - jnp.mean(next_residual)
             next_norm = jnp.vdot(next_residual, next_residual).real
             safe_norm = jnp.where(residual_norm > 0.0, residual_norm, 1.0)
             beta = jnp.where(residual_norm > 0.0, next_norm / safe_norm, 0.0)
@@ -594,11 +692,17 @@ def build_gmg_solver(
             iteration,
             (zeros, compatible, compatible, initial_norm),
         )
-        return (solution - jnp.mean(solution)).reshape(coarse_shape)
+        if periodic_x:
+            solution = solution - jnp.mean(solution)
+        return solution.reshape(coarse_shape)
 
-    def smooth(pressure: jnp.ndarray, rhs: jnp.ndarray, level: int, sweeps: int) -> jnp.ndarray:
+    def smooth(
+        pressure: jnp.ndarray, rhs: jnp.ndarray, level: int, sweeps: int
+    ) -> jnp.ndarray:
         for _ in range(sweeps):
-            residual = rhs - _apply_laplacian(pressure, levels[level])
+            residual = rhs - _apply_laplacian(
+                pressure, levels[level], periodic_x=periodic_x
+            )
             pressure = pressure + omega * residual / diagonals[level]
         return pressure
 
@@ -606,27 +710,44 @@ def build_gmg_solver(
         if level == len(levels) - 1:
             return coarse_solve(rhs)
         pressure = smooth(jnp.zeros_like(rhs), rhs, level, presweeps)
-        residual = rhs - _apply_laplacian(pressure, levels[level])
-        coarse_correction = v_cycle(_restrict(residual, factors[level]), level + 1)
-        pressure = pressure + _prolong(coarse_correction, factors[level])
+        residual = rhs - _apply_laplacian(
+            pressure, levels[level], periodic_x=periodic_x
+        )
+        coarse_correction = v_cycle(
+            _restrict(
+                residual, factors[level], periodic_x=periodic_x
+            ),
+            level + 1,
+        )
+        pressure = pressure + _prolong(
+            coarse_correction, factors[level], periodic_x=periodic_x
+        )
         return smooth(pressure, rhs, level, postsweeps)
 
     def precondition(flat: jnp.ndarray) -> jnp.ndarray:
         rhs = flat.reshape(shape)
         pressure = v_cycle(rhs, 0)
         for _ in range(cycles_per_precondition - 1):
-            residual = rhs - _apply_laplacian(pressure, grid)
+            residual = rhs - _apply_laplacian(pressure, grid, periodic_x=periodic_x)
             pressure = pressure + v_cycle(residual, 0)
-        return (pressure - jnp.mean(pressure)).reshape(-1)
+        if periodic_x:
+            pressure = pressure - jnp.mean(pressure)
+        return pressure.reshape(-1)
 
-    def solve(right_hand_side: jnp.ndarray) -> jnp.ndarray:
+    def solve(
+        right_hand_side: jnp.ndarray,
+        initial_guess: jnp.ndarray | None = None,
+    ) -> jnp.ndarray:
         def matvec(flat: jnp.ndarray) -> jnp.ndarray:
-            return _apply_laplacian(flat.reshape(shape), grid).reshape(-1)
+            return _apply_laplacian(
+                flat.reshape(shape), grid, periodic_x=periodic_x
+            ).reshape(-1)
 
         solution, _ = cg(
             matvec,
             right_hand_side,
             M=precondition,
+            x0=initial_guess,
             tol=tolerance,
             atol=0.0,
             maxiter=max_iterations,
@@ -643,14 +764,26 @@ class PressurePoisson:
     grid: UniformGrid
     matrix: SparseMatrix
     linear_solver: LinearSolver
+    periodic_x: bool = True
 
-    def solve(self, right_hand_side: jnp.ndarray) -> jnp.ndarray:
-        """Return the zero-mean cell-centred solution of ``D G p = rhs``."""
+    def solve(
+        self,
+        right_hand_side: jnp.ndarray,
+        initial_pressure: jnp.ndarray | None = None,
+    ) -> jnp.ndarray:
+        """Return the cell-centred solution of ``D G p = rhs``."""
         if right_hand_side.shape != (self.grid.nz, self.grid.ny, self.grid.nx):
             raise ValueError("the pressure right-hand side must be cell centred")
         flat = self._prepare(right_hand_side)
-        solution = self.linear_solver(flat)
-        solution = solution - jnp.mean(solution)
+        if initial_pressure is None:
+            solution = self.linear_solver(flat)
+        else:
+            initial = initial_pressure.reshape(-1)
+            if self.periodic_x:
+                initial = initial - jnp.mean(initial)
+            solution = self.linear_solver(flat, initial)
+        if self.periodic_x:
+            solution = solution - jnp.mean(solution)
         return solution.reshape(right_hand_side.shape)
 
     def residual_norm(
@@ -665,14 +798,19 @@ class PressurePoisson:
         outside the range of a periodic-plus-Neumann Laplacian, and it is zero
         whenever the right-hand side comes from a divergence.
         """
-        applied = divergence(pressure_gradient(pressure, self.grid), self.grid)
+        applied = divergence(pressure_gradient(
+            pressure, self.grid, periodic_x=self.periodic_x
+        ), self.grid)
         error = applied - right_hand_side
-        return jnp.linalg.norm(error - jnp.mean(error))
+        if self.periodic_x:
+            error = error - jnp.mean(error)
+        return jnp.linalg.norm(error)
 
     def _prepare(self, right_hand_side: jnp.ndarray) -> jnp.ndarray:
         """Negate, make compatible with the null space, and drop the gauge row."""
         flat = -right_hand_side.reshape(-1)
-        flat = flat - jnp.mean(flat)
+        if self.periodic_x:
+            flat = flat - jnp.mean(flat)
         if self.matrix.reference_cell is None:
             return flat
         return flat.at[self.matrix.reference_cell].set(0.0)
@@ -682,42 +820,62 @@ def build_pressure_poisson(
     grid: UniformGrid,
     *,
     backend: str = "amg",
+    periodic_x: bool = True,
     dtype: str = "float64",
     reference_cell: int | None = 0,
     config: Mapping[str, Any] | None = None,
 ) -> PressurePoisson:
     """Assemble the pressure operator and attach the requested solver."""
+    if backend == "fft" and not periodic_x:
+        raise ValueError("the FFT pressure backend requires periodic x")
     if backend in ("fft", "gmg"):
         # Both handle the null space themselves (an explicit eigenmode for
         # ``fft``, symmetry of the unpinned operator for ``gmg``), so the
         # assembled matrix kept for bookkeeping stays unpinned.
-        matrix = assemble_pressure_matrix(grid, dtype=dtype, reference_cell=None)
+        matrix = assemble_pressure_matrix(
+            grid,
+            dtype=dtype,
+            periodic_x=periodic_x,
+            reference_cell=None,
+        )
         if backend == "fft":
             solver = build_fft_solver(grid, dtype=dtype, **dict(config or {}))
         else:
-            solver = build_gmg_solver(grid, dtype=dtype, **dict(config or {}))
-        return PressurePoisson(grid, matrix, solver)
+            solver = build_gmg_solver(
+                grid,
+                dtype=dtype,
+                periodic_x=periodic_x,
+                **dict(config or {}),
+            )
+        return PressurePoisson(grid, matrix, solver, periodic_x)
     matrix = assemble_pressure_matrix(
         grid,
         dtype=dtype,
+        periodic_x=periodic_x,
         reference_cell=reference_cell,
     )
     if backend == "amg":
         solver = build_amg_solver(matrix, config=config)
     else:
         raise ValueError(f"unsupported pressure backend: {backend!r}")
-    return PressurePoisson(grid, matrix, solver)
+    return PressurePoisson(grid, matrix, solver, periodic_x)
 
 
 def project(
     velocity: StaggeredVelocity,
     poisson: PressurePoisson,
     dt: float,
+    initial_pressure: jnp.ndarray | None = None,
 ) -> tuple[StaggeredVelocity, jnp.ndarray]:
     """Remove the divergent part of a candidate velocity."""
     grid = poisson.grid
-    pressure = poisson.solve(divergence(velocity, grid) / dt)
-    gradient = pressure_gradient(pressure, grid)
+    pressure = poisson.solve(
+        divergence(velocity, grid) / dt,
+        initial_pressure,
+    )
+    gradient = pressure_gradient(
+        pressure, grid, periodic_x=poisson.periodic_x
+    )
     corrected = StaggeredVelocity(
         velocity.x - dt * gradient.x,
         velocity.y - dt * gradient.y,

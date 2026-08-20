@@ -6,7 +6,8 @@ transitions; directories under `cases/` contain data only, while
 `applications/` owns configuration interpretation, diagnostics, and effects.
 
 The active cases are a pressure-driven atmospheric boundary layer and the
-Andrén et al. (1994) and Nieuwstadt et al. (1993) intercomparisons. They use
+Andrén et al. (1994), Nieuwstadt et al. (1993), and GABLS1
+intercomparisons. They use
 conservative momentum transport, Lagrangian scale-dependent dynamic (LASD)
 closure, AB2 integration, and compatible spectral/finite-difference pressure
 projection.
@@ -120,8 +121,45 @@ python -m applications.abl cases/Andren1994/config.toml \
   --output outputs/andren1994_lasd_40x40x40_trial
 ```
 
-Nieuwstadt uses that same ABL command and schema. Its scalar profile, surface
-flux, and buoyancy coupling are ordinary physical inputs to the shared solver:
+The same physical case can be run with the staggered finite-volume solver, AB2,
+and its direct FFT pressure backend. The FV path currently uses AMD momentum
+closure and an eddy-diffusivity passive scalar, so its resolved output records
+that closure distinction from the canonical LASD run. Its extended diagnostics
+supply every currently registered Andrén overlay (Figures 2--8, 11, 14, and
+15):
+
+```bash
+python -m applications.fv_abl cases/Andren1994/config.toml --dry-run
+JAX_PLATFORMS=cuda XLA_PYTHON_CLIENT_PREALLOCATE=false \
+  python -m applications.fv_abl cases/Andren1994/config.toml \
+  --max-steps 10 --overwrite
+```
+
+For open-streamwise calculations, the FV application also provides a
+configuration-driven warmup/precursor/main workflow. It develops and records
+the periodic precursor with FFT, writes only one inflow layer per time step,
+then enforces those layers in an open-x main run with GMG and a second-order
+outflow condition:
+
+```bash
+python -m applications.fv_abl.workflow \
+  cases/Andren1994/config.toml --dry-run
+JAX_PLATFORMS=cuda XLA_PYTHON_CLIENT_PREALLOCATE=false \
+  python -m applications.fv_abl.workflow \
+  cases/Andren1994/config.toml --max-steps 2 --overwrite
+```
+
+Nieuwstadt uses that same ABL command and schema. It also has an FV comparison
+runner with Boussinesq coupling and FFT pressure projection:
+
+```bash
+python -m applications.fv_abl cases/Nieuwstadt1993/config.toml --dry-run
+JAX_PLATFORMS=cuda XLA_PYTHON_CLIENT_PREALLOCATE=false \
+  python -m applications.fv_abl cases/Nieuwstadt1993/config.toml --overwrite
+```
+
+Its scalar profile, surface flux, and buoyancy coupling are ordinary physical
+inputs to the shared solver:
 
 ```bash
 python -m applications.abl \
@@ -129,6 +167,19 @@ python -m applications.abl \
 JAX_PLATFORMS=cuda XLA_PYTHON_CLIENT_PREALLOCATE=false \
   python -m applications.abl cases/Nieuwstadt1993/config.toml
 python tools/overlay_nieuwstadt1993.py
+```
+
+GABLS1 also has an FV runner with evolving surface temperature and coupled
+Monin–Obukhov momentum and heat fluxes. Its complete overlay covers 27 of the
+30 official diagnostics:
+
+```bash
+python -m applications.fv_abl cases/GABLS1/config.toml --dry-run
+JAX_PLATFORMS=cuda XLA_PYTHON_CLIENT_PREALLOCATE=false \
+  python -m applications.fv_abl cases/GABLS1/config.toml \
+  --output gabls1_fv_fft_overlays
+python tools/overlay_gabls1.py gabls1_fv_fft_overlays \
+  --output-dir gabls1_fv_fft_overlays
 ```
 
 ## Solver boundary

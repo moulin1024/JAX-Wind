@@ -129,7 +129,7 @@ class FftSinglePrecisionTest(unittest.TestCase):
         self.assertEqual(pressure.dtype, jnp.dtype("float32"))
         scale = float(jnp.linalg.norm(right_hand_side))
         residual = float(poisson.residual_norm(pressure, right_hand_side))
-        self.assertLess(residual, 1.0e-4 * scale)
+        self.assertLess(residual, 1.0e-6 * scale)
 
 
 class FftProjectionTest(unittest.TestCase):

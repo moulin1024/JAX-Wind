@@ -67,3 +67,12 @@ spectrum_heights_m = [320.0, 960.0, 1600.0]
 
 [output]
 directory = "outputs/nieuwstadt1993_lasd_40x40x48"
+
+[finite_volume]
+pressure_backend = "gmg"
+time_integration = "ab2"
+momentum_closure = "amd"
+turbulent_prandtl = 1.0
+chunk_steps = 96
+spectrum_diagnostic = "radial"
+output_directory = "outputs/nieuwstadt1993_fv_{pressure_backend}_40x40x48"

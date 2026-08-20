@@ -16,6 +16,40 @@ pitch. It includes the legacy element-size AD-BEM smearing, tower, and nacelle.
 This benchmark deliberately prescribes speed; it does not exercise a turbine
 controller.
 
+## Finite-volume open-domain workflow
+
+[`fv_workflow.toml`](fv_workflow.toml) runs the same `128 x 64 x 256` domain
+and fixed DTU operating point through the FV warmup/precursor/main workflow.
+Its warmup and one-hour precursor use the periodic FFT projection. The
+precursor records one `yz` layer every `0.1 s`; the main domain enforces those
+layers at its inlet, disables the background pressure force, uses the
+second-order open outlet, and projects with GMG. AD-BEM, nacelle, and tower
+loads are active only in the main stage.
+
+The turbine declaration remains data. Set its configured environment variable
+to an AeroDyn15-compatible DTU 10 MW OpenFAST deck, then inspect or run it:
+
+```bash
+export JAXWIND_DTU10MW_FAST=/path/to/DTU_10MW_AeroDyn15.fst
+python -m applications.fv_abl.workflow \
+  cases/DTU10MWPrecursor/fv_workflow.toml --dry-run
+JAX_PLATFORMS=cuda XLA_PYTHON_CLIENT_PREALLOCATE=false \
+  python -m applications.fv_abl.workflow \
+  cases/DTU10MWPrecursor/fv_workflow.toml --overwrite
+```
+
+The complete configuration advances 360,000 warmup steps, records 36,000
+precursor layers, and advances the turbine domain for 36,000 steps. The four
+memory-mappable inflow arrays occupy about 9.5 GB in float32, substantially less
+than the legacy 11-plane HDF5 recording. Use `--max-steps 2 --overwrite` for a
+full-resolution smoke chain.
+
+This is an FV/AMD realization of the benchmark, not a claim that AMD and the
+canonical LASD closure are numerically identical. It preserves the physical
+domain, pressure driving, roughness, turbine geometry, fixed rotor speed, and
+stage durations while using the FV core's configured closure and open-boundary
+discretization.
+
 Set the path to the DTU 10-MW OpenFAST deck, then inspect or run the workflow:
 
 ```bash

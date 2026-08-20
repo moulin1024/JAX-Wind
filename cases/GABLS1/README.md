@@ -40,6 +40,24 @@ The overlay tool selects the official 12.5 m ensemble for 32³ results and the
 official 6.25 m ensemble for 64³ results from the profile spacing. An explicit
 `--reference-dir` still overrides this selection.
 
+The staggered finite-volume solver can run the same 32³ physical case with
+AB2 integration, AMD closure, and the direct FFT pressure backend:
+
+```bash
+PYTHONPATH=src:. JAX_PLATFORMS=cuda XLA_PYTHON_CLIENT_PREALLOCATE=false \
+  python -m applications.fv_abl cases/GABLS1/config.toml \
+  --output gabls1_fv_fft_overlays
+PYTHONPATH=src:. python tools/overlay_gabls1.py \
+  gabls1_fv_fft_overlays --output-dir gabls1_fv_fft_overlays
+```
+
+This FV overlay supplies 27 of the 30 official quantities. Boundary-layer
+height, TKE storage, and total TKE transport remain reference-only because the
+FV statistics accumulator does not yet expose numerically equivalent fields.
+The generated `summary.json`, `complete_overlay_manifest.json`, and
+`overlay_checkout.json` record the solver configuration, coverage, and
+quantitative comparison.
+
 The refined 64³ case uses a 1/12 s timestep and updates LASD every eight
 steps. It preserves the same nine-hour duration and hour-8-to-9 statistics
 window:

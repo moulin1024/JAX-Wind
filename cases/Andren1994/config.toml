@@ -67,3 +67,20 @@ spectrum_heights_m = [393.75]
 
 [output]
 directory = "outputs/andren1994_lasd_40x40x40"
+
+[finite_volume]
+pressure_backend = "gmg"
+time_integration = "ab2"
+momentum_closure = "amd"
+turbulent_prandtl = 1.0
+chunk_steps = 300
+spectrum_diagnostic = "streamwise"
+output_directory = "outputs/andren1994_fv_{pressure_backend}_40x40x40"
+
+[finite_volume_workflow]
+warmup_steps = 125000
+precursor_steps = 4500
+main_steps = 4500
+record_plane = 0
+chunk_steps = 300
+output_directory = "outputs/andren1994_fv_precursor_main_40x40x40"
