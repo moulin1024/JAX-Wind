@@ -1,0 +1,22 @@
+schema_version = 1
+extends = "fv_loglaw_light_256x256x128_16x8x8_1h.toml"
+
+[case]
+name = "hornsrev1_loglaw_light_16x8x8_to18h"
+
+[initial_conditions]
+checkpoint = "../../outputs/hornsrev1_loglaw_light_16x8x8_to10h_30244593/checkpoint.npz"
+
+[time]
+# Continue from 10 h to 18 h.
+steps = 4800
+chunk_steps = 200
+checkpoint_every_steps = 10000
+
+[diagnostics]
+# Average absolute t=16..18 h at 120 s intervals.
+sample_start_step = 3600
+sample_every_steps = 20
+
+[output]
+directory = "outputs/hornsrev1_loglaw_light_16x8x8_to18h_30244593"

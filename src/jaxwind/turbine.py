@@ -23,9 +23,15 @@ from jaxwind.numerics.discretization import cell_velocity
 from .state import StaggeredVelocity
 
 
-def _x_faces(values: jnp.ndarray, grid: Grid) -> jnp.ndarray:
-    """Conservatively average cell forcing onto physical open-x faces."""
+def _x_faces(values: jnp.ndarray, grid: Grid, *, periodic=False) -> jnp.ndarray:
+    """Conservatively average cell forcing onto open or periodic x faces."""
     widths = jnp.asarray(grid.x_widths, dtype=values.dtype)
+    if periodic:
+        lower_widths = jnp.roll(widths, 1)
+        return (
+            jnp.roll(values, 1, axis=2) * widths[None, None, :]
+            + values * lower_widths[None, None, :]
+        ) / (lower_widths + widths)[None, None, :]
     total = widths[:-1] + widths[1:]
     interior = (
         values[..., :-1] * widths[:-1][None, None, :]
@@ -133,7 +139,7 @@ def build_adbem_forcing(
             source_z_upper = source_z_upper + body_values[2][0]
         wall = jnp.zeros_like(source_z_upper[:1])
         return StaggeredVelocity(
-            _x_faces(source_x, grid),
+            _x_faces(source_x, grid, periodic=velocity.x.shape[-1] == grid.nx),
             _y_faces(source_y, grid),
             jnp.concatenate((wall, source_z_upper), axis=0),
         )

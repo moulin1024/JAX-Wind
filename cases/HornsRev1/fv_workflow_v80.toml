@@ -1,0 +1,33 @@
+schema_version = 1
+extends = "fv_workflow_512x512x256_16x16x4.toml"
+
+[case]
+name = "hornsrev1_v80_adbem_512x512x256"
+
+# Same declaration format as cases/DTU10MWPrecursor/fv_workflow.toml.
+# The environment variable points at turbines/V80/CustomRotor.fst.
+[physics.turbine]
+model = "openfast-ad-bem"
+openfast_model_environment = "JAXWIND_V80_FAST"
+x_m = 4096.0
+y_m = 4096.0
+# Horns Rev placement overrides the source deck's temporary 90 m hub height.
+hub_height_m = 70.0
+rotor_speed_rpm = 16.7
+blade_pitch_degrees = 0.0
+smoothing_width_m = 16.0
+smearing_azimuthal_elements = 64
+body_smoothing_width_m = 16.0
+# No V80 nacelle/tower dimensions were supplied; the loader defaults are DTU-sized.
+nacelle_drag_coefficient = 0.0
+tower_drag_coefficient = 0.0
+
+[output]
+directory = "outputs/hornsrev1_v80_adbem_512x512x256"
+
+[workflow]
+# Fixed-step recording and main stages, as in the DTU workflow.
+# Inherited 1200 steps per stage give 120 s each at these step sizes.
+precursor_dt_seconds = 0.1
+main_dt_seconds = 0.1
+output_directory = "outputs/hornsrev1_v80_adbem_workflow_512x512x256"

@@ -93,3 +93,9 @@ directories are left untouched but cannot be resumed by the new runtime.
 Regenerate continuation inputs with the new format. See the
 [migration map](doc/architecture.md#migration-map) and
 [verification instructions](doc/verification.md) before production use.
+
+## Synthetic turbine inflow
+
+Generate neutral turbulence with a reproducible Mann box, sample staggered
+inlet planes under frozen advection, or export them for an open-inflow workflow.
+See the [Mann inflow example and model limits](doc/mann-inflow.md).

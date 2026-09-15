@@ -46,10 +46,18 @@ def _build(case) -> Simulation:
     dtype = case.document["numerics"].get("dtype", "float32")
     jax.config.update("jax_enable_x64", dtype == "float64")
     dt = case.document["time"]["dt_seconds"]
+    if case.formulation == "boussinesq" and "inflow" in case.document.get("physics", {}):
+        from .synthetic_inflow import build_simulation as build_synthetic
+        return build_synthetic(case)
     if case.formulation == "boussinesq":
         from jaxwind.config.abl import load_fv_abl
         from .atmospheric import build_components
-        components = build_components(load_fv_abl(case))
+        forcing = None
+        if "turbine" in case.document.get("physics", {}):
+            from jaxwind.config.stages import load_workflow
+            from .turbines import build_turbine_forcing
+            forcing = build_turbine_forcing(load_workflow(case))
+        components = build_components(load_fv_abl(case), forcing=forcing)
         def advance(state, controls):
             target = controls.target_time if components.adaptive else dt
             return components.advance(state, target, controls.count)

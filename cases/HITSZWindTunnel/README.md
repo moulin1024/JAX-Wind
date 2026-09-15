@@ -229,3 +229,57 @@ outflow. The internal nitrogen source and side/floor/ceiling boundaries
 remain those of the jet-alone case. It retains adaptive RK3, CFL 0.6,
 GMG, the 1 s target and 20 physical-time snapshots; full checkpoints are
 written every 200 accepted steps to reduce compression overhead.
+
+## Direct Mann inflow with AD-BEM, 512 × 128 × 256
+
+`fv_mann_512x128x256_adbem_90s.toml` starts the turbine main run directly,
+without warmup, precursor recording, or a precursor checkpoint. It uses the
+24 × 6 × 3.6 m domain (dx=dy=0.046875 m, dz=0.0140625 m), the R9 AD-BEM rotor
+at (12, 3, 0.876) m and 480 RPM, AMD, the floor wall model, periodic y,
+impermeable free-slip ceiling, and GMG open-x pressure projection. Mean pressure
+forcing is zero. The target is 90 s with dt=0.00125 s (72,000 steps), 100 wake
+frames, and a checkpoint every 2,000 steps.
+
+Both mean speed and turbulence intensity come from the measured columns of
+`reference/inflow_profile.csv`, not its log-fit column. Heights are converted
+from millimetres to metres; mean speed and TI are interpolated independently,
+and their product sets the streamwise RMS at each receiving cell height.
+Outside the measured 0.1–2.0 m range, the nearest measurement is held constant.
+At the hub, U=3.3108 m/s and TI=9.3492%. The initial domain contains the same
+measured mean profile without random perturbations; synthetic turbulence enters
+from t=0. The first flow-through time is a startup transient.
+
+A 4096 × 64 × 128 Mann box spans 384 × 6 × 3.6 m. Its 115.984 s frozen-advection
+period exceeds the 90 s run. L=0.5 m and Gamma=3.9 are explicit modelling
+assumptions: the supplied mean/TI data cannot identify the spectral shape or
+integral scale. Height-dependent rescaling matches the measured streamwise RMS
+after transverse interpolation, including the variance reduction from linear
+streamwise interpolation over a complete box period. All components receive
+the same local scaling (interpolated to w faces), preserving local Mann component
+ratios. This makes the inlet inhomogeneous; it is not a homogeneous Mann tensor
+at every height and it is not discretely divergence-free. Short-window realized
+statistics fluctuate around the full-period calibration.
+
+Run on a compute node:
+
+```bash
+jaxwind run cases/HITSZWindTunnel/fv_mann_512x128x256_adbem_90s.toml
+# Raven batch execution, with a unique output directory per job:
+sbatch tools/submit_hitsz_mann.sh
+# Continue the exact state; the seeded box is regenerated deterministically:
+jaxwind resume outputs/hitsz_mann/adbem_512x128x256_JOBID
+```
+
+The ordinary `jaxwind run` and `resume` commands own checkpoints and wake
+frames; no inflow file needs to be recorded or stored.
+
+Validation on 2026-09-09: 17 focused Mann/direct-run/architecture tests passed,
+including measured-profile mean/RMS calibration and checkpoint continuation.
+The full 512 × 128 × 256 case advanced two steps on an A100 40 GB with the
+production box: CFL=0.219193, maximum FV divergence=8.56e-4 s^-1; the final
+checkpoint was written successfully. Device memory observed after advancement
+was about 5.2 GB (not a measured peak). This short smoke establishes execution,
+not a converged wake or long-time stability. The broader schema suite has two
+existing failures (cryogenic adaptive-CFL rejection and an out-of-range inherited
+record plane); both reproduce with the original configuration module.
+The 90 s production run was submitted separately as Raven job 30109427.

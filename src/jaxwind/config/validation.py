@@ -10,6 +10,9 @@ def check_case(case):
     if case.formulation == "boussinesq":
         from .abl import load_fv_abl
         configured = load_fv_abl(case)
+        if "inflow" in case.document.get("physics", {}):
+            from .synthetic_inflow import reference_profile
+            reference_profile(case.document["physics"]["inflow"]["reference_profile"])
         from jaxwind.io.initial_conditions import load_initial_profile
         load_initial_profile(configured.physical)
         grid = configured.physical.physical_grid

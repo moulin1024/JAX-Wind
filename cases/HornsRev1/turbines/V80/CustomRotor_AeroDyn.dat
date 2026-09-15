@@ -1,0 +1,15 @@
+------- Minimal AeroDyn-compatible rotor for JAX-Wind ------------------------
+0 Wake_Mod
+True TipLoss
+True HubLoss
+0 UA_Mod
+1 AFTabMod
+1 InCol_Alfa
+2 InCol_Cl
+3 InCol_Cd
+0 InCol_Cm
+1 NumAFfiles
+"airfoils/CustomAirfoil.dat" AFNames
+"CustomRotor_AeroDyn_blade.dat" ADBlFile(1)
+"CustomRotor_AeroDyn_blade.dat" ADBlFile(2)
+"CustomRotor_AeroDyn_blade.dat" ADBlFile(3)

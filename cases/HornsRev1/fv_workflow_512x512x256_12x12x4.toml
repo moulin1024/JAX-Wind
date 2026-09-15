@@ -1,0 +1,24 @@
+schema_version = 1
+extends = "fv_workflow_256x256x128.toml"
+
+[case]
+name = "hornsrev1_fv_512x512x256_12x12x4"
+initial_profile = "fv_initial_profile_256_lz1024.csv"
+
+[mesh]
+cells = [512, 512, 256]
+lengths_m = [6144.0, 6144.0, 1024.0]
+
+[physics.flow]
+# Preserve u* = 0.4 * 8 / ln(70 / 2e-4); acceleration = u*^2 / 1024.
+pressure_acceleration_m_s2 = [0.00006136369728288523, 0.0]
+
+[diagnostics]
+reference_length_m = 1024.0
+inversion_search_max_height_m = 1024.0
+
+[output]
+directory = "outputs/hornsrev1_fv_512x512x256_12x12x4"
+
+[workflow]
+output_directory = "outputs/hornsrev1_fv_workflow_512x512x256_12x12x4"

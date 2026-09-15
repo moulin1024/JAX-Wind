@@ -1,0 +1,18 @@
+------- Minimal ElastoDyn-compatible rigid geometry for JAX-Wind -------------
+3 NumBl
+40 TipRad
+3.21582115219 HubRad
+0.0 PreCone(1)
+0.0 PreCone(2)
+0.0 PreCone(3)
+0 BlPitch(1)
+0 BlPitch(2)
+0 BlPitch(3)
+0.0 Azimuth
+16.7 RotSpeed
+0.0 NacYaw
+0.0 ShftTilt
+0.0 AzimB1Up
+0.0 OverHang
+0.0 Twr2Shft
+90 TowerHt

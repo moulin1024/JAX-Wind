@@ -1,0 +1,82 @@
+schema_version = 1
+formulation = "boussinesq"
+
+[case]
+name = "hitsz_mann_512x128x256_adbem_90s"
+citation = "Yang, Lin & Zhou, Renewable Energy 220 (2024), 119625"
+initial_profile = "fv_initial_loglaw_uniform_256.csv"
+reference_results = "fv_reference_results.json"
+seed = 2024
+
+[mesh]
+cells = [512, 128, 256]
+lengths_m = [24.0, 6.0, 3.6]
+
+[time]
+dt_seconds = 0.00125
+steps = 72000
+chunk_steps = 100
+checkpoint_every_steps = 2000
+frame_count = 100
+
+[numerics]
+dtype = "float32"
+pressure_backend = "gmg"
+gmg_tolerance = 1.0e-5
+gmg_presweeps = 4
+gmg_postsweeps = 4
+gmg_anisotropy_aware = true
+time_integration = "fast-rk3"
+turbulent_prandtl = 0.4
+wall_gradient_correction = true
+spectrum_diagnostic = "none"
+
+[output]
+directory = "outputs/hitsz_mann_512x128x256_adbem_90s"
+
+[diagnostics]
+sample_start_step = 16000
+sample_every_steps = 100
+reference_length_m = 1.26
+reference_velocity_m_s = 3.3108
+reference_scalar = 1.0
+inversion_search_max_height_m = 3.6
+spectrum_heights_m = [0.876]
+
+[physics.flow]
+pressure_acceleration_m_s2 = [0.0, 0.0]
+geostrophic_velocity_m_s = [0.0, 0.0]
+advection_frame_velocity_m_s = [0.0, 0.0]
+coriolis_s = [0.0, 0.0]
+roughness_length_m = 1.6100320416141182e-5
+von_karman = 0.4
+
+[physics.scalar]
+reference_value = 0.0
+surface_flux = 0.0
+buoyancy_acceleration_per_unit = 0.0
+
+[physics.inflow]
+model = "mann"
+reference_profile = "reference/inflow_profile.csv"
+# dx_box=0.09375, dy_box=0.09375, dz_box=0.028125 m.
+box_cells = [4096, 64, 128]
+box_lengths_m = [384.0, 6.0, 3.6]
+# L and Gamma are modelling choices; mean/TI alone cannot determine them.
+length_scale_m = 0.5
+gamma = 3.9
+seed = 2024
+advection_height_m = 0.876
+
+[physics.turbine]
+model = "hitsz-r9-ad-bem"
+x_m = 12.0
+y_m = 3.0
+hub_height_m = 0.876
+rotor_speed_rpm = 480.0
+blade_pitch_degrees = 0.0
+smoothing_width_m = 0.09375
+smearing_azimuthal_elements = 64
+body_smoothing_width_m = 0.1875
+nacelle_drag_coefficient = 1.0
+tower_drag_coefficient = 1.0

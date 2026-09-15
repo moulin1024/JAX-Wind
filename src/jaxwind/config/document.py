@@ -18,7 +18,7 @@ except ModuleNotFoundError:
 FORMULATIONS = {"boussinesq", "low-mach-abl", "cryogenic-incompressible", "cryogenic-low-mach"}
 PATH_KEYS = {"initial_profile", "reference_results", "source_workflow", "source_case",
              "incompressible_checkpoint", "low_mach_checkpoint", "checkpoint",
-             "warmup_restart_checkpoint", "input_directory"}
+             "warmup_restart_checkpoint", "input_directory", "reference_profile"}
 
 
 def merge(base: dict, overrides: dict) -> dict:
@@ -130,10 +130,13 @@ def validate(document: dict) -> None:
         raise ValueError("numerics.dtype must be float32 or float64")
     formulation = document["formulation"]
     physics = document.get("physics", {})
-    physical_sections = ({"flow", "scalar", "surface_scalar", "turbine", "cooling"} if formulation == "boussinesq"
+    physical_sections = ({"flow", "scalar", "surface_scalar", "turbine", "cooling", "inflow"} if formulation == "boussinesq"
                          else {"thermodynamics"} if formulation == "low-mach-abl" else {"ambient", "walls", "jet", "source"})
     if not isinstance(physics, dict) or physics.keys() - physical_sections:
         raise ValueError("unknown physics sections for this formulation")
+    if "inflow" in physics:
+        from .synthetic_inflow import validate_mann_inflow
+        validate_mann_inflow(document)
     if formulation != "boussinesq":
         if document["numerics"].get("dtype", "float32") != "float32":
             raise ValueError("this formulation currently supports float32 only")
@@ -181,6 +184,7 @@ def native_document(path: str | Path | ResolvedCase) -> dict:
     if "mesh" in doc:
         result["domain"] = doc["mesh"]
     result.update(doc.get("physics", {}))
+    result.pop("inflow", None)  # Owned by the direct open-inflow builder.
     if "diagnostics" in doc:
         result["diagnostics"] = doc["diagnostics"]
     if case.formulation == "boussinesq":

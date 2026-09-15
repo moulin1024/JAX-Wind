@@ -1,0 +1,27 @@
+schema_version = 1
+extends = "fv_workflow_512x512x256_16x16x4.toml"
+
+[case]
+name = "hornsrev1_loglaw_light_256x128x256_16x16x4_20h"
+
+[mesh]
+# Same physical domain as the 16 x 8 x 8 m light test.
+cells = [256, 128, 256]
+lengths_m = [4096.0, 2048.0, 1024.0]
+
+[time]
+# Fresh 20-hour run: 12000 * 6 s; individual steps use adaptive CFL 0.9.
+steps = 12000
+chunk_steps = 200
+checkpoint_every_steps = 10000
+
+[numerics]
+pressure_backend = "fft"
+
+[diagnostics]
+# Average only hours 18–20, sampled every 120 simulated seconds.
+sample_start_step = 10800
+sample_every_steps = 20
+
+[output]
+directory = "outputs/hornsrev1_loglaw_light_16x16x4_20h_30244593"

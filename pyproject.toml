@@ -9,6 +9,7 @@ description = "Functional JAX large-eddy simulation solver"
 requires-python = ">=3.10"
 dependencies = [
     "jax>=0.4.30",
+    "scipy>=1.10",
     "tomli>=1.1.0; python_version < '3.11'",
 ]
 
@@ -43,6 +44,8 @@ python_files = [
     "test_cryogenic.py",
     "test_surface.py",
     "test_turbine.py",
+    "test_mann_inflow.py",
+    "test_synthetic_main.py",
     "test_hitsz.py",
 ]
 

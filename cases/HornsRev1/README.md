@@ -7,7 +7,25 @@
 Neutral offshore precursor for the Horns Rev 1 wind farm (Vestas V80-2.0 MW,
 80 m rotor, 70 m hub height, 7D spacing). This directory currently provides the
 **warmup** stage only: a periodic, pressure-driven neutral boundary layer that
-spins up turbulence for a later precursor/main turbine workflow.
+spins up turbulence for a later precursor/main turbine workflow. An additional
+single-V80 AD-BEM setup is provided below.
+
+## V80 turbine setup
+
+[`fv_workflow_v80.toml`](fv_workflow_v80.toml) declares the supplied 80 m rotor
+using the same `[physics.turbine]` format as the DTU10MW case. Its case-local
+OpenFAST-compatible data are under [`turbines/V80`](turbines/V80/README.md).
+
+```bash
+export JAXWIND_V80_FAST="$PWD/cases/HornsRev1/turbines/V80/CustomRotor.fst"
+jaxwind check cases/HornsRev1/fv_workflow_v80.toml
+```
+
+The example uses Horns Rev's 70 m hub height and offshore inflow, with a
+single turbine in the 8192 x 8192 x 1024 m domain. It preserves the supplied
+blade and polar data. Nacelle/tower drag is disabled because V80 body
+dimensions were not supplied. See the turbine README for stage durations,
+source-data limits, and running instructions.
 
 ## Configuration
 

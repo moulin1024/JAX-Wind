@@ -5,7 +5,7 @@ from jaxwind.config.abl_resolved import resolved
 from jaxwind.io.initialization import initial_fields
 
 
-def build_components(configured):
+def build_components(configured, *, forcing=None):
     case = configured.physical
     options = configured.options
     configuration = resolved(configured)
@@ -95,6 +95,7 @@ def build_components(configured):
         )
     momentum = FlowModel(
         body_force=(pressure_force[0], pressure_force[1], 0.0),
+        forcing=forcing,
         subfilter=subfilter,
         surface=wall,
         rotation=rotation,
