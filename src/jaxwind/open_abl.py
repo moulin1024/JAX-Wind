@@ -61,7 +61,7 @@ def build_open_atmospheric_step(
     momentum_rhs = build_tendency(grid, boundaries, momentum)
 
     def tendencies(velocity, scalar_field, execution_time, inflow):
-        current_velocity = enforce_open_velocity(velocity, inflow, grid)
+        current_velocity = enforce_open_velocity(velocity, inflow, grid, open_y=poisson.open_y)
         current_scalar_field = (
             scalar_field
             if scalar is None
@@ -168,7 +168,7 @@ def build_open_atmospheric_step(
                 + previous_weight * solution.momentum_tendency.z
             ),
         )
-        candidate = enforce_open_velocity(candidate, inflow, grid)
+        candidate = enforce_open_velocity(candidate, inflow, grid, open_y=poisson.open_y)
         velocity, pressure = project(
             candidate, poisson, dt, solution.pressure
         )
@@ -206,7 +206,7 @@ def build_open_atmospheric_step(
         previous_scalar = solution.scalar_tendency
         pressure = solution.pressure
         step_size = jnp.asarray(dt, velocity.x.dtype)
-        lagged = pressure_gradient(pressure, grid, periodic_x=False, periodic_y=poisson.periodic_y)
+        lagged = pressure_gradient(pressure, grid, periodic_x=False, periodic_y=poisson.periodic_y, open_y=poisson.open_y)
         last = len(current_weights) - 1
 
         for stage, (current_weight, previous_weight) in enumerate(
@@ -251,6 +251,7 @@ def build_open_atmospheric_step(
                 ),
                 inflow,
                 grid,
+                open_y=poisson.open_y,
             )
             if stage == last:
                 velocity, correction = project(candidate, poisson, substep)

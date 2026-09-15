@@ -1,0 +1,9 @@
+step=2 time=0.02s CFL=0.0003828
+step=4 time=0.04s CFL=0.0003828
+step=6 time=0.06s CFL=0.0003828
+step=8 time=0.08s CFL=0.0003828
+step=10 time=0.1s CFL=0.0003828
+step=12 time=0.12s CFL=0.0003828
+step=2 time=0.02s CFL=0.0003896
+step=4 time=0.04s CFL=0.0003932
+step=6 time=0.06s CFL=0.0003933

@@ -1,0 +1,55 @@
+"schema_version" = 1
+"formulation" = "boussinesq"
+
+["case"]
+"name" = "hornsrev1_shared_reference_smoke"
+"citation" = "Shared neutral reference: supplied 270-degree sector mean assumed at 70 m"
+"initial_profile" = "initial_profile.csv"
+"reference_results" = "/raven/u/limo/JAX-Wind/cases/HornsRev1/fv_reference_results.json"
+"seed" = 2026
+
+["mesh"]
+"cells" = [32, 24, 64]
+"lengths_m" = [512.0, 384.0, 256.0]
+
+["time"]
+"dt_seconds" = 0.25
+"steps" = 4
+"chunk_steps" = 2
+"checkpoint_every_steps" = 2
+"frame_count" = 2
+
+["numerics"]
+"dtype" = "float32"
+"momentum_advection_scheme" = "muscl-mc"
+"pressure_backend" = "fft"
+"time_integration" = "fast-rk3"
+"turbulent_prandtl" = 0.4
+"spectrum_diagnostic" = "none"
+
+["diagnostics"]
+"sample_start_step" = 0
+"sample_every_steps" = 2
+"reference_length_m" = 256.0
+"reference_velocity_m_s" = 9.691004386
+"reference_scalar" = 1.0
+"inversion_search_max_height_m" = 256.0
+"spectrum_heights_m" = [70.0]
+
+["physics"]
+
+["physics"."flow"]
+"pressure_acceleration_m_s2" = [0.0003601878976722509, 0.0]
+"geostrophic_velocity_m_s" = [0.0, 0.0]
+"advection_frame_velocity_m_s" = [0.0, 0.0]
+"coriolis_s" = [0.0, 0.0]
+"roughness_length_m" = 0.0002
+"von_karman" = 0.4
+
+["physics"."scalar"]
+"reference_value" = 0.0
+"surface_flux" = 0.0
+"buoyancy_acceleration_per_unit" = 0.0
+
+["output"]
+"directory" = "/raven/u/limo/JAX-Wind/outputs/hornsrev1_directional/reference_smoke/warmup"

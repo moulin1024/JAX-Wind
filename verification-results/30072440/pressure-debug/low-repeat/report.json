@@ -1,0 +1,34 @@
+{
+  "scenario": "low-mach",
+  "phase": "candidate",
+  "jax": "0.10.0",
+  "devices": [
+    "cuda:0"
+  ],
+  "dtype": "float32",
+  "revision": "6ccd0bd3e9140b9b58ea82ebe593bdd9c4469c69",
+  "block_seconds": [
+    4.145479365019128,
+    0.0006213169544935226,
+    0.0005396129563450813
+  ],
+  "steady_seconds": 0.001160929910838604,
+  "status": "passed",
+  "maximum_absolute_error": {
+    "velocity_x": 0.0,
+    "velocity_y": 0.0,
+    "velocity_z": 0.0,
+    "pressure": 0.0,
+    "density": 0.0,
+    "momentum_tendency_x": 0.0,
+    "momentum_tendency_y": 0.0,
+    "momentum_tendency_z": 0.0,
+    "temperature": 0.0,
+    "water_vapor": 0.0,
+    "nitrogen": 0.0,
+    "continuity_error": 0.0,
+    "time": 0.0,
+    "step": 0.0
+  },
+  "performance_review_required": false
+}

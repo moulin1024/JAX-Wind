@@ -1,0 +1,13 @@
+{
+  "schema": "jaxwind.run.v1",
+  "status": "complete",
+  "formulation": "boussinesq",
+  "step": 6,
+  "time_seconds": 0.05999999865889549,
+  "target_step": 6,
+  "target_time_seconds": 0.06,
+  "final_cfl": 0.00039325974648818374,
+  "elapsed_seconds": 16.100866422057152,
+  "steady_steps_per_second": 345.88665526104455,
+  "checkpoint": "/raven/u/limo/JAX-Wind/verification-results/30072440/pressure-deterministic/candidate/open/workflow/main/checkpoint.npz"
+}

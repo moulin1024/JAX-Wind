@@ -1,0 +1,29 @@
+{
+  "scenario": "open",
+  "phase": "candidate",
+  "jax": "0.10.0",
+  "devices": [
+    "cuda:0"
+  ],
+  "dtype": "float32",
+  "python_hash_seed": "0",
+  "xla_flags": "--xla_gpu_deterministic_ops=true",
+  "revision": "6ccd0bd3e9140b9b58ea82ebe593bdd9c4469c69",
+  "block_seconds": [],
+  "steady_seconds": null,
+  "status": "passed",
+  "maximum_absolute_error": {
+    "velocity_x": 0.0,
+    "velocity_y": 0.0,
+    "velocity_z": 0.0,
+    "pressure": 0.0,
+    "momentum_tendency_x": 0.0,
+    "momentum_tendency_y": 0.0,
+    "momentum_tendency_z": 0.0,
+    "scalar": 0.0,
+    "scalar_tendency": 0.0,
+    "time": 0.0,
+    "step": 0.0
+  },
+  "performance_review_required": false
+}

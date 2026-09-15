@@ -58,7 +58,7 @@ class Wall:
 class Boundaries:
     """Streamwise topology plus impermeable walls in z.
 
-    The spanwise direction remains periodic. OPEN gives the streamwise
+    The spanwise direction can be periodic, free-slip, or OPEN. OPEN gives the streamwise
     velocity a distinct face at each end of the domain, so its final dimension
     is nx + 1 instead of the periodic nx.
     """
@@ -71,7 +71,7 @@ class Boundaries:
     def __post_init__(self) -> None:
         if self.streamwise not in (PERIODIC, OPEN):
             raise ValueError(f"unsupported streamwise boundary: {self.streamwise!r}")
-        if self.spanwise not in (PERIODIC, FREE_SLIP):
+        if self.spanwise not in (PERIODIC, FREE_SLIP, OPEN):
             raise ValueError(f"unsupported spanwise boundary: {self.spanwise!r}")
 
 
@@ -153,11 +153,11 @@ def spanwise_is_periodic(
     raise ValueError("v must carry ny periodic faces or ny + 1 wall faces")
 
 
-def enforce_impermeability(velocity: StaggeredVelocity) -> StaggeredVelocity:
-    """Zero normal velocity on z walls and on represented y side walls."""
+def enforce_impermeability(velocity: StaggeredVelocity, *, open_y=False) -> StaggeredVelocity:
+    """Zero normal velocity on z walls and, unless open_y, y side walls."""
     z_velocity = velocity.z.at[0].set(0.0).at[-1].set(0.0)
     y_velocity = velocity.y
-    if velocity.y.shape[1] != velocity.x.shape[1]:
+    if not open_y and velocity.y.shape[1] != velocity.x.shape[1]:
         y_velocity = y_velocity.at[:, 0].set(0.0).at[:, -1].set(0.0)
     return StaggeredVelocity(velocity.x, y_velocity, z_velocity)
 

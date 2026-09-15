@@ -1,0 +1,17 @@
+{
+  "scenario": "jet-incompressible",
+  "phase": "baseline",
+  "jax": "0.10.0",
+  "devices": [
+    "cuda:0"
+  ],
+  "dtype": "float32",
+  "revision": "f7d83625e481f0fcba04e73bfb3482eff043a603",
+  "block_seconds": [
+    49.83478503499646,
+    0.009999168920330703,
+    0.009370279964059591
+  ],
+  "steady_seconds": 0.019369448884390295,
+  "status": "captured"
+}

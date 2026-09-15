@@ -1,0 +1,47 @@
+{
+  "schema": "jaxwind.workflow.v1",
+  "stages": {
+    "warmup": {
+      "schema": "jaxwind.run.v1",
+      "status": "complete",
+      "formulation": "boussinesq",
+      "step": 6,
+      "time_seconds": 0.05999999865889549,
+      "target_step": 6,
+      "target_time_seconds": 0.06,
+      "final_cfl": 0.00038281819433905184,
+      "elapsed_seconds": 4.486511478899047,
+      "steady_steps_per_second": 2213.5794708139,
+      "checkpoint": "/raven/u/limo/JAX-Wind/verification-results/30072440/pressure-fixed/candidate/open/workflow/warmup/checkpoint.npz",
+      "fingerprint": "2a6111ad0f07274b285ccb4cb45691611e5bb2457e8e6deb4ed0aeabe691d84d"
+    },
+    "precursor": {
+      "schema": "jaxwind.run.v1",
+      "status": "complete",
+      "formulation": "boussinesq",
+      "step": 12,
+      "time_seconds": 0.11999999731779099,
+      "target_step": 12,
+      "target_time_seconds": 0.11999999865889549,
+      "final_cfl": 0.0003828220651485026,
+      "elapsed_seconds": 4.4857887021498755,
+      "steady_steps_per_second": 3354.128407868244,
+      "checkpoint": "/raven/u/limo/JAX-Wind/verification-results/30072440/pressure-fixed/candidate/open/workflow/precursor/checkpoint.npz",
+      "fingerprint": "426c81cf3f266c7d970d586fd8b8f3f75258d8fbb376b29533512d2af34aaf87"
+    },
+    "main": {
+      "schema": "jaxwind.run.v1",
+      "status": "complete",
+      "formulation": "boussinesq",
+      "step": 6,
+      "time_seconds": 0.05999999865889549,
+      "target_step": 6,
+      "target_time_seconds": 0.06,
+      "final_cfl": 0.00039325974648818374,
+      "elapsed_seconds": 16.091600633924827,
+      "steady_steps_per_second": 345.8093880113534,
+      "checkpoint": "/raven/u/limo/JAX-Wind/verification-results/30072440/pressure-fixed/candidate/open/workflow/main/checkpoint.npz",
+      "fingerprint": "198a96e863e34b2b520705131b18d2017f2fd5d51d3324aeda714cc7ec0ee3aa"
+    }
+  }
+}

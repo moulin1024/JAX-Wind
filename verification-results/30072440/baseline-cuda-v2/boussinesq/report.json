@@ -1,0 +1,17 @@
+{
+  "scenario": "boussinesq",
+  "phase": "baseline",
+  "jax": "0.10.0",
+  "devices": [
+    "cuda:0"
+  ],
+  "dtype": "float32",
+  "revision": "f7d83625e481f0fcba04e73bfb3482eff043a603",
+  "block_seconds": [
+    4.433008144958876,
+    0.0006586438976228237,
+    0.0006379910046234727
+  ],
+  "steady_seconds": 0.0012966349022462964,
+  "status": "captured"
+}

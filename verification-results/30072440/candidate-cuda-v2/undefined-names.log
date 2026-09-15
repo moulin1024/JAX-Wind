@@ -1,0 +1,10 @@
+F821 Undefined name `dataclass`
+  --> src/jaxwind/runtime/periodic.py:26:2
+   |
+26 | @dataclass(frozen=True, slots=True)
+   |  ^^^^^^^^^
+27 | def run_periodic_blocks(
+28 |     solution,
+   |
+
+Found 1 error.

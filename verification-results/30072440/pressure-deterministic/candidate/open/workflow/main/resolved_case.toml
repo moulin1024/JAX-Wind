@@ -1,0 +1,71 @@
+"schema_version" = 1
+"formulation" = "boussinesq"
+
+["case"]
+"name" = "andren1994_fv_40x40x40"
+"citation" = "Andrén et al. (1994), Q.J.R. Meteorol. Soc. 120, 1457-1484"
+"initial_profile" = "/raven/u/limo/JAX-Wind/verification-results/30072440/pressure-deterministic/candidate/open/profile.csv"
+"reference_results" = "/raven/u/limo/JAX-Wind/cases/Andren1994/reference/reference_results.json"
+"seed" = 1994
+
+["mesh"]
+"cells" = [8, 8, 8]
+"lengths_m" = [4000.0, 2000.0, 1500.0]
+
+["time"]
+"dt_seconds" = 0.01
+"steps" = 6
+"chunk_steps" = 2
+"frame_count" = 0
+
+["numerics"]
+"dtype" = "float32"
+"pressure_backend" = "gmg"
+"time_integration" = "fast-rk3"
+"turbulent_prandtl" = 1.0
+"spectrum_diagnostic" = "streamwise"
+
+["output"]
+"directory" = "/raven/u/limo/JAX-Wind/verification-results/30072440/pressure-deterministic/candidate/open/workflow/main"
+
+["diagnostics"]
+"sample_start_step" = 0
+"sample_every_steps" = 2
+"reference_length_m" = 1500.0
+"reference_velocity_m_s" = 10.0
+"reference_scalar" = 1.0
+"inversion_search_max_height_m" = 1500.0
+"spectrum_heights_m" = [393.75]
+
+["physics"]
+
+["physics"."flow"]
+"pressure_acceleration_m_s2" = [0.0, 0.0]
+"geostrophic_velocity_m_s" = [10.0, 0.0]
+"advection_frame_velocity_m_s" = [0.0, 0.0]
+"coriolis_s" = [0.0001, 0.0001]
+"roughness_length_m" = 0.1
+"von_karman" = 0.4
+
+["physics"."scalar"]
+"reference_value" = 0.0
+"surface_flux" = 0.001
+"buoyancy_acceleration_per_unit" = 0.0
+
+["workflow"]
+"warmup_steps" = 6
+"precursor_steps" = 6
+"main_steps" = 6
+"record_plane" = 1
+"chunk_steps" = 2
+"output_directory" = "/raven/u/limo/JAX-Wind/verification-results/30072440/pressure-deterministic/candidate/open/workflow"
+
+["initial_conditions"]
+"operation" = "open-inflow"
+
+["initial_conditions"."artifacts"]
+"checkpoint" = "/raven/u/limo/JAX-Wind/verification-results/30072440/pressure-deterministic/candidate/open/workflow/warmup/checkpoint.npz"
+"inflow" = "/raven/u/limo/JAX-Wind/verification-results/30072440/pressure-deterministic/candidate/open/workflow/precursor/inflow"
+
+["initial_conditions"."stage_options"]
+"substeps_per_inflow" = 1

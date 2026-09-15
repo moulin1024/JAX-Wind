@@ -10,7 +10,10 @@ def check_case(case):
     if case.formulation == "boussinesq":
         from .abl import load_fv_abl
         configured = load_fv_abl(case)
-        if "inflow" in case.document.get("physics", {}):
+        if "wind_farm" in case.document.get("physics", {}):
+            from jaxwind.simulation.wind_farm import ControlledFarm
+            ControlledFarm(case, open_domain=True if case.document.get("initial_conditions", {}).get("operation") == "open-inflow" else None)
+        if case.document.get("physics", {}).get("inflow", {}).get("model") == "mann":
             from .synthetic_inflow import reference_profile
             reference_profile(case.document["physics"]["inflow"]["reference_profile"])
         from jaxwind.io.initial_conditions import load_initial_profile

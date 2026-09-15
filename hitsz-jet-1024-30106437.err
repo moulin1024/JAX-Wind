@@ -1,0 +1,110 @@
+/raven/u/limo/venvs/numba_cuda_waterboa/lib/python3.13/site-packages/jax/_src/interpreters/mlir.py:1220: UserWarning: A large amount of constants were captured during lowering (4.23GB total). If this is intentional, disable this warning by setting JAX_CAPTURED_CONSTANTS_WARN_BYTES=-1. To obtain a report of where these constants were encountered, set JAX_CAPTURED_CONSTANTS_REPORT_FRAMES=-1.
+  warnings.warn(message)
+W0909 20:32:42.188609  146357 bfc_allocator.cc:502] Allocator (GPU_0_bfc) ran out of memory trying to allocate 512.00MiB (rounded to 536870912)requested by op 
+If the cause is memory fragmentation maybe the environment variable 'TF_GPU_ALLOCATOR=cuda_malloc_async' will improve the situation. 
+Current allocation summary follows.
+Current allocation summary follows.
+W0909 20:32:42.188994  146357 bfc_allocator.cc:513] *************************************************************************************_****_*********
+W0909 20:32:52.189188  146357 bfc_allocator.cc:502] Allocator (GPU_0_bfc) ran out of memory trying to allocate 512.00MiB (rounded to 536870912)requested by op 
+If the cause is memory fragmentation maybe the environment variable 'TF_GPU_ALLOCATOR=cuda_malloc_async' will improve the situation. 
+Current allocation summary follows.
+Current allocation summary follows.
+W0909 20:32:52.189376  146357 bfc_allocator.cc:513] *************************************************************************************_****_*********
+W0909 20:33:02.189586  146357 bfc_allocator.cc:502] Allocator (GPU_0_bfc) ran out of memory trying to allocate 512.00MiB (rounded to 536870912)requested by op 
+If the cause is memory fragmentation maybe the environment variable 'TF_GPU_ALLOCATOR=cuda_malloc_async' will improve the situation. 
+Current allocation summary follows.
+Current allocation summary follows.
+W0909 20:33:02.189760  146357 bfc_allocator.cc:513] *************************************************************************************_****_*********
+W0909 20:33:12.297952  146360 bfc_allocator.cc:502] Allocator (GPU_0_bfc) ran out of memory trying to allocate 512.00MiB (rounded to 536870912)requested by op 
+If the cause is memory fragmentation maybe the environment variable 'TF_GPU_ALLOCATOR=cuda_malloc_async' will improve the situation. 
+Current allocation summary follows.
+Current allocation summary follows.
+W0909 20:33:12.298149  146360 bfc_allocator.cc:513] *************************************************************************************_****_*********
+W0909 20:33:22.298340  146360 bfc_allocator.cc:502] Allocator (GPU_0_bfc) ran out of memory trying to allocate 512.00MiB (rounded to 536870912)requested by op 
+If the cause is memory fragmentation maybe the environment variable 'TF_GPU_ALLOCATOR=cuda_malloc_async' will improve the situation. 
+Current allocation summary follows.
+Current allocation summary follows.
+W0909 20:33:22.298514  146360 bfc_allocator.cc:513] *************************************************************************************_****_*********
+W0909 20:33:32.298701  146360 bfc_allocator.cc:502] Allocator (GPU_0_bfc) ran out of memory trying to allocate 512.00MiB (rounded to 536870912)requested by op 
+If the cause is memory fragmentation maybe the environment variable 'TF_GPU_ALLOCATOR=cuda_malloc_async' will improve the situation. 
+Current allocation summary follows.
+Current allocation summary follows.
+W0909 20:33:32.298881  146360 bfc_allocator.cc:513] *************************************************************************************_****_*********
+W0909 20:33:32.653407  146390 bfc_allocator.cc:311] Allocator (GPU_0_bfc) ran out of memory trying to allocate 528.00MiB with freed_by_count=0. The caller indicates that this is not a failure, but this may mean that there could be performance gains if more memory were available.
+W0909 20:33:42.789213  146366 bfc_allocator.cc:502] Allocator (GPU_0_bfc) ran out of memory trying to allocate 512.50MiB (rounded to 537395200)requested by op 
+If the cause is memory fragmentation maybe the environment variable 'TF_GPU_ALLOCATOR=cuda_malloc_async' will improve the situation. 
+Current allocation summary follows.
+Current allocation summary follows.
+W0909 20:33:42.789408  146366 bfc_allocator.cc:513] *************************************************************************************_****_*********
+W0909 20:33:52.789575  146366 bfc_allocator.cc:502] Allocator (GPU_0_bfc) ran out of memory trying to allocate 512.50MiB (rounded to 537395200)requested by op 
+If the cause is memory fragmentation maybe the environment variable 'TF_GPU_ALLOCATOR=cuda_malloc_async' will improve the situation. 
+Current allocation summary follows.
+Current allocation summary follows.
+W0909 20:33:52.789748  146366 bfc_allocator.cc:513] *************************************************************************************_****_*********
+W0909 20:34:02.790012  146366 bfc_allocator.cc:502] Allocator (GPU_0_bfc) ran out of memory trying to allocate 512.50MiB (rounded to 537395200)requested by op 
+If the cause is memory fragmentation maybe the environment variable 'TF_GPU_ALLOCATOR=cuda_malloc_async' will improve the situation. 
+Current allocation summary follows.
+Current allocation summary follows.
+W0909 20:34:02.790187  146366 bfc_allocator.cc:513] *************************************************************************************_****_*********
+W0909 20:34:12.874841  146391 bfc_allocator.cc:502] Allocator (GPU_0_bfc) ran out of memory trying to allocate 512.50MiB (rounded to 537395200)requested by op 
+If the cause is memory fragmentation maybe the environment variable 'TF_GPU_ALLOCATOR=cuda_malloc_async' will improve the situation. 
+Current allocation summary follows.
+Current allocation summary follows.
+W0909 20:34:12.875057  146391 bfc_allocator.cc:513] *************************************************************************************_****_*********
+W0909 20:34:22.875268  146391 bfc_allocator.cc:502] Allocator (GPU_0_bfc) ran out of memory trying to allocate 512.50MiB (rounded to 537395200)requested by op 
+If the cause is memory fragmentation maybe the environment variable 'TF_GPU_ALLOCATOR=cuda_malloc_async' will improve the situation. 
+Current allocation summary follows.
+Current allocation summary follows.
+W0909 20:34:22.875465  146391 bfc_allocator.cc:513] *************************************************************************************_****_*********
+W0909 20:34:32.875659  146391 bfc_allocator.cc:502] Allocator (GPU_0_bfc) ran out of memory trying to allocate 512.50MiB (rounded to 537395200)requested by op 
+If the cause is memory fragmentation maybe the environment variable 'TF_GPU_ALLOCATOR=cuda_malloc_async' will improve the situation. 
+Current allocation summary follows.
+Current allocation summary follows.
+W0909 20:34:32.875855  146391 bfc_allocator.cc:513] *************************************************************************************_****_*********
+E0909 20:34:32.876580  146148 autotuner.cc:460] Could not get config for HLO: %loop_add_subtract_fusion.9 = (f32[256,512,1025]{2,1,0}, f32[256,512,1025]{2,1,0}) fusion(%get-tuple-element.83314, %get-tuple-element.56048.0, %get-tuple-element.83315, %get-tuple-element.83291, %input_transpose_fusion.15, /*index=5*/%input_transpose_fusion.14, %get-tuple-element.50404.0, %get-tuple-element.50396.0, %constant.73999.0, %loop_multiply_fusion.69, /*index=10*/%input_transpose_fusion.17, %input_transpose_fusion.16, %get-tuple-element.83312, %loop_multiply_fusion.59, %loop_multiply_fusion.49, /*index=15*/%get-tuple-element.83313, %get-tuple-element.83323, %get-tuple-element.83322, %get-tuple-element.83320, %get-tuple-element.56056.0, /*index=20*/%get-tuple-element.83321, %loop_multiply_fusion.37, %loop_multiply_fusion.44, %loop_subtract_fusion.27, %optimization_barrier.27.0), kind=kLoop, calls=%fused_add_subtract.9, metadata={op_name="jit(advance_block)/jit(advance_controlled)/while/body/closed_call/sub" stack_frame_id=9699}. Status: INTERNAL: Autotuning failed for HLO: %loop_add_subtract_fusion.9 = (f32[256,512,1025]{2,1,0}, f32[256,512,1025]{2,1,0}) fusion(%get-tuple-element.83314, %get-tuple-element.56048.0, %get-tuple-element.83315, %get-tuple-element.83291, %input_transpose_fusion.15, /*index=5*/%input_transpose_fusion.14, %get-tuple-element.50404.0, %get-tuple-element.50396.0, %constant.73999.0, %loop_multiply_fusion.69, /*index=10*/%input_transpose_fusion.17, %input_transpose_fusion.16, %get-tuple-element.83312, %loop_multiply_fusion.59, %loop_multiply_fusion.49, /*index=15*/%get-tuple-element.83313, %get-tuple-element.83323, %get-tuple-element.83322, %get-tuple-element.83320, %get-tuple-element.56056.0, /*index=20*/%get-tuple-element.83321, %loop_multiply_fusion.37, %loop_multiply_fusion.44, %loop_subtract_fusion.27, %optimization_barrier.27.0), kind=kLoop, calls=%fused_add_subtract.9, metadata={op_name="jit(advance_block)/jit(advance_controlled)/while/body/closed_call/sub" stack_frame_id=9699}. Failed to pick best config: All configs failed during profiling.
+Failures (3):
+EXECUTION FAILED: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 512.50MiB. [tf-allocator-allocation-error='']
+EXECUTION FAILED: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 512.50MiB. [tf-allocator-allocation-error='']
+EXECUTION FAILED: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 512.50MiB. [tf-allocator-allocation-error='']
+E0909 20:34:32.877009  146148 autotuner.cc:460] Could not get config for HLO: %loop_add_subtract_transpose_fusion.1 = (f32[512,256,1024]{2,1,0}, f32[512,256,1024]{2,1,0}, f32[512,256,1024]{2,1,0}, f32[512,256,1024]{2,1,0}) fusion(%get-tuple-element.83196, %get-tuple-element.83275, %get-tuple-element.83202, %get-tuple-element.83210, %get-tuple-element.83188, /*index=5*/%get-tuple-element.83277, %get-tuple-element.83195, %input_concatenate_fusion.213, %get-tuple-element.83187, %get-tuple-element.83276, /*index=10*/%get-tuple-element.83194, %input_concatenate_fusion.212, %get-tuple-element.83186, %get-tuple-element.83273, %constant.73999.0, /*index=15*/%loop_multiply_fusion.68, %get-tuple-element.83274, %get-tuple-element.50396.0, %loop_multiply_fusion.69, %get-tuple-element.83197, /*index=20*/%get-tuple-element.83209, %input_concatenate_fusion.234, %get-tuple-element.83189), kind=kLoop, calls=%fused_add_subtract_transpose.1, metadata={op_name="jit(advance_block)/jit(advance_controlled)/while/body/closed_call/add" stack_frame_id=9317}. Status: INTERNAL: Autotuning failed for HLO: %loop_add_subtract_transpose_fusion.1 = (f32[512,256,1024]{2,1,0}, f32[512,256,1024]{2,1,0}, f32[512,256,1024]{2,1,0}, f32[512,256,1024]{2,1,0}) fusion(%get-tuple-element.83196, %get-tuple-element.83275, %get-tuple-element.83202, %get-tuple-element.83210, %get-tuple-element.83188, /*index=5*/%get-tuple-element.83277, %get-tuple-element.83195, %input_concatenate_fusion.213, %get-tuple-element.83187, %get-tuple-element.83276, /*index=10*/%get-tuple-element.83194, %input_concatenate_fusion.212, %get-tuple-element.83186, %get-tuple-element.83273, %constant.73999.0, /*index=15*/%loop_multiply_fusion.68, %get-tuple-element.83274, %get-tuple-element.50396.0, %loop_multiply_fusion.69, %get-tuple-element.83197, /*index=20*/%get-tuple-element.83209, %input_concatenate_fusion.234, %get-tuple-element.83189), kind=kLoop, calls=%fused_add_subtract_transpose.1, metadata={op_name="jit(advance_block)/jit(advance_controlled)/while/body/closed_call/add" stack_frame_id=9317}. Failed to pick best config: All configs failed during profiling.
+Failures (3):
+EXECUTION FAILED: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 512.00MiB. [tf-allocator-allocation-error='']
+EXECUTION FAILED: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 512.00MiB. [tf-allocator-allocation-error='']
+EXECUTION FAILED: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 512.00MiB. [tf-allocator-allocation-error='']
+E0909 20:34:32.877026  146148 autotuner.cc:460] Could not get config for HLO: %loop_add_subtract_fusion.12 = (f32[512,256,1024]{2,1,0}, f32[512,256,1024]{2,1,0}, f32[512,256,1024]{2,1,0}, f32[512,256,1024]{2,1,0}, f32[512,256,1024]{2,1,0}) fusion(%get-tuple-element.83177, %get-tuple-element.83178, %get-tuple-element.83101, %get-tuple-element.83105, %input_concatenate_fusion.200, /*index=5*/%constant.73999.0, %loop_multiply_fusion.68, %get-tuple-element.50396.0, %loop_multiply_fusion.69, %get-tuple-element.83181, /*index=10*/%get-tuple-element.83102, %input_concatenate_fusion.209, %get-tuple-element.83098, %get-tuple-element.83179, %get-tuple-element.83103, /*index=15*/%input_concatenate_fusion.210, %get-tuple-element.83099, %get-tuple-element.83180, %get-tuple-element.83104, %input_concatenate_fusion.208, /*index=20*/%get-tuple-element.83100, %loop_subtract_fusion.33, %loop_subtract_fusion.28, %loop_subtract_fusion.29), kind=kLoop, calls=%fused_add_subtract.12, metadata={op_name="jit(advance_block)/jit(advance_controlled)/while/body/closed_call/sub" stack_frame_id=9446}. Status: RESOURCE_EXHAUSTED: Autotuning failed for HLO: %loop_add_subtract_fusion.12 = (f32[512,256,1024]{2,1,0}, f32[512,256,1024]{2,1,0}, f32[512,256,1024]{2,1,0}, f32[512,256,1024]{2,1,0}, f32[512,256,1024]{2,1,0}) fusion(%get-tuple-element.83177, %get-tuple-element.83178, %get-tuple-element.83101, %get-tuple-element.83105, %input_concatenate_fusion.200, /*index=5*/%constant.73999.0, %loop_multiply_fusion.68, %get-tuple-element.50396.0, %loop_multiply_fusion.69, %get-tuple-element.83181, /*index=10*/%get-tuple-element.83102, %input_concatenate_fusion.209, %get-tuple-element.83098, %get-tuple-element.83179, %get-tuple-element.83103, /*index=15*/%input_concatenate_fusion.210, %get-tuple-element.83099, %get-tuple-element.83180, %get-tuple-element.83104, %input_concatenate_fusion.208, /*index=20*/%get-tuple-element.83100, %loop_subtract_fusion.33, %loop_subtract_fusion.28, %loop_subtract_fusion.29), kind=kLoop, calls=%fused_add_subtract.12, metadata={op_name="jit(advance_block)/jit(advance_controlled)/while/body/closed_call/sub" stack_frame_id=9446}. Failed to profile configs: Out of memory while trying to allocate 528.00MiB. [tf-allocator-allocation-error='']
+E0909 20:34:32.877045  146148 autotuner.cc:460] Could not get config for HLO: %loop_add_maximum_multiply_subtract_fusion = (f32[512,256,1024]{2,1,0}, f32[256,512,1024]{2,1,0}, f32[512,256,1024]{2,1,0}, f32[512,256,1024]{2,1,0}, f32[256,512,1024]{2,1,0}) fusion(%get-tuple-element.83312, %get-tuple-element.50396.0, %get-tuple-element.50400.0, %get-tuple-element.83308, %input_concatenate_fusion.199, /*index=5*/%input_concatenate_fusion.201, %constant.73999.0, %loop_multiply_fusion.68, %loop_multiply_fusion.69, %get-tuple-element.83313, /*index=10*/%get-tuple-element.50409.0, %get-tuple-element.50410.0, %get-tuple-element.83307, %get-tuple-element.83310, %get-tuple-element.83301, /*index=15*/%get-tuple-element.50402.0, %get-tuple-element.83305, %get-tuple-element.83311, %get-tuple-element.83299), kind=kLoop, calls=%fused_add_maximum_multiply_subtract, metadata={op_name="jit(advance_block)/jit(advance_controlled)/while/body/closed_call/sub" stack_frame_id=9446}. Status: INTERNAL: Autotuning failed for HLO: %loop_add_maximum_multiply_subtract_fusion = (f32[512,256,1024]{2,1,0}, f32[256,512,1024]{2,1,0}, f32[512,256,1024]{2,1,0}, f32[512,256,1024]{2,1,0}, f32[256,512,1024]{2,1,0}) fusion(%get-tuple-element.83312, %get-tuple-element.50396.0, %get-tuple-element.50400.0, %get-tuple-element.83308, %input_concatenate_fusion.199, /*index=5*/%input_concatenate_fusion.201, %constant.73999.0, %loop_multiply_fusion.68, %loop_multiply_fusion.69, %get-tuple-element.83313, /*index=10*/%get-tuple-element.50409.0, %get-tuple-element.50410.0, %get-tuple-element.83307, %get-tuple-element.83310, %get-tuple-element.83301, /*index=15*/%get-tuple-element.50402.0, %get-tuple-element.83305, %get-tuple-element.83311, %get-tuple-element.83299), kind=kLoop, calls=%fused_add_maximum_multiply_subtract, metadata={op_name="jit(advance_block)/jit(advance_controlled)/while/body/closed_call/sub" stack_frame_id=9446}. Failed to pick best config: All configs failed during profiling.
+Failures (3):
+EXECUTION FAILED: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 512.00MiB. [tf-allocator-allocation-error='']
+EXECUTION FAILED: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 512.00MiB. [tf-allocator-allocation-error='']
+EXECUTION FAILED: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 512.00MiB. [tf-allocator-allocation-error='']
+E0909 20:34:32.877059  146148 autotuner.cc:460] Could not get config for HLO: %loop_negate_subtract_fusion = (f32[256,512,1025]{2,1,0}, f32[256,512,1025]{2,1,0}, f32[512,256,1025]{2,1,0}, f32[256,512,1025]{2,1,0}, f32[512,256,1025]{2,1,0}, /*index=5*/f32[256,512,1025]{2,1,0}) fusion(%input_concatenate_fusion.220, %get-tuple-element.83276, %input_concatenate_fusion.205, %get-tuple-element.83277, %get-tuple-element.83275, /*index=5*/%get-tuple-element.83274, %loop_multiply_fusion.62, %get-tuple-element.83268, %input_concatenate_fusion.224, %get-tuple-element.83206, /*index=10*/%loop_multiply_fusion.53), kind=kLoop, calls=%fused_negate_subtract, metadata={op_name="jit(advance_block)/jit(advance_controlled)/while/body/closed_call/sub" stack_frame_id=9193}. Status: INTERNAL: Autotuning failed for HLO: %loop_negate_subtract_fusion = (f32[256,512,1025]{2,1,0}, f32[256,512,1025]{2,1,0}, f32[512,256,1025]{2,1,0}, f32[256,512,1025]{2,1,0}, f32[512,256,1025]{2,1,0}, /*index=5*/f32[256,512,1025]{2,1,0}) fusion(%input_concatenate_fusion.220, %get-tuple-element.83276, %input_concatenate_fusion.205, %get-tuple-element.83277, %get-tuple-element.83275, /*index=5*/%get-tuple-element.83274, %loop_multiply_fusion.62, %get-tuple-element.83268, %input_concatenate_fusion.224, %get-tuple-element.83206, /*index=10*/%loop_multiply_fusion.53), kind=kLoop, calls=%fused_negate_subtract, metadata={op_name="jit(advance_block)/jit(advance_controlled)/while/body/closed_call/sub" stack_frame_id=9193}. Failed to pick best config: All configs failed during profiling.
+Failures (3):
+EXECUTION FAILED: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 512.50MiB. [tf-allocator-allocation-error='']
+EXECUTION FAILED: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 512.50MiB. [tf-allocator-allocation-error='']
+EXECUTION FAILED: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 512.50MiB. [tf-allocator-allocation-error='']
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/raven/u/limo/JAX-Wind/src/jaxwind/__main__.py", line 4, in <module>
+    raise SystemExit(main())
+                     ~~~~^^
+  File "/raven/u/limo/JAX-Wind/src/jaxwind/cli/main.py", line 55, in main
+    result = run(arguments.case, output=arguments.output, max_steps=arguments.max_steps)
+  File "/raven/u/limo/JAX-Wind/src/jaxwind/runtime/engine.py", line 90, in run
+    advanced = simulation.advance(state, RunControls(count, target))
+  File "/raven/u/limo/JAX-Wind/src/jaxwind/simulation/api.py", line 38, in advance
+    return self.advance_block(state, controls)
+           ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/raven/u/limo/JAX-Wind/src/jaxwind/simulation/api.py", line 69, in <lambda>
+    return Simulation(case, grid, initial, lambda state, controls: advance(state, controls.count), courant)
+                                                                   ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+jax.errors.JaxRuntimeError: INTERNAL: Failed to get configs for: 5 out of 138 instructions. See logs for all failures. Example failure: 
+Autotuning failed for HLO: %loop_add_subtract_fusion.9 = (f32[256,512,1025]{2,1,0}, f32[256,512,1025]{2,1,0}) fusion(%get-tuple-element.83314, %get-tuple-element.56048.0, %get-tuple-element.83315, %get-tuple-element.83291, %input_transpose_fusion.15, /*index=5*/%input_transpose_fusion.14, %get-tuple-element.50404.0, %get-tuple-element.50396.0, %constant.73999.0, %loop_multiply_fusion.69, /*index=10*/%input_transpose_fusion.17, %input_transpose_fusion.16, %get-tuple-element.83312, %loop_multiply_fusion.59, %loop_multiply_fusion.49, /*index=15*/%get-tuple-element.83313, %get-tuple-element.83323, %get-tuple-element.83322, %get-tuple-element.83320, %get-tuple-element.56056.0, /*index=20*/%get-tuple-element.83321, %loop_multiply_fusion.37, %loop_multiply_fusion.44, %loop_subtract_fusion.27, %optimization_barrier.27.0), kind=kLoop, calls=%fused_add_subtract.9, metadata={op_name="jit(advance_block)/jit(advance_controlled)/while/body/closed_call/sub" stack_frame_id=9699}. Failed to pick best config: All configs failed during profiling.
+Failures (3):
+EXECUTION FAILED: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 512.50MiB. [tf-allocator-allocation-error='']
+EXECUTION FAILED: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 512.50MiB. [tf-allocator-allocation-error='']
+EXECUTION FAILED: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 512.50MiB. [tf-allocator-allocation-error='']
+--------------------
+For simplicity, JAX has removed its internal frames from the traceback of the following exception. Set JAX_TRACEBACK_FILTERING=off to include these.
+srun: error: ravg1018: task 0: Exited with exit code 1
+srun: Terminating StepId=30106437.0

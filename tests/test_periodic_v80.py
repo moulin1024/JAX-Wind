@@ -9,7 +9,7 @@ import numpy as np
 from jaxwind.config.document import ResolvedCase, load_case
 from jaxwind.simulation.api import RunControls, build_simulation
 from jaxwind.turbine import _x_faces
-from jaxwind.domain.grid import UniformGrid
+from jaxwind.domain import AnalyticalGrid, TanhMapping, UniformGrid
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -21,6 +21,15 @@ def test_periodic_force_mapping_conserves_sum():
     assert faces.shape == values.shape
     np.testing.assert_allclose(faces.sum(), values.sum())
     np.testing.assert_allclose(faces[..., 0], .5 * (values[..., -1] + values[..., 0]))
+
+
+def test_periodic_force_mapping_conserves_mapped_integral():
+    grid = AnalyticalGrid(8, 4, 4, 128., 64., 64., x_mapping=TanhMapping(1.1, focus=.375))
+    values = jnp.arange(128, dtype=jnp.float32).reshape(4, 4, 8)
+    faces = _x_faces(values, grid, periodic=True)
+    widths = np.asarray(grid.x_widths)
+    face_widths = .5 * (widths + np.roll(widths, 1))
+    np.testing.assert_allclose(np.sum(faces * face_widths), np.sum(values * widths), rtol=1e-6)
 
 
 def test_direct_periodic_v80_changes_momentum(monkeypatch):

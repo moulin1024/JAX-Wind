@@ -37,6 +37,7 @@ class FiniteVolumeOptions:
     gmg_presweeps: int = 2
     gmg_postsweeps: int = 2
     gmg_anisotropy_aware: bool = True
+    momentum_advection_scheme: str = "muscl-mc"
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,6 +99,7 @@ def load_fv_abl(path: str | Path) -> FiniteVolumeCase:
     }
     missing = expected - table.keys()
     optional = {
+        "momentum_advection_scheme",
         "cfl_ceiling",
         "gmg_tolerance",
         "gmg_presweeps",
@@ -127,7 +129,13 @@ def load_fv_abl(path: str | Path) -> FiniteVolumeCase:
     output_directory = _string(table, "output_directory").replace(
         "{pressure_backend}", pressure_backend
     )
+    physical = load_abl(path)
     options = FiniteVolumeOptions(
+        momentum_advection_scheme=_choice(
+            table.get("momentum_advection_scheme", "muscl-mc" if physical.physical_grid.is_uniform else "central"),
+            {"central", "muscl-mc"},
+            "momentum_advection_scheme",
+        ),
         pressure_backend=pressure_backend,
         time_integration=_choice(
             _string(table, "time_integration"),
@@ -194,7 +202,9 @@ def load_fv_abl(path: str | Path) -> FiniteVolumeCase:
     )
     if not isinstance(options.gmg_anisotropy_aware, bool):
         raise ValueError("finite_volume.gmg_anisotropy_aware must be boolean")
-    return FiniteVolumeCase(load_abl(path), options, source)
+    if options.momentum_advection_scheme == "muscl-mc" and not physical.physical_grid.is_uniform:
+        raise ValueError("muscl-mc momentum advection requires a uniform grid")
+    return FiniteVolumeCase(physical, options, source)
 
 
 __all__ = ["FiniteVolumeCase", "FiniteVolumeOptions", "load_fv_abl"]

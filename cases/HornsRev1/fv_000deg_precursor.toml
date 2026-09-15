@@ -1,0 +1,55 @@
+schema_version = 1
+formulation = "boussinesq"
+
+[case]
+name = "hornsrev1_000deg_precursor"
+citation = "User-supplied Horns Rev wind rose, sector 1; mean speed assumed at 70 m"
+initial_profile = "fv_initial_profile_000deg_256_lz1024.csv"
+reference_results = "fv_reference_results.json"
+seed = 2026
+
+[mesh]
+cells = [512, 512, 256]
+lengths_m = [8192.0, 8192.0, 1024.0]
+
+[time]
+dt_seconds = 0.25
+steps = 288000
+chunk_steps = 120
+checkpoint_every_steps = 7200
+frame_count = 100
+
+[numerics]
+dtype = "float32"
+momentum_advection_scheme = "muscl-mc"
+pressure_backend = "fft"
+time_integration = "fast-rk3"
+turbulent_prandtl = 0.4
+spectrum_diagnostic = "none"
+
+[diagnostics]
+sample_start_step = 0
+sample_every_steps = 120
+reference_length_m = 1024.0
+reference_velocity_m_s = 7.661026439
+reference_scalar = 1.0
+inversion_search_max_height_m = 1024.0
+spectrum_heights_m = [70.0]
+
+[physics.flow]
+# Neutral log law at 70 m: u*=0.2400505536 m/s; acceleration=u*^2/1024.
+# This is constant pressure-gradient forcing, not exact hub-speed feedback.
+pressure_acceleration_m_s2 = [0.00005627369949802555, 0.0]
+geostrophic_velocity_m_s = [0.0, 0.0]
+advection_frame_velocity_m_s = [0.0, 0.0]
+coriolis_s = [0.0, 0.0]
+roughness_length_m = 0.0002
+von_karman = 0.4
+
+[physics.scalar]
+reference_value = 0.0
+surface_flux = 0.0
+buoyancy_acceleration_per_unit = 0.0
+
+[output]
+directory = "outputs/hornsrev1_000deg_precursor"

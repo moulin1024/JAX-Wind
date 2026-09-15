@@ -1,0 +1,34 @@
+Traceback (most recent call last):
+  File "/u/limo/JAX-Wind/tools/verification/scenario.py", line 241, in <module>
+    main()
+    ~~~~^^
+  File "/u/limo/JAX-Wind/tools/verification/scenario.py", line 232, in main
+    np.testing.assert_allclose(value, reference, rtol=2.e-5, atol=2.e-6, err_msg=name)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/u/limo/venvs/numba_cuda_waterboa/lib/python3.13/site-packages/numpy/testing/_private/utils.py", line 1768, in assert_allclose
+    assert_array_compare(compare, actual, desired, err_msg=str(err_msg),
+    ~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                         verbose=verbose, header=header, equal_nan=equal_nan,
+                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                         strict=strict)
+                         ^^^^^^^^^^^^^^
+  File "/u/limo/venvs/numba_cuda_waterboa/lib/python3.13/site-packages/numpy/testing/_private/utils.py", line 983, in assert_array_compare
+    raise AssertionError(msg)
+AssertionError: 
+Not equal to tolerance rtol=2e-05, atol=2e-06
+pressure
+Mismatched elements: 396 / 512 (77.3%)
+First 5 mismatches are at indices:
+ [0, 0, 0]: -0.0014997570542618632 (ACTUAL), -0.0015062264865264297 (DESIRED)
+ [0, 0, 1]: 9.284831321565434e-06 (ACTUAL), 1.882574360934086e-05 (DESIRED)
+ [0, 0, 2]: 0.00203818385489285 (ACTUAL), 0.0020422637462615967 (DESIRED)
+ [0, 0, 3]: 0.00025141448713839054 (ACTUAL), 0.0002564893220551312 (DESIRED)
+ [0, 0, 5]: 0.0013014479773119092 (ACTUAL), 0.0012941312743350863 (DESIRED)
+Max absolute difference among violations: 1.1298398e-05
+Max relative difference among violations: 1.3284676
+ ACTUAL: array([[[-1.499757e-03,  9.284831e-06,  2.038184e-03,  2.514145e-04,
+          1.743583e-03,  1.301448e-03, -1.926474e-03, -7.070205e-04],
+        [-2.125325e-03, -1.155722e-04,  9.462303e-04,  3.048061e-04,...
+ DESIRED: array([[[-1.506226e-03,  1.882574e-05,  2.042264e-03,  2.564893e-04,
+          1.744829e-03,  1.294131e-03, -1.931326e-03, -7.085824e-04],
+        [-2.128402e-03, -1.091936e-04,  9.502824e-04,  3.097887e-04,...

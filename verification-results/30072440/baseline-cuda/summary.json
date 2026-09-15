@@ -1,0 +1,114 @@
+{
+  "phase": "baseline",
+  "source": "/tmp/jaxwind-refactor-30072440/baseline",
+  "platform": "cuda",
+  "python": "/u/limo/venvs/numba_cuda_waterboa/bin/python",
+  "started": 1788847333.8743923,
+  "checks": [
+    {
+      "name": "boussinesq",
+      "command": [
+        "/u/limo/venvs/numba_cuda_waterboa/bin/python",
+        "/u/limo/JAX-Wind/tools/verification/scenario.py",
+        "baseline",
+        "--source",
+        "/tmp/jaxwind-refactor-30072440/baseline",
+        "--output",
+        "/raven/u/limo/JAX-Wind/verification-results/30072440/baseline-cuda/boussinesq",
+        "--scenario",
+        "boussinesq"
+      ],
+      "returncode": 0,
+      "seconds": 12.237088231020607,
+      "log": "boussinesq.log"
+    },
+    {
+      "name": "adaptive",
+      "command": [
+        "/u/limo/venvs/numba_cuda_waterboa/bin/python",
+        "/u/limo/JAX-Wind/tools/verification/scenario.py",
+        "baseline",
+        "--source",
+        "/tmp/jaxwind-refactor-30072440/baseline",
+        "--output",
+        "/raven/u/limo/JAX-Wind/verification-results/30072440/baseline-cuda/adaptive",
+        "--scenario",
+        "adaptive"
+      ],
+      "returncode": 0,
+      "seconds": 13.994262906024233,
+      "log": "adaptive.log"
+    },
+    {
+      "name": "open",
+      "command": [
+        "/u/limo/venvs/numba_cuda_waterboa/bin/python",
+        "/u/limo/JAX-Wind/tools/verification/scenario.py",
+        "baseline",
+        "--source",
+        "/tmp/jaxwind-refactor-30072440/baseline",
+        "--output",
+        "/raven/u/limo/JAX-Wind/verification-results/30072440/baseline-cuda/open",
+        "--scenario",
+        "open"
+      ],
+      "returncode": 0,
+      "seconds": 33.0798204819439,
+      "log": "open.log"
+    },
+    {
+      "name": "low-mach",
+      "command": [
+        "/u/limo/venvs/numba_cuda_waterboa/bin/python",
+        "/u/limo/JAX-Wind/tools/verification/scenario.py",
+        "baseline",
+        "--source",
+        "/tmp/jaxwind-refactor-30072440/baseline",
+        "--output",
+        "/raven/u/limo/JAX-Wind/verification-results/30072440/baseline-cuda/low-mach",
+        "--scenario",
+        "low-mach"
+      ],
+      "returncode": 1,
+      "seconds": 1.543988737044856,
+      "log": "low-mach.log"
+    },
+    {
+      "name": "jet-incompressible",
+      "command": [
+        "/u/limo/venvs/numba_cuda_waterboa/bin/python",
+        "/u/limo/JAX-Wind/tools/verification/scenario.py",
+        "baseline",
+        "--source",
+        "/tmp/jaxwind-refactor-30072440/baseline",
+        "--output",
+        "/raven/u/limo/JAX-Wind/verification-results/30072440/baseline-cuda/jet-incompressible",
+        "--scenario",
+        "jet-incompressible"
+      ],
+      "returncode": 0,
+      "seconds": 55.44984924001619,
+      "log": "jet-incompressible.log"
+    },
+    {
+      "name": "jet-low-mach",
+      "command": [
+        "/u/limo/venvs/numba_cuda_waterboa/bin/python",
+        "/u/limo/JAX-Wind/tools/verification/scenario.py",
+        "baseline",
+        "--source",
+        "/tmp/jaxwind-refactor-30072440/baseline",
+        "--output",
+        "/raven/u/limo/JAX-Wind/verification-results/30072440/baseline-cuda/jet-low-mach",
+        "--scenario",
+        "jet-low-mach"
+      ],
+      "returncode": 0,
+      "seconds": 39.758858209010214,
+      "log": "jet-low-mach.log"
+    }
+  ],
+  "status": "failed",
+  "finished": 1788847489.9415913,
+  "optional_backends": "AMG/accelerator coverage requires the corresponding environment; no fallback backend is selected"
+}

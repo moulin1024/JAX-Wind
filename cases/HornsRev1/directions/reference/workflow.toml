@@ -1,0 +1,25 @@
+"schema_version" = 1
+
+["output"]
+"directory" = "/raven/u/limo/JAX-Wind/outputs/hornsrev1_directional/reference"
+
+["stages"]
+
+["stages"."warmup"]
+"case" = "precursor.toml"
+"operation" = "periodic"
+
+["stages"."precursor"]
+"case" = "precursor.toml"
+"operation" = "record-inflow"
+
+["stages"."precursor"."inputs"]
+"checkpoint" = "@warmup/checkpoint"
+
+["stages"."precursor"."options"]
+"record_plane" = 0
+
+["stages"."precursor"."overrides"]
+
+["stages"."precursor"."overrides"."time"]
+"steps" = 28800

@@ -1,0 +1,271 @@
+{
+  "schema": "jaxwind.hitsz-step-benchmark.v1",
+  "environment": {
+    "timestamp_utc": "2026-09-07T16:50:03.075948+00:00",
+    "hostname": "ravg1063",
+    "jax_version": "0.10.0",
+    "jaxlib_version": "0.10.0",
+    "default_backend": "gpu",
+    "devices": [
+      {
+        "id": 0,
+        "platform": "gpu",
+        "device_kind": "NVIDIA A100-SXM4-40GB",
+        "process_index": 0
+      }
+    ],
+    "variables": {
+      "JAX_PLATFORMS": "cuda",
+      "JAX_PLATFORM_NAME": null,
+      "XLA_FLAGS": null,
+      "XLA_PYTHON_CLIENT_PREALLOCATE": "false",
+      "CUDA_VISIBLE_DEVICES": "0",
+      "ROCR_VISIBLE_DEVICES": null,
+      "HIP_VISIBLE_DEVICES": null,
+      "SLURM_JOB_ID": "30061710",
+      "SLURM_JOB_PARTITION": "gpu1",
+      "SLURM_CPUS_PER_TASK": "18"
+    }
+  },
+  "case": {
+    "config": "/raven/u/limo/JAX-Wind/cases/HITSZWindTunnel/fv_workflow.toml",
+    "name": "hitsz_r9_fv_warmup_256x64x128_porte_agel_1800s",
+    "cells": [
+      256,
+      64,
+      128
+    ],
+    "dtype": "float32",
+    "time_integration": "fast-rk3",
+    "maximum_dt_seconds": 0.02,
+    "representative_dt_seconds": 0.02,
+    "cfl_ceiling": 1.0
+  },
+  "settings": {
+    "block_steps": 20,
+    "setup_steps": 2,
+    "samples": 3,
+    "component_repeats": 2,
+    "setup_compile_and_run_seconds": 12.783071659039706
+  },
+  "end_to_end": {
+    "adaptive_workflow": {
+      "compile_seconds": 12.432177904993296,
+      "samples_ms": [
+        4.6956550038885325,
+        4.684033500961959,
+        4.684392001945525
+      ],
+      "median_ms": 4.684392001945525,
+      "minimum_ms": 4.684033500961959,
+      "maximum_ms": 4.6956550038885325,
+      "unit": "ms/step"
+    },
+    "fixed_dt": {
+      "compile_seconds": 9.721628695027903,
+      "samples_ms": [
+        4.203225497622043,
+        4.193216800922528,
+        4.192377405706793
+      ],
+      "median_ms": 4.193216800922528,
+      "minimum_ms": 4.192377405706793,
+      "maximum_ms": 4.203225497622043,
+      "unit": "ms/step"
+    }
+  },
+  "decomposition": {
+    "cfl_control": {
+      "compile_seconds": 0.0003210220020264387,
+      "samples_ms": [
+        0.10989350266754627,
+        0.08537399116903543,
+        0.08390203583985567
+      ],
+      "median_ms": 0.08537399116903543,
+      "minimum_ms": 0.08390203583985567,
+      "maximum_ms": 0.10989350266754627,
+      "unit": "ms/call",
+      "calls_per_step": 1,
+      "estimated_ms_per_step": 0.08537399116903543,
+      "percent_of_full_step": 1.822520214652784
+    },
+    "lagged_pressure_gradient": {
+      "compile_seconds": 0.0001303959870710969,
+      "samples_ms": [
+        0.12949603842571378,
+        0.12284098193049431,
+        0.12030545622110367
+      ],
+      "median_ms": 0.12284098193049431,
+      "minimum_ms": 0.12030545622110367,
+      "maximum_ms": 0.12949603842571378,
+      "unit": "ms/call",
+      "calls_per_step": 1,
+      "estimated_ms_per_step": 0.12284098193049431,
+      "percent_of_full_step": 2.622346333942076
+    },
+    "explicit_tendencies": {
+      "compile_seconds": 0.001445258967578411,
+      "samples_ms": [
+        1.2399695115163922,
+        1.1934884823858738,
+        1.1891450267285109
+      ],
+      "median_ms": 1.1934884823858738,
+      "minimum_ms": 1.1891450267285109,
+      "maximum_ms": 1.2399695115163922,
+      "unit": "ms/call",
+      "calls_per_step": 3,
+      "estimated_ms_per_step": 3.5804654471576214,
+      "percent_of_full_step": 76.43394160161189
+    },
+    "rk_field_update": {
+      "compile_seconds": 0.00028309691697359085,
+      "samples_ms": [
+        0.23159553529694676,
+        0.21575851133093238,
+        0.21372752962633967
+      ],
+      "median_ms": 0.21575851133093238,
+      "minimum_ms": 0.21372752962633967,
+      "maximum_ms": 0.23159553529694676,
+      "unit": "ms/call",
+      "calls_per_step": 3,
+      "estimated_ms_per_step": 0.6472755339927971,
+      "percent_of_full_step": 13.81770641150378
+    },
+    "fft_projection": {
+      "compile_seconds": 0.5870861709117889,
+      "samples_ms": [
+        0.4813974956050515,
+        0.45038299867883325,
+        0.4478119662962854
+      ],
+      "median_ms": 0.45038299867883325,
+      "minimum_ms": 0.4478119662962854,
+      "maximum_ms": 0.4813974956050515,
+      "unit": "ms/call",
+      "calls_per_step": 1,
+      "estimated_ms_per_step": 0.45038299867883325,
+      "percent_of_full_step": 9.6145454627149
+    }
+  },
+  "decomposition_estimated_total_ms_per_step": 4.8863389529287815,
+  "drilldown": {
+    "momentum_advection": {
+      "compile_seconds": 0.40429446194320917,
+      "samples_ms": [
+        0.3480144659988582,
+        0.3107240190729499,
+        0.3087189979851246
+      ],
+      "median_ms": 0.3107240190729499,
+      "minimum_ms": 0.3087189979851246,
+      "maximum_ms": 0.3480144659988582,
+      "unit": "ms/call"
+    },
+    "amd_subfilter": {
+      "compile_seconds": 2.0213606159668416,
+      "samples_ms": [
+        0.6470615044236183,
+        0.5871645407751203,
+        0.5847020074725151
+      ],
+      "median_ms": 0.5871645407751203,
+      "minimum_ms": 0.5847020074725151,
+      "maximum_ms": 0.6470615044236183,
+      "unit": "ms/call"
+    },
+    "combined_momentum_rhs": {
+      "compile_seconds": 2.5614262350136414,
+      "samples_ms": [
+        0.9754615020938218,
+        0.9128404781222343,
+        0.9079310111701488
+      ],
+      "median_ms": 0.9128404781222343,
+      "minimum_ms": 0.9079310111701488,
+      "maximum_ms": 0.9754615020938218,
+      "unit": "ms/call"
+    },
+    "eddy_viscosity_for_scalar": {
+      "compile_seconds": 0.4887614758918062,
+      "samples_ms": [
+        0.30959746800363064,
+        0.2736144815571606,
+        0.26944599812850356
+      ],
+      "median_ms": 0.2736144815571606,
+      "minimum_ms": 0.26944599812850356,
+      "maximum_ms": 0.30959746800363064,
+      "unit": "ms/call"
+    },
+    "scalar_transport": {
+      "compile_seconds": 0.7260373790049925,
+      "samples_ms": [
+        0.5438545485958457,
+        0.44807797530665994,
+        0.4415345028974116
+      ],
+      "median_ms": 0.44807797530665994,
+      "minimum_ms": 0.4415345028974116,
+      "maximum_ms": 0.5438545485958457,
+      "unit": "ms/call"
+    },
+    "projection_divergence_rhs": {
+      "compile_seconds": 0.00011786003597080708,
+      "samples_ms": [
+        0.09413901716470718,
+        0.09162502828985453,
+        0.08870247984305024
+      ],
+      "median_ms": 0.09162502828985453,
+      "minimum_ms": 0.08870247984305024,
+      "maximum_ms": 0.09413901716470718,
+      "unit": "ms/call"
+    },
+    "projection_fft_solve": {
+      "compile_seconds": 0.00045013800263404846,
+      "samples_ms": [
+        0.36590552190318704,
+        0.35871699219569564,
+        0.35681796725839376
+      ],
+      "median_ms": 0.35871699219569564,
+      "minimum_ms": 0.35681796725839376,
+      "maximum_ms": 0.36590552190318704,
+      "unit": "ms/call"
+    },
+    "projection_gradient_update": {
+      "compile_seconds": 0.10951297904830426,
+      "samples_ms": [
+        0.15367951709777117,
+        0.1328574726358056,
+        0.13183301780372858
+      ],
+      "median_ms": 0.1328574726358056,
+      "minimum_ms": 0.13183301780372858,
+      "maximum_ms": 0.15367951709777117,
+      "unit": "ms/call"
+    },
+    "wall_stress": {
+      "compile_seconds": 0.15495267196092755,
+      "samples_ms": [
+        0.10755646508187056,
+        0.09203748777508736,
+        0.08974701631814241
+      ],
+      "median_ms": 0.09203748777508736,
+      "minimum_ms": 0.08974701631814241,
+      "maximum_ms": 0.10755646508187056,
+      "unit": "ms/call"
+    }
+  },
+  "notes": [
+    "End-to-end timings synchronize once per production-style block.",
+    "Component timings synchronize each call and prevent phase fusion.",
+    "Decomposition totals need not equal end-to-end time.",
+    "RHS and projection drilldowns overlap their parent measurements."
+  ]
+}

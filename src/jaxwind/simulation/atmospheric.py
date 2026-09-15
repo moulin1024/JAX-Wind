@@ -5,7 +5,7 @@ from jaxwind.config.abl_resolved import resolved
 from jaxwind.io.initialization import initial_fields
 
 
-def build_components(configured, *, forcing=None):
+def build_components(configured, *, forcing=None, farm=None):
     case = configured.physical
     options = configured.options
     configuration = resolved(configured)
@@ -94,6 +94,7 @@ def build_components(configured, *, forcing=None):
             gradient_correction=options.wall_gradient_correction,
         )
     momentum = FlowModel(
+        momentum_advection_scheme=options.momentum_advection_scheme,
         body_force=(pressure_force[0], pressure_force[1], 0.0),
         forcing=forcing,
         subfilter=subfilter,
@@ -140,16 +141,13 @@ def build_components(configured, *, forcing=None):
             maximum_abs_zeta=coupled_surface.maximum_abs_zeta,
             gradient_correction=options.wall_gradient_correction,
         )
-    step = build_atmospheric_step(
-        grid,
-        boundaries,
-        poisson,
-        momentum,
-        scalar,
-        buoyancy,
-        surface,
-        scheme=options.time_integration,
-    )
+    def step_factory(source):
+        from dataclasses import replace
+        return build_atmospheric_step(
+            grid, boundaries, poisson, replace(momentum, forcing=source),
+            scalar, buoyancy, surface, scheme=options.time_integration,
+        )
+    step = step_factory(forcing) if farm is None else farm.couple_step(step_factory)
     adaptive = options.cfl_ceiling is not None
     if adaptive:
         # dt_seconds is the upper bound; the CFL ceiling sets the actual step.
@@ -167,6 +165,8 @@ def build_components(configured, *, forcing=None):
         scalar_field,
         dtype=case.dtype,
     )
+    if farm is not None:
+        solution = farm.initialize(solution)
 
     if surface is None:
         def diagnostic(velocity, pressure, scalar_field, execution_time):

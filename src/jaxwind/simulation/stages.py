@@ -7,6 +7,11 @@ from jaxwind.config.document import ResolvedCase
 
 
 def build_stage(case, operation, inputs, options):
+    farm = "wind_farm" in case.document.get("physics", {})
+    if farm and operation not in {"simulation", "open-inflow"}:
+        raise ValueError("warmup and precursor must be turbine-free")
+    if operation == "open-inflow" and not {"checkpoint", "inflow"} <= inputs.keys():
+        raise ValueError("open-inflow requires checkpoint and inflow inputs")
     if operation == "simulation":
         if "checkpoint" in inputs:
             from jaxwind.io.checkpoint import checkpoint_metadata
@@ -54,15 +59,48 @@ def build_stage(case, operation, inputs, options):
         reader = InflowReader(inputs["inflow"], grid, samples=(case.document["time"]["steps"] + factor - 1) // factor, dt=dt*factor)
         first = reader.read(0, 1)
         first = type(first)(*(item[0] for item in first))
-        workflow = load_workflow(case)
-        initial, advance = build_open_components(workflow, warm, first)
+        turbine_diagnostics = None
+        if farm:
+            if options.get("lateral_boundary") != "outflow":
+                raise ValueError("recorded farm requires lateral_boundary = outflow")
+            from .recorded_farm import build_recorded_farm
+            scale = 1.
+            target = options.get("target_hub_wind_speed_m_s")
+            if target is not None:
+                import numpy as np
+                if isinstance(target, bool) or not np.isfinite(target) or target <= 0.:
+                    raise ValueError("target_hub_wind_speed_m_s must be finite and positive")
+                mean = np.asarray(reader.metadata.get("mean_x_velocity_profile_m_s", []))
+                if mean.shape != (grid.nz,) or not np.isfinite(mean).all():
+                    raise ValueError("scaled replay requires recorded mean velocity profile metadata")
+                height = case.document["physics"]["turbine"]["hub_height_m"]
+                reference = float(np.interp(height, np.asarray(grid.z_centers), mean))
+                if reference <= 0.:
+                    raise ValueError("reference recorded hub-height wind must be positive")
+                scale = target / reference
+                print(f"Scaled replay: recorded mean Uhub={reference:.6g} m/s, target={target:.6g} m/s, velocity scale={scale:.6g}; timestamps unchanged", flush=True)
+            initial, advance, turbine_diagnostics = build_recorded_farm(case, warm, first, velocity_scale=scale)
+        else:
+            if "target_hub_wind_speed_m_s" in options:
+                raise ValueError("scaled replay currently requires a controlled farm")
+            if options.get("lateral_boundary", "periodic") != "periodic":
+                raise ValueError("legacy single-turbine replay supports periodic y only")
+            workflow = load_workflow(case)
+            initial, advance = build_open_components(workflow, warm, first)
         def advance_open(state, controls):
             start = int(state.step)
             first_sample, last_sample = start // factor, (start + controls.count + factor - 1) // factor
             planes = reader.read(first_sample, last_sample)
             planes = type(planes)(*(jnp.repeat(item, factor, axis=0)[start % factor:start % factor + controls.count] for item in planes))
-            return advance(state, dt, planes)
-        return Simulation(case, grid, initial, advance_open, courant)
+            result = advance(state, dt, planes)
+            if farm:
+                import math
+                value = float(courant(result))
+                if not math.isfinite(value) or value > 1.:
+                    raise RuntimeError(f"recorded farm stopped: CFL={value}; reduce fixed dt")
+            return result
+        return Simulation(case, grid, initial, advance_open, courant,
+                          turbine_diagnostics=turbine_diagnostics)
     if operation not in {"periodic", "record-inflow"}:
         raise ValueError(f"unknown stage operation: {operation}")
     step, fixed = build_periodic_advance(configured)

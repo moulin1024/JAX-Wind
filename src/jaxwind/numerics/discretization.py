@@ -96,6 +96,7 @@ def pressure_gradient(
     periodic_x: bool = True,
     periodic_y: bool = True,
     open_x_low: bool = False,
+    open_y: bool = False,
 ) -> StaggeredVelocity:
     """Face-normal gradient of a cell-centred field."""
     if periodic_x:
@@ -123,7 +124,9 @@ def pressure_gradient(
         interior_y = (pressure[:, 1:] - pressure[:, :-1]) / distances_y[
             None, 1:-1, None
         ]
-        y_gradient = jnp.concatenate((side, interior_y, side), axis=1)
+        low_y = pressure[:, :1] / distances_y[0] if open_y else side
+        high_y = -pressure[:, -1:] / distances_y[-1] if open_y else side
+        y_gradient = jnp.concatenate((low_y, interior_y, high_y), axis=1)
     distances_z = center_distances(grid, 0, periodic=False, dtype=pressure.dtype)
     wall = jnp.zeros_like(pressure[:1])
     z_gradient = jnp.concatenate(

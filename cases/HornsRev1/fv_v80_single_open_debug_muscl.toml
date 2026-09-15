@@ -1,0 +1,11 @@
+schema_version = 1
+extends = "fv_v80_single_open_debug.toml"
+
+[case]
+name = "v80_single_open_debug_muscl_300s"
+
+[numerics]
+momentum_advection_scheme = "muscl-mc"
+
+[output]
+directory = "outputs/v80_single_open_debug_muscl_300s"

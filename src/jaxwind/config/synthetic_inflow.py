@@ -31,6 +31,28 @@ def reference_profile(path):
 
 def validate_mann_inflow(document):
     table = document["physics"]["inflow"]
+    if isinstance(table, dict) and table.get("model") == "uniform":
+        if set(table) != {"model", "speed_m_s", "lateral_boundary"}:
+            raise ValueError("uniform inflow requires model, speed_m_s, lateral_boundary")
+        speed = table["speed_m_s"]
+        if isinstance(speed, bool) or not isinstance(speed, (int, float)) or not math.isfinite(speed) or speed <= 0:
+            raise ValueError("uniform inflow speed_m_s must be finite and positive")
+        if table["lateral_boundary"] != "outflow":
+            raise ValueError("uniform inflow currently requires lateral_boundary = outflow")
+        if document["numerics"]["pressure_backend"] != "gmg" or document["numerics"].get("time_integration") != "fast-rk3":
+            raise ValueError("uniform farm inflow requires GMG and fast-rk3")
+        if "cfl" in document["time"]:
+            raise ValueError("uniform farm inflow currently requires a fixed timestep")
+        if "wind_farm" not in document["physics"] or "cooling" in document["physics"] or "surface_scalar" in document["physics"]:
+            raise ValueError("uniform inflow supports neutral wind-farm main cases only")
+        flow = document["physics"].get("flow", {})
+        if any(flow.get("pressure_acceleration_m_s2", [0., 0.])) or any(flow.get("coriolis_s", [0., 0.])):
+            raise ValueError("uniform inflow requires zero pressure forcing and Coriolis")
+        if document["physics"].get("scalar", {}).get("buoyancy_acceleration_per_unit", 0.) != 0.:
+            raise ValueError("uniform inflow requires neutral scalar physics")
+        if document.get("initial_conditions", {}).get("checkpoint"):
+            raise ValueError("uniform inflow starts directly from uniform flow; use resume for continuation")
+        return
     required = {
         "model",
         "reference_profile",

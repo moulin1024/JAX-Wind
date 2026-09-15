@@ -1,0 +1,17 @@
+{
+  "scenario": "adaptive",
+  "phase": "baseline",
+  "jax": "0.10.0",
+  "devices": [
+    "cuda:0"
+  ],
+  "dtype": "float32",
+  "revision": "f7d83625e481f0fcba04e73bfb3482eff043a603",
+  "block_seconds": [
+    8.159010487957858,
+    0.0009354680078104138,
+    0.0008038940140977502
+  ],
+  "steady_seconds": 0.001739362021908164,
+  "status": "captured"
+}

@@ -1,0 +1,18 @@
+{
+  "scenario": "low-mach",
+  "phase": "baseline",
+  "jax": "0.10.0",
+  "devices": [
+    "cuda:0"
+  ],
+  "dtype": "float32",
+  "revision": "f7d83625e481f0fcba04e73bfb3482eff043a603",
+  "baseline_assembly_adapter": "physical.pressure.dtype -> physical.dtype",
+  "block_seconds": [
+    4.132997901062481,
+    0.003299158997833729,
+    0.003041603951714933
+  ],
+  "steady_seconds": 0.006340762949548662,
+  "status": "captured"
+}

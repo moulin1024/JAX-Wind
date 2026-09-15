@@ -44,7 +44,15 @@ class Observer:
             period = diag["sample_every_steps"]
             if self.simulation.adaptive:
                 now = float(state.time) - metadata["initial_time"]
-                boundary = start * dt if now < start * dt else (start + (math.floor((now / dt - start) / period + 1e-9) + 1) * period) * dt
+                # Use the same float32-aware tolerance as sample(). A time
+                # just below an already sampled boundary must not schedule
+                # that boundary again (which can yield a zero-step block).
+                tolerance = 8 * np.finfo(np.asarray(state.time).dtype).eps * max(1., metadata["target_time"])
+                if now < start * dt - tolerance:
+                    boundary = start * dt
+                else:
+                    index = math.floor((now + tolerance - start * dt) / (period * dt)) + 1
+                    boundary = start * dt + index * period * dt
                 target = min(target, metadata["initial_time"] + boundary, float(state.time) + settings.get("chunk_steps", 100) * dt)
             else:
                 boundary = start if step < start else start + ((step - start) // period + 1) * period
@@ -104,6 +112,8 @@ class Observer:
                     self.surface["count"] += 1
                     for key, attribute in (("scalar_flux_sum", "scalar_flux"), ("obukhov_sum", "obukhov_length"), ("surface_scalar_sum", "surface_scalar")):
                         self.surface[key] += float(getattr(exchange, attribute))
+        if self.simulation.turbine_diagnostics is not None:
+            row.update({key: float(value) for key, value in jax.device_get(self.simulation.turbine_diagnostics(state)).items()})
         self.history.append(row)
         settings = self.simulation.case.document["time"]
         frame_count = settings.get("frame_count", self.simulation.case.document.get("diagnostics", {}).get("frame_count", 0))

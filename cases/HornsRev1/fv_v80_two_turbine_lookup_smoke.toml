@@ -1,0 +1,41 @@
+schema_version = 1
+extends = "fv_v80_two_turbine_lookup.toml"
+
+[case]
+name = "two_v80_lookup_gpu_smoke"
+
+[mesh]
+cells = [64, 16, 256]
+lengths_m = [1024.0, 256.0, 1024.0]
+
+[physics.turbine]
+x_m = 512.0
+y_m = 128.0
+
+[[physics.wind_farm.layout]]
+id = "T01"
+x_m = 256.0
+y_m = 128.0
+hub_height_m = 70.0
+initial_rpm = 0.0
+
+[[physics.wind_farm.layout]]
+id = "T02"
+x_m = 816.0
+y_m = 128.0
+hub_height_m = 70.0
+initial_rpm = 0.0
+
+[time]
+dt_seconds = 0.2
+steps = 100
+chunk_steps = 10
+checkpoint_every_steps = 100
+frame_count = 10
+
+[diagnostics]
+sample_start_step = 0
+sample_every_steps = 10
+
+[output]
+directory = "outputs/two_v80_lookup_gpu_smoke"

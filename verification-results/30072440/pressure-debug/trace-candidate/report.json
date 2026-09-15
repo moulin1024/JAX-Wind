@@ -1,0 +1,17 @@
+{
+  "scenario": "low-mach",
+  "phase": "candidate",
+  "jax": "0.10.0",
+  "devices": [
+    "cuda:0"
+  ],
+  "dtype": "float32",
+  "revision": "6ccd0bd3e9140b9b58ea82ebe593bdd9c4469c69",
+  "block_seconds": [
+    4.163196712965146,
+    0.003052524058148265,
+    0.0028587100096046925
+  ],
+  "steady_seconds": 0.005911234067752957,
+  "status": "captured"
+}

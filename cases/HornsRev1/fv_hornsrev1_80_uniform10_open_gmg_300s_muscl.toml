@@ -1,0 +1,11 @@
+schema_version = 1
+extends = "fv_hornsrev1_80_uniform10_open_gmg_300s.toml"
+
+[case]
+name = "hornsrev1_80_v80_uniform10_open_gmg_300s_muscl"
+
+[numerics]
+momentum_advection_scheme = "muscl-mc"
+
+[output]
+directory = "outputs/hornsrev1_80_v80_uniform10_open_gmg_300s_muscl"

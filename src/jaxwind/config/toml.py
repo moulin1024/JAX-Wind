@@ -10,6 +10,8 @@ def _value(value):
         return "true" if value else "false"
     if isinstance(value, (int, float)) and math.isfinite(value):
         return repr(value)
+    if isinstance(value, dict):
+        return "{ " + ", ".join(json.dumps(key) + " = " + _value(item) for key, item in value.items()) + " }"
     if isinstance(value, (list, tuple)):
         return "[" + ", ".join(_value(item) for item in value) + "]"
     raise ValueError(f"unsupported TOML value: {type(value).__name__}")

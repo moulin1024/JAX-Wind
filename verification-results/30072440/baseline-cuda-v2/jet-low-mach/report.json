@@ -1,0 +1,17 @@
+{
+  "scenario": "jet-low-mach",
+  "phase": "baseline",
+  "jax": "0.10.0",
+  "devices": [
+    "cuda:0"
+  ],
+  "dtype": "float32",
+  "revision": "f7d83625e481f0fcba04e73bfb3482eff043a603",
+  "block_seconds": [
+    34.16737719299272,
+    0.011018594959750772,
+    0.011026981985196471
+  ],
+  "steady_seconds": 0.022045576944947243,
+  "status": "captured"
+}

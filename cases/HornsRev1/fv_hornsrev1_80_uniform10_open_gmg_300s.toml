@@ -1,0 +1,16 @@
+schema_version = 1
+extends = "fv_hornsrev1_80_uniform10_open_gmg.toml"
+
+[case]
+name = "hornsrev1_80_v80_uniform10_open_gmg_300s_dt025"
+
+[time]
+# Restart from uniform flow with half the previous timestep.
+dt_seconds = 0.25
+steps = 1200
+chunk_steps = 12
+checkpoint_every_steps = 600
+frame_count = 10
+
+[output]
+directory = "outputs/hornsrev1_80_v80_uniform10_open_gmg_300s_dt025"
