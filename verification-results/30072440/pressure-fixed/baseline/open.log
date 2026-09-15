@@ -1,9 +1,0 @@
-periodic        2/6 CFL 0.000 finish 2026-09-08T08:50:36+02:00 remaining 0:00:10
-periodic        4/6 CFL 0.000 finish 2026-09-08T08:50:29+02:00 remaining 0:00:02
-periodic        6/6 CFL 0.000 finish 2026-09-08T08:50:26+02:00 remaining 0:00:00
-precursor        2/6 time    0.020/0.060s frames 0/0 finish 2026-09-08T08:50:40+02:00 remaining 0:00:09
-precursor        4/6 time    0.040/0.060s frames 0/0 finish 2026-09-08T08:50:33+02:00 remaining 0:00:02
-precursor        6/6 time    0.060/0.060s frames 0/0 finish 2026-09-08T08:50:31+02:00 remaining 0:00:00
-main        2/6 div 1.761e-09 rate 0.1 step/s frames 0/0 finish 2026-09-08T08:51:20+02:00 remaining 0:00:32
-main        4/6 div 1.979e-09 rate 224.0 step/s frames 0/0 finish 2026-09-08T08:50:56+02:00 remaining 0:00:08
-main        6/6 div 2.037e-09 rate 248.0 step/s frames 0/0 finish 2026-09-08T08:50:48+02:00 remaining 0:00:00
