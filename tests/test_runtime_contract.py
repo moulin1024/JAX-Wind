@@ -129,3 +129,58 @@ def test_low_mach_continuation_consumes_new_stage_checkpoint(tmp_path):
     assert completed["stages"]["continuation"]["step"] == 12
     assert completed["stages"]["continuation"]["status"] == "complete"
     assert checkpoint_metadata(output / "continuation/checkpoint.npz")["initial_step"] == 6
+
+
+@pytest.mark.parametrize("adaptive", [False, True])
+def test_physical_time_checkpoints_survive_mid_interval_resume(tmp_path, monkeypatch, adaptive):
+    """Checkpoint clocks must not depend on actual step count or resume time."""
+    from types import SimpleNamespace
+    from collections import namedtuple
+    from jaxwind.simulation.api import Simulation
+    from jaxwind.runtime import engine
+    from jaxwind.runtime.observers import Observer
+
+    case = tiny_case(tmp_path, adaptive=adaptive)
+    case.document["time"].update(dt_seconds=1. if adaptive else .25,
+        steps=3 if adaptive else 12, chunk_steps=5, frame_count=0,
+        checkpoint_every_steps=1, checkpoint_every_seconds=1.)
+    State = namedtuple("ClockState", "step time")
+    initial = State(np.asarray(0, dtype=np.int32), np.asarray(0., dtype=np.float64))
+    def advance(state, controls):
+        for _ in range(controls.count):
+            dt = min(.3, controls.target_time - float(state.time)) if adaptive else .25
+            if dt <= 1.e-12:
+                break
+            state = State(state.step + np.int32(1), state.time + dt)
+        return state
+    grid = SimpleNamespace(**{name: np.array([0., 1.]) for name in ("x_faces", "y_faces", "z_faces")})
+    simulation = Simulation(case, grid, initial, advance, lambda state: 0., adaptive)
+    monkeypatch.setattr(Observer, "sample", lambda *args: None)
+    monkeypatch.setattr(Observer, "write", lambda *args: None)
+    monkeypatch.setattr(Observer, "summary", lambda self: {})
+    saved_times = []
+    save = engine.save_checkpoint
+    def capture(path, state, **kwargs):
+        saved_times.append(float(state.time))
+        save(path, state, **kwargs)
+    monkeypatch.setattr(engine, "save_checkpoint", capture)
+    first = run(case, max_steps=2, _simulation=simulation)
+    assert first.summary["status"] == "paused"
+    final = run(case, _resume=True, _simulation=simulation)
+    assert final.summary["status"] == "complete"
+    assert final.summary["time_seconds"] == pytest.approx(3.)
+    np.testing.assert_allclose(saved_times, [0., .6 if adaptive else .5, 1., 2., 3., 3.])
+
+
+def test_adaptive_frame_boundary_after_shortening_schedule(tmp_path):
+    from types import SimpleNamespace
+    from jaxwind.runtime.observers import Observer
+    case = tiny_case(tmp_path, adaptive=True)
+    case.document["time"].update(dt_seconds=6., steps=6000, frame_count=100,
+        checkpoint_every_seconds=3600.)
+    observer = Observer(SimpleNamespace(case=case, diagnostics=None, adaptive=True))
+    observer.frames = [{"time_seconds": 720.}, {"time_seconds": 1440.}]
+    state = SimpleNamespace(step=np.int32(7200), time=np.float32(1800.))
+    metadata = {"initial_step": 0, "initial_time": 0., "target_time": 36000.}
+    _, target = observer.next_block(state, 120, metadata)
+    assert target == 2160.

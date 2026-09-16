@@ -2,8 +2,8 @@
 
 ## Shared precursor and parameterized wind directions
 
-See [directional workflow](directional_workflow.md) for the 20 h warmup + 2 h
-shared precursor + 2 h per-direction main setup. Generate a case with
+See [directional workflow](directional_workflow.md) for the 10 h warmup + 1 h
+shared precursor + 1 h per-direction main setup. Generate a case with
 `python tools/create_hornsrev_case.py --wind-direction 270` (or another angle).
 All directions reuse the same recording, amplitude-scaled to their wind-rose
 mean speed; the main domain is nonperiodic. The selected first direction is 270°.

@@ -12,18 +12,20 @@ pinned to `central` for reproducibility.
 
 The reference is a turbine-free, horizontally periodic neutral offshore LES:
 
-1. Warmup: 20 h / 288000 steps.
-2. Precursor recording: 2 h / 28800 steps, from the warmup checkpoint.
-3. Each independent directional main: 2 h / 28800 steps, replaying that same
+1. Warmup: 10 h, adaptive CFL=0.9 with a 6 s timestep cap (6000 × 6 s schedule).
+2. Precursor recording: 1 h / 14400 steps, from the warmup checkpoint.
+3. Each independent directional main: 1 h / 14400 steps, replaying that same
    recording, with GMG, nonperiodic x/y and lateral/downstream pressure outlets.
 
-All stages use dt=0.25 s. Each stores 100 frames. Warmup/precursor periodicity
+Precursor and main use fixed dt=0.25 s. All stages checkpoint every simulated
+hour using `checkpoint_every_seconds = 3600`, independent of adaptive step counts.
+Each schedules 100 frames. Warmup/precursor periodicity
 is intentional; there is no periodic coupling of the main solution. The initial
 main state is the warmup checkpoint (the start of the recorded sequence), not
 the precursor's end state. The turbine controller uses the existing 1D-upstream
 lookup for RPM and reported power.
 
-The 20 h schedule is not an automatic guarantee of developed turbulence.
+The 10 h schedule is not an automatic guarantee of developed turbulence.
 Inspect the warmup's final profiles, stress, and stationarity before accepting
 the reference for production comparisons. No full-duration run was launched
 while implementing this feature.
@@ -93,7 +95,7 @@ s = target sector mean at 70 m / recorded mean at 70 m
 Main initialization is projected onto the open-domain constraints. Initial
 pressure/tendency/controller state is rebuilt; no old periodic pressure or
 rotor state is copied. Scalar values and recording timestamps are unchanged.
-The entire 2 h recording is used once: no looping, clipping or missing coverage.
+The entire 1 h recording is used once: no looping, clipping or missing coverage.
 The recorded file is not rewritten or duplicated for another direction.
 
 This preserves fluctuation-to-mean ratios (TI), normalized profile and the
@@ -104,8 +106,8 @@ common neutral stability, roughness and turbulence statistics across directions;
 the wind rose alone does not justify directional stability/TI differences.
 Main CFL is checked during advancement and fails explicitly above 1.
 
-The recording stores four float32 yz fields each step: approximately 56.3 GiB
-uncompressed for 2 h on the production grid (compressed size depends on flow).
+The recording stores four float32 yz fields each step: approximately 28.1 GiB
+uncompressed for 1 h on the production grid (compressed size depends on flow).
 Allow additional space for checkpoints and per-direction output. Checkpoint
 compression/output is CPU work; simulation advancement runs on the GPU.
 

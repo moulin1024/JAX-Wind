@@ -13,11 +13,13 @@
 "lengths_m" = [8192.0, 8192.0, 1024.0]
 
 ["time"]
-"dt_seconds" = 0.25
-"steps" = 288000
+"dt_seconds" = 6.0
+"steps" = 6000
 "chunk_steps" = 120
-"checkpoint_every_steps" = 7200
+"checkpoint_every_steps" = 600
 "frame_count" = 100
+"cfl" = 0.9
+"checkpoint_every_seconds" = 3600.0
 
 ["numerics"]
 "dtype" = "float32"
@@ -29,7 +31,7 @@
 
 ["diagnostics"]
 "sample_start_step" = 0
-"sample_every_steps" = 120
+"sample_every_steps" = 5
 "reference_length_m" = 1024.0
 "reference_velocity_m_s" = 9.691004386
 "reference_scalar" = 1.0

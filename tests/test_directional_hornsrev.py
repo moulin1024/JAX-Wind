@@ -42,10 +42,14 @@ def test_directions_share_reference_and_no_warmup_in_main(tmp_path):
         assert result["reference_workflow"] == reference
         main = check_workflow(result["main_workflow"])
         assert main["order"] == ["main"]
-        assert main["stages"]["main"]["time"]["steps"] * .25 == 7200.
+        assert main["stages"]["main"]["time"]["steps"] * .25 == 3600.
     ref = check_workflow(reference)
-    assert ref["stages"]["warmup"]["time"]["steps"] * .25 == 72000.
-    assert ref["stages"]["precursor"]["time"]["steps"] * .25 == 7200.
+    assert ref["stages"]["warmup"]["time"]["steps"] * ref["stages"]["warmup"]["time"]["dt_seconds"] == 36000.
+    assert ref["stages"]["precursor"]["time"]["steps"] * .25 == 3600.
+    assert ref["stages"]["warmup"]["time"]["cfl"] == .9
+    assert ref["stages"]["warmup"]["time"]["checkpoint_every_seconds"] == 3600.
+    assert "cfl" not in ref["stages"]["precursor"]["time"]
+    assert "cfl" not in main["stages"]["main"]["time"]
     assert result["selected_wind_rose_sector_deg"] == 270.
     # Regeneration is idempotent, but differing assets must not be overwritten.
     profile = Path(reference).parent / "initial_profile.csv"

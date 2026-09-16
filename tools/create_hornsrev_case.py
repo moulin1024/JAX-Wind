@@ -92,18 +92,22 @@ def generate(direction=270., wind_speed=None, directory=None, run_root=None, smo
     ref["physics"]["flow"]["pressure_acceleration_m_s2"] = [ustar**2 / height, 0.]
     ref["diagnostics"].update(reference_velocity_m_s=reference_speed,
         reference_length_m=height, inversion_search_max_height_m=height,
-        sample_every_steps=2 if smoke else 120)
-    warm_steps, precursor_steps, main_steps = (4, 4, 4) if smoke else (288000, 28800, 28800)
-    ref["time"].update(steps=warm_steps, chunk_steps=2 if smoke else 120,
-        checkpoint_every_steps=2 if smoke else 7200, frame_count=2 if smoke else 100)
+        sample_every_steps=2 if smoke else 5)
+    warm_steps, precursor_steps, main_steps = (4, 4, 4) if smoke else (6000, 14400, 14400)
+    ref["time"].update(dt_seconds=.25 if smoke else 6., cfl=.9, steps=warm_steps, chunk_steps=2 if smoke else 120,
+        checkpoint_every_steps=2 if smoke else 600, frame_count=2 if smoke else 100)
+    if not smoke:
+        ref["time"]["checkpoint_every_seconds"] = 3600.
     ref["output"]["directory"] = str(reference_output / "warmup")
     ref_workflow = {"schema_version": 1, "output": {"directory": str(reference_output)},
         "stages": {
             "warmup": {"case": "precursor.toml", "operation": "periodic"},
-            "precursor": {"case": "precursor.toml", "operation": "record-inflow",
+            "precursor": {"case": "precursor.toml", "operation": "record-inflow", "fixed_dt": True,
                 "inputs": {"checkpoint": "@warmup/checkpoint"},
                 "options": {"record_plane": 0},
-                "overrides": {"time": {"steps": precursor_steps}}}}}
+                "overrides": {"time": {"steps": precursor_steps, "dt_seconds": .25,
+                    "checkpoint_every_steps": 2 if smoke else 14400},
+                    "diagnostics": {"sample_every_steps": 2 if smoke else 120}}}}}
     main = deepcopy(load_case(CASE_ROOT / "fv_hornsrev1_80_uniform10_open_gmg_300s_muscl.toml").document)
     main["physics"].pop("inflow")
     main["case"].update(name="hornsrev1_" + label,
@@ -112,7 +116,10 @@ def generate(direction=270., wind_speed=None, directory=None, run_root=None, smo
     main["mesh"] = deepcopy(ref["mesh"])
     main["diagnostics"] = deepcopy(ref["diagnostics"])
     main["diagnostics"]["reference_velocity_m_s"] = target
-    main["time"] = {**ref["time"], "steps": main_steps}
+    main["time"] = {**ref["time"], "steps": main_steps, "dt_seconds": .25,
+        "checkpoint_every_steps": 2 if smoke else 14400}
+    main["time"].pop("cfl", None)
+    main["diagnostics"]["sample_every_steps"] = 2 if smoke else 120
     layout = main["physics"]["wind_farm"]["layout"]
     if smoke:
         layout = [dict(id="T01", x_m=256., y_m=192., hub_height_m=70., initial_rpm=0.)]

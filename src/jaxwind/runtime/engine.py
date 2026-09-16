@@ -100,8 +100,16 @@ def run(case, *, output=None, max_steps=None, _resume=False, _simulation=None):
                 observer.consume(directory, {key: np.asarray(value)[:active] for key, value in outputs.items()})
             observer.sample(state, metadata)
             checkpoint_every = settings.get("checkpoint_every_steps", chunk * 10)
-            if int(state.step) - metadata.get("last_checkpoint_step", invocation_start) >= checkpoint_every:
+            checkpoint_seconds = settings.get("checkpoint_every_seconds")
+            if checkpoint_seconds:
+                checkpoint_index = math.floor((float(state.time) - metadata["initial_time"] + tolerance) / checkpoint_seconds)
+                checkpoint_due = checkpoint_index > metadata.get("checkpoint_time_index", 0)
+            else:
+                checkpoint_due = int(state.step) - metadata.get("last_checkpoint_step", invocation_start) >= checkpoint_every
+            if checkpoint_due:
                 metadata["last_checkpoint_step"] = int(state.step)
+                if checkpoint_seconds:
+                    metadata["checkpoint_time_index"] = checkpoint_index
                 save_checkpoint(checkpoint, state, metadata=metadata, observer=observer.snapshot())
             timestep = f" dt={float(state.last_dt):.6g}s" if hasattr(state, "last_dt") else ""
             print(f"step={int(state.step)} time={float(state.time):.6g}s CFL={float(simulation.courant(state)):.4g}{timestep}", flush=True)

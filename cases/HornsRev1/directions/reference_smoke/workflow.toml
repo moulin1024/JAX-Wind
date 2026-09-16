@@ -12,6 +12,7 @@
 ["stages"."precursor"]
 "case" = "precursor.toml"
 "operation" = "record-inflow"
+"fixed_dt" = true
 
 ["stages"."precursor"."inputs"]
 "checkpoint" = "@warmup/checkpoint"
@@ -23,3 +24,8 @@
 
 ["stages"."precursor"."overrides"."time"]
 "steps" = 4
+"dt_seconds" = 0.25
+"checkpoint_every_steps" = 2
+
+["stages"."precursor"."overrides"."diagnostics"]
+"sample_every_steps" = 2

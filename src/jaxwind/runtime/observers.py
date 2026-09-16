@@ -63,11 +63,22 @@ class Observer:
             upcoming = [item for item in frame_steps(settings["steps"], frame_count) if item > step]
             if self.simulation.adaptive and len(self.frames) < frame_count:
                 period = (metadata["target_time"] - metadata["initial_time"]) / frame_count
-                target = min(target, metadata["initial_time"] + (len(self.frames) + 1) * period)
+                now = float(state.time) - metadata["initial_time"]
+                tolerance = 8 * np.finfo(np.asarray(state.time).dtype).eps * max(1., metadata["target_time"])
+                index = math.floor((now + tolerance) / period) + 1
+                target = min(target, metadata["initial_time"] + index * period)
             elif upcoming and not self.simulation.adaptive:
                 count = min(count, upcoming[0] - step)
+        checkpoint_seconds = settings.get("checkpoint_every_seconds")
         checkpoint_every = settings.get("checkpoint_every_steps")
-        if checkpoint_every and not self.simulation.adaptive:
+        if checkpoint_seconds:
+            # Anchor to the stage clock, including after a mid-interval resume.
+            boundary = metadata["initial_time"] + (metadata.get("checkpoint_time_index", 0) + 1) * checkpoint_seconds
+            if self.simulation.adaptive:
+                target = min(target, boundary)
+            else:
+                count = min(count, max(1, math.ceil((boundary - float(state.time)) / dt - 1.e-6)))
+        elif checkpoint_every and not self.simulation.adaptive:
             count = min(count, checkpoint_every - step % checkpoint_every)
         return max(1, count), target
 
@@ -122,9 +133,10 @@ class Observer:
             from .frames import frame_steps
             if self.simulation.adaptive:
                 period = (metadata["target_time"] - metadata["initial_time"]) / frame_count
-                due_time = metadata["initial_time"] + (len(self.frames) + 1) * period
+                index = round((float(state.time) - metadata["initial_time"]) / period)
+                due_time = metadata["initial_time"] + index * period
                 tolerance = 8 * np.finfo(np.asarray(state.time).dtype).eps * max(1., metadata["target_time"])
-                due = len(self.frames) < frame_count and float(state.time) >= due_time - tolerance
+                due = 0 < index <= frame_count and abs(float(state.time) - due_time) <= tolerance
             else:
                 due = relative_step in frame_steps(settings["steps"], frame_count)
             if due:

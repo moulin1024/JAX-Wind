@@ -18,6 +18,7 @@
 "chunk_steps" = 2
 "checkpoint_every_steps" = 2
 "frame_count" = 2
+"cfl" = 0.9
 
 ["numerics"]
 "dtype" = "float32"

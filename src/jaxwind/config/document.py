@@ -102,6 +102,8 @@ def validate(document: dict) -> None:
     _positive(time.get("steps"), "time.steps", integer=True)
     if "chunk_steps" in time:
         _positive(time["chunk_steps"], "time.chunk_steps", integer=True)
+    if "checkpoint_every_seconds" in time:
+        _positive(time["checkpoint_every_seconds"], "time.checkpoint_every_seconds")
     if "checkpoint_every_steps" in time:
         _positive(time["checkpoint_every_steps"], "time.checkpoint_every_steps", integer=True)
     if "frame_count" in time:
@@ -152,7 +154,7 @@ def validate(document: dict) -> None:
         if unknown:
             raise ValueError(f"unknown numerics settings: {', '.join(sorted(unknown))}")
     for section, keys in {
-        "time": {"dt_seconds", "steps", "chunk_steps", "cfl", "frame_count", "statistics_window_seconds", "checkpoint_every_steps"},
+        "time": {"dt_seconds", "steps", "chunk_steps", "cfl", "frame_count", "statistics_window_seconds", "checkpoint_every_steps", "checkpoint_every_seconds"},
         "output": {"directory"},
     }.items():
         unknown = document[section].keys() - keys
@@ -198,7 +200,7 @@ def native_document(path: str | Path | ResolvedCase) -> dict:
         result["finite_volume"]["chunk_steps"] = result["time"].pop("chunk_steps", 100)
         if "cfl" in result["time"]:
             result["finite_volume"]["cfl_ceiling"] = result["time"].pop("cfl")
-        for key in ("checkpoint_every_steps", "frame_count", "statistics_window_seconds"):
+        for key in ("checkpoint_every_steps", "checkpoint_every_seconds", "frame_count", "statistics_window_seconds"):
             result["time"].pop(key, None)
         if "workflow" in doc:
             result["finite_volume_workflow"] = doc["workflow"]

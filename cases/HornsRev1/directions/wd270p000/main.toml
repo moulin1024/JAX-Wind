@@ -14,10 +14,11 @@
 
 ["time"]
 "dt_seconds" = 0.25
-"steps" = 28800
+"steps" = 14400
 "chunk_steps" = 120
-"checkpoint_every_steps" = 7200
+"checkpoint_every_steps" = 14400
 "frame_count" = 100
+"checkpoint_every_seconds" = 3600.0
 
 ["numerics"]
 "momentum_advection_scheme" = "muscl-mc"
