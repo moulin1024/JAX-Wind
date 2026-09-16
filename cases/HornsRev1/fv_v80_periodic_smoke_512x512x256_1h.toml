@@ -1,0 +1,22 @@
+schema_version = 1
+extends = "fv_workflow_v80.toml"
+
+[case]
+name = "hornsrev1_v80_periodic_smoke_512x512x256_1h"
+
+[time]
+# Fresh periodic run with the turbine active: 600 * 6 s = 1 hour.
+steps = 600
+chunk_steps = 50
+checkpoint_every_steps = 2000
+frame_count = 100
+
+[numerics]
+pressure_backend = "fft"
+
+[diagnostics]
+sample_start_step = 540
+sample_every_steps = 6
+
+[output]
+directory = "outputs/hornsrev1_v80_periodic_smoke_1h_30244593"

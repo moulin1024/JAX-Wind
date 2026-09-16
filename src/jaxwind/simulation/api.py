@@ -28,6 +28,7 @@ class Simulation:
     courant: Callable
     adaptive: bool = False
     diagnostics: Any = None
+    turbine_diagnostics: Any = None
 
     def initialize(self, inputs=None):
         if inputs:
@@ -46,15 +47,31 @@ def _build(case) -> Simulation:
     dtype = case.document["numerics"].get("dtype", "float32")
     jax.config.update("jax_enable_x64", dtype == "float64")
     dt = case.document["time"]["dt_seconds"]
+    if case.formulation == "boussinesq" and "inflow" in case.document.get("physics", {}):
+        if case.document["physics"]["inflow"]["model"] == "uniform":
+            from .uniform_farm import build_simulation as build_uniform
+            return build_uniform(case)
+        from .synthetic_inflow import build_simulation as build_synthetic
+        return build_synthetic(case)
     if case.formulation == "boussinesq":
         from jaxwind.config.abl import load_fv_abl
         from .atmospheric import build_components
-        components = build_components(load_fv_abl(case))
+        forcing = None
+        farm = None
+        if "wind_farm" in case.document.get("physics", {}):
+            from .wind_farm import ControlledFarm
+            farm = ControlledFarm(case)
+        elif "turbine" in case.document.get("physics", {}):
+            from jaxwind.config.stages import load_workflow
+            from .turbines import build_turbine_forcing
+            forcing = build_turbine_forcing(load_workflow(case))
+        components = build_components(load_fv_abl(case), forcing=forcing, farm=farm)
         def advance(state, controls):
             target = controls.target_time if components.adaptive else dt
             return components.advance(state, target, controls.count)
-        courant = jax.jit(lambda state: courant_number(state.velocity, components.grid, dt))
-        return Simulation(case, components.grid, components.initial, advance, courant, components.adaptive, components)
+        courant = jax.jit(lambda state: courant_number(state.velocity, components.grid, state.controller_dt if farm is not None else dt))
+        return Simulation(case, components.grid, components.initial, advance, courant, components.adaptive, components,
+                          jax.jit(farm.diagnostics) if farm is not None else None)
     if case.formulation == "low-mach-abl":
         from jaxwind.config.low_mach import load_case as load_native
         from jaxwind.simulation.low_mach import build_simulation as build_native
@@ -65,6 +82,10 @@ def _build(case) -> Simulation:
     from jaxwind.simulation.jet import build_simulation as build_native
     native = load_native(case)
     grid, jet, microphysics, initial, advance, _ = build_native(native)
+    if native.cfl is not None:
+        return Simulation(case, grid, initial,
+                          lambda state, controls: advance(state, controls.target_time, controls.count),
+                          lambda state: state.last_cfl, adaptive=True)
     courant = jax.jit(lambda state: courant_number(state.velocity, grid, dt))
     return Simulation(case, grid, initial, lambda state, controls: advance(state, controls.count), courant)
 
@@ -73,9 +94,29 @@ def build_simulation(case) -> Simulation:
     from dataclasses import replace
     from jaxwind.io.state_fields import initialize_state
     case = load_case(case)
+    initial = case.document.get("initial_conditions", {})
+    if initial.get("operation") in {"periodic", "record-inflow", "open-inflow"}:
+        from .stages import build_stage
+        return build_stage(case, initial["operation"], initial.get("artifacts", {}),
+                           initial.get("stage_options", {}))
     simulation = _build(case)
     checkpoint = case.document.get("initial_conditions", {}).get("checkpoint")
     if checkpoint is not None:
-        state = initialize_state(checkpoint, simulation.initial_state, simulation.grid, case.formulation)
+        template = simulation.initial_state
+        if hasattr(template, "rotors"):
+            from jaxwind.io.checkpoint import checkpoint_metadata
+            header = checkpoint_metadata(checkpoint)
+            if header["state"].get("record") == "AtmosphericSolution":
+                from jaxwind.abl import AtmosphericSolution
+                from .wind_farm import ControlledFarm
+                flow = initialize_state(checkpoint, AtmosphericSolution(*template[:7]), simulation.grid, case.formulation)
+                state = ControlledFarm(case).initialize(flow)
+            else:
+                previous = header.get("resolved_case", {}).get("physics", {}).get("wind_farm", {})
+                if previous.get("layout") != case.document["physics"]["wind_farm"]["layout"]:
+                    raise ValueError("farm checkpoint initialization requires an unchanged turbine layout/order")
+                state = initialize_state(checkpoint, template, simulation.grid, case.formulation)
+        else:
+            state = initialize_state(checkpoint, template, simulation.grid, case.formulation)
         simulation = replace(simulation, initial_state=state)
     return simulation

@@ -1,0 +1,19 @@
+schema_version = 1
+extends = "fv_512x128x256_l24_jet_only_two_outlets_adaptive_cfl0p6_1s.toml"
+formulation = "cryogenic-low-mach"
+
+[case]
+name = "HITSZ nitrogen jet, 5 m/s inlet, adaptive RK3 CFL 0.6, low-Mach GMG 512x128x256"
+
+[physics.ambient]
+# Uniform initial airflow and constant streamwise inlet speed.
+streamwise_velocity_m_s = 5.0
+
+[physics.source]
+streamwise_boundaries = "inflow-outflow"
+
+[time]
+checkpoint_every_steps = 200
+
+[output]
+directory = "outputs/hitsz_ln2_jet/fv_512x128x256_l24_inflow5_adaptive_cfl0p6_1s"

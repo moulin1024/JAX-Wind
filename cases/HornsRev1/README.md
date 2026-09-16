@@ -1,15 +1,81 @@
 # HornsRev1
 
+## Shared precursor and parameterized wind directions
+
+See [directional workflow](directional_workflow.md) for the 20 h warmup + 2 h
+shared precursor + 2 h per-direction main setup. Generate a case with
+`python tools/create_hornsrev_case.py --wind-direction 270` (or another angle).
+All directions reuse the same recording, amplitude-scaled to their wind-rose
+mean speed; the main domain is nonperiodic. The selected first direction is 270°.
+The [English wind rose](wind_rose.csv) preserves the supplied values.
+
 > Run all commands below on a compute node, including configuration checks.
 > This case uses schema version 1. Historical outputs cannot be resumed;
 > regenerate inputs in the new format. See [verification](../../doc/verification.md).
 
 Neutral offshore precursor for the Horns Rev 1 wind farm (Vestas V80-2.0 MW,
-80 m rotor, 70 m hub height, 7D spacing). This directory currently provides the
-**warmup** stage only: a periodic, pressure-driven neutral boundary layer that
-spins up turbulence for a later precursor/main turbine workflow.
+80 m rotor, 70 m hub height, 7D spacing). The directional workflow above provides
+shared warmup/precursor development and independent open-boundary farm mains.
+Historical warmup and single-V80 AD-BEM examples are also provided below.
 
-## Configuration
+## V80 turbine setup
+
+[`fv_workflow_v80.toml`](fv_workflow_v80.toml) declares the supplied 80 m rotor
+using the same `[physics.turbine]` format as the DTU10MW case. Its case-local
+OpenFAST-compatible data are under [`turbines/V80`](turbines/V80/README.md).
+
+```bash
+export JAXWIND_V80_FAST="$PWD/cases/HornsRev1/turbines/V80/CustomRotor.fst"
+jaxwind check cases/HornsRev1/fv_workflow_v80.toml
+```
+
+The example uses Horns Rev's 70 m hub height and offshore inflow, with a
+single turbine in the 8192 x 8192 x 1024 m domain. It preserves the supplied
+blade and polar data. Nacelle/tower drag is disabled because V80 body
+dimensions were not supplied. See the turbine README for stage durations,
+source-data limits, and running instructions.
+
+### One-hour periodic V80 smoke run
+
+[`fv_v80_periodic_smoke_512x512x256_1h.toml`](fv_v80_periodic_smoke_512x512x256_1h.toml)
+uses 512 x 512 x 256 cells in an 8192 x 8192 x 1024 m domain
+(16 x 16 x 4 m). The single V80 is active from startup at
+(4096, 4096, 70) m, with 16.7 rpm and zero blade pitch. Use `jaxwind run`
+for this case, not the turbine-free `workflow --stage warmup` command.
+
+```bash
+export JAXWIND_V80_FAST="$PWD/cases/HornsRev1/turbines/V80/CustomRotor.fst"
+jaxwind run cases/HornsRev1/fv_v80_periodic_smoke_512x512x256_1h.toml
+python tools/render_v80_smoke.py outputs/hornsrev1_v80_periodic_smoke_1h_30244593
+```
+
+The adaptive run ends at 3600 simulated seconds and stores 100 hub-height
+and centerline frames, at 36-second intervals. The MP4 shows a near-wake
+crop of both planes at 10 fps; full-domain planes remain in `flow_frames.npz`.
+This starts from the prescribed log profile plus noise, not a fully developed
+precursor. Horizontal boundaries are periodic, so the wake can recirculate
+during the hour. This is a single-turbine smoke test, not the full farm.
+
+## Independently controlled turbines
+
+The [centered 80-turbine direct main case](main_uniform10.md) uses uniform
+10 m/s inflow, lateral/downstream pressure outlets, GMG, and 100 hub-height
+u animation frames in the 512 x 512 x 256 domain.
+
+The requested **1D-upstream RPM/power lookup mode** is configured in
+[`fv_v80_two_turbine_lookup.toml`](fv_v80_two_turbine_lookup.toml), with a
+small [`lookup smoke case`](fv_v80_two_turbine_lookup_smoke.toml).
+See [lookup data and limitations](v80_lookup.md): RPM values are approximate
+published-figure readings, and power comes from DTU's V80 reference table.
+
+[`fv_v80_two_turbine_tsr.toml`](fv_v80_two_turbine_tsr.toml) adds a two-V80
+layout with independent filtered optimal-TSR speed tracking. A small GPU test
+is provided in [`fv_v80_two_turbine_tsr_smoke.toml`](fv_v80_two_turbine_tsr_smoke.toml).
+See [controller documentation](../../doc/wind-farm-control.md) for parameters,
+commands, per-turbine history, and limitations. This is an idealized speed
+servo; the example target TSR and response settings are not calibrated V80 data.
+
+## Base warmup configuration
 
 | | |
 |---|---|

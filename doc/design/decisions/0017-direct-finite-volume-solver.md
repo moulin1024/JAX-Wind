@@ -14,6 +14,23 @@ JAX-Wind has one flow solver: the staggered finite-volume modules in `src/jaxwin
 
 FFT, geometric multigrid, and optional AMG are pressure backends within that solver. FFT remains the direct periodic-uniform option; mapped or open domains use multigrid. A pressure backend is not a separate flow solver.
 
+For a nonperiodic streamwise axis, GMG supports either the original prescribed
+inlet/pressure-outlet pair or pressure outlets at both ends (`open_x_low=True`).
+The latter uses zero exterior-face pressure at x− and x+, consistently in the
+gradient, multigrid operator/diagonals, residual, and low-Mach correction. It
+does not impose a streamwise inlet velocity. Cryogenic volume-source cases
+select it with `physics.source.streamwise_boundaries = "outflow-outflow"`;
+sidewalls and vertical wall conditions are unchanged. Outlet backflow uses
+ambient scalar values. Other backends reject this optional boundary mode.
+
+Cryogenic fully vaporized volume-source runs may select adaptive RK3 through
+`time.cfl`. Their `dt_seconds` is a maximum and `steps * dt_seconds` defines
+physical duration. The adaptive state additionally carries accepted dt,
+peak-stage CFL, and rejected-trial count. Source ramps use physical time;
+projection, microphysics, and stage updates use the accepted step. Diffusion,
+startup, and CFL checks can shorten a step. Snapshot scheduling for adaptive
+runs uses physical time and is preserved across checkpoints.
+
 Case files use canonical SI values. The ABL application stores pressure acceleration, rotation, geostrophic velocity, wall and surface parameters, scalar flux and buoyancy, time step, precision, and sampling controls directly. The ABL solver advances those SI values directly; there is no semantic-field interpreter, ownership DSL, or separate integrator package.
 
 The ABL momentum closure is AMD. Removed LASD parameters are not accepted as configuration. Adding another closure requires an implemented FV closure, a real configuration choice, and direct tests.

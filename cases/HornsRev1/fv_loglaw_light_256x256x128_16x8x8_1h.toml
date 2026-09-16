@@ -1,0 +1,26 @@
+schema_version = 1
+extends = "fv_workflow_512x1024x128_16x8x8.toml"
+
+[case]
+name = "hornsrev1_loglaw_light_256x256x128_16x8x8_1h"
+
+[mesh]
+cells = [256, 256, 128]
+lengths_m = [4096.0, 2048.0, 1024.0]
+
+[time]
+# Adaptive duration: 600 * 6 s = 1 h; diagnostic cadence uses the same cap.
+steps = 600
+chunk_steps = 100
+checkpoint_every_steps = 5000
+
+[numerics]
+pressure_backend = "fft"
+
+[diagnostics]
+# Average the second half-hour, sampling every 120 simulated seconds.
+sample_start_step = 300
+sample_every_steps = 20
+
+[output]
+directory = "outputs/hornsrev1_loglaw_light_256x256x128_16x8x8_1h"

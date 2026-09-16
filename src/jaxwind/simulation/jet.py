@@ -9,6 +9,10 @@ from jaxwind.formulations.jet import (CryogenicState, DifferentiableInletControl
 def build_simulation(case: JetCase, *, differentiable_inlet: bool = False):
     import jax
     import jax.numpy as jnp
+    from jaxwind.simulation.jet_adaptive import AdaptiveCryogenicState, build_adaptive_advance
+
+    if case.cfl is not None and differentiable_inlet:
+        raise ValueError("adaptive step rejection is not a differentiable inlet mode")
 
     from jaxwind.domain import (
         AnalyticalGrid,
@@ -58,6 +62,16 @@ def build_simulation(case: JetCase, *, differentiable_inlet: bool = False):
         CryogenicMicrophysicsConfig,
         advance_fog_microphysics,
     )
+    from jaxwind.open_boundary import (
+        enforce_two_outlet_scalar, enforce_two_outlet_velocity,
+    )
+
+    two_outlets = case.streamwise_boundaries == "outflow-outflow"
+
+    def enforce_velocity(velocity, plane, grid):
+        if two_outlets:
+            return enforce_two_outlet_velocity(velocity)
+        return enforce_open_velocity(velocity, plane, grid)
 
     def axis_mapping(kind, focus, strength, length):
         normalized_focus = focus / length
@@ -114,6 +128,7 @@ def build_simulation(case: JetCase, *, differentiable_inlet: bool = False):
         backend="gmg",
         periodic_x=False,
         periodic_y=False,
+        open_x_low=two_outlets,
         dtype="float32",
         config={
             "tolerance": case.gmg_tolerance,
@@ -285,9 +300,9 @@ def build_simulation(case: JetCase, *, differentiable_inlet: bool = False):
         rms = jnp.sqrt(jnp.sum(weight * centered**2) / total)
         return centered / jnp.maximum(rms, tiny)
 
-    def inlet_fields(control, time):
+    def inlet_fields(control, time, dt=case.dt):
         momentum_correction = zero_acceleration
-        midpoint = time + 0.5 * case.dt
+        midpoint = time + 0.5 * dt
         inlet_ramp = (
             jnp.asarray(1.0, jnp.float32)
             if case.ramp_time == 0.0
@@ -307,7 +322,7 @@ def build_simulation(case: JetCase, *, differentiable_inlet: bool = False):
             inlet_nitrogen_density = jnp.zeros(
                 inlet_shape, jnp.float32
             )
-            inlet_x_velocity = jnp.zeros(inlet_shape, jnp.float32)
+            inlet_x_velocity = jnp.full(inlet_shape, case.ambient_streamwise_velocity, jnp.float32)
             inlet_y_velocity = jnp.zeros(
                 (grid.nz, grid.ny + 1), jnp.float32
             )
@@ -526,9 +541,10 @@ def build_simulation(case: JetCase, *, differentiable_inlet: bool = False):
             inlet_nitrogen_density,
             _momentum_correction,
         ) = inlet_fields(control, jnp.asarray(0.0, jnp.float32))
-        velocity = enforce_open_velocity(
-            zeros(grid, "float32", boundaries), inflow_plane, grid
-        )
+        velocity = zeros(grid, "float32", boundaries)
+        if case.ambient_streamwise_velocity:
+            velocity = velocity._replace(x=jnp.full_like(velocity.x, case.ambient_streamwise_velocity))
+        velocity = enforce_velocity(velocity, inflow_plane, grid)
         zero_velocity = StaggeredVelocity(
             jnp.zeros_like(velocity.x),
             jnp.zeros_like(velocity.y),
@@ -556,7 +572,7 @@ def build_simulation(case: JetCase, *, differentiable_inlet: bool = False):
         initial_nitrogen = jnp.clip(
             initial_nitrogen_density / initial_density, 0.0, 1.0
         )
-        return CryogenicState(
+        initial_state = CryogenicState(
             velocity,
             jnp.zeros(shape, jnp.float32),
             initial_density,
@@ -577,17 +593,23 @@ def build_simulation(case: JetCase, *, differentiable_inlet: bool = False):
             jnp.asarray(0.0, jnp.float32),
             jnp.asarray(0, jnp.int32),
         )
+        if case.cfl is not None:
+            return AdaptiveCryogenicState(
+                *initial_state, jnp.asarray(case.dt, jnp.float32),
+                jnp.asarray(0.0, jnp.float32), jnp.asarray(0, jnp.int32),
+            )
+        return initial_state
 
     initial = make_initial(base_control)
 
-    def rk3_step(state, control):
+    def rk3_step(state, control, dt=case.dt):
         """Wray three-stage RK3 with selectable pressure projection cadence."""
         (
             inflow_plane,
             inlet_temperature,
             inlet_nitrogen_density,
             subgrid_momentum,
-        ) = inlet_fields(control, state.time)
+        ) = inlet_fields(control, state.time, dt)
         reference_temperature = jnp.full(
             shape, case.ambient_temperature, state.temperature.dtype
         ).at[..., 0].set(inlet_temperature)
@@ -605,7 +627,7 @@ def build_simulation(case: JetCase, *, differentiable_inlet: bool = False):
             control.edge_speed_ratio,
             control.edge_diameter_ratio,
         )
-        current_velocity = enforce_open_velocity(
+        current_velocity = enforce_velocity(
             state.velocity, inflow_plane, grid
         )
         parcel_exchange = (
@@ -627,7 +649,7 @@ def build_simulation(case: JetCase, *, differentiable_inlet: bool = False):
                 state.temperature,
                 grid,
                 state.step,
-                case.dt,
+                dt,
                 jet,
                 microphysics,
                 state.density,
@@ -635,7 +657,10 @@ def build_simulation(case: JetCase, *, differentiable_inlet: bool = False):
             )
         )
         dtype = state.temperature.dtype
-        midpoint = (state.step.astype(dtype) + 0.5) * case.dt
+        midpoint = (
+            state.time + 0.5 * dt if case.cfl is not None
+            else (state.step.astype(dtype) + 0.5) * dt
+        )
         ramp = (
             jnp.asarray(1.0, dtype)
             if jet.ramp_time == 0.0
@@ -801,12 +826,14 @@ def build_simulation(case: JetCase, *, differentiable_inlet: bool = False):
                 grid,
                 periodic_x=poisson.periodic_x,
                 periodic_y=poisson.periodic_y,
+                open_x_low=poisson.open_x_low,
             )
             if case.time_integration == "fast-rk3"
             else None
         )
         last_stage = len(weights) - 1
         continuity_error = state.continuity_error
+        peak_cfl = courant_number(velocity, grid, dt) if case.cfl is not None else 0.0
         for stage, (current_weight, previous_weight) in enumerate(weights):
             previous_stage_density = density
             current = tendencies(
@@ -824,25 +851,25 @@ def build_simulation(case: JetCase, *, differentiable_inlet: bool = False):
             previous_momentum = previous[0]
             candidate = StaggeredVelocity(
                 velocity.x
-                + case.dt
+                + dt
                 * (
                     current_weight * current_momentum.x
                     + previous_weight * previous_momentum.x
                 ),
                 velocity.y
-                + case.dt
+                + dt
                 * (
                     current_weight * current_momentum.y
                     + previous_weight * previous_momentum.y
                 ),
                 velocity.z
-                + case.dt
+                + dt
                 * (
                     current_weight * current_momentum.z
                     + previous_weight * previous_momentum.z
                 ),
             )
-            substep = case.dt * (current_weight + previous_weight)
+            substep = dt * (current_weight + previous_weight)
             if lagged_pressure_gradient is not None:
                 if incompressible:
                     candidate = StaggeredVelocity(
@@ -866,12 +893,12 @@ def build_simulation(case: JetCase, *, differentiable_inlet: bool = False):
                         * lagged_pressure_gradient.z
                         / pressure_density.z,
                     )
-            candidate = enforce_open_velocity(candidate, inflow_plane, grid)
+            candidate = enforce_velocity(candidate, inflow_plane, grid)
 
             def stage_scalar(
                 field, tendency, old_tendency, ambient, floor=None, ceiling=None
             ):
-                updated = field + case.dt * (
+                updated = field + dt * (
                     current_weight * tendency
                     + previous_weight * old_tendency
                 )
@@ -879,6 +906,8 @@ def build_simulation(case: JetCase, *, differentiable_inlet: bool = False):
                     updated = jnp.maximum(updated, floor)
                 if ceiling is not None:
                     updated = jnp.minimum(updated, ceiling)
+                if two_outlets:
+                    return enforce_two_outlet_scalar(updated, candidate, ambient)
                 return _enforce_scalar(updated, ambient)
 
             temperature = stage_scalar(
@@ -961,11 +990,13 @@ def build_simulation(case: JetCase, *, differentiable_inlet: bool = False):
                         poisson,
                         substep,
                         mass_source=gas_mass_source,
-                        continuity_dt=case.dt,
+                        continuity_dt=dt,
                     )
-                pressure = pressure + correction * (substep / case.dt)
+                pressure = pressure + correction * (substep / dt)
             else:
                 velocity = candidate
+            if case.cfl is not None:
+                peak_cfl = jnp.maximum(peak_cfl, courant_number(velocity, grid, dt))
             if stage == last_stage:
                 if incompressible:
                     continuity_error = case.ambient_density * jnp.max(
@@ -978,7 +1009,7 @@ def build_simulation(case: JetCase, *, differentiable_inlet: bool = False):
                         else previous_stage_density
                     )
                     mass_interval = (
-                        case.dt
+                        dt
                         if lagged_pressure_gradient is not None
                         else substep
                     )
@@ -999,7 +1030,7 @@ def build_simulation(case: JetCase, *, differentiable_inlet: bool = False):
 
         nitrogen = jnp.clip(nitrogen_density / density, 0.0, 1.0)
 
-        return CryogenicState(
+        result = CryogenicState(
             velocity,
             pressure,
             density,
@@ -1017,14 +1048,31 @@ def build_simulation(case: JetCase, *, differentiable_inlet: bool = False):
             current[5],
             parcel_exchange.parcels,
             continuity_error,
-            state.time + case.dt,
+            state.time + dt,
             state.step + 1,
         )
+        if case.cfl is not None:
+            return AdaptiveCryogenicState(*result, dt, peak_cfl, state.rejected_steps)
+        return result
 
     def advance_controlled(state, control, count):
         return jax.lax.fori_loop(
             0, count, lambda _, carry: rk3_step(carry, control), state
         )
+
+    if case.cfl is not None:
+        def diffusivity(velocity):
+            eddy = eddy_viscosity(velocity, grid, boundaries, closure)
+            return jnp.maximum(
+                case.kinematic_viscosity + eddy,
+                case.scalar_diffusivity + eddy / scalar_model.turbulent_prandtl,
+            )
+
+        advance = build_adaptive_advance(
+            lambda state, dt: rk3_step(state, base_control, dt),
+            case, grid, diffusivity,
+        )
+        return grid, jet, microphysics, initial, advance, courant_number
 
     controlled = jax.jit(advance_controlled, static_argnums=2)
     if differentiable_inlet:

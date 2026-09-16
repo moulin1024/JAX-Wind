@@ -17,6 +17,7 @@ import jax.numpy as jnp
 from jaxwind.domain.grid import Grid
 
 from jaxwind.numerics.discretization import _cells_to_faces, advection, diffusion, pressure_gradient, stable_timestep
+from jaxwind.numerics.momentum import muscl_advection
 from jaxwind.numerics.poisson import PressurePoisson, project
 from jaxwind.rotation import CoriolisGeostrophic, coriolis_tendency
 from jaxwind.sgs import (
@@ -62,6 +63,7 @@ class FlowModel:
     surface: MoninObukhovWall | None = None
     sidewalls: MoninObukhovWall | None = None
     rotation: CoriolisGeostrophic | None = None
+    momentum_advection_scheme: str = "muscl-mc"
 
 
 def initial_solution(
@@ -115,6 +117,11 @@ def build_tendency(
 ) -> Callable[[StaggeredVelocity, jnp.ndarray], StaggeredVelocity]:
     """Return the explicit right-hand side of the momentum equations."""
     force_x, force_y, force_z = model.body_force
+    if model.momentum_advection_scheme not in {"central", "muscl-mc"}:
+        raise ValueError("momentum_advection_scheme must be central or muscl-mc")
+    if model.momentum_advection_scheme == "muscl-mc" and not grid.is_uniform:
+        raise ValueError("muscl-mc momentum advection requires a uniform grid")
+    transport = muscl_advection if model.momentum_advection_scheme == "muscl-mc" else advection
 
     def tendency(
         velocity: StaggeredVelocity,
@@ -123,7 +130,7 @@ def build_tendency(
         surface_override=None,
         mesh_stability=0.0,
     ) -> StaggeredVelocity:
-        total = advection(velocity, grid)
+        total = transport(velocity, grid)
         # Keeping advection out of the following closure/forcing fusion avoids
         # register pressure and spilling on ROCm and is also faster on CUDA.
         total = StaggeredVelocity(

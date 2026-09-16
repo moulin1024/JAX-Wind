@@ -1,0 +1,22 @@
+schema_version = 1
+extends = "fv_loglaw_light_256x256x128_16x8x8_1h.toml"
+
+[case]
+name = "hornsrev1_loglaw_light_16x8x8_to9h"
+
+[initial_conditions]
+checkpoint = "../../outputs/hornsrev1_loglaw_light_16x8x8_1h_30244593/checkpoint.npz"
+
+[time]
+# Add 8 hours to the 1-hour checkpoint: 4800 * 6 s.
+steps = 4800
+chunk_steps = 200
+checkpoint_every_steps = 10000
+
+[diagnostics]
+# Relative to restart at 1 h: sample absolute t=8..9 h every 120 s.
+sample_start_step = 4200
+sample_every_steps = 20
+
+[output]
+directory = "outputs/hornsrev1_loglaw_light_16x8x8_to9h_30244593"

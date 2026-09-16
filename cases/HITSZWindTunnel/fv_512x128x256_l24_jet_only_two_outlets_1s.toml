@@ -1,0 +1,13 @@
+schema_version = 1
+extends = "fv_1024x256x512_l24_jet_only_two_outlets_1s.toml"
+formulation = "cryogenic-low-mach"
+
+[case]
+name = "HITSZ jet alone, two streamwise outlets, low-Mach GMG 512x128x256"
+
+[mesh]
+cells = [512, 128, 256]
+lengths_m = [24.0, 6.0, 3.6]
+
+[output]
+directory = "outputs/hitsz_ln2_jet/fv_512x128x256_l24_two_outlets_1s"

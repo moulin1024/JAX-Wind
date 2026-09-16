@@ -1,0 +1,98 @@
+"schema_version" = 1
+"formulation" = "boussinesq"
+
+["case"]
+"name" = "hornsrev1_wd000p000"
+"citation" = "Meteorological wind FROM 0 deg; shared amplitude-scaled precursor"
+"initial_profile" = "/raven/u/limo/JAX-Wind/cases/HornsRev1/directions/reference/initial_profile.csv"
+"reference_results" = "/raven/u/limo/JAX-Wind/cases/HornsRev1/fv_reference_results.json"
+"seed" = 2026
+
+["mesh"]
+"cells" = [512, 512, 256]
+"lengths_m" = [8192.0, 8192.0, 1024.0]
+
+["time"]
+"dt_seconds" = 0.25
+"steps" = 28800
+"chunk_steps" = 120
+"checkpoint_every_steps" = 7200
+"frame_count" = 100
+
+["numerics"]
+"momentum_advection_scheme" = "muscl-mc"
+"dtype" = "float32"
+"pressure_backend" = "gmg"
+"gmg_tolerance" = 1e-05
+"gmg_presweeps" = 1
+"gmg_postsweeps" = 1
+"time_integration" = "fast-rk3"
+"turbulent_prandtl" = 0.4
+"spectrum_diagnostic" = "none"
+
+["diagnostics"]
+"sample_start_step" = 0
+"sample_every_steps" = 120
+"reference_length_m" = 1024.0
+"reference_velocity_m_s" = 7.661026439
+"reference_scalar" = 1.0
+"inversion_search_max_height_m" = 1024.0
+"spectrum_heights_m" = [70.0]
+
+["physics"]
+
+["physics"."flow"]
+"pressure_acceleration_m_s2" = [0.0, 0.0]
+"geostrophic_velocity_m_s" = [0.0, 0.0]
+"advection_frame_velocity_m_s" = [0.0, 0.0]
+"coriolis_s" = [0.0, 0.0]
+"roughness_length_m" = 0.0002
+"von_karman" = 0.4
+
+["physics"."scalar"]
+"reference_value" = 0.0
+"surface_flux" = 0.0
+"buoyancy_acceleration_per_unit" = 0.0
+
+["physics"."turbine"]
+"model" = "openfast-ad-bem"
+"openfast_model_environment" = "JAXWIND_V80_FAST"
+"x_m" = 4096.0
+"y_m" = 4096.0
+"hub_height_m" = 70.0
+"rotor_speed_rpm" = 18.0
+"blade_pitch_degrees" = 0.0
+"smoothing_width_m" = 16.0
+"smearing_azimuthal_elements" = 64
+"body_smoothing_width_m" = 16.0
+"nacelle_drag_coefficient" = 0.0
+"tower_drag_coefficient" = 0.0
+
+["physics"."wind_farm"]
+"layout" = [{ "id" = "T01", "x_m" = 2150.5, "y_m" = 1337.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T02", "x_m" = 2706.5, "y_m" = 1405.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T03", "x_m" = 3262.5, "y_m" = 1474.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T04", "x_m" = 3818.5, "y_m" = 1542.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T05", "x_m" = 4373.5, "y_m" = 1610.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T06", "x_m" = 4929.5, "y_m" = 1678.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T07", "x_m" = 5485.5, "y_m" = 1747.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T08", "x_m" = 6041.5, "y_m" = 1815.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T09", "x_m" = 2150.5, "y_m" = 1897.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T10", "x_m" = 2706.5, "y_m" = 1965.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T11", "x_m" = 3262.5, "y_m" = 2034.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T12", "x_m" = 3818.5, "y_m" = 2102.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T13", "x_m" = 4373.5, "y_m" = 2170.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T14", "x_m" = 4929.5, "y_m" = 2238.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T15", "x_m" = 5485.5, "y_m" = 2307.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T16", "x_m" = 6041.5, "y_m" = 2375.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T17", "x_m" = 2150.5, "y_m" = 2457.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T18", "x_m" = 2706.5, "y_m" = 2525.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T19", "x_m" = 3262.5, "y_m" = 2594.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T20", "x_m" = 3818.5, "y_m" = 2662.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T21", "x_m" = 4373.5, "y_m" = 2730.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T22", "x_m" = 4929.5, "y_m" = 2798.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T23", "x_m" = 5485.5, "y_m" = 2867.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T24", "x_m" = 6041.5, "y_m" = 2935.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T25", "x_m" = 2150.5, "y_m" = 3017.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T26", "x_m" = 2706.5, "y_m" = 3085.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T27", "x_m" = 3262.5, "y_m" = 3154.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T28", "x_m" = 3818.5, "y_m" = 3222.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T29", "x_m" = 4373.5, "y_m" = 3290.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T30", "x_m" = 4929.5, "y_m" = 3358.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T31", "x_m" = 5485.5, "y_m" = 3427.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T32", "x_m" = 6041.5, "y_m" = 3495.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T33", "x_m" = 2150.5, "y_m" = 3577.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T34", "x_m" = 2706.5, "y_m" = 3645.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T35", "x_m" = 3262.5, "y_m" = 3714.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T36", "x_m" = 3818.5, "y_m" = 3782.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T37", "x_m" = 4373.5, "y_m" = 3850.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T38", "x_m" = 4929.5, "y_m" = 3918.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T39", "x_m" = 5485.5, "y_m" = 3987.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T40", "x_m" = 6041.5, "y_m" = 4055.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T41", "x_m" = 2150.5, "y_m" = 4137.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T42", "x_m" = 2706.5, "y_m" = 4205.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T43", "x_m" = 3262.5, "y_m" = 4274.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T44", "x_m" = 3818.5, "y_m" = 4342.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T45", "x_m" = 4373.5, "y_m" = 4410.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T46", "x_m" = 4929.5, "y_m" = 4478.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T47", "x_m" = 5485.5, "y_m" = 4547.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T48", "x_m" = 6041.5, "y_m" = 4615.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T49", "x_m" = 2150.5, "y_m" = 4697.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T50", "x_m" = 2706.5, "y_m" = 4765.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T51", "x_m" = 3262.5, "y_m" = 4834.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T52", "x_m" = 3818.5, "y_m" = 4902.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T53", "x_m" = 4373.5, "y_m" = 4970.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T54", "x_m" = 4929.5, "y_m" = 5038.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T55", "x_m" = 5485.5, "y_m" = 5107.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T56", "x_m" = 6041.5, "y_m" = 5175.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T57", "x_m" = 2150.5, "y_m" = 5257.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T58", "x_m" = 2706.5, "y_m" = 5325.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T59", "x_m" = 3262.5, "y_m" = 5394.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T60", "x_m" = 3818.5, "y_m" = 5462.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T61", "x_m" = 4373.5, "y_m" = 5530.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T62", "x_m" = 4929.5, "y_m" = 5598.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T63", "x_m" = 5485.5, "y_m" = 5667.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T64", "x_m" = 6041.5, "y_m" = 5735.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T65", "x_m" = 2150.5, "y_m" = 5817.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T66", "x_m" = 2706.5, "y_m" = 5885.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T67", "x_m" = 3262.5, "y_m" = 5954.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T68", "x_m" = 3818.5, "y_m" = 6022.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T69", "x_m" = 4373.5, "y_m" = 6090.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T70", "x_m" = 4929.5, "y_m" = 6158.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T71", "x_m" = 5485.5, "y_m" = 6227.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T72", "x_m" = 6041.5, "y_m" = 6295.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T73", "x_m" = 2150.5, "y_m" = 6377.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T74", "x_m" = 2706.5, "y_m" = 6445.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T75", "x_m" = 3262.5, "y_m" = 6514.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T76", "x_m" = 3818.5, "y_m" = 6582.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T77", "x_m" = 4373.5, "y_m" = 6650.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T78", "x_m" = 4929.5, "y_m" = 6718.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T79", "x_m" = 5485.5, "y_m" = 6787.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }, { "id" = "T80", "x_m" = 6041.5, "y_m" = 6855.0, "hub_height_m" = 70.0, "initial_rpm" = 0.0 }]
+
+["physics"."wind_farm"."controller"]
+"model" = "wind-speed-lookup"
+"probe_distance_diameters" = 1.0
+"wind_filter_seconds" = 5.0
+"cut_in_m_s" = 4.0
+"cut_out_m_s" = 25.0
+"wind_speed_m_s" = [4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0, 17.0, 18.0, 19.0, 20.0, 21.0, 22.0, 23.0, 24.0, 25.0]
+"rpm" = [12.5, 12.4, 13.1, 14.5, 16.3, 17.6, 18.0, 18.0, 18.0, 18.0, 18.0, 18.0, 18.1, 18.1, 18.1, 18.1, 18.1, 18.1, 18.1, 18.1, 18.1, 18.1]
+"power_w" = [66600.0, 154000.0, 282000.0, 460000.0, 696000.0, 996000.0, 1341000.0, 1661000.0, 1866000.0, 1958000.0, 1988000.0, 1997000.0, 1999000.0, 2000000.0, 2000000.0, 2000000.0, 2000000.0, 2000000.0, 2000000.0, 2000000.0, 2000000.0, 2000000.0]
+"rpm_source" = "Approximate manual readings, Hansen et al. (2012), doi:10.1002/we.512, Fig.2b, PDF p.21; 23-25 m/s held at 18.1 rpm. https://backend.orbit.dtu.dk/ws/files/6499345/paper0149_R2.pdf"
+"power_source" = "DTU PyWake hornsrev1.py power_curve, 4-25 m/s, converted kW to W; retrieved 2026-09-15. https://gitlab.windenergy.dtu.dk/TOPFARM/PyWake/-/raw/master/py_wake/examples/data/hornsrev1.py"
+
+["output"]
+"directory" = "/raven/u/limo/JAX-Wind/outputs/hornsrev1_directional/wd000p000/main"
+
+["initial_conditions"]
+"operation" = "open-inflow"
+
+["initial_conditions"."artifacts"]
+"checkpoint" = "/raven/u/limo/JAX-Wind/outputs/hornsrev1_directional/reference/warmup/checkpoint.npz"
+"inflow" = "/raven/u/limo/JAX-Wind/outputs/hornsrev1_directional/reference/precursor/inflow"
+
+["initial_conditions"."stage_options"]
+"lateral_boundary" = "outflow"
+"target_hub_wind_speed_m_s" = 7.661026439

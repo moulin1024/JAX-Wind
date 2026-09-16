@@ -1,0 +1,36 @@
+schema_version = 1
+extends = "../HITSZLiquidNitrogenJet/fv_512x128x64_l24_pure_nitrogen_low_mach_1s.toml"
+formulation = "cryogenic-low-mach"
+
+[case]
+name = "HITSZ jet alone, two streamwise outlets, low-Mach GMG 1024x256x512"
+
+[mesh]
+cells = [1024, 256, 512]
+lengths_m = [24.0, 6.0, 3.6]
+
+[time]
+dt_seconds = 0.00025
+steps = 4000
+chunk_steps = 4
+checkpoint_every_steps = 400
+frame_count = 20
+
+[numerics]
+pressure_backend = "gmg"
+gmg_tolerance = 1.0e-5
+gmg_presweeps = 2
+gmg_postsweeps = 2
+momentum_closure = "amd"
+scalar_advection_scheme = "upwind"
+time_integration = "rk3"
+dtype = "float32"
+
+[physics.source]
+mode = "volume"
+streamwise_boundaries = "outflow-outflow"
+# Retain the existing fully vaporized subgrid source, not the proposed spray model.
+fully_vaporized_within_source_cell = true
+
+[output]
+directory = "outputs/hitsz_ln2_jet/fv_1024x256x512_l24_two_outlets_1s"

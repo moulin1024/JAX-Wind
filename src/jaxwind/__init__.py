@@ -5,6 +5,9 @@ Exports are lazy so configuration and CLI discovery do not initialize JAX.
 from importlib import import_module
 
 _EXPORTS = {
+    "MannBox": "jaxwind.inflow",
+    "generate_mann_box": "jaxwind.inflow",
+    "build_mann_inflow": "jaxwind.inflow",
     "UniformGrid": "jaxwind.domain",
     "AtmosphericSolution": "jaxwind.abl",
     "build_adaptive_atmospheric_run": "jaxwind.abl",

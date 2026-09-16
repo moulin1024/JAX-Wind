@@ -103,7 +103,8 @@ def run(case, *, output=None, max_steps=None, _resume=False, _simulation=None):
             if int(state.step) - metadata.get("last_checkpoint_step", invocation_start) >= checkpoint_every:
                 metadata["last_checkpoint_step"] = int(state.step)
                 save_checkpoint(checkpoint, state, metadata=metadata, observer=observer.snapshot())
-            print(f"step={int(state.step)} time={float(state.time):.6g}s CFL={float(simulation.courant(state)):.4g}", flush=True)
+            timestep = f" dt={float(state.last_dt):.6g}s" if hasattr(state, "last_dt") else ""
+            print(f"step={int(state.step)} time={float(state.time):.6g}s CFL={float(simulation.courant(state)):.4g}{timestep}", flush=True)
         complete = finished()
         save_checkpoint(checkpoint, state, metadata=metadata, observer=observer.snapshot())
         observer.write(directory, state)

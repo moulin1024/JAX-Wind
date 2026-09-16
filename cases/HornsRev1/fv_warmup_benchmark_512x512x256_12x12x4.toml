@@ -1,0 +1,10 @@
+schema_version = 1
+extends = "fv_workflow_512x512x256_12x12x4.toml"
+
+# Four blocks in a 100-step test allow steady timing after two startup blocks.
+[time]
+chunk_steps = 25
+
+[workflow]
+chunk_steps = 25
+output_directory = "outputs/hornsrev1_warmup_benchmark_512x512x256_12x12x4"

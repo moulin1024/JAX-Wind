@@ -39,6 +39,8 @@ def build_blade_element_disk_kernel(
     grid,
     axis_name: str,
     partition_count: int,
+    periodic_x: bool = True,
+    periodic_y: bool = True,
 ):
     """Build an annular AD-BEM kernel for an upright, streamwise rotor."""
 
@@ -81,6 +83,10 @@ def build_blade_element_disk_kernel(
         y_widths = jnp.asarray(grid.y_widths, dtype=dtype)
         dx = jnp.mod(x - disk_x + 0.5 * grid.lx, grid.lx) - 0.5 * grid.lx
         dy = jnp.mod(y - disk_y + 0.5 * grid.ly, grid.ly) - 0.5 * grid.ly
+        if not periodic_x:
+            dx = x - disk_x
+        if not periodic_y:
+            dy = y - disk_y
 
         raw_x = jnp.exp(-(dx[None, :] / widths[:, None]) ** 2)
         weighted_x = raw_x * x_widths[None, :]

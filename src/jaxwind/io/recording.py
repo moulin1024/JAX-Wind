@@ -15,12 +15,23 @@ def write_chunk(directory, index, outputs):
     with temporary.open("wb") as stream:
         np.savez_compressed(stream, **outputs)
     temporary.replace(path)
-    return {"file": path.name, "samples": len(outputs["dt_seconds"])}
+    dt = np.asarray(outputs["dt_seconds"], dtype=np.float64)
+    duration = float(dt.sum())
+    mean_u = (np.mean(outputs["x_velocity"], axis=2, dtype=np.float64)
+              * dt[:, None]).sum(axis=0) / duration
+    return {"file": path.name, "samples": len(dt), "duration_seconds": duration,
+            "mean_x_velocity_profile_m_s": mean_u.tolist()}
 
 
 def write_manifest(directory, grid, chunks):
     value = {"schema": SCHEMA, "chunks": chunks, "samples": sum(chunk["samples"] for chunk in chunks),
              "units": "SI", "y_faces_m": np.asarray(grid.y_faces).tolist(), "z_faces_m": np.asarray(grid.z_faces).tolist()}
+    if chunks and all("duration_seconds" in chunk for chunk in chunks):
+        duration = sum(chunk["duration_seconds"] for chunk in chunks)
+        value["duration_seconds"] = duration
+        value["mean_x_velocity_profile_m_s"] = (sum(
+            np.asarray(chunk["mean_x_velocity_profile_m_s"]) * chunk["duration_seconds"]
+            for chunk in chunks) / duration).tolist()
     path = Path(directory) / "metadata.json"
     temporary = path.with_suffix(".tmp")
     temporary.write_text(json.dumps(value, indent=2), encoding="utf-8")

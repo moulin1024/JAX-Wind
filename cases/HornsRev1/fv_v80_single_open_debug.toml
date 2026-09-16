@@ -1,0 +1,28 @@
+schema_version = 1
+extends = "fv_hornsrev1_80_uniform10_open_gmg_300s.toml"
+
+[case]
+name = "v80_single_open_debug_300s"
+
+[mesh]
+# Same 16 x 16 x 4 m spacing and vertical extent; 1/32 the farm cells.
+cells = [128, 64, 256]
+lengths_m = [2048.0, 1024.0, 1024.0]
+
+[time]
+frame_count = 100
+
+[physics.turbine]
+x_m = 512.0
+y_m = 512.0
+
+# Array replacement: exactly one rotor, not an addition to the 80-rotor layout.
+[[physics.wind_farm.layout]]
+id = "T01"
+x_m = 512.0
+y_m = 512.0
+hub_height_m = 70.0
+initial_rpm = 0.0
+
+[output]
+directory = "outputs/v80_single_open_debug_300s"

@@ -1,0 +1,100 @@
+{
+  "acceptance": {
+    "finite": true,
+    "maximum_cfl": 0.17063210904598236,
+    "maximum_divergence": 1.0728836485895954e-07,
+    "maximum_lasd_cfl": 0.8531605452299118
+  },
+  "case": {
+    "air_density_kg_m3": 1.0,
+    "citation": "Andren et al. (1994)",
+    "diagnostic_sgs_energy": true,
+    "diagnostic_sgs_scalar_variance": true,
+    "passive_scalar_surface_flux_kg_m2_s": 0.001,
+    "sgs_model": "lasd"
+  },
+  "comparison": {
+    "first_cell_diagnostic_sgs_scalar_variance_over_cstar2": 0.3643350899219513,
+    "inside_published_envelope": true,
+    "maximum_diagnostic_sgs_scalar_variance_over_cstar2": 0.42141270637512207,
+    "mean_normalized_integrated_total_tke": 0.6308861920433303,
+    "paper_overlay_scope": "resolved-plus-diagnostic-SGS TKE, shared resolved velocity statistics, actual total momentum flux, signed resolved-TKE SGS transfer for Fig. 11, and resolved spectra",
+    "published_ustar_over_ug_max": 0.0448,
+    "published_ustar_over_ug_min": 0.0402,
+    "statistics_ustar_m_s": 0.42387558850692486,
+    "ustar_over_ug": 0.04238755885069249
+  },
+  "final": {
+    "cfl": 0.1406073421239853,
+    "integrated_resolved_tke_m3_s2": 333.8167419433594,
+    "integrated_sgs_tke_m3_s2": 90.90750885009766,
+    "integrated_total_tke_m3_s2": 424.72425079345703,
+    "lasd_cfl": 0.7030367106199265,
+    "max_divergence": 8.056561284774943e-08,
+    "near_wall_u": 5.297511100769043,
+    "near_wall_v": 1.5180164575576782,
+    "step": 125000,
+    "surface_uw_m2_s2": -0.17378197610378265,
+    "surface_vw_m2_s2": -0.049407053738832474,
+    "time_seconds": 99999.99999986231,
+    "top_u": 10.917725563049316,
+    "top_v": 0.6469125747680664,
+    "ustar": 0.4250515812546339
+  },
+  "grid": {
+    "lx": 4000.0,
+    "ly": 2000.0,
+    "lz": 1500.0,
+    "nx": 40,
+    "ny": 40,
+    "nz": 40
+  },
+  "physics": {
+    "dealiasing": "three-halves-padding",
+    "diagnostic_fingerprint": "jaxwind.lasd.diagnostics.v3|ce=0x1.dc28f5c28f5c3p-1|cc=0x1.028f5c28f5c29p+1|production-wall=neutral-log-if-configured|scalar-wall-gradient=prescribed-flux|exports=local-and-predivision|homogeneous-wall=1",
+    "momentum_advection": "conservative",
+    "momentum_sgs": "jaxwind.lasd.momentum.v1|fgr=0x1.8000000000000p+0|tfr=0x1.0000000000000p+1|interval=5|timescale=0x1.8000000000000p+0|initial=0x1.eb851eb851eb8p-6|min=0x1.0c6f7a0b5ed8dp-20|max=0x1.9eb851eb851ecp-1|scale-dependent=1",
+    "neutral_log_wall_roughness_m": 0.1,
+    "neutral_log_wall_von_karman": 0.4,
+    "nonlinear_padding_ratio": 1.5,
+    "physics_fingerprint": "jaxwind.lasd.momentum.v1|fgr=0x1.8000000000000p+0|tfr=0x1.0000000000000p+1|interval=5|timescale=0x1.8000000000000p+0|initial=0x1.eb851eb851eb8p-6|min=0x1.0c6f7a0b5ed8dp-20|max=0x1.9eb851eb851ecp-1|scale-dependent=1|jaxwind.lasd.scalar.v1|initial=0x1.eb851eb851eb8p-6|min=0x0.0p+0|max=0x1.0000000000000p+0|scale-dependent=1|stability-buoyancy=0x0.0p+0|stability-beta=0x1.e000000000000p+4|stability-power=0x1.0000000000000p+1|advection=conservative|dealiasing=three-halves-padding|coefficient-padding=bounded",
+    "resolved_tke_sgs_transfer_kind": "signed tau_ij*d_j(u_i), negative for forward transfer; three-halves padded with neutral-log first-cell shear",
+    "scalar_sgs": "jaxwind.lasd.scalar.v1|initial=0x1.eb851eb851eb8p-6|min=0x0.0p+0|max=0x1.0000000000000p+0|scale-dependent=1|stability-buoyancy=0x0.0p+0|stability-beta=0x1.e000000000000p+4|stability-power=0x1.0000000000000p+1",
+    "sgs_energy_kind": "diagnostic local equilibrium with log-wall shear, not prognostic",
+    "sgs_scalar_variance_kind": "horizontal-budget diagnostic of full q_i grad_i c with flux-consistent wall gradient",
+    "surface_scalar_flux": 0.001
+  },
+  "reference": {
+    "normalized_integrated_total_tke_plateau": 0.7,
+    "normalized_top_height_approximate": 0.35,
+    "source": {
+      "citation": "Andren et al. (1994), Q.J.R. Meteorol. Soc. 120, 1457-1484",
+      "doi": "10.1002/qj.49712052003",
+      "url": "https://elib.dlr.de/31898/1/qj-1457-1994.pdf"
+    },
+    "spectrum_peak_k_ustar_over_f": {
+      "andren_moeng_and_nieuwstadt": 20,
+      "mason_brown_and_schumann_graf": [
+        30,
+        40
+      ]
+    },
+    "ustar_over_ug": {
+      "andren_moeng": 0.0425,
+      "mason_brown_backscatter": 0.0448,
+      "mason_brown_no_backscatter": 0.0402,
+      "nieuwstadt": 0.0402,
+      "schumann_graf": 0.0425
+    }
+  },
+  "runtime": {
+    "accepted_steps": 125000,
+    "completed_hours": 27.77777777773953,
+    "dt": 0.8,
+    "dtype": "float32",
+    "elapsed_seconds": 909.3296775270719,
+    "samples_averaged": 126,
+    "steps_per_second": 137.46389575663946
+  },
+  "schema": "jaxwind.andren1994.sgs-comparison.v1"
+}

@@ -92,6 +92,8 @@ def build_turbine_forcing(workflow: FiniteVolumeWorkflow):
     scales = ScaleSystem(1.0, 1.0)
     grid = workflow.case.physical.physical_grid
     body = turbine.to_nacelle_tower(scales=scales)
+    if body.nacelle_drag_coefficient == 0.0 and body.tower_drag_coefficient == 0.0:
+        body = None
     if workflow.turbine.model.endswith("alm"):
         line = _lower_actuator_line(
             turbine,

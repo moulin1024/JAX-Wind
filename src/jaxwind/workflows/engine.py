@@ -63,7 +63,7 @@ def load_workflow(path):
         if node.get("operation", "simulation") not in {"simulation", "periodic", "record-inflow", "open-inflow"}:
             raise ValueError(f"unknown stage operation: {name}")
         operation = node.get("operation", "simulation")
-        allowed_options = {"record_plane"} if operation == "record-inflow" else {"substeps_per_inflow"} if operation == "open-inflow" else set()
+        allowed_options = {"record_plane"} if operation == "record-inflow" else {"substeps_per_inflow", "lateral_boundary", "target_hub_wind_speed_m_s"} if operation == "open-inflow" else set()
         if node.get("options", {}).keys() - allowed_options:
             raise ValueError(f"unsupported stage options: {name}")
         if operation != "open-inflow" and "inflow" in node.get("inputs", {}):

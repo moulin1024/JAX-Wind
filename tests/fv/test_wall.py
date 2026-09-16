@@ -11,6 +11,9 @@ import jax.numpy as jnp
 
 from jaxwind.domain import UniformGrid
 from jaxwind import (
+    OPEN,
+    AnisotropicMinimumDissipation,
+    Boundaries,
     CELL_AVERAGE,
     CELL_CENTRE,
     LOCAL,
@@ -22,6 +25,7 @@ from jaxwind import (
     friction_velocity,
     logarithmic_profile,
     monin_obukhov_boundaries,
+    periodic_to_open_velocity,
     sidewall_stress,
     sidewall_tendency,
     surface_stress,
@@ -205,6 +209,30 @@ class WallTendencyTest(unittest.TestCase):
         )(flow, 0.0)
         column = float(jnp.mean(jnp.sum(tendency.x, axis=0)) * self.grid.dz)
         self.assertLess(abs(column), 1.0e-12 * forcing * self.grid.lz)
+
+    def test_log_gradient_correction_supports_open_x_faces(self) -> None:
+        model = MoninObukhovWall(ROUGHNESS, gradient_correction=True)
+        velocity = periodic_to_open_velocity(
+            uniform_log_flow(self.grid, model), self.grid
+        )
+        periodic = monin_obukhov_boundaries()
+        boundaries = Boundaries(
+            periodic.lower,
+            periodic.upper,
+            streamwise=OPEN,
+        )
+        tendency = build_tendency(
+            self.grid,
+            boundaries,
+            FlowModel(
+                surface=model,
+                subfilter=AnisotropicMinimumDissipation(),
+            ),
+        )(velocity, 0.0)
+
+        self.assertEqual(tendency.x.shape, velocity.x.shape)
+        self.assertEqual(tendency.y.shape, velocity.y.shape)
+        self.assertEqual(tendency.z.shape, velocity.z.shape)
 
 
 class SideWallStressTest(unittest.TestCase):

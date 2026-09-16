@@ -44,7 +44,15 @@ class Observer:
             period = diag["sample_every_steps"]
             if self.simulation.adaptive:
                 now = float(state.time) - metadata["initial_time"]
-                boundary = start * dt if now < start * dt else (start + (math.floor((now / dt - start) / period + 1e-9) + 1) * period) * dt
+                # Use the same float32-aware tolerance as sample(). A time
+                # just below an already sampled boundary must not schedule
+                # that boundary again (which can yield a zero-step block).
+                tolerance = 8 * np.finfo(np.asarray(state.time).dtype).eps * max(1., metadata["target_time"])
+                if now < start * dt - tolerance:
+                    boundary = start * dt
+                else:
+                    index = math.floor((now + tolerance - start * dt) / (period * dt)) + 1
+                    boundary = start * dt + index * period * dt
                 target = min(target, metadata["initial_time"] + boundary, float(state.time) + settings.get("chunk_steps", 100) * dt)
             else:
                 boundary = start if step < start else start + ((step - start) // period + 1) * period
@@ -53,7 +61,10 @@ class Observer:
         if frame_count:
             from .frames import frame_steps
             upcoming = [item for item in frame_steps(settings["steps"], frame_count) if item > step]
-            if upcoming and not self.simulation.adaptive:
+            if self.simulation.adaptive and len(self.frames) < frame_count:
+                period = (metadata["target_time"] - metadata["initial_time"]) / frame_count
+                target = min(target, metadata["initial_time"] + (len(self.frames) + 1) * period)
+            elif upcoming and not self.simulation.adaptive:
                 count = min(count, upcoming[0] - step)
         checkpoint_every = settings.get("checkpoint_every_steps")
         if checkpoint_every and not self.simulation.adaptive:
@@ -66,6 +77,9 @@ class Observer:
         from jaxwind import divergence
         row = {"step": int(state.step), "time_hours": float(state.time) / 3600.,
                "maximum_cfl": float(self.simulation.courant(state))}
+        if hasattr(state, "last_dt"):
+            row["dt_seconds"] = float(state.last_dt)
+            row["rejected_steps"] = int(state.rejected_steps)
         if hasattr(state, "continuity_error"):
             row["continuity_residual_kg_m3_s"] = float(jnp.max(jnp.abs(state.continuity_error)))
         else:
@@ -98,13 +112,22 @@ class Observer:
                     self.surface["count"] += 1
                     for key, attribute in (("scalar_flux_sum", "scalar_flux"), ("obukhov_sum", "obukhov_length"), ("surface_scalar_sum", "surface_scalar")):
                         self.surface[key] += float(getattr(exchange, attribute))
+        if self.simulation.turbine_diagnostics is not None:
+            row.update({key: float(value) for key, value in jax.device_get(self.simulation.turbine_diagnostics(state)).items()})
         self.history.append(row)
         settings = self.simulation.case.document["time"]
         frame_count = settings.get("frame_count", self.simulation.case.document.get("diagnostics", {}).get("frame_count", 0))
         relative_step = int(state.step) - metadata["initial_step"]
         if frame_count and relative_step != self.last_frame:
             from .frames import frame_steps
-            if relative_step in frame_steps(settings["steps"], frame_count):
+            if self.simulation.adaptive:
+                period = (metadata["target_time"] - metadata["initial_time"]) / frame_count
+                due_time = metadata["initial_time"] + (len(self.frames) + 1) * period
+                tolerance = 8 * np.finfo(np.asarray(state.time).dtype).eps * max(1., metadata["target_time"])
+                due = len(self.frames) < frame_count and float(state.time) >= due_time - tolerance
+            else:
+                due = relative_step in frame_steps(settings["steps"], frame_count)
+            if due:
                 self.frames.append(self._frame(state))
                 self.last_frame = relative_step
 

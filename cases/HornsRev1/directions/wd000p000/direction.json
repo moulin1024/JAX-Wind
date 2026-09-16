@@ -1,0 +1,15 @@
+{
+  "wind_direction_from_deg": 0.0,
+  "selected_wind_rose_sector_deg": 0.0,
+  "target_mean_hub_speed_m_s": 7.661026439,
+  "reference_nominal_hub_speed_m_s": 9.691004386,
+  "hub_height_m": 70.0,
+  "roughness_length_m": 0.0002,
+  "reference_friction_velocity_m_s": 0.30365786965612507,
+  "scaling": "all velocity components; actual recorded mean hub speed; unchanged timestamps",
+  "axes": "x downstream; y cross-stream; z up; geographic East/North layout rotated about its centre",
+  "frequency_sum_percent_as_supplied": 100.2,
+  "reference_workflow": "/raven/u/limo/JAX-Wind/cases/HornsRev1/directions/reference/workflow.toml",
+  "main_workflow": "/raven/u/limo/JAX-Wind/cases/HornsRev1/directions/wd000p000/workflow.toml",
+  "smoke": false
+}

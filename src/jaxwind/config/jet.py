@@ -29,10 +29,12 @@ class JetCase:
     mapping_focus: tuple[float, float, float]
     mapping_strength: tuple[float, float, float]
     dt: float
+    cfl: float | None
     steps: int
     chunk_steps: int
     checkpoint_every: int
     ambient_temperature: float
+    ambient_streamwise_velocity: float
     ambient_relative_humidity: float
     ambient_water_vapor: float
     pressure: float
@@ -47,6 +49,7 @@ class JetCase:
     gravity: tuple[float, float, float]
     roughness: float
     source_mode: str
+    streamwise_boundaries: str
     fully_vaporized_within_source_cell: bool
     gas_inlet_radius: float
     gas_inlet_temperature: float
@@ -132,6 +135,7 @@ def load_case(path: str | Path) -> JetCase:
         mapping_focus=mapping_focus,
         mapping_strength=mapping_strength,
         dt=float(time_table["dt_seconds"]),
+        cfl=float(time_table["cfl"]) if "cfl" in time_table else None,
         steps=int(time_table["steps"]),
         chunk_steps=int(time_table["chunk_steps"]),
         checkpoint_every=int(time_table["checkpoint_every_steps"]),
@@ -170,6 +174,8 @@ def load_case(path: str | Path) -> JetCase:
         ),
         roughness=float(walls["roughness_length_m"]),
         source_mode=str(source.get("mode", "volume")),
+        streamwise_boundaries=str(source.get("streamwise_boundaries", "inflow-outflow")),
+        ambient_streamwise_velocity=float(ambient.get("streamwise_velocity_m_s", 0.0)),
         fully_vaporized_within_source_cell=bool(
             source.get("fully_vaporized_within_source_cell", False)
         ),
@@ -302,6 +308,11 @@ def load_case(path: str | Path) -> JetCase:
         raise ValueError("jet ramp time must be finite and nonnegative")
     if case.steps <= 0 or case.chunk_steps <= 0 or case.checkpoint_every <= 0:
         raise ValueError("steps, chunk size, and checkpoint interval must be positive")
+    if case.cfl is not None:
+        if not math.isfinite(case.cfl) or case.cfl <= 0.0:
+            raise ValueError("jet CFL target must be finite and positive")
+        if not case.fully_vaporized_within_source_cell or case.time_integration != "rk3":
+            raise ValueError("adaptive jets currently require RK3 and the fully vaporized volume source")
     if case.parcels_per_step <= 0 or case.maximum_parcels < case.parcels_per_step:
         raise ValueError("parcel capacity must accommodate one injection")
     if case.parcel_substeps <= 0:
@@ -326,6 +337,16 @@ def load_case(path: str | Path) -> JetCase:
         )
     if case.source_mode not in {"volume", "inflow"}:
         raise ValueError("source mode must be .volume. or .inflow.")
+    if not math.isfinite(case.ambient_streamwise_velocity) or case.ambient_streamwise_velocity < 0.0:
+        raise ValueError("ambient streamwise_velocity_m_s must be finite and nonnegative")
+    if case.ambient_streamwise_velocity and (
+        case.source_mode != "volume" or case.streamwise_boundaries != "inflow-outflow"
+    ):
+        raise ValueError("ambient inflow requires a volume source and inflow-outflow boundaries")
+    if case.streamwise_boundaries not in {"inflow-outflow", "outflow-outflow"}:
+        raise ValueError("streamwise_boundaries must be inflow-outflow or outflow-outflow")
+    if case.streamwise_boundaries == "outflow-outflow" and case.source_mode != "volume":
+        raise ValueError("two streamwise outlets require an embedded volume source")
     if case.subgrid_jet_enabled and case.source_mode != "inflow":
         raise ValueError("the subgrid boundary jet requires source mode .inflow.")
     if case.fully_vaporized_within_source_cell and case.source_mode != "volume":

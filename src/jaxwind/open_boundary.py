@@ -93,12 +93,19 @@ def enforce_open_velocity(
     grid: Grid,
     *,
     extrapolate_normal_outflow: bool = True,
+    open_y: bool = False,
 ) -> StaggeredVelocity:
     """Overwrite one inlet layer and apply second-order outlet extrapolation."""
     wall_y = not spanwise_is_periodic(velocity, grid)
     validate_inflow_plane(plane, grid, wall_y=wall_y)
-    spanwise = FREE_SLIP if wall_y else PERIODIC
+    spanwise = OPEN if open_y else (FREE_SLIP if wall_y else PERIODIC)
     validate(velocity, grid, Boundaries(streamwise=OPEN, spanwise=spanwise))
+    if open_y:
+        def sides(field):
+            low = (4.0 * field[:, 1] - field[:, 2]) / 3.0
+            high = (4.0 * field[:, -2] - field[:, -3]) / 3.0
+            return field.at[:, 0].set(low).at[:, -1].set(high)
+        velocity = StaggeredVelocity(*(sides(field) for field in velocity))
     x_velocity = velocity.x.at[..., 0].set(plane.x_velocity)
     y_velocity = velocity.y.at[..., 0].set(plane.y_velocity)
     z_velocity = velocity.z.at[..., 0].set(plane.z_velocity)
@@ -109,7 +116,7 @@ def enforce_open_velocity(
         _second_order_outflow(y_velocity),
         _second_order_outflow(z_velocity),
     )
-    return enforce_impermeability(result)
+    return enforce_impermeability(result, open_y=open_y)
 
 
 def enforce_open_scalar(
@@ -125,10 +132,32 @@ def enforce_open_scalar(
     return _second_order_outflow(scalar.at[..., 0].set(plane.scalar))
 
 
+def enforce_two_outlet_velocity(
+    velocity: StaggeredVelocity,
+) -> StaggeredVelocity:
+    """Extrapolate both x ends; pressure projection sets the final normal flux."""
+    def both(field):
+        field = _second_order_outflow(field)
+        return field.at[..., 0].set((4.0 * field[..., 1] - field[..., 2]) / 3.0)
+
+    return enforce_impermeability(StaggeredVelocity(
+        both(velocity.x), both(velocity.y), both(velocity.z),
+    ))
+
+
+def enforce_two_outlet_scalar(scalar, velocity, ambient):
+    """Zero-gradient outflow and ambient scalar on pressure-driven backflow."""
+    left = jnp.where(velocity.x[..., 0] > 0.0, ambient, scalar[..., 1])
+    right = jnp.where(velocity.x[..., -1] < 0.0, ambient, scalar[..., -2])
+    return scalar.at[..., 0].set(left).at[..., -1].set(right)
+
+
 __all__ = [
     "InflowPlane",
     "enforce_open_scalar",
     "enforce_open_velocity",
+    "enforce_two_outlet_velocity",
+    "enforce_two_outlet_scalar",
     "extract_inflow_plane",
     "periodic_to_open_velocity",
     "validate_inflow_plane",

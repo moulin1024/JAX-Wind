@@ -1,0 +1,42 @@
+schema_version = 1
+extends = "fv_v80_two_turbine_tsr.toml"
+
+[case]
+name = "two_v80_ideal_tsr_gpu_smoke"
+
+# Small validation domain only, retaining 16 x 16 x 4 m cells.
+[mesh]
+cells = [64, 16, 256]
+lengths_m = [1024.0, 256.0, 1024.0]
+
+[physics.turbine]
+x_m = 512.0
+y_m = 128.0
+
+[[physics.wind_farm.layout]]
+id = "T01"
+x_m = 256.0
+y_m = 128.0
+hub_height_m = 70.0
+initial_rpm = 8.0
+
+[[physics.wind_farm.layout]]
+id = "T02"
+x_m = 816.0
+y_m = 128.0
+hub_height_m = 70.0
+initial_rpm = 14.0
+
+[time]
+dt_seconds = 0.2
+steps = 600
+chunk_steps = 20
+checkpoint_every_steps = 600
+frame_count = 20
+
+[diagnostics]
+sample_start_step = 540
+sample_every_steps = 6
+
+[output]
+directory = "outputs/two_v80_ideal_tsr_gpu_smoke"

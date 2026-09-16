@@ -1,0 +1,22 @@
+schema_version = 1
+extends = "fv_512x128x256_l24_jet_only_two_outlets_1s.toml"
+formulation = "cryogenic-low-mach"
+
+[case]
+name = "HITSZ jet alone, adaptive RK3 CFL 0.6, low-Mach GMG 512x128x256"
+
+[time]
+# In adaptive mode dt_seconds is the maximum step. dt_seconds * steps
+# specifies the physical duration; the actual number of steps is determined by CFL.
+dt_seconds = 0.01
+steps = 100
+cfl = 0.6
+chunk_steps = 4
+checkpoint_every_steps = 25
+frame_count = 20
+
+[numerics]
+time_integration = "rk3"
+
+[output]
+directory = "outputs/hitsz_ln2_jet/fv_512x128x256_l24_two_outlets_adaptive_cfl0p6_1s"

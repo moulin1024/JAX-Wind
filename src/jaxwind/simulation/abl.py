@@ -82,6 +82,7 @@ def build_models(
     if not pressure_force_enabled:
         pressure_force = (0.0, 0.0)
     momentum = FlowModel(
+        momentum_advection_scheme=configured.options.momentum_advection_scheme,
         body_force=(pressure_force[0], pressure_force[1], 0.0),
         forcing=forcing,
         subfilter=AnisotropicMinimumDissipation(),

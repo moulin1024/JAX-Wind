@@ -1,5 +1,9 @@
 # HITSZ liquid-nitrogen jet (finite volume)
 
+See the [detailed nitrogen-jet guide](NITROGEN_JET.md) for model selection,
+source equations, main-only turbine injection, MP4 rendering, and the completed
+LN2/no-jet centerline comparison.
+
 > Run all commands below on a compute node, including configuration checks.
 > This case uses schema version 1. Historical outputs cannot be resumed;
 > regenerate inputs in the new format. See [verification](../../doc/verification.md).
@@ -22,7 +26,8 @@ parcel buffer with a 50--300 micrometre Rosin--Rammler distribution.  The
 carrier coupling includes drag/reaction momentum, Ranz--Marshall sensible and
 latent heat transfer, evaporation, nitrogen transport, low-Mach expansion,
 thermal/compositional buoyancy, ambient-water saturation adjustment, fog and
-ice, molecular transport, and classical static Smagorinsky subfilter transport (coefficient 0.16).
+ice, molecular transport, and AMD subfilter transport. Classical static Smagorinsky transport
+(coefficient 0.16) is an optional alternative.
 
 Carrier density is now evaluated from the constant-thermodynamic-pressure
 air/N2/water-vapour ideal-gas mixture rather than held at its ambient value.
@@ -50,9 +55,10 @@ Run a short validation first:
 jaxwind run cases/HITSZLiquidNitrogenJet/fv_256.toml --max-steps 2
 ```
 
-The carrier and all thermodynamic fields use three-stage fast-RK3: the
-lagged pressure gradient is applied at every stage, with one pressure projection
-at the end of each full step.  The configured production run is 1 second
+The configured carrier and thermodynamic integration uses three-stage RK3
+with a pressure projection at each stage. The optional `fast-rk3` path instead
+uses a lagged pressure gradient and a final-stage projection. The configured
+production run is 1 second
 (2,000 steps):
 
 ```bash

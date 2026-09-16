@@ -1,0 +1,36 @@
+schema_version = 1
+extends = "fv_v80_periodic_smoke_512x512x256_1h.toml"
+
+[case]
+name = "hornsrev1_two_v80_ideal_tsr"
+
+# physics.turbine, inherited above, is the shared rotor template only.
+# No additional turbine is placed at its template x/y coordinates.
+[physics.wind_farm.controller]
+model = "ideal-tsr"
+# EXAMPLE parameters, not a calibrated V80 controller. Supply a target TSR
+# from your rotor Cp(lambda) curve before using this for production.
+target_tsr = 7.0
+wind_filter_seconds = 5.0
+response_seconds = 10.0
+minimum_rpm = 0.0
+maximum_rpm = 16.7
+maximum_acceleration_rpm_s = 0.5
+probe_distance_diameters = 2.0
+
+[[physics.wind_farm.layout]]
+id = "T01"
+x_m = 3536.0
+y_m = 4096.0
+hub_height_m = 70.0
+initial_rpm = 12.0
+
+[[physics.wind_farm.layout]]
+id = "T02"
+x_m = 4096.0
+y_m = 4096.0
+hub_height_m = 70.0
+initial_rpm = 12.0
+
+[output]
+directory = "outputs/hornsrev1_two_v80_ideal_tsr"

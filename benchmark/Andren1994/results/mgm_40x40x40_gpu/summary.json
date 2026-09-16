@@ -1,0 +1,100 @@
+{
+  "acceptance": {
+    "finite": true,
+    "maximum_cfl": 0.16994982957839966,
+    "maximum_divergence": 9.854635152350966e-08,
+    "maximum_lasd_cfl": 0.0
+  },
+  "case": {
+    "air_density_kg_m3": 1.0,
+    "citation": "Andren et al. (1994)",
+    "diagnostic_sgs_energy": true,
+    "diagnostic_sgs_scalar_variance": false,
+    "passive_scalar_surface_flux_kg_m2_s": 0.001,
+    "sgs_model": "mgm"
+  },
+  "comparison": {
+    "first_cell_diagnostic_sgs_scalar_variance_over_cstar2": 0.0,
+    "inside_published_envelope": true,
+    "maximum_diagnostic_sgs_scalar_variance_over_cstar2": 0.0,
+    "mean_normalized_integrated_total_tke": 0.49470599380260355,
+    "paper_overlay_scope": "resolved-plus-diagnostic-SGS TKE, shared resolved velocity statistics, actual total momentum flux, signed resolved-TKE SGS transfer for Fig. 11, and resolved spectra",
+    "published_ustar_over_ug_max": 0.0448,
+    "published_ustar_over_ug_min": 0.0402,
+    "statistics_ustar_m_s": 0.446340065874982,
+    "ustar_over_ug": 0.0446340065874982
+  },
+  "final": {
+    "cfl": 0.14836199581623077,
+    "integrated_resolved_tke_m3_s2": 356.0355224609375,
+    "integrated_sgs_tke_m3_s2": 85.36602020263672,
+    "integrated_total_tke_m3_s2": 441.4015426635742,
+    "lasd_cfl": 0.0,
+    "max_divergence": 8.742014756535355e-08,
+    "near_wall_u": 5.688487529754639,
+    "near_wall_v": 1.784700870513916,
+    "step": 125000,
+    "surface_uw_m2_s2": -0.20122475922107697,
+    "surface_vw_m2_s2": -0.0633172020316124,
+    "time_seconds": 99999.99999986231,
+    "top_u": 11.120043754577637,
+    "top_v": 0.5767989158630371,
+    "ustar": 0.4592944037975356
+  },
+  "grid": {
+    "lx": 4000.0,
+    "ly": 2000.0,
+    "lz": 1500.0,
+    "nx": 40,
+    "ny": 40,
+    "nz": 40
+  },
+  "physics": {
+    "dealiasing": "three-halves-padding",
+    "diagnostic_fingerprint": "jaxwind.mgm.momentum.v2|fgr=0x1.8000000000000p+0|ce=0x1.0000000000000p+0|fallback=0x1.999999999999ap-4|epsilon=0x1.dce221068c180p-25|nu=0x1.12e0be826d695p-30|sgs-energy=model-native-gradient-contraction",
+    "momentum_advection": "conservative",
+    "momentum_sgs": "jaxwind.mgm.momentum.v2|fgr=0x1.8000000000000p+0|ce=0x1.0000000000000p+0|fallback=0x1.999999999999ap-4|epsilon=0x1.dce221068c180p-25|nu=0x1.12e0be826d695p-30",
+    "neutral_log_wall_roughness_m": 0.1,
+    "neutral_log_wall_von_karman": 0.4,
+    "nonlinear_padding_ratio": 1.5,
+    "physics_fingerprint": "jaxwind.mgm.momentum.v2|fgr=0x1.8000000000000p+0|ce=0x1.0000000000000p+0|fallback=0x1.999999999999ap-4|epsilon=0x1.dce221068c180p-25|nu=0x1.12e0be826d695p-30|static-smagorinsky-scalar|pr=0x1.999999999999ap-2|advection=conservative|dealiasing=three-halves-padding",
+    "resolved_tke_sgs_transfer_kind": "signed tau_ij*d_j(u_i), negative for forward transfer; three-halves padded with neutral-log first-cell shear",
+    "scalar_sgs": "static-smagorinsky-scalar|pr=0x1.999999999999ap-2",
+    "sgs_energy_kind": "model-native MGM gradient-contraction diagnostic",
+    "sgs_scalar_variance_kind": "not available",
+    "surface_scalar_flux": 0.001
+  },
+  "reference": {
+    "normalized_integrated_total_tke_plateau": 0.7,
+    "normalized_top_height_approximate": 0.35,
+    "source": {
+      "citation": "Andren et al. (1994), Q.J.R. Meteorol. Soc. 120, 1457-1484",
+      "doi": "10.1002/qj.49712052003",
+      "url": "https://elib.dlr.de/31898/1/qj-1457-1994.pdf"
+    },
+    "spectrum_peak_k_ustar_over_f": {
+      "andren_moeng_and_nieuwstadt": 20,
+      "mason_brown_and_schumann_graf": [
+        30,
+        40
+      ]
+    },
+    "ustar_over_ug": {
+      "andren_moeng": 0.0425,
+      "mason_brown_backscatter": 0.0448,
+      "mason_brown_no_backscatter": 0.0402,
+      "nieuwstadt": 0.0402,
+      "schumann_graf": 0.0425
+    }
+  },
+  "runtime": {
+    "accepted_steps": 125000,
+    "completed_hours": 27.77777777773953,
+    "dt": 0.8,
+    "dtype": "float32",
+    "elapsed_seconds": 774.9322708409745,
+    "samples_averaged": 126,
+    "steps_per_second": 161.30441937118852
+  },
+  "schema": "jaxwind.andren1994.sgs-comparison.v1"
+}

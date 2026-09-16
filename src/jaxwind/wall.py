@@ -198,8 +198,12 @@ def log_law_gradient_correction(
     for key, component in (("xz", centred_x), ("yz", centred_y)):
         field = corrected[key]
         # Wall face: replace outright, aligned with the wall-adjacent wind.
-        value = wall_slope * component / safe_speed
-        field = field.at[0].set(jnp.where(speed > tiny, value, 0.0))
+        value = jnp.where(
+            speed > tiny, wall_slope * component / safe_speed, 0.0
+        )
+        if field.shape[-1] == value.shape[-1] + 1:
+            value = _open_x_faces(value)
+        field = field.at[0].set(value)
         # Interior faces: shift the plane mean, leave the fluctuations alone.
         # The top face is excluded, hence the ``- 2``.
         faces = min(model.corrected_faces, field.shape[0] - 2)
@@ -211,6 +215,14 @@ def log_law_gradient_correction(
             field = field.at[face].add((1.0 / ratio - 1.0) * plane)
         corrected[key] = field
     return corrected
+
+
+def _open_x_faces(values: jnp.ndarray) -> jnp.ndarray:
+    """Interpolate cell values to the distinct faces of an open x domain."""
+    interior = 0.5 * (values[..., :-1] + values[..., 1:])
+    return jnp.concatenate(
+        (values[..., :1], interior, values[..., -1:]), axis=-1
+    )
 
 
 def _first_level_speed(
@@ -251,10 +263,7 @@ def surface_stress(
     stress_x = coefficient * speed * centred_x
     stress_y = coefficient * speed * centred_y
     if velocity.x.shape[-1] == stress_x.shape[-1] + 1:
-        interior = 0.5 * (stress_x[..., :-1] + stress_x[..., 1:])
-        stress_x_faces = jnp.concatenate(
-            (stress_x[..., :1], interior, stress_x[..., -1:]), axis=1
-        )
+        stress_x_faces = _open_x_faces(stress_x)
     else:
         stress_x_faces = 0.5 * (stress_x + jnp.roll(stress_x, 1, axis=1))
     if velocity.y.shape[1] == stress_y.shape[0] + 1:

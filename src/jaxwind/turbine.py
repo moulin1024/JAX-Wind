@@ -23,9 +23,15 @@ from jaxwind.numerics.discretization import cell_velocity
 from .state import StaggeredVelocity
 
 
-def _x_faces(values: jnp.ndarray, grid: Grid) -> jnp.ndarray:
-    """Conservatively average cell forcing onto physical open-x faces."""
+def _x_faces(values: jnp.ndarray, grid: Grid, *, periodic=False) -> jnp.ndarray:
+    """Conservatively average cell forcing onto open or periodic x faces."""
     widths = jnp.asarray(grid.x_widths, dtype=values.dtype)
+    if periodic:
+        lower_widths = jnp.roll(widths, 1)
+        return (
+            jnp.roll(values, 1, axis=2) * lower_widths[None, None, :]
+            + values * widths[None, None, :]
+        ) / (lower_widths + widths)[None, None, :]
     total = widths[:-1] + widths[1:]
     interior = (
         values[..., :-1] * widths[:-1][None, None, :]
@@ -34,9 +40,13 @@ def _x_faces(values: jnp.ndarray, grid: Grid) -> jnp.ndarray:
     return jnp.concatenate((values[..., :1], interior, values[..., -1:]), axis=2)
 
 
-def _y_faces(values: jnp.ndarray, grid: Grid) -> jnp.ndarray:
+def _y_faces(values: jnp.ndarray, grid: Grid, *, periodic=True) -> jnp.ndarray:
     """Conservatively average cell forcing onto physical periodic-y faces."""
     upper_widths = jnp.asarray(grid.y_widths, dtype=values.dtype)
+    if not periodic:
+        interior = (values[:, :-1] * upper_widths[None, :-1, None]
+                    + values[:, 1:] * upper_widths[None, 1:, None]) / (upper_widths[:-1] + upper_widths[1:])[None, :, None]
+        return jnp.concatenate((values[:, :1], interior, values[:, -1:]), axis=1)
     lower_widths = jnp.roll(upper_widths, 1)
     total = lower_widths + upper_widths
     return (
@@ -49,8 +59,9 @@ def build_adbem_forcing(
     grid: Grid,
     disk: BladeElementActuatorDisk,
     body: NacelleTowerDrag | None = None,
+    *, periodic_x: bool = True, periodic_y: bool = True,
 ) -> Callable[[StaggeredVelocity, jnp.ndarray], StaggeredVelocity]:
-    """Build single-device DTU-style AD-BEM forcing for an open FV domain.
+    """Build single-device AD-BEM forcing for an open or periodic FV domain.
 
     The aerodynamic calculation reuses the shared annular turbine kernel.
     Velocities are sampled at cell centres and upper z faces;
@@ -61,21 +72,23 @@ def build_adbem_forcing(
         grid=grid,
         axis_name="fv_adbem",
         partition_count=1,
+        periodic_x=periodic_x,
+        periodic_y=periodic_y,
     )
 
-    def disk_local(u, v, w_upper):
+    def disk_local(u, v, w_upper, position, angular_velocity):
         dtype = u.dtype
         return disk_kernel(
             u,
             v,
             w_upper,
-            disk.x,
-            disk.y,
-            disk.z,
+            position[0],
+            position[1],
+            position[2],
             disk.blade_count,
             disk.hub_radius,
             disk.tip_radius,
-            disk.angular_velocity,
+            angular_velocity,
             jnp.asarray(disk.element_smoothing_widths, dtype=dtype),
             jnp.asarray(disk.element_radii, dtype=dtype),
             jnp.asarray(disk.element_widths, dtype=dtype),
@@ -90,7 +103,7 @@ def build_adbem_forcing(
             disk.root_loss,
         )
 
-    disk_mapped = jax.pmap(disk_local, axis_name="fv_adbem")
+    disk_mapped = jax.pmap(disk_local, axis_name="fv_adbem", in_axes=(0, 0, 0, None, None))
     body_mapped = None
     if body is not None:
         body_kernel = build_nacelle_tower_kernel(
@@ -119,10 +132,17 @@ def build_adbem_forcing(
     def forcing(
         velocity: StaggeredVelocity,
         _time: jnp.ndarray,
+        *, position=None, angular_velocity=None,
     ) -> StaggeredVelocity:
+        if position is not None and body_mapped is not None:
+            raise ValueError("dynamic turbine positions require body drag to be disabled")
         u, v, _w = cell_velocity(velocity)
         w_upper = velocity.z[1:]
-        disk_values = disk_mapped(u[None], v[None], w_upper[None])
+        if position is None:
+            position = jnp.asarray((disk.x, disk.y, disk.z), u.dtype)
+        if angular_velocity is None:
+            angular_velocity = disk.angular_velocity
+        disk_values = disk_mapped(u[None], v[None], w_upper[None], position, angular_velocity)
         source_x = disk_values[0][0]
         source_y = disk_values[1][0]
         source_z_upper = disk_values[2][0]
@@ -133,8 +153,8 @@ def build_adbem_forcing(
             source_z_upper = source_z_upper + body_values[2][0]
         wall = jnp.zeros_like(source_z_upper[:1])
         return StaggeredVelocity(
-            _x_faces(source_x, grid),
-            _y_faces(source_y, grid),
+            _x_faces(source_x, grid, periodic=velocity.x.shape[-1] == grid.nx),
+            _y_faces(source_y, grid, periodic=velocity.y.shape[1] == grid.ny),
             jnp.concatenate((wall, source_z_upper), axis=0),
         )
 

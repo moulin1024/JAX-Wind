@@ -282,6 +282,7 @@ def project_low_mach(
         grid,
         periodic_x=poisson.periodic_x,
         periodic_y=poisson.periodic_y,
+        open_x_low=poisson.open_x_low,
     )
     rho_face = face_density(density, velocity, grid)
     step = jnp.asarray(dt, density.dtype)

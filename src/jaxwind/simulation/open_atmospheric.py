@@ -5,7 +5,7 @@ from jaxwind.simulation.abl import build_models
 from jaxwind.simulation.turbines import build_turbine_forcing, combine_forcings
 
 
-def build_open_components(workflow, warm, first):
+def build_open_components(workflow, warm, first, *, return_step=False):
     from jaxwind import (build_open_atmospheric_run, build_open_atmospheric_step,
         build_pressure_poisson, enforce_open_scalar, enforce_open_velocity,
         initial_atmospheric_solution, periodic_to_open_velocity)
@@ -115,6 +115,6 @@ def build_open_components(workflow, warm, first):
         scalar_source=scalar_source,
         scheme=workflow.case.options.time_integration,
     )
-    advance = build_open_atmospheric_run(step)
+    advance = step if return_step else build_open_atmospheric_run(step)
 
     return solution, advance
