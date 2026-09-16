@@ -1,0 +1,23 @@
+name: Mirror to Gitee
+
+on:
+  push:
+    branches:
+      - '**'
+    tags:
+      - '**'
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Mirror GitHub to Gitee
+        run: |
+          git clone --mirror \
+            https://github.com/${{ github.repository }} repo.git
+
+          cd repo.git
+
+          git push --mirror \
+            https://${{ secrets.GITEE_USERNAME }}:${{ secrets.GITEE_TOKEN }}@gitee.com/moulin1024/JAX-Wind.git
