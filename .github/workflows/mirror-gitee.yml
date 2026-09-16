@@ -7,6 +7,8 @@ on:
     tags:
       - '**'
 
+  workflow_dispatch:
+
 jobs:
   mirror:
     runs-on: ubuntu-latest
@@ -14,10 +16,18 @@ jobs:
     steps:
       - name: Mirror GitHub to Gitee
         run: |
-          git clone --mirror \
+          git clone --bare \
             https://github.com/${{ github.repository }} repo.git
 
           cd repo.git
 
-          git push --mirror \
-            https://${{ secrets.GITEE_USERNAME }}:${{ secrets.GITEE_TOKEN }}@gitee.com/moulin1024/JAX-Wind.git
+          GITEE_URL="https://${{ secrets.GITEE_USERNAME }}:${{ secrets.GITEE_TOKEN }}@gitee.com/moulin1024/JAX-Wind.git"
+
+          # Sync all branches and delete branches removed from GitHub
+          git push --prune "$GITEE_URL" \
+            'refs/heads/*:refs/heads/*'
+
+          # Sync all tags and delete tags removed from GitHub
+          git push --prune "$GITEE_URL" \
+            'refs/tags/*:refs/tags/*'
+
