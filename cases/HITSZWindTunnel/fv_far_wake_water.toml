@@ -1,0 +1,30 @@
+# Entrained fine-mist example; size and flow are exploratory, not calibrated.
+extends = "fv_far_wake_baseline.toml"
+
+[case]
+name = "hitsz_r9_water_spray_far_wake"
+
+[output]
+directory = "outputs/hitsz_water_far_wake"
+
+[physics.scalar]
+# Scalar is temperature anomaly from 300 K. Moist runtime adds humidity/loading.
+buoyancy_acceleration_per_unit = 0.0327
+
+[physics.moisture]
+temperature_offset_k = 300.0
+reference_temperature_k = 300.0
+ambient_relative_humidity = 0.5
+pressure_pa = 100000.0
+dry_air_density_kg_m3 = 1.225
+
+[physics.water_spray]
+mass_flow_rate_kg_s = 0.001
+streamwise_offset_m = 0.30
+standard_deviation_m = [0.15, 0.15, 0.12]
+droplet_diameter_m = 20.0e-6
+ramp_time_s = 1.0
+
+[workflow]
+output_directory = "outputs/hitsz_water_far_wake"
+evolve_scalar = true

@@ -1,0 +1,9 @@
+schema_version = 1
+extends = "fv_v80_small_central_outlet_debug.toml"
+[case]
+name = "v80_small_central_open_upwind"
+[numerics]
+momentum_advection_scheme = "central-open-upwind"
+outlet_backflow = "energy"
+[output]
+directory = "outputs/v80_small_backflow_fix_20260916/run"

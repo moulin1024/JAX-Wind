@@ -105,7 +105,14 @@ def enforce_open_velocity(
             low = (4.0 * field[:, 1] - field[:, 2]) / 3.0
             high = (4.0 * field[:, -2] - field[:, -3]) / 3.0
             return field.at[:, 0].set(low).at[:, -1].set(high)
-        velocity = StaggeredVelocity(*(sides(field) for field in velocity))
+        velocity = StaggeredVelocity(
+            sides(velocity.x),
+            # Lateral pressure outlets retain their ordinary extrapolation.
+            # The high-x backflow option must not impose a tangential-energy
+            # pressure jump on the developing rough-wall layer.
+            sides(velocity.y),
+            sides(velocity.z),
+        )
     x_velocity = velocity.x.at[..., 0].set(plane.x_velocity)
     y_velocity = velocity.y.at[..., 0].set(plane.y_velocity)
     z_velocity = velocity.z.at[..., 0].set(plane.z_velocity)
@@ -117,6 +124,51 @@ def enforce_open_velocity(
         _second_order_outflow(z_velocity),
     )
     return enforce_impermeability(result, open_y=open_y)
+
+
+def backflow_outlet_pressure(velocity: StaggeredVelocity, grid: Grid) -> jnp.ndarray:
+    """Kinematic high-x pressure for the normal-traction backflow closure.
+
+    With zero normal viscous traction, p_b = -|u_b|^2 for u_n < 0,
+    otherwise zero (OBC-B, sharp-switch limit, Dong & Shen 2015,
+    doi:10.1016/j.jcp.2015.03.012). The continuum boundary power is
+    -(p_b + |u_b|^2/2) u_n = -|u_b|^2 |u_n|/2 <= 0.
+    This is a boundary energy condition, not a discrete RK stability proof
+    or a nonreflecting boundary condition. Tangential velocities are averaged
+    onto the outlet u-face locations; no inlet data or opposite x edge enters.
+    """
+    if streamwise_is_periodic(velocity, grid):
+        raise ValueError("backflow outlet pressure requires nonperiodic x")
+    normal = velocity.x[..., -1]
+    tangent_y = velocity.y[..., -1]
+    if spanwise_is_periodic(velocity, grid):
+        tangent_y = 0.5 * (tangent_y + jnp.roll(tangent_y, -1, axis=1))
+    else:
+        tangent_y = 0.5 * (tangent_y[:, :-1] + tangent_y[:, 1:])
+    tangent_z = 0.5 * (velocity.z[:-1, :, -1] + velocity.z[1:, :, -1])
+    speed_squared = normal**2 + tangent_y**2 + tangent_z**2
+    return jnp.where(normal < 0., -speed_squared, 0.)
+
+
+def backflow_lateral_pressures(velocity, grid, streamwise_reference):
+    """Energy backflow pressure on y sides, relative to the ambient throughflow.
+
+    The reference is tangential to both y sides. For the perturbation velocity
+    q = u - (U_ref, 0, 0), pressure work plus advective perturbation-energy flux
+    is -(p + |q|²/2) u_n. Setting p=-|q|² on reversal makes that nonpositive.
+    Using the ambient reference also leaves uniform tangential flow unchanged.
+    The projection retains its prescribed x-end/corner constraints.
+    """
+    if spanwise_is_periodic(velocity, grid) or streamwise_is_periodic(velocity, grid):
+        raise ValueError("lateral backflow pressure requires nonperiodic x and y")
+    u = 0.5 * (velocity.x[..., :-1] + velocity.x[..., 1:])
+    w = 0.5 * (velocity.z[:-1] + velocity.z[1:])
+    reference = jnp.asarray(streamwise_reference, velocity.x.dtype)
+    low_normal, high_normal = -velocity.y[:, 0], velocity.y[:, -1]
+    low_speed2 = (u[:, 0] - reference)**2 + low_normal**2 + w[:, 0]**2
+    high_speed2 = (u[:, -1] - reference)**2 + high_normal**2 + w[:, -1]**2
+    return (jnp.where(low_normal < 0., -low_speed2, 0.),
+            jnp.where(high_normal < 0., -high_speed2, 0.))
 
 
 def enforce_open_scalar(
@@ -154,6 +206,8 @@ def enforce_two_outlet_scalar(scalar, velocity, ambient):
 
 __all__ = [
     "InflowPlane",
+    "backflow_outlet_pressure",
+    "backflow_lateral_pressures",
     "enforce_open_scalar",
     "enforce_open_velocity",
     "enforce_two_outlet_velocity",

@@ -1,0 +1,16 @@
+schema_version = 1
+extends = "fv_hornsrev1_80_uniform10_open_gmg_300s.toml"
+
+[case]
+name = "hornsrev1_80_uniform10_central_rk3_backflow_300s"
+
+[numerics]
+momentum_advection_scheme = "central"
+time_integration = "rk3"
+outlet_backflow = "energy"
+
+[time]
+frame_count = 100
+
+[output]
+directory = "outputs/hornsrev1_80_uniform10_central_backflow_20260916/run"

@@ -1,0 +1,7 @@
+extends = "inertial_turbulent_energy.toml"
+
+[case]
+name = "montazeri2015-case3-inertial-energy-audit"
+
+[output]
+directory = "outputs/water_spray_montazeri2015/inertial_energy_audit"

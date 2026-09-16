@@ -39,8 +39,8 @@ def validate_mann_inflow(document):
             raise ValueError("uniform inflow speed_m_s must be finite and positive")
         if table["lateral_boundary"] != "outflow":
             raise ValueError("uniform inflow currently requires lateral_boundary = outflow")
-        if document["numerics"]["pressure_backend"] != "gmg" or document["numerics"].get("time_integration") != "fast-rk3":
-            raise ValueError("uniform farm inflow requires GMG and fast-rk3")
+        if document["numerics"]["pressure_backend"] != "gmg" or document["numerics"].get("time_integration") not in {"rk3", "fast-rk3"}:
+            raise ValueError("uniform farm inflow requires GMG and rk3 or fast-rk3")
         if "cfl" in document["time"]:
             raise ValueError("uniform farm inflow currently requires a fixed timestep")
         if "wind_farm" not in document["physics"] or "cooling" in document["physics"] or "surface_scalar" in document["physics"]:

@@ -4,6 +4,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
+#SBATCH --mem=128G
 #SBATCH --gres=dcu:1
 #SBATCH --time=48:00:00
 set -euo pipefail

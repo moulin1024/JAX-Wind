@@ -1,0 +1,11 @@
+extends = "inertial_projected_half_dt.toml"
+
+[case]
+name = "montazeri2015-case3-inertial-projected-refined"
+parcel_capacity = 65536
+
+[mesh]
+cells = [128, 48, 48]
+
+[output]
+directory = "outputs/water_spray_montazeri2015/inertial_projected_refined"

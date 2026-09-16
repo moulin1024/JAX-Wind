@@ -253,6 +253,8 @@ def load_abl(path: str | Path) -> BoussinesqCase:
         "finite_volume_turbine",
         "finite_volume_workflow",
         "finite_volume_cooling",
+        "moisture",
+        "water_spray",
         "surface_scalar",
     }
     if not expected_tables <= document.keys() or not document.keys() <= (

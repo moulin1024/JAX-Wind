@@ -1751,9 +1751,41 @@ def project(
     dt: float,
     initial_pressure: jnp.ndarray | None = None,
     target_divergence: jnp.ndarray | None = None,
+    *,
+    outlet_pressure: jnp.ndarray | None = None,
+    lateral_pressures: tuple[jnp.ndarray, jnp.ndarray] | None = None,
 ) -> tuple[StaggeredVelocity, jnp.ndarray]:
-    """Remove the divergent part of a candidate velocity."""
+    """Project with optional kinematic pressure on the high-x open face.
+
+    The nonzero Dirichlet value contributes an affine gradient at the outlet.
+    Subtract that known gradient before constructing the Poisson RHS; the
+    existing homogeneous matrix then supplies the remaining gradient. This
+    preserves the discrete divergence constraint without clipping outlet flux.
+    """
     grid = poisson.grid
+    if outlet_pressure is not None:
+        if poisson.periodic_x:
+            raise ValueError("outlet pressure requires nonperiodic x")
+        boundary = jnp.asarray(outlet_pressure, velocity.x.dtype)
+        if boundary.shape != (grid.nz, grid.ny):
+            raise ValueError("outlet pressure must have shape (nz, ny)")
+        distance = jnp.asarray(0.5 * grid.x_widths[-1], velocity.x.dtype)
+        velocity = velocity._replace(
+            x=velocity.x.at[..., -1].add(-dt * boundary / distance)
+        )
+    if lateral_pressures is not None:
+        if poisson.periodic_y or not poisson.open_y:
+            raise ValueError("lateral pressures require open y boundaries")
+        low, high = (jnp.asarray(value, velocity.y.dtype) for value in lateral_pressures)
+        if low.shape != (grid.nz, grid.nx) or high.shape != low.shape:
+            raise ValueError("lateral pressures must each have shape (nz, nx)")
+        if not poisson.periodic_x:
+            # Match the homogeneous operator's fixed tangential x-end layers.
+            low = low.at[:, 0].set(0.).at[:, -1].set(0.)
+            high = high.at[:, 0].set(0.).at[:, -1].set(0.)
+        y_velocity = velocity.y.at[:, 0].add(dt * low / (0.5 * grid.y_widths[0]))
+        y_velocity = y_velocity.at[:, -1].add(-dt * high / (0.5 * grid.y_widths[-1]))
+        velocity = velocity._replace(y=y_velocity)
     current_divergence = divergence(velocity, grid)
     target = (
         jnp.zeros_like(current_divergence)

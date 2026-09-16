@@ -1,0 +1,8 @@
+extends = "inertial_wall_audit.toml"
+
+[case]
+name = "montazeri2015-case3-inertial-cell-boundary-control"
+scalar_boundary = "cell"
+
+[output]
+directory = "outputs/water_spray_montazeri2015/inertial_cell_boundary_control"

@@ -83,6 +83,11 @@ def build_models(
         pressure_force = (0.0, 0.0)
     momentum = FlowModel(
         momentum_advection_scheme=configured.options.momentum_advection_scheme,
+        outlet_backflow=configured.options.outlet_backflow,
+        outlet_sponge_start_fraction=(configured.options.outlet_sponge_start_fraction if not periodic_x else None),
+        outlet_sponge_timescale_seconds=configured.options.outlet_sponge_timescale_seconds,
+        upstream_mode_sponge_end_fraction=(configured.options.upstream_mode_sponge_end_fraction if not periodic_x else None),
+        upstream_mode_sponge_timescale_seconds=configured.options.upstream_mode_sponge_timescale_seconds,
         body_force=(pressure_force[0], pressure_force[1], 0.0),
         forcing=forcing,
         subfilter=AnisotropicMinimumDissipation(),

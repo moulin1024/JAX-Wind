@@ -1,0 +1,11 @@
+extends = "inertial_turbulent_energy.toml"
+
+[case]
+name = "montazeri2015-case3-inertial-annular"
+# Original spray photographs report inner/outer cone radius ratio 0.45–0.50.
+# Use their midpoint, preserve mean angle 18 degrees, assume uniform mass/area.
+# This is a source-model sensitivity, not a fit or a measured angular PDF.
+spray_annulus_ratio = 0.475
+
+[output]
+directory = "outputs/water_spray_montazeri2015/inertial_annular"

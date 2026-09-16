@@ -1,0 +1,18 @@
+extends = "inertial_fine.toml"
+
+[case]
+name = "montazeri2015-case3-inertial-turbulent"
+
+[case.inlet_turbulence]
+# Literature k=(U I)^2. Spectral length mapping is an explicit assumption.
+intensity = 0.1
+length_scale_m = 0.04095
+box_cells = [1024, 48, 48]
+box_lengths_m = [12.6, 0.585, 0.585]
+seed = 20260916
+
+[time]
+chunk_steps = 50
+
+[output]
+directory = "outputs/water_spray_montazeri2015/inertial_turbulent"

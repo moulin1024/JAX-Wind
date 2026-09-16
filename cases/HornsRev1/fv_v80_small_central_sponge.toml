@@ -1,0 +1,15 @@
+schema_version = 1
+extends = "fv_v80_small_central_outlet_debug.toml"
+
+[case]
+name = "v80_small_central_outlet_sponge"
+
+[numerics]
+momentum_advection_scheme = "central"
+time_integration = "rk3"
+outlet_backflow = "energy"
+outlet_sponge_start_fraction = 0.75
+outlet_sponge_timescale_seconds = 5.0
+
+[output]
+directory = "outputs/v80_small_central_sponge/run"

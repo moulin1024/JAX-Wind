@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Usage: bash tools/submit_hornsrev_rocm.sh prepare|direction|windrose RUNNER_ARGS...
-# Optional: PARTITION, WALLTIME, DEPENDENCY=afterok:JOBID, ARRAY_CONCURRENCY.
+# Optional: PARTITION, WALLTIME, MEMORY (default 128G), DEPENDENCY=afterok:JOBID, ARRAY_CONCURRENCY.
 set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
@@ -15,6 +15,7 @@ if ! sinfo --noheader --partition="$partition" --format='%P' | tr -d '*' | awk -
 fi
 mkdir -p logs/hornsrev
 batch=(--parsable --partition="$partition" --time="${WALLTIME:-48:00:00}"
+    --mem="${MEMORY:-${SBATCH_MEM_PER_NODE:-128G}}"
     --chdir="$REPO_ROOT" --export=ALL --output='logs/hornsrev/%x-%A_%a.out'
     --job-name="hornsrev-$1")
 if [[ -n "${DEPENDENCY:-}" ]]; then batch+=(--dependency="$DEPENDENCY"); fi

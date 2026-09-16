@@ -29,6 +29,7 @@ class Simulation:
     adaptive: bool = False
     diagnostics: Any = None
     turbine_diagnostics: Any = None
+    state_diagnostics: Any = None
 
     def initialize(self, inputs=None):
         if inputs:
@@ -47,6 +48,9 @@ def _build(case) -> Simulation:
     dtype = case.document["numerics"].get("dtype", "float32")
     jax.config.update("jax_enable_x64", dtype == "float64")
     dt = case.document["time"]["dt_seconds"]
+    if case.document["case"].get("benchmark") == "montazeri2015-water-spray":
+        from .water_spray_benchmark import build_simulation as build_benchmark
+        return build_benchmark(case)
     if case.formulation == "boussinesq" and "inflow" in case.document.get("physics", {}):
         if case.document["physics"]["inflow"]["model"] == "uniform":
             from .uniform_farm import build_simulation as build_uniform
@@ -54,6 +58,8 @@ def _build(case) -> Simulation:
         from .synthetic_inflow import build_simulation as build_synthetic
         return build_synthetic(case)
     if case.formulation == "boussinesq":
+        if "moisture" in case.document.get("physics", {}):
+            raise ValueError("moisture requires an open-inflow workflow stage")
         from jaxwind.config.abl import load_fv_abl
         from .atmospheric import build_components
         forcing = None

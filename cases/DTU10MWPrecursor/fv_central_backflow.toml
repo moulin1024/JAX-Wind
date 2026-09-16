@@ -1,0 +1,21 @@
+schema_version = 1
+extends = "fv_workflow.toml"
+
+[case]
+name = "dtu10mw_central_rk3_backflow_64x32x128"
+profile_resampling = "linear"
+
+[mesh]
+cells = [64, 32, 128]
+
+[numerics]
+momentum_advection_scheme = "central-open-upwind"
+time_integration = "rk3"
+wall_gradient_correction = true
+outlet_backflow = "energy"
+
+[output]
+directory = "outputs/dtu10mw_central_rk3_backflow_64x32x128"
+
+[workflow]
+output_directory = "outputs/dtu10mw_central_rk3_backflow_workflow_64x32x128"

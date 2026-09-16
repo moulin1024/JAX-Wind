@@ -1,0 +1,13 @@
+extends = "inertial_coarse.toml"
+
+[case]
+name = "montazeri2015-case3-inertial-half-dt"
+
+[time]
+dt_seconds = 0.0005
+steps = 8000
+chunk_steps = 400
+checkpoint_every_steps = 2000
+
+[output]
+directory = "outputs/water_spray_montazeri2015/inertial_half_dt"

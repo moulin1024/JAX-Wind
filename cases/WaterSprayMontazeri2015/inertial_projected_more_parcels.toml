@@ -1,0 +1,10 @@
+extends = "inertial_projected_feedback.toml"
+
+[case]
+name = "montazeri2015-case3-inertial-projected-more-parcels"
+# Double sampling while keeping dt and the physical injected mass unchanged.
+parcels_per_step = 32
+parcel_capacity = 65536
+
+[output]
+directory = "outputs/water_spray_montazeri2015/inertial_projected_more_parcels"

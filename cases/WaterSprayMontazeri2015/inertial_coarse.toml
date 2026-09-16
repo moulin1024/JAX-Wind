@@ -1,0 +1,11 @@
+extends = "coarse.toml"
+
+[case]
+name = "montazeri2015-case3-inertial-coarse"
+spray_model = "inertial"
+parcels_per_step = 16
+parcel_capacity = 16384
+parcel_substeps = 4
+
+[output]
+directory = "outputs/water_spray_montazeri2015/inertial_coarse"

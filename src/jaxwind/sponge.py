@@ -96,3 +96,35 @@ __all__ = [
     "REST",
     "rayleigh_sponge_tendency",
 ]
+
+
+def outlet_sponge_tendency(grid: Grid, *, start_fraction: float, timescale: float):
+    """Downstream Rayleigh layer targeting the inlet's spanwise mean profile.
+
+    The quadratic rate rises from zero at start_fraction*Lx to 1/timescale
+    at the outlet. Horizontal velocity relaxes to the inlet mean at each z;
+    vertical velocity relaxes to zero. Applied before the RK-stage projection.
+    """
+    import math
+    if not math.isfinite(start_fraction) or not 0. < start_fraction < 1.:
+        raise ValueError('outlet sponge start_fraction must lie between 0 and 1')
+    if not math.isfinite(timescale) or timescale <= 0.:
+        raise ValueError('outlet sponge timescale must be finite and positive')
+    start = start_fraction*grid.lx
+    centers = _ramp(jnp.asarray(grid.x_centers),start,grid.lx,2.)/timescale
+    faces = _ramp(jnp.asarray(grid.x_faces),start,grid.lx,2.)/timescale
+
+    def tendency(velocity, inflow):
+        if velocity.x.shape[-1] != grid.nx+1:
+            raise ValueError('outlet sponge requires an open streamwise domain')
+        mean_u = jnp.mean(inflow.x_velocity,axis=1)[:,None,None]
+        v = inflow.y_velocity
+        if v.shape[1] == grid.ny+1:
+            v = .5*(v[:,:-1]+v[:,1:])
+        mean_v = jnp.mean(v,axis=1)[:,None,None]
+        return StaggeredVelocity(
+            -faces.astype(velocity.x.dtype)[None,None,:]*(velocity.x-mean_u),
+            -centers.astype(velocity.y.dtype)[None,None,:]*(velocity.y-mean_v),
+            -centers.astype(velocity.z.dtype)[None,None,:]*velocity.z,
+        )
+    return tendency

@@ -40,3 +40,14 @@ own numerical stepping; installed code must not import `applications`.
 Small deterministic trajectories, conservation/projection residuals, resume
 equivalence and differentiated inlet behavior are the numerical gates.
 Documentation must distinguish implemented behavior from pending migration.
+
+## Atmospheric moisture extension
+
+The optional recorded-inflow moisture state extends the seven atmospheric fields
+with a named water record (vapor, cloud liquid/ice, spray liquid and droplet number).
+Existing dry and cryogenic state schemas remain unchanged. Generic full-state
+checkpointing and resume serialize this record; frame observers also export water
+slices. Injection geometry is separate from shared water thermodynamics. The
+carrier keeps fast-RK3; split microphysics and subcycled first-order moisture
+transport do not claim third-order coupled accuracy. See
+[water-spray scope and configuration](../../water-spray.md).

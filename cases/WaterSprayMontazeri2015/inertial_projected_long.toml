@@ -1,0 +1,17 @@
+extends = "inertial_projected_feedback.toml"
+
+[case]
+name = "montazeri2015-case3-inertial-projected-long"
+
+[case.inlet_turbulence]
+# Preserve spectral spacing and physical TKE/scale; extend nonrepeating inflow.
+# A longer Fourier box is a new realization, not an exact restart/prefix.
+box_cells = [3072, 48, 48]
+box_lengths_m = [37.8, 0.585, 0.585]
+
+[time]
+steps = 24000
+checkpoint_every_steps = 4000
+
+[output]
+directory = "outputs/water_spray_montazeri2015/inertial_projected_long"

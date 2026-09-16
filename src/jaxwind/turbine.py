@@ -60,6 +60,8 @@ def build_adbem_forcing(
     disk: BladeElementActuatorDisk,
     body: NacelleTowerDrag | None = None,
     *, periodic_x: bool = True, periodic_y: bool = True,
+    minimum_normal_smoothing_width: float = 0.0,
+    momentum_stabilization_coefficient: float = 0.0,
 ) -> Callable[[StaggeredVelocity, jnp.ndarray], StaggeredVelocity]:
     """Build single-device AD-BEM forcing for an open or periodic FV domain.
 
@@ -68,8 +70,16 @@ def build_adbem_forcing(
     the resulting accelerations are conservatively centred back onto the MAC
     component faces before entering the FV momentum tendency.
     """
+    import math
+    if not math.isfinite(minimum_normal_smoothing_width) or minimum_normal_smoothing_width < 0.:
+        raise ValueError("minimum_normal_smoothing_width must be finite and nonnegative")
+    if not math.isfinite(momentum_stabilization_coefficient) or not 0. <= momentum_stabilization_coefficient <= 1./16.:
+        raise ValueError("momentum_stabilization_coefficient must be between 0 and 1/16")
+    if momentum_stabilization_coefficient and not grid.is_uniform:
+        raise ValueError("actuator momentum stabilization requires a uniform mesh")
     disk_kernel = build_blade_element_disk_kernel(
         grid=grid,
+        minimum_normal_smoothing_width=minimum_normal_smoothing_width,
         axis_name="fv_adbem",
         partition_count=1,
         periodic_x=periodic_x,
@@ -152,11 +162,19 @@ def build_adbem_forcing(
             source_y = source_y + body_values[1][0]
             source_z_upper = source_z_upper + body_values[2][0]
         wall = jnp.zeros_like(source_z_upper[:1])
-        return StaggeredVelocity(
+        result = StaggeredVelocity(
             _x_faces(source_x, grid, periodic=velocity.x.shape[-1] == grid.nx),
             _y_faces(source_y, grid, periodic=velocity.y.shape[1] == grid.ny),
             jnp.concatenate((wall, source_z_upper), axis=0),
         )
+
+        if momentum_stabilization_coefficient:
+            from jaxwind.numerics.actuator_stabilization import actuator_momentum_stabilization
+            damping = actuator_momentum_stabilization(
+                velocity, grid, position, disk.tip_radius, minimum_normal_smoothing_width,
+                momentum_stabilization_coefficient, periodic_x=periodic_x, periodic_y=periodic_y)
+            result = StaggeredVelocity(*(a+b for a,b in zip(result,damping)))
+        return result
 
     return forcing
 

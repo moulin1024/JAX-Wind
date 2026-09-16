@@ -26,6 +26,7 @@ def boussinesq_tendency(
     model: LinearBoussinesqBuoyancy,
     *,
     x_face_count: int | None = None,
+    y_face_count: int | None = None,
 ) -> StaggeredVelocity:
     """Return hydrostatic-free buoyancy on the staggered vertical faces.
 
@@ -51,9 +52,11 @@ def boussinesq_tendency(
     )
     x_count = scalar.shape[-1] if x_face_count is None else x_face_count
     x_shape = scalar.shape[:-1] + (x_count,)
+    y_count = scalar.shape[1] if y_face_count is None else y_face_count
+    y_shape = (scalar.shape[0], y_count, scalar.shape[2])
     return StaggeredVelocity(
         jnp.zeros(x_shape, scalar.dtype),
-        jnp.zeros_like(scalar),
+        jnp.zeros(y_shape, scalar.dtype),
         vertical,
     )
 

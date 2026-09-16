@@ -132,10 +132,16 @@ def validate(document: dict) -> None:
         raise ValueError("numerics.dtype must be float32 or float64")
     formulation = document["formulation"]
     physics = document.get("physics", {})
-    physical_sections = ({"flow", "scalar", "surface_scalar", "turbine", "wind_farm", "cooling", "inflow"} if formulation == "boussinesq"
+    physical_sections = ({"flow", "scalar", "surface_scalar", "turbine", "wind_farm", "cooling", "inflow", "moisture", "water_spray"} if formulation == "boussinesq"
                          else {"thermodynamics"} if formulation == "low-mach-abl" else {"ambient", "walls", "jet", "source"})
     if not isinstance(physics, dict) or physics.keys() - physical_sections:
         raise ValueError("unknown physics sections for this formulation")
+    if "moisture" in physics or "water_spray" in physics:
+        from .moisture import load_moisture
+        load_moisture(physics)
+        # Workflows also declare their open-inflow stage outside this case.
+        if "inflow" in physics or "wind_farm" in physics:
+            raise ValueError("moisture currently supports recorded single-turbine open inflow")
     if "inflow" in physics:
         from .synthetic_inflow import validate_mann_inflow
         validate_mann_inflow(document)

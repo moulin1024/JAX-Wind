@@ -1,0 +1,9 @@
+extends = "inertial_energy_audit.toml"
+
+[case]
+name = "montazeri2015-case3-inertial-smooth-walls"
+# Velocity-based equilibrium LES stress; not an exact RANS wall-function replica.
+gas_wall_model = "smooth-spalding"
+
+[output]
+directory = "outputs/water_spray_montazeri2015/inertial_smooth_walls"

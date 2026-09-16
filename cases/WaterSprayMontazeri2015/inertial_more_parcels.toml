@@ -1,0 +1,8 @@
+extends = "inertial_coarse.toml"
+
+[case]
+name = "montazeri2015-case3-inertial-more-parcels"
+parcels_per_step = 32
+
+[output]
+directory = "outputs/water_spray_montazeri2015/inertial_more_parcels"

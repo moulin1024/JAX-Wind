@@ -173,4 +173,29 @@ def scalar_tendency(
     )
 
 
-__all__ = ["PassiveScalar", "scalar_tendency"]
+def open_scalar_tendency(
+    scalar, velocity, grid, model, ambient, *, eddy_viscosity=0.0,
+    lower_flux=None, upper_flux=None,
+):
+    """Conservative open-x transport with reservoir inflow and interior outflow.
+
+    Physical end cells evolve normally, including local sources. Advective
+    boundary flux uses ambient on incoming flow at either end; diffusive flux
+    is zero at the open faces. This is a flux boundary, not a cell-centre
+    Dirichlet condition. Lateral/vertical treatment follows scalar_tendency.
+    """
+    if streamwise_is_periodic(velocity, grid):
+        raise ValueError("open scalar flux requires nonperiodic streamwise faces")
+    tendency = scalar_tendency(
+        scalar, velocity, grid, model, eddy_viscosity=eddy_viscosity,
+        lower_flux=lower_flux, upper_flux=upper_flux,
+    )
+    widths = jnp.asarray(grid.x_widths, scalar.dtype)
+    incoming_left = jnp.maximum(velocity.x[..., 0], 0) * (ambient - scalar[..., 0])
+    incoming_right = jnp.minimum(velocity.x[..., -1], 0) * (ambient - scalar[..., -1])
+    return tendency.at[..., 0].add(incoming_left / widths[0]).at[..., -1].add(
+        -incoming_right / widths[-1]
+    )
+
+
+__all__ = ["PassiveScalar", "scalar_tendency", "open_scalar_tendency"]

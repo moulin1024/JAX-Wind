@@ -1,0 +1,12 @@
+schema_version = 1
+extends = "fv_v80_small_central_sponge.toml"
+[case]
+name = "v80_central_upstream_mode_sponge"
+[numerics]
+upstream_mode_sponge_end_fraction = 0.2
+upstream_mode_sponge_timescale_seconds = 1.0
+[physics.turbine]
+minimum_normal_smoothing_width_m = 0.0
+momentum_stabilization_coefficient = 0.0
+[output]
+directory = "outputs/backflow_mode_sponge_30270853/wake_corrected"

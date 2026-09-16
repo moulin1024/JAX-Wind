@@ -86,7 +86,7 @@ def capture_frame(
         solution.velocity.x,
         solution.scalar,
     )
-    return {
+    result = {
         "u_hub_yx": np.asarray(velocity_hub),
         "u_center_zx": np.asarray(velocity_centre),
         "scalar_hub_yx": np.asarray(scalar_hub),
@@ -94,3 +94,9 @@ def capture_frame(
         "time_seconds": float(solution.time),
         "step": int(solution.step),
     }
+    if hasattr(solution, "moisture"):
+        for name in solution.moisture._fields:
+            _, _, hub, centre = capture(solution.velocity.x, getattr(solution.moisture, name))
+            result[f"{name}_hub_yx"] = np.asarray(hub)
+            result[f"{name}_center_zx"] = np.asarray(centre)
+    return result

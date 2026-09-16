@@ -1,0 +1,9 @@
+extends = "inertial_flux_boundary.toml"
+
+[case]
+name = "montazeri2015-case3-inertial-projected-feedback"
+# Project the coupled momentum impulse before transporting heat and humidity.
+project_parcel_feedback = true
+
+[output]
+directory = "outputs/water_spray_montazeri2015/inertial_projected_feedback"

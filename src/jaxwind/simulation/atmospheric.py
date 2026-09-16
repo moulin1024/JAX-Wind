@@ -25,16 +25,12 @@ def build_components(configured, *, forcing=None, farm=None):
         MoninObukhovWall,
         PassiveScalar,
         StaggeredVelocity,
-        atmospheric_history_diagnostics,
-        atmospheric_profile_diagnostics,
         build_adaptive_atmospheric_run,
         build_atmospheric_run,
         build_atmospheric_step,
         build_pressure_poisson,
-        coupled_surface_exchange,
         courant_number,
         divergence,
-        friction_velocity,
         initial_atmospheric_solution,
         monin_obukhov_boundaries,
         project,
@@ -168,6 +164,29 @@ def build_components(configured, *, forcing=None, farm=None):
     if farm is not None:
         solution = farm.initialize(solution)
 
+    diagnostics = build_diagnostics(
+        configured, grid, boundaries, wall, scalar, subfilter, surface,
+    )
+    return SimpleNamespace(
+        **vars(diagnostics), initial=solution, advance=advance,
+        step=step, adaptive=adaptive,
+    )
+
+
+def build_diagnostics(configured, grid, boundaries, wall, scalar, subfilter, surface):
+    """Attach the same profile observations to direct and workflow runs."""
+    import jax
+    from jaxwind import (
+        atmospheric_history_diagnostics,
+        atmospheric_profile_diagnostics,
+        coupled_surface_exchange,
+        friction_velocity,
+    )
+
+    case = configured.physical
+    configuration = resolved(configured)
+    offset_u, offset_v = case.advection_frame_velocity_m_s
+    vertical_f = configuration["coriolis_vertical_s"]
     if surface is None:
         def diagnostic(velocity, pressure, scalar_field, execution_time):
             del execution_time
@@ -240,8 +259,7 @@ def build_components(configured, *, forcing=None, farm=None):
     profile_diagnostic = jax.jit(diagnostic)
 
     return SimpleNamespace(
-        configured=configured, grid=grid, initial=solution, advance=advance,
-        step=step, adaptive=adaptive, profile_diagnostic=profile_diagnostic,
+        configured=configured, grid=grid, profile_diagnostic=profile_diagnostic,
         history_diagnostic=history_diagnostic, exchange_diagnostic=exchange_diagnostic,
         wall=wall, scalar=scalar, subfilter=subfilter, surface=surface,
     )

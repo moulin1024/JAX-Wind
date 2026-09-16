@@ -1,0 +1,84 @@
+# Direct periodic ALM smoke: 100 fixed steps at tip-sweep CFL <= 0.5.
+# Launch with `jaxwind run`, as documented in README.md.
+"schema_version" = 1
+"formulation" = "boussinesq"
+
+["case"]
+"name" = "dtu10mw_alm_smoke_512x256x512"
+"citation" = "Bak et al. (2013), Description of the DTU 10 MW Reference Wind Turbine"
+"initial_profile" = "fv_initial_profile_512.csv"
+"reference_results" = "fv_reference_results.json"
+"seed" = 2025
+
+["mesh"]
+"cells" = [512, 256, 512]
+"lengths_m" = [4096.0, 2048.0, 1024.0]
+
+["time"]
+"dt_seconds" = 0.011157774024082195
+"steps" = 100
+"chunk_steps" = 10
+"checkpoint_every_steps" = 100
+"frame_count" = 10
+
+["numerics"]
+"dtype" = "float32"
+"pressure_backend" = "fft"
+"gmg_tolerance" = 1e-05
+"gmg_presweeps" = 1
+"gmg_postsweeps" = 1
+"time_integration" = "fast-rk3"
+"turbulent_prandtl" = 0.4
+"spectrum_diagnostic" = "none"
+"momentum_advection_scheme" = "muscl-mc"
+
+["output"]
+"directory" = "outputs/dtu10mw_alm_smoke_512x256x512"
+
+["diagnostics"]
+"sample_start_step" = 0
+"sample_every_steps" = 10
+"reference_length_m" = 1024.0
+"reference_velocity_m_s" = 0.4
+"reference_scalar" = 1.0
+"inversion_search_max_height_m" = 1024.0
+"spectrum_heights_m" = [118.0]
+
+["physics"]
+
+["physics"."flow"]
+"pressure_acceleration_m_s2" = [0.00015625, 0.0]
+"geostrophic_velocity_m_s" = [0.0, 0.0]
+"advection_frame_velocity_m_s" = [0.0, 0.0]
+"coriolis_s" = [0.0, 0.0]
+"roughness_length_m" = 0.001
+"von_karman" = 0.4
+
+["physics"."scalar"]
+"reference_value" = 0.0
+"surface_flux" = 0.0
+"buoyancy_acceleration_per_unit" = 0.0
+
+["physics"."turbine"]
+"model" = "openfast-alm"
+"openfast_model_environment" = "JAXWIND_DTU10MW_FAST"
+"x_m" = 1000.0
+"y_m" = 1024.0
+"hub_height_m" = 117.76719422649163
+"rotor_speed_rpm" = 9.6
+"blade_pitch_degrees" = 0.0
+"smoothing_width_m" = 16.0
+"body_smoothing_width_m" = 96.0
+"nacelle_drag_coefficient" = 1.0
+"tower_drag_coefficient" = 1.0
+"initial_azimuth_degrees" = 0.0
+
+["workflow"]
+"warmup_steps" = 100
+"precursor_steps" = 100
+"main_steps" = 100
+"record_plane" = 0
+"chunk_steps" = 10
+"output_directory" = "outputs/dtu10mw_alm_smoke_512x256x512_workflow"
+"main_pressure_force" = false
+"evolve_scalar" = false

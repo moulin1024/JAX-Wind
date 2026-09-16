@@ -1,0 +1,29 @@
+schema_version = 1
+extends = "fv_v80_single_open_debug.toml"
+
+[case]
+name = "v80_small_central_outlet_debug"
+initial_profile = "fv_uniform10_profile_64_lz256.csv"
+
+[mesh]
+cells = [128, 64, 64]
+lengths_m = [2048.0, 1024.0, 256.0]
+
+[time]
+dt_seconds = 0.25
+steps = 1200
+chunk_steps = 12
+checkpoint_every_steps = 1201
+frame_count = 100
+
+[numerics]
+time_integration = "rk3"
+momentum_advection_scheme = "central"
+outlet_backflow = "none"
+
+[diagnostics]
+reference_length_m = 256.0
+inversion_search_max_height_m = 256.0
+
+[output]
+directory = "outputs/v80_small_backflow_debug_20260916/ordinary/run"

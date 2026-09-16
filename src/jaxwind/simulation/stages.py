@@ -44,6 +44,8 @@ def build_stage(case, operation, inputs, options):
     warm = atmospheric_state(inputs["checkpoint"], grid) if "checkpoint" in inputs else initialize_periodic(configured, jax, jnp)
     dt = case.document["time"]["dt_seconds"]
     adaptive = "cfl" in case.document["time"]
+    if adaptive and configured.options.time_integration == "ab2":
+        raise ValueError("adaptive periodic/inflow stages require rk3 or fast-rk3; AB2 requires fixed timesteps")
     courant = jax.jit(lambda state: courant_number(state.velocity, grid, dt))
     if operation == "open-inflow":
         from jaxwind.config.stages import load_workflow
@@ -99,21 +101,39 @@ def build_stage(case, operation, inputs, options):
                 if not math.isfinite(value) or value > 1.:
                     raise RuntimeError(f"recorded farm stopped: CFL={value}; reduce fixed dt")
             return result
+        state_diagnostics = None
+        if configured.options.outlet_backflow == "energy":
+            from jaxwind.open_boundary import backflow_outlet_pressure
+            area = jnp.asarray(grid.z_widths)[:, None] * jnp.asarray(grid.y_widths)[None, :]
+            @jax.jit
+            def state_diagnostics(state):
+                normal = state.velocity.x[..., -1]
+                return {
+                    "outlet_backflow_area_fraction": jnp.sum(area * (normal < 0.)) / jnp.sum(area),
+                    "outlet_minimum_u_m_s": jnp.min(normal),
+                    "outlet_backflow_pressure_min_m2_s2": jnp.min(backflow_outlet_pressure(state.velocity, grid)),
+                    "open_x_net_volume_flux_m3_s": jnp.sum(area * (normal - state.velocity.x[..., 0])),
+                }
         return Simulation(case, grid, initial, advance_open, courant,
-                          turbine_diagnostics=turbine_diagnostics)
+                          turbine_diagnostics=turbine_diagnostics,
+                          state_diagnostics=state_diagnostics)
     if operation not in {"periodic", "record-inflow"}:
         raise ValueError(f"unknown stage operation: {operation}")
+    from .abl import build_models
+    from .atmospheric import build_diagnostics
+    boundaries, momentum, scalar, _, surface = build_models(configured, periodic_x=True)
+    diagnostics = build_diagnostics(
+        configured, grid, boundaries, momentum.surface, scalar,
+        momentum.subfilter, surface,
+    )
     step, fixed = build_periodic_advance(configured)
-    if operation == "periodic":
-        if adaptive:
-            from jaxwind import build_adaptive_atmospheric_run
-            advance = build_adaptive_atmospheric_run(step, grid, cfl_ceiling=case.document["time"]["cfl"], maximum_dt=dt)
-            return Simulation(case, grid, warm, lambda state, controls: advance(state, controls.target_time, controls.count), courant, True)
+    if operation == "periodic" and not adaptive:
         initial_time, initial_step = float(warm.time), int(warm.step)
         def advance_periodic(state, controls):
             final = fixed(state, dt, controls.count)
             return final._replace(time=jnp.asarray(initial_time + (int(final.step)-initial_step)*dt, final.time.dtype))
-        return Simulation(case, grid, warm, advance_periodic, courant)
+        return Simulation(case, grid, warm, advance_periodic, courant, diagnostics=diagnostics)
+    recording = operation == "record-inflow"
     plane_index = options.get("record_plane", 0)
     if type(plane_index) is not int or not 0 <= plane_index < grid.nx:
         raise ValueError("record_plane is outside the mesh")
@@ -122,7 +142,7 @@ def build_stage(case, operation, inputs, options):
         def advance(state, unused):
             if not adaptive:
                 state = state._replace(time=jnp.asarray(initial_time, state.time.dtype) + (state.step-initial_step)*dt)
-            plane = extract_inflow_plane(state, grid, plane_index)
+            plane = extract_inflow_plane(state, grid, plane_index) if recording else ()
             active_dt = jnp.asarray(dt, state.time.dtype)
             if adaptive:
                 active_dt = jnp.minimum(jnp.minimum(active_dt, stable_timestep(state.velocity, grid, 0., courant=case.document["time"]["cfl"])), jnp.maximum(target_time-state.time, 0.))
@@ -130,11 +150,29 @@ def build_stage(case, operation, inputs, options):
             else:
                 final = step(state, active_dt)
                 final = final._replace(time=jnp.asarray(initial_time, final.time.dtype) + (final.step-initial_step)*dt)
-            return final, (*plane, state.time, active_dt)
+            values = (*plane, state.time, active_dt)
+            if adaptive:
+                values += (courant_number(state.velocity, grid, active_dt),)
+            return final, values
         return jax.lax.scan(advance, current, None, length=count)
     compiled = jax.jit(block, static_argnums=1)
-    def record(state, controls):
+    step_metrics = {"dt_seconds": jnp.asarray(dt, warm.time.dtype),
+                    "block_maximum_cfl": jnp.asarray(0., warm.time.dtype)}
+    measured_courant = jax.jit(lambda state, actual_dt: courant_number(state.velocity, grid, actual_dt))
+    def advance_block(state, controls):
         final, arrays = compiled(state, controls.count, controls.target_time)
-        outputs = dict(zip(("x_velocity", "y_velocity", "z_velocity", "scalar", "time_seconds", "dt_seconds"), arrays))
-        return AdvanceResult(final, outputs)
-    return Simulation(case, grid, warm, record, courant, adaptive)
+        if adaptive:
+            offset = 4 if recording else 0
+            last = jnp.maximum(final.step - state.step - 1, 0)
+            step_metrics["dt_seconds"] = arrays[offset + 1][last]
+            step_metrics["block_maximum_cfl"] = jnp.max(arrays[offset + 2])
+        if not recording:
+            return final
+        names = ("x_velocity", "y_velocity", "z_velocity", "scalar", "time_seconds", "dt_seconds")
+        if adaptive:
+            names += ("maximum_cfl",)
+        return AdvanceResult(final, dict(zip(names, arrays)))
+    if adaptive:
+        courant = lambda state: measured_courant(state, step_metrics["dt_seconds"])
+    return Simulation(case, grid, warm, advance_block, courant, adaptive, diagnostics,
+                      state_diagnostics=(lambda state: dict(step_metrics)) if adaptive else None)

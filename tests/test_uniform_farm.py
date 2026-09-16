@@ -111,3 +111,20 @@ def test_open_farm_local_force_matches_full_and_runs(case):
     assert float(jnp.max(jnp.abs(divergence(final.velocity, simulation.grid)))) < 2.e-5
     diag = simulation.turbine_diagnostics(final)
     assert 0 < float(diag["farm_lookup_power_w"]) < 2.e6
+
+
+def test_uniform_farm_rk3_backflow_and_diagnostics(case):
+    doc = deepcopy(case.document)
+    doc['mesh'] = {'cells': [8, 6, 8], 'lengths_m': [512., 384., 256.]}
+    doc['physics']['turbine'].update(x_m=256., y_m=192.)
+    doc['physics']['wind_farm']['layout'] = [dict(id='T01',x_m=256.,y_m=192.,hub_height_m=70.,initial_rpm=0.)]
+    doc['numerics'].update(time_integration='rk3', momentum_advection_scheme='central', outlet_backflow='energy')
+    doc['time'].update(dt_seconds=.1,steps=2,frame_count=1)
+    simulation=build_simulation(ResolvedCase(case.source,doc))
+    state=simulation.advance(simulation.initial_state,RunControls(2,.2))
+    assert all(np.isfinite(v).all() for v in state.velocity)
+    assert float(jnp.max(jnp.abs(divergence(state.velocity,simulation.grid))))<2e-5
+    diagnostic=simulation.state_diagnostics(state)
+    assert float(diagnostic['inlet_maximum_error_m_s'])==0.
+    assert 0 <= float(diagnostic['outlet_x_backflow_area_fraction']) <= 1
+    assert np.isfinite(float(diagnostic['boundary_net_volume_flux_m3_s']))

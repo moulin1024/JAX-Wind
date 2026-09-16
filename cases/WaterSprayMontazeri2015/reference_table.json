@@ -1,0 +1,38 @@
+{
+  "source_doi": "10.1016/j.applthermaleng.2007.09.010",
+  "source_url": "https://pldhar.wordpress.com/wp-content/uploads/2010/09/spray-model-air-water-syst-suresh-kumar.pdf",
+  "source_location": "Collected author PDF page 16; original paper page 354, Table 2(b), 4 mm nozzle, 3 m/s air, 3 barg water, Tin air 39.2 C / 18.7 C, water 35.2 C / 26.1 C",
+  "method": "Direct transcription of tabulated DBT; replaces figure digitization for current comparisons. Original figure-derived reference and results remain archived.",
+  "experimental_dbt_c": [
+    30.7,
+    32.2,
+    32.2,
+    31.9,
+    31.4,
+    31.7,
+    31.0,
+    31.6,
+    31.7
+  ],
+  "sensor_order": "z bottom, middle, top; y left, center, right as viewed from tunnel exit (source Fig. 2)",
+  "sensor_y_m": [
+    0.0975,
+    0.2925,
+    0.4875
+  ],
+  "sensor_z_m": [
+    0.0975,
+    0.2925,
+    0.4875
+  ],
+  "spatial_pairing_known": true,
+  "temperature_uncertainty_c": 0.3,
+  "uncertainty_note": "Reported DBT measurement uncertainty is \u00b10.3 C (pp.352, 358), with confidence level unspecified and table precision 0.1 C. Section 2.7 also reports an additional, dominant but unquantified uncertainty from mist carryover at higher air velocities, especially counterflow. Do not treat \u00b10.3 C as a complete uncertainty bound for this operating point.",
+  "outlet_water_temperature_c": 26.1,
+  "additional_uncertainty": {
+    "mechanism": "Mist carryover onto thermocouples downstream of the drift eliminator",
+    "magnitude_c": null,
+    "source_location": "waterjet_referece.pdf page 10 / printed p.358, Section 2.7",
+    "tolerance_unchanged": true
+  }
+}

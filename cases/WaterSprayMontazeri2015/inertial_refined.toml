@@ -1,0 +1,19 @@
+extends = "inertial_energy_audit.toml"
+
+[case]
+name = "montazeri2015-case3-inertial-refined"
+# Preserve 32000 parcels/s while halving the time step.
+parcels_per_step = 8
+parcel_capacity = 65536
+
+[mesh]
+cells = [128, 48, 48]
+
+[time]
+dt_seconds = 0.00025
+steps = 16000
+chunk_steps = 100
+checkpoint_every_steps = 4000
+
+[output]
+directory = "outputs/water_spray_montazeri2015/inertial_refined"

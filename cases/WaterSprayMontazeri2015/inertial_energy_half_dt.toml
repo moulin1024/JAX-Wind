@@ -1,0 +1,14 @@
+extends = "inertial_energy_audit.toml"
+
+[case]
+name = "montazeri2015-case3-inertial-energy-half-dt"
+parcels_per_step = 8
+
+[time]
+dt_seconds = 0.00025
+steps = 16000
+chunk_steps = 100
+checkpoint_every_steps = 4000
+
+[output]
+directory = "outputs/water_spray_montazeri2015/inertial_energy_half_dt"

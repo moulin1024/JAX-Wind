@@ -14,13 +14,21 @@ import jax
 import jax.numpy as jnp
 
 
-# Bracket for the fixed-enthalpy saturation solve. The floor is below the
-# 77.34 K nitrogen boiling point so that air chilled by an LN2 source is
-# bracketed rather than clipped; note that the Murphy-Koop ice saturation fit
-# is only calibrated down to about 110 K, so temperatures below that are an
-# extrapolation (saturation vapour pressure there is negligible in any case).
-CRYOGENIC_TEMPERATURE_FLOOR = 50.0
-CRYOGENIC_TEMPERATURE_CEILING = 450.0
+# Backward-compatible exports from the shared water thermodynamics module.
+from .moisture import (
+    SATURATION_TEMPERATURE_CEILING,
+    SATURATION_TEMPERATURE_FLOOR,
+    FogMicrophysicsUpdate as FogMicrophysicsUpdate,
+    advance_fog_microphysics as advance_fog_microphysics,
+    saturation_adjustment as saturation_adjustment,
+    saturation_mixing_ratio as saturation_mixing_ratio,
+    saturation_vapor_pressure_ice as saturation_vapor_pressure_ice,
+    saturation_vapor_pressure_water as saturation_vapor_pressure_water,
+)
+
+
+CRYOGENIC_TEMPERATURE_CEILING = SATURATION_TEMPERATURE_CEILING
+CRYOGENIC_TEMPERATURE_FLOOR = SATURATION_TEMPERATURE_FLOOR
 
 
 @dataclass(frozen=True)
@@ -108,246 +116,6 @@ class MassOnlyOutletUpdate(NamedTuple):
     target_divergence: jax.Array
     nitrogen_tendency: jax.Array
     volume_sink: jax.Array
-
-
-class FogMicrophysicsUpdate(NamedTuple):
-    temperature: jax.Array
-    qv: jax.Array
-    ql: jax.Array
-    qi: jax.Array
-    condensed_or_deposited: jax.Array
-    evaporated_or_sublimated: jax.Array
-    frozen: jax.Array
-    melted: jax.Array
-
-
-def saturation_vapor_pressure_water(temperature: jax.Array) -> jax.Array:
-    """Murphy--Koop (2005) saturation pressure over liquid water [Pa]."""
-
-    temperature = jnp.asarray(temperature)
-    log_t = jnp.log(temperature)
-    transition = jnp.tanh(0.0415 * (temperature - 218.8))
-    log_pressure = (
-        54.842763
-        - 6763.22 / temperature
-        - 4.210 * log_t
-        + 0.000367 * temperature
-        + transition
-        * (
-            53.878
-            - 1331.22 / temperature
-            - 9.44523 * log_t
-            + 0.014025 * temperature
-        )
-    )
-    return jnp.exp(log_pressure)
-
-
-def saturation_vapor_pressure_ice(temperature: jax.Array) -> jax.Array:
-    """Murphy--Koop (2005) saturation pressure over hexagonal ice [Pa]."""
-
-    temperature = jnp.asarray(temperature)
-    return jnp.exp(
-        9.550426
-        - 5723.265 / temperature
-        + 3.53068 * jnp.log(temperature)
-        - 0.00728332 * temperature
-    )
-
-
-def saturation_mixing_ratio(
-    temperature: jax.Array,
-    pressure: jax.Array | float,
-    config: CryogenicMicrophysicsConfig,
-) -> jax.Array:
-    """Return water-vapour saturation mixing ratio [kg/kg dry air]."""
-
-    pressure = jnp.asarray(pressure, dtype=temperature.dtype)
-    over_ice = temperature < config.freezing_temperature
-    vapor_pressure = jnp.where(
-        over_ice,
-        saturation_vapor_pressure_ice(temperature),
-        saturation_vapor_pressure_water(temperature),
-    )
-    vapor_pressure = jnp.minimum(vapor_pressure, 0.99 * pressure)
-    epsilon = config.dry_air_gas_constant / config.water_vapor_gas_constant
-    return epsilon * vapor_pressure / jnp.maximum(
-        pressure - vapor_pressure,
-        jnp.asarray(1.0, dtype=temperature.dtype),
-    )
-
-
-def saturation_adjustment(
-    temperature: jax.Array,
-    qv: jax.Array,
-    ql: jax.Array,
-    qi: jax.Array,
-    config: CryogenicMicrophysicsConfig,
-    pressure: jax.Array | float | None = None,
-    heat_capacity: jax.Array | float | None = None,
-) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
-    """Equilibrate vapour, liquid fog, and ice fog at fixed moist enthalpy.
-
-    Positive supersaturation condenses or deposits into the stable condensed
-    phase.  Subsaturation evaporates liquid and sublimates ice.  A fixed
-    iteration count accounts for the saturation-pressure change caused by
-    latent heating without introducing a data-dependent JAX loop.
-    """
-
-    pressure_value = config.pressure if pressure is None else pressure
-    cp = jnp.asarray(
-        (
-            config.dry_air_heat_capacity
-            if heat_capacity is None
-            else heat_capacity
-        ),
-        dtype=temperature.dtype,
-    )
-    lv = jnp.asarray(config.water_vapor_latent_heat, dtype=temperature.dtype)
-    ls = jnp.asarray(config.ice_sublimation_latent_heat, dtype=temperature.dtype)
-    freezing = jnp.asarray(config.freezing_temperature, dtype=temperature.dtype)
-
-    qv = jnp.maximum(qv, 0.0)
-    ql = jnp.maximum(ql, 0.0)
-    qi = jnp.maximum(qi, 0.0)
-    total_water = qv + ql + qi
-    enthalpy = cp * temperature + lv * qv - (
-        ls - lv
-    ) * qi
-
-    def phases_at(temp):
-        vapor = jnp.minimum(
-            total_water,
-            saturation_mixing_ratio(temp, pressure_value, config),
-        )
-        condensate = jnp.maximum(total_water - vapor, 0.0)
-        cold = temp < freezing
-        liquid = jnp.where(cold, 0.0, condensate)
-        ice = jnp.where(cold, condensate, 0.0)
-        modeled_enthalpy = cp * temp + lv * vapor - (
-            ls - lv
-        ) * ice
-        return vapor, liquid, ice, modeled_enthalpy
-
-    # Solve the monotone fixed-enthalpy saturation problem. The former
-    # condense/evaporate iteration could form condensate, warm past the new
-    # saturation point, evaporate it all, and return unchanged after every
-    # even iteration. Bisection cannot enter that two-cycle.
-    #
-    # The bracket is absolute rather than a window around the incoming
-    # temperature: a strong cryogenic source can pull a cell far colder than
-    # any fixed offset would allow, and a bracket that does not contain the
-    # root silently returns its own endpoint as the answer. The lower bound
-    # sits below the nitrogen boiling point so LN2-cooled air is bracketed
-    # rather than clipped. Bisection cost is fixed by the iteration count, so
-    # a wide bracket costs nothing but a few more halvings.
-    lower = jnp.full_like(temperature, CRYOGENIC_TEMPERATURE_FLOOR)
-    upper = jnp.full_like(temperature, CRYOGENIC_TEMPERATURE_CEILING)
-
-    def bisect(_, bounds):
-        low, high = bounds
-        mid = 0.5 * (low + high)
-        residual = phases_at(mid)[3] - enthalpy
-        return (
-            jnp.where(residual <= 0.0, mid, low),
-            jnp.where(residual > 0.0, mid, high),
-        )
-
-    lower, upper = jax.lax.fori_loop(
-        0,
-        4 * config.saturation_iterations,
-        bisect,
-        (lower, upper),
-    )
-    adjusted_temperature = 0.5 * (lower + upper)
-    vapor, liquid, ice, _ = phases_at(adjusted_temperature)
-
-    # At the freezing point, a liquid/ice mixture spans the fusion-enthalpy
-    # discontinuity and is the conservative equilibrium state.
-    freezing_vapor = jnp.minimum(
-        total_water,
-        saturation_mixing_ratio(freezing, pressure_value, config),
-    )
-    freezing_condensate = jnp.maximum(total_water - freezing_vapor, 0.0)
-    liquid_enthalpy = cp * freezing + lv * freezing_vapor
-    ice_enthalpy = liquid_enthalpy - (ls - lv) * freezing_condensate
-    mixed = (
-        (freezing_condensate > 0.0)
-        & (enthalpy >= ice_enthalpy)
-        & (enthalpy <= liquid_enthalpy)
-    )
-    mixed_ice = jnp.clip(
-        (liquid_enthalpy - enthalpy)
-        / jnp.maximum(
-            ls - lv,
-            jnp.asarray(jnp.finfo(temperature.dtype).tiny),
-        ),
-        0.0,
-        freezing_condensate,
-    )
-    adjusted_temperature = jnp.where(mixed, freezing, adjusted_temperature)
-    vapor = jnp.where(mixed, freezing_vapor, vapor)
-    ice = jnp.where(mixed, mixed_ice, ice)
-    liquid = jnp.where(mixed, freezing_condensate - mixed_ice, liquid)
-    return adjusted_temperature, vapor, liquid, ice
-
-
-def advance_fog_microphysics(
-    temperature: jax.Array,
-    qv: jax.Array,
-    ql: jax.Array,
-    qi: jax.Array,
-    dt: float,
-    config: CryogenicMicrophysicsConfig,
-    pressure: jax.Array | float | None = None,
-    heat_capacity: jax.Array | float | None = None,
-) -> FogMicrophysicsUpdate:
-    """Vapour/fog/ice exchange via the enthalpy-conserving equilibrium.
-
-    Water-phase change is treated as fast relative to the LES timestep (valid
-    for typical LES dt on the order of milliseconds), so the state jumps
-    directly to the `saturation_adjustment` equilibrium every call instead of
-    relaxing toward it. Relaxing `temperature` and `qv` independently by the
-    same exponential factor does not preserve `qv <= qsat(T)` at intermediate
-    steps, because `qsat(T)` is a steeply convex function of temperature: a
-    state partway between a supersaturated point and its correctly-saturated
-    equilibrium can still read as strongly supersaturated. `dt` is accepted
-    for interface compatibility but is otherwise unused.
-
-    This intentionally drops any nucleation-delay physics (how long it takes
-    supersaturated vapour to actually nucleate into droplets/crystals) in
-    favour of getting the bulk sensible/latent heat budget - and hence the
-    buoyancy it drives - right without depending on an under-resolved
-    relaxation timescale.
-    """
-
-    del dt
-    initial_qv = jnp.maximum(qv, 0.0)
-    initial_ql = jnp.maximum(ql, 0.0)
-    initial_qi = jnp.maximum(qi, 0.0)
-    temp, vapor, liquid, ice = saturation_adjustment(
-        temperature,
-        initial_qv,
-        initial_ql,
-        initial_qi,
-        config,
-        pressure,
-        heat_capacity,
-    )
-
-    vapor_change = vapor - initial_qv
-    frozen = jnp.maximum(ice - initial_qi, 0.0)
-    melted = jnp.maximum(initial_qi - ice, 0.0)
-    return FogMicrophysicsUpdate(
-        temperature=temp,
-        qv=vapor,
-        ql=jnp.maximum(liquid, 0.0),
-        qi=jnp.maximum(ice, 0.0),
-        condensed_or_deposited=jnp.maximum(-vapor_change, 0.0),
-        evaporated_or_sublimated=jnp.maximum(vapor_change, 0.0),
-        frozen=frozen,
-        melted=melted,
-    )
 
 
 def stokes_terminal_velocity(

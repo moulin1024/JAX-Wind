@@ -109,7 +109,11 @@ class ControlledFarm:
         if np.any(positions[:, 2] - radius <= 0.) or np.any(positions[:, 2] + radius >= self.grid.lz):
             raise ValueError("farm rotor intersects a vertical boundary")
         self.positions = jnp.asarray(positions, dtype=workflow.case.physical.dtype)
+        normal_width = workflow.turbine.minimum_normal_smoothing_width_m
+        stabilization = workflow.turbine.momentum_stabilization_coefficient
         self.single_force = build_adbem_forcing(self.grid, self.disk,
+                                               minimum_normal_smoothing_width=normal_width,
+                                               momentum_stabilization_coefficient=stabilization,
                                                periodic_x=not self.open_domain, periodic_y=not self.open_domain)
         if self.open_domain:
             # Six Gaussian smoothing widths make omitted tails negligible in
@@ -119,7 +123,11 @@ class ControlledFarm:
             if not grid.is_uniform:
                 raise ValueError("open farm force patches require a uniform mesh")
             margin = 6. * max(self.disk.element_smoothing_widths)
-            half = np.array([margin, radius + margin, radius + margin])
+            half = np.array([max(margin, 6.*normal_width), radius + margin, radius + margin])
+            if stabilization:
+                half = np.maximum(half, [4*max(normal_width,grid.dx)+2*grid.dx,
+                                          radius+4*max(grid.dy,grid.dz),
+                                          radius+4*max(grid.dy,grid.dz)])
             spacing = np.array([grid.dx, grid.dy, grid.dz])
             counts = np.array([grid.nx, grid.ny, grid.nz])
             size = np.minimum(np.ceil(2 * half / spacing).astype(int) + 2, counts)
@@ -128,7 +136,9 @@ class ControlledFarm:
             self.patch_positions = jnp.asarray(positions - starts * spacing, self.positions.dtype)
             self.patch_shape = tuple(int(n) for n in size[::-1])
             local_grid = UniformGrid(*(int(n) for n in size), *(float(v) for v in size * spacing))
-            self.patch_force = build_adbem_forcing(local_grid, self.disk, periodic_x=False, periodic_y=False)
+            self.patch_force = build_adbem_forcing(local_grid, self.disk, periodic_x=False, periodic_y=False,
+                                                   minimum_normal_smoothing_width=normal_width,
+                                                   momentum_stabilization_coefficient=stabilization)
         # Separable volume-weighted probes avoid N full-domain sampling arrays.
         grid = self.grid
         probe_distance = self.control["probe_distance_diameters"] * 2. * radius

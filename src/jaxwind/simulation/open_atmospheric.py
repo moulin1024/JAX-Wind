@@ -104,6 +104,11 @@ def build_open_components(workflow, warm, first, *, return_step=False):
                 ),
                 dtype=case.dtype,
             )
+    if workflow.moisture is not None:
+        from jaxwind import LinearBoussinesqBuoyancy
+        buoyancy = LinearBoussinesqBuoyancy(
+            9.81 / workflow.moisture.reference_temperature_k
+        )
     step = build_open_atmospheric_step(
         grid,
         boundaries,
@@ -115,6 +120,29 @@ def build_open_components(workflow, warm, first, *, return_step=False):
         scalar_source=scalar_source,
         scheme=workflow.case.options.time_integration,
     )
+    if workflow.moisture is not None:
+        from jaxwind.moist_abl import build_moist_atmospheric_step, initialize_moisture
+        from jaxwind.water_spray import build_water_injection
+        source = None
+        if workflow.water_spray is not None:
+            spray = workflow.water_spray
+            source = build_water_injection(
+                grid, (turbine.x_m + spray.streamwise_offset_m,
+                       turbine.y_m, turbine.hub_height_m),
+                spray.standard_deviation_m, spray.mass_flow_rate_kg_s,
+                spray.droplet_diameter_m, spray.ramp_time_s,
+                workflow.moisture.thermodynamics, dtype=case.dtype,
+            )
+        moist = workflow.moisture
+        solution, ambient_vapor = initialize_moisture(
+            solution, moist.temperature_offset_k,
+            moist.ambient_relative_humidity, moist.thermodynamics,
+        )
+        step = build_moist_atmospheric_step(
+            step, grid, boundaries, momentum, scalar,
+            moist.thermodynamics, moist.temperature_offset_k,
+            moist.reference_temperature_k, ambient_vapor, source,
+        )
     advance = step if return_step else build_open_atmospheric_run(step)
 
     return solution, advance

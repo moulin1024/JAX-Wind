@@ -1,0 +1,61 @@
+{
+  "source_doi": "10.1016/j.applthermaleng.2007.09.010",
+  "source_url": "https://pldhar.wordpress.com/wp-content/uploads/2010/09/spray-model-air-water-syst-suresh-kumar.pdf",
+  "source_location": "PDF p.6, printed p.354, Table 2(b), last row; geometry: Fig.2, PDF p.3",
+  "method": "Direct table transcription, visually verified against the uploaded PDF",
+  "experimental_dbt_c": [
+    30.7,
+    32.2,
+    32.2,
+    31.9,
+    31.4,
+    31.7,
+    31.0,
+    31.6,
+    31.7
+  ],
+  "sensor_order": "z bottom, middle, top; y left, center, right as viewed from tunnel exit (source Fig. 2)",
+  "sensor_y_m": [
+    0.0975,
+    0.2925,
+    0.4875
+  ],
+  "sensor_z_m": [
+    0.0975,
+    0.2925,
+    0.4875
+  ],
+  "spatial_pairing_known": true,
+  "temperature_uncertainty_c": 0.3,
+  "uncertainty_note": "Reported air-temperature uncertainty, original paper p352; confidence level not specified. Table precision is 0.1 C.",
+  "outlet_water_temperature_c": 26.1,
+  "source_pdf": "waterjet_referece.pdf",
+  "source_sha256": "2e8d080d7944bea85d941328d40f0aafb85b906af1416c932847510dd132c95d",
+  "experimental_wbt_c": [
+    21.4,
+    20.8,
+    19.9,
+    20.5,
+    20.2,
+    20.2,
+    21.0,
+    20.8,
+    20.4
+  ],
+  "operating_conditions": {
+    "air_speed_m_s": 3.0,
+    "inlet_dbt_c": 39.2,
+    "inlet_wbt_c": 18.7,
+    "nozzle_diameter_mm": 4.0,
+    "water_gauge_pressure_bar": 3.0,
+    "water_inlet_c": 35.2,
+    "water_outlet_c": 26.1,
+    "water_flow_l_min": 12.5,
+    "configuration": "parallel flow, hot-dry",
+    "tunnel_dimensions_m": [
+      1.9,
+      0.585,
+      0.585
+    ]
+  }
+}

@@ -1,0 +1,11 @@
+extends = "inertial_projected_feedback.toml"
+
+[case]
+name = "montazeri2015-case3-inertial-projected-central"
+
+[numerics]
+# Numerical-damping control; same AMD closure and all physical inputs.
+momentum_advection_scheme = "central"
+
+[output]
+directory = "outputs/water_spray_montazeri2015/inertial_projected_central"

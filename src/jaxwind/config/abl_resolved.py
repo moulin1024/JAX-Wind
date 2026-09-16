@@ -39,6 +39,7 @@ def resolved(configured: FiniteVolumeCase) -> dict:
         "turbulent_prandtl": options.turbulent_prandtl,
         "scalar_advection_scheme": options.scalar_advection_scheme,
         "momentum_advection_scheme": options.momentum_advection_scheme,
+        "outlet_backflow": options.outlet_backflow,
         "cells": [grid.nx, grid.ny, grid.nz],
         "lengths_m": [grid.lx, grid.ly, grid.lz],
         "grid_uniform": grid.is_uniform,

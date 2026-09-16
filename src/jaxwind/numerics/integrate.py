@@ -17,7 +17,7 @@ import jax.numpy as jnp
 from jaxwind.domain.grid import Grid
 
 from jaxwind.numerics.discretization import _cells_to_faces, advection, diffusion, pressure_gradient, stable_timestep
-from jaxwind.numerics.momentum import muscl_advection
+from jaxwind.numerics.momentum import muscl_advection, central_open_upwind_advection, central_open_filter_advection
 from jaxwind.numerics.poisson import PressurePoisson, project
 from jaxwind.rotation import CoriolisGeostrophic, coriolis_tendency
 from jaxwind.sgs import (
@@ -64,6 +64,12 @@ class FlowModel:
     sidewalls: MoninObukhovWall | None = None
     rotation: CoriolisGeostrophic | None = None
     momentum_advection_scheme: str = "muscl-mc"
+    # Used only by the open atmospheric integrator; periodic transport is unchanged.
+    outlet_backflow: str = "none"
+    outlet_sponge_start_fraction: float | None = None
+    outlet_sponge_timescale_seconds: float = 5.0
+    upstream_mode_sponge_end_fraction: float | None = None
+    upstream_mode_sponge_timescale_seconds: float = 1.0
 
 
 def initial_solution(
@@ -117,11 +123,13 @@ def build_tendency(
 ) -> Callable[[StaggeredVelocity, jnp.ndarray], StaggeredVelocity]:
     """Return the explicit right-hand side of the momentum equations."""
     force_x, force_y, force_z = model.body_force
-    if model.momentum_advection_scheme not in {"central", "muscl-mc"}:
-        raise ValueError("momentum_advection_scheme must be central or muscl-mc")
-    if model.momentum_advection_scheme == "muscl-mc" and not grid.is_uniform:
+    if model.momentum_advection_scheme not in {"central", "muscl-mc", "central-open-upwind", "central-open-filter"}:
+        raise ValueError("momentum_advection_scheme must be central, muscl-mc, central-open-upwind, or central-open-filter")
+    if model.momentum_advection_scheme != "central" and not grid.is_uniform:
         raise ValueError("muscl-mc momentum advection requires a uniform grid")
-    transport = muscl_advection if model.momentum_advection_scheme == "muscl-mc" else advection
+    transport = {"central": advection, "muscl-mc": muscl_advection,
+                 "central-open-upwind": central_open_upwind_advection,
+                 "central-open-filter": central_open_filter_advection}[model.momentum_advection_scheme]
 
     def tendency(
         velocity: StaggeredVelocity,

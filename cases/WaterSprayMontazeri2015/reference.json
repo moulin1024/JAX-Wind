@@ -1,0 +1,18 @@
+{
+  "source_doi": "10.1016/j.buildenv.2014.03.022",
+  "experimental_source_doi": "10.1016/j.applthermaleng.2007.09.010",
+  "source_url": "https://pure.tue.nl/ws/portalfiles/portal/32337686/15_bae_si_cpc_montazeri.pdf",
+  "case": 3,
+  "figure": "7c: experimental DBT values on horizontal axis; paper page 16, PDF page 17",
+  "method": "Manual marker centers from native embedded image 104 (1268 x 551 pixels); x=47 maps to 25 C, x=400 to 35 C. Three touching markers near x=285 separated by visual inspection. No sensor identities are provided by this scatter plot.",
+  "marker_x_pixels": [247.64, 258.36, 272.38, 279.53, 283.0, 283.0, 290.5, 300.67, 300.59],
+  "axis_x_pixels": [47, 400],
+  "axis_temperature_c": [25, 35],
+  "digitization_uncertainty_c": 0.1,
+  "sensor_y_m": [0.0975, 0.2925, 0.4875],
+  "sensor_z_m": [0.0975, 0.2925, 0.4875],
+  "spatial_pairing_known": false,
+  "literature_cfd_cooling_w_approx": 8000,
+  "literature_cfd_is_not_experimental_target": true,
+  "reference_scope": "Measured nine-sensor DBT distribution. Compare means/ranges or sorted distributions, never assume pointwise spatial pairing."
+}

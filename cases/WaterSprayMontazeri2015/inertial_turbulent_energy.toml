@@ -1,0 +1,10 @@
+extends = "inertial_turbulent.toml"
+
+[case]
+name = "montazeri2015-case3-inertial-turbulent-energy"
+
+[case.inlet_turbulence]
+normalization = "total_energy"
+
+[output]
+directory = "outputs/water_spray_montazeri2015/inertial_turbulent_energy"

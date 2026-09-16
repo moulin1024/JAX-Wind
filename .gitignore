@@ -62,3 +62,15 @@ __pycache__/
 /*_gpu/
 legacy/fortran_cuda/job
 *.png
+
+# Local research papers, runtime logs, and generated validation artifacts
+/*.pdf
+/logs/
+/cases/WaterSprayMontazeri2015/**/*.svg
+/cases/WaterSprayMontazeri2015/investigation/**/*.json
+/cases/WaterSprayMontazeri2015/comparison/comparison.json
+/cases/FreeWaterSprayTransport/kit_data_audit.json
+/cases/WaterSprayMontazeri2015/uploaded_reference_validation/comparison.json
+/cases/WaterSprayMontazeri2015/uploaded_reference_validation/energy_audit.json
+/cases/WaterSprayMontazeri2015/uploaded_reference_validation/sensors.csv
+/cases/WaterSprayMontazeri2015/uploaded_reference_validation/tables.md

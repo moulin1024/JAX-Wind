@@ -1,0 +1,11 @@
+schema_version = 1
+extends = "fv_v80_small_central_outlet_debug.toml"
+
+[case]
+name = "v80_small_central_backflow_debug"
+
+[numerics]
+outlet_backflow = "energy"
+
+[output]
+directory = "outputs/v80_small_backflow_debug_20260916/energy/run"

@@ -99,3 +99,10 @@ Regenerate continuation inputs with the new format. See the
 Generate neutral turbulence with a reproducible Mann box, sample staggered
 inlet planes under frozen advection, or export them for an open-inflow workflow.
 See the [Mann inflow example and model limits](doc/mann-inflow.md).
+
+## Water spray and humidity
+
+The recorded-inflow turbine workflow can inject fine water mist into the wake,
+with finite-rate evaporation, shared cloud physics, latent cooling and moist
+buoyancy. See the [water-spray configuration and model limits](doc/water-spray.md)
+and [HITSZ water example](cases/HITSZWindTunnel/fv_far_wake_water.toml).

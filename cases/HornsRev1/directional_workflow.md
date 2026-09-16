@@ -146,3 +146,25 @@ was paused after two steps and resumed successfully; final CFL was 0.202. The
 nonperiodic x/y face shapes. The smoke geometry contains one turbine, so full
 farm rotations are checked separately by all-pair-distance and centroid tests
 for all 12 rose directions and an intermediate angle.
+
+## ROCm Slurm host memory
+
+The ROCm launcher requests 128 GiB of host RAM per node by default. Override
+with `MEMORY=192G` (or `SBATCH_MEM_PER_NODE` when `MEMORY` is unset). Device
+memory and Slurm host-memory limits are separate: a `slurmstepd` cgroup
+`oom_kill` can terminate initialization even when GPU memory is available.
+The request is headroom for initialization/checkpoint processing, not a
+measured guarantee for every backend or configuration.
+
+```bash
+MEMORY=128G WALLTIME=08:00:00 bash tools/submit_hornsrev_rocm.sh prepare \
+  --output outputs/hornsrev_prepare_rocm --resume
+```
+
+Use the original output directory when resuming. If initialization was killed
+before the first checkpoint, resume starts that unfinished stage from its
+initial condition. Inspect the failed job on the ROCm cluster with:
+
+```bash
+sacct -j JOBID --format=JobID,State,ReqMem,MaxRSS,AllocCPUS,Elapsed
+```

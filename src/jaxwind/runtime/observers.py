@@ -125,6 +125,9 @@ class Observer:
                         self.surface[key] += float(getattr(exchange, attribute))
         if self.simulation.turbine_diagnostics is not None:
             row.update({key: float(value) for key, value in jax.device_get(self.simulation.turbine_diagnostics(state)).items()})
+        diagnostic = getattr(self.simulation, "state_diagnostics", None)
+        if diagnostic is not None:
+            row.update({key: float(value) for key, value in jax.device_get(diagnostic(state)).items()})
         self.history.append(row)
         settings = self.simulation.case.document["time"]
         frame_count = settings.get("frame_count", self.simulation.case.document.get("diagnostics", {}).get("frame_count", 0))

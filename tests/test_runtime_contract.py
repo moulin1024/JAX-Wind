@@ -184,3 +184,53 @@ def test_adaptive_frame_boundary_after_shortening_schedule(tmp_path):
     metadata = {"initial_step": 0, "initial_time": 0., "target_time": 36000.}
     _, target = observer.next_block(state, 120, metadata)
     assert target == 2160.
+
+
+@pytest.mark.parametrize("operation", ["periodic", "record-inflow"])
+@pytest.mark.parametrize("adaptive", [False, True])
+def test_periodic_stages_average_volume_profiles_across_resume(tmp_path, operation, adaptive):
+    """Stage profiles average evolved full-volume fields, including before resume."""
+    from jaxwind.simulation.stages import build_stage
+
+    case = tiny_case(tmp_path, adaptive=adaptive)
+    case.document["time"]["steps"] = 4
+    case.document["initial_conditions"] = {
+        "operation": operation, "artifacts": {}, "stage_options": {},
+    }
+    simulation = build_stage(case, operation, {}, {})
+    first = run(case, max_steps=2, _simulation=simulation)
+    first_fields, _ = state_fields(first.checkpoint)
+    final = resume(first.output)
+    final_fields, _ = state_fields(final.checkpoint)
+    profiles = np.genfromtxt(final.output / "profiles.csv", delimiter=",", names=True)
+    expected = .5 * (
+        first_fields["velocity_x"].mean(axis=(1, 2), dtype=np.float64)
+        + final_fields["velocity_x"].mean(axis=(1, 2), dtype=np.float64)
+    )
+    np.testing.assert_allclose(profiles["mean_u_m_s"], expected, rtol=2.e-6, atol=2.e-6)
+    assert final.summary["runtime"]["profile_samples"] == 2
+    assert final.summary["runtime"]["ustar_m_s"] > 0.
+    whole = run(case, output=tmp_path / "whole", _simulation=simulation)
+    assert (whole.output / "profiles.csv").read_text() == (final.output / "profiles.csv").read_text()
+
+
+@pytest.mark.parametrize("operation", ["periodic", "record-inflow"])
+def test_adaptive_stage_reports_actual_cfl_and_lands_on_samples(tmp_path, operation):
+    from jaxwind.simulation.stages import build_stage
+    case = tiny_case(tmp_path, adaptive=True)
+    case.document["time"].update(dt_seconds=100., steps=2, chunk_steps=40)
+    case.document["time"]["cfl"] = .9
+    case.document["diagnostics"].update(sample_every_steps=1)
+    case.document["numerics"].update(momentum_advection_scheme="central", time_integration="rk3")
+    result = run(case, _simulation=build_stage(case, operation, {}, {}))
+    history = np.atleast_1d(np.genfromtxt(result.output / "history.csv", delimiter=",", names=True))
+    assert result.summary["time_seconds"] == pytest.approx(200.)
+    assert result.summary["runtime"]["profile_samples"] == 2
+    assert np.max(history["block_maximum_cfl"]) <= .90001
+    assert np.max(history["block_maximum_cfl"]) > .89
+    assert np.max(history["dt_seconds"]) < 100.
+    if operation == "record-inflow":
+        import json
+        meta = json.loads((result.output / "inflow/metadata.json").read_text())
+        assert meta["duration_seconds"] == pytest.approx(200., abs=1.e-4)
+        assert meta["samples"] > 2

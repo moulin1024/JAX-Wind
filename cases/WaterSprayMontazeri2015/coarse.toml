@@ -1,0 +1,62 @@
+schema_version = 1
+formulation = "boussinesq"
+
+[case]
+name = "montazeri2015-case3-coarse"
+benchmark = "montazeri2015-water-spray"
+citation = "Montazeri et al. (2015), doi:10.1016/j.buildenv.2014.03.022, case 3; experimental data from Sureshkumar et al. (2008)"
+# Parameters unsupported by the current model are retained, not silently fitted.
+[case.reference]
+dry_bulb_c = 39.2
+wet_bulb_c = 18.7
+water_inlet_c = 35.2
+water_outlet_c = 26.1
+water_l_min = 12.5
+nozzle_diameter_m = 0.004
+water_gauge_pressure_pa = 300000.0
+cone_half_angle_degrees = 18.0
+rosin_rammler_scale_m = 0.000369
+rosin_rammler_spread = 3.67
+minimum_diameter_m = 0.000074
+maximum_diameter_m = 0.000518
+
+[mesh]
+cells = [32, 12, 12]
+lengths_m = [1.9, 0.585, 0.585]
+
+[time]
+dt_seconds = 0.001
+steps = 4000
+chunk_steps = 200
+checkpoint_every_steps = 1000
+frame_count = 0
+
+[numerics]
+dtype = "float64"
+pressure_backend = "gmg"
+time_integration = "fast-rk3"
+
+[physics.flow]
+streamwise_velocity_m_s = 3.0
+kinematic_viscosity_m2_s = 0.000017
+
+[physics.moisture]
+temperature_offset_k = 312.35
+reference_temperature_k = 312.35
+# Initialization uses measured DBT/WBT to derive vapor, not this placeholder RH.
+ambient_relative_humidity = 0.0
+pressure_pa = 101325.0
+dry_air_density_kg_m3 = 1.125
+
+[physics.water_spray]
+mass_flow_rate_kg_s = 0.20770833333333333
+# Fixed physical support for all grids, chosen before looking at computed cooling.
+streamwise_offset_m = 0.08
+standard_deviation_m = [0.025, 0.035, 0.035]
+# Area/mass-equivalent diameter for the truncated mass-based literature fit.
+# Recomputed from the fit by the builder; the rounded value is documented here.
+droplet_diameter_m = 0.000300
+ramp_time_s = 0.1
+
+[output]
+directory = "outputs/water_spray_montazeri2015/coarse"

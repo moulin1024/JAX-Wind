@@ -20,6 +20,7 @@ except ModuleNotFoundError:  # Python 3.10
 
 from .abl import FiniteVolumeCase, load_fv_abl
 from .abl_resolved import resolved
+from .moisture import AtmosphericMoistureOptions, WaterSprayOptions, load_moisture
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,6 +62,8 @@ class TurbineOptions:
     body_smoothing_width_m: float
     nacelle_drag_coefficient: float
     tower_drag_coefficient: float
+    minimum_normal_smoothing_width_m: float = 0.0
+    momentum_stabilization_coefficient: float = 0.0
 
 
 
@@ -127,10 +130,15 @@ class FiniteVolumeWorkflow:
     options: WorkflowOptions
     turbine: TurbineOptions | None = None
     cooling: NacelleCoolingOptions | None = None
+    moisture: AtmosphericMoistureOptions | None = None
+    water_spray: WaterSprayOptions | None = None
 
     def resolved(self) -> dict[str, Any]:
+        from dataclasses import asdict
         grid = self.case.physical.physical_grid
         return {
+            "moisture": None if self.moisture is None else asdict(self.moisture),
+            "water_spray": None if self.water_spray is None else asdict(self.water_spray),
             "schema": "jaxwind.precursor-main.v1",
             "case": resolved(self.case),
             "warmup": {
@@ -232,6 +240,8 @@ class FiniteVolumeWorkflow:
                     "smoothing_width_chord_factor": (
                         self.turbine.smoothing_width_chord_factor
                     ),
+                    "minimum_normal_smoothing_width_m": self.turbine.minimum_normal_smoothing_width_m,
+                    "momentum_stabilization_coefficient": self.turbine.momentum_stabilization_coefficient,
                     "smearing_azimuthal_elements": (
                         self.turbine.smearing_azimuthal_elements
                         if self.turbine.model.endswith("ad-bem")
@@ -335,6 +345,8 @@ def _load_turbine(document: dict[str, Any]) -> TurbineOptions | None:
         "smearing_azimuthal_elements",
         "initial_azimuth_degrees",
         "smoothing_width_chord_factor",
+        "minimum_normal_smoothing_width_m",
+        "momentum_stabilization_coefficient",
     }
     if model.startswith("openfast-"):
         required.add("openfast_model_environment")
@@ -403,7 +415,19 @@ def _load_turbine(document: dict[str, Any]) -> TurbineOptions | None:
                 "finite_volume_turbine.smoothing_width_chord_factor is "
                 "only valid for an ALM"
             )
+    normal_width = table.get("minimum_normal_smoothing_width_m", 0.0)
+    if isinstance(normal_width, bool) or not isinstance(normal_width, (int, float)) or not math.isfinite(normal_width) or normal_width < 0.:
+        raise ValueError("minimum_normal_smoothing_width_m must be finite and nonnegative")
+    if normal_width and not model.endswith("ad-bem"):
+        raise ValueError("minimum_normal_smoothing_width_m is only valid for AD-BEM")
+    stabilization = table.get("momentum_stabilization_coefficient", 0.0)
+    if isinstance(stabilization, bool) or not isinstance(stabilization, (int, float)) or not math.isfinite(stabilization) or not 0. <= stabilization <= 1./16.:
+        raise ValueError("momentum_stabilization_coefficient must be finite and between 0 and 1/16")
+    if stabilization and not model.endswith("ad-bem"):
+        raise ValueError("momentum_stabilization_coefficient is only valid for AD-BEM")
     result = TurbineOptions(
+        momentum_stabilization_coefficient=float(stabilization),
+        minimum_normal_smoothing_width_m=float(normal_width),
         model=model,
         model_environment=environment,
         x_m=_finite_number(table, "x_m"),
@@ -722,4 +746,18 @@ def load_workflow(path: str | Path) -> FiniteVolumeWorkflow:
         source_x = turbine.x_m + cooling.streamwise_offset_m
         if source_x >= grid.lx:
             raise ValueError("the nacelle cooling source lies outside the domain")
-    return FiniteVolumeWorkflow(case, options, turbine, cooling)
+    moisture, water_spray = load_moisture(document)
+    if moisture is not None:
+        if not options.evolve_scalar:
+            raise ValueError("moisture requires evolve_scalar=true")
+        if case.options.time_integration != "fast-rk3":
+            raise ValueError("moisture currently requires fast-rk3 integration")
+        if cooling is not None:
+            raise ValueError("prescribed LN2 cooling and atmospheric moisture cannot be combined")
+    if water_spray is not None:
+        if turbine is None:
+            raise ValueError("water spray requires a turbine")
+        source_x = turbine.x_m + water_spray.streamwise_offset_m
+        if not grid.x_centers[0] < source_x < grid.x_centers[-1]:
+            raise ValueError("water spray source must lie inside the transported domain")
+    return FiniteVolumeWorkflow(case, options, turbine, cooling, moisture, water_spray)

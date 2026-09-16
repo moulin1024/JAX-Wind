@@ -41,6 +41,7 @@ def build_blade_element_disk_kernel(
     partition_count: int,
     periodic_x: bool = True,
     periodic_y: bool = True,
+    minimum_normal_smoothing_width: float = 0.0,
 ):
     """Build an annular AD-BEM kernel for an upright, streamwise rotor."""
 
@@ -88,7 +89,15 @@ def build_blade_element_disk_kernel(
         if not periodic_y:
             dy = y - disk_y
 
-        raw_x = jnp.exp(-(dx[None, :] / widths[:, None]) ** 2)
+        # Use the same normalized kernel for velocity sampling and spreading.
+        # The optional x-only floor removes underresolved disk-normal forcing
+        # without broadening annular loading in the rotor plane.
+        normal_widths = (jnp.maximum(widths, minimum_normal_smoothing_width)
+                         if minimum_normal_smoothing_width else widths)
+        # A common log shift preserves the normalized Gaussian even when
+        # every unshifted weight underflows on a coarse grid.
+        log_x = -(dx[None, :] / normal_widths[:, None]) ** 2
+        raw_x = jnp.exp(log_x - jnp.max(log_x, axis=1, keepdims=True))
         weighted_x = raw_x * x_widths[None, :]
         weights_x = weighted_x / jnp.maximum(
             jnp.sum(weighted_x, axis=1, keepdims=True), tiny
@@ -98,13 +107,20 @@ def build_blade_element_disk_kernel(
             yy = dy[None, None, :]
             zz = z_coordinates[None, :, None] - jnp.asarray(disk_z, dtype)
             radius = jnp.sqrt(yy * yy + zz * zz)
-            raw = jnp.exp(
-                -(
-                    (radius - element_radii[:, None, None])
-                    / widths[:, None, None]
-                )
-                ** 2
+            log_raw = -(
+                (radius - element_radii[:, None, None])
+                / widths[:, None, None]
+            ) ** 2
+            # Excluded faces have zero area and must not set the shift.
+            # All z slabs must use the same shift before the global sum.
+            log_raw = jnp.where(
+                transverse_areas[None, :, :] > 0.0, log_raw, -jnp.inf
             )
+            maximum = lax.pmax(
+                jnp.max(log_raw, axis=(1, 2), keepdims=True), axis_name
+            )
+            maximum = jnp.where(jnp.isfinite(maximum), maximum, 0.0)
+            raw = jnp.exp(log_raw - maximum)
             weighted = raw * transverse_areas[None, :, :]
             denominator = lax.psum(
                 jnp.sum(weighted, axis=(1, 2)), axis_name

@@ -105,6 +105,8 @@ def build_turbine_forcing(workflow: FiniteVolumeWorkflow):
         grid,
         turbine.to_actuator_disk(scales=scales),
         body,
+        minimum_normal_smoothing_width=workflow.turbine.minimum_normal_smoothing_width_m,
+        momentum_stabilization_coefficient=workflow.turbine.momentum_stabilization_coefficient,
     )
 
 

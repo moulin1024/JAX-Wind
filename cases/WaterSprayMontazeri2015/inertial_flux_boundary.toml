@@ -1,0 +1,10 @@
+extends = "inertial_wall_audit.toml"
+
+[case]
+name = "montazeri2015-case3-inertial-flux-boundary"
+# Evolve end cells; impose incoming scalar through advective boundary flux.
+# Same physical inputs as the archived smooth-wall/wall-audit baseline.
+scalar_boundary = "flux"
+
+[output]
+directory = "outputs/water_spray_montazeri2015/inertial_flux_boundary"

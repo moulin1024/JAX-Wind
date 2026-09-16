@@ -1,0 +1,14 @@
+{
+  "temperature_criterion": "Every spatially paired outlet-temperature sensor must be within 10% of its measured value.",
+  "normalization": "Measured dry-bulb temperature in degrees Celsius",
+  "relative_tolerance": 0.1,
+  "aggregation": "all nine sensors",
+  "formula": "abs(predicted_C - measured_C) <= 0.10 * abs(measured_C)",
+  "averaging_window_seconds": [
+    3.0,
+    4.0
+  ],
+  "reference": "reference_table.json",
+  "authorization": "User explicitly accepted 10% difference and confirmed every-sensor application.",
+  "scope": "Temperature agreement; numerical convergence and conservation checks remain separate. This does not validate compressed-air atomization."
+}

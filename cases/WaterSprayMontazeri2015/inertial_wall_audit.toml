@@ -1,0 +1,7 @@
+extends = "inertial_smooth_walls.toml"
+
+[case]
+name = "montazeri2015-case3-inertial-wall-audit"
+
+[output]
+directory = "outputs/water_spray_montazeri2015/inertial_wall_audit"

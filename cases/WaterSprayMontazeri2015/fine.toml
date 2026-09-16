@@ -1,0 +1,12 @@
+extends = "coarse.toml"
+[case]
+name = "montazeri2015-case3-fine"
+[mesh]
+cells = [64, 24, 24]
+[time]
+dt_seconds = 0.0005
+steps = 8000
+chunk_steps = 400
+checkpoint_every_steps = 2000
+[output]
+directory = "outputs/water_spray_montazeri2015/fine"

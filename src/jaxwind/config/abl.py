@@ -38,6 +38,11 @@ class FiniteVolumeOptions:
     gmg_postsweeps: int = 2
     gmg_anisotropy_aware: bool = True
     momentum_advection_scheme: str = "muscl-mc"
+    outlet_backflow: str = "none"
+    outlet_sponge_start_fraction: float | None = None
+    outlet_sponge_timescale_seconds: float = 5.0
+    upstream_mode_sponge_end_fraction: float | None = None
+    upstream_mode_sponge_timescale_seconds: float = 1.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,6 +104,11 @@ def load_fv_abl(path: str | Path) -> FiniteVolumeCase:
     }
     missing = expected - table.keys()
     optional = {
+        "outlet_backflow",
+        "outlet_sponge_start_fraction",
+        "outlet_sponge_timescale_seconds",
+        "upstream_mode_sponge_end_fraction",
+        "upstream_mode_sponge_timescale_seconds",
         "momentum_advection_scheme",
         "cfl_ceiling",
         "gmg_tolerance",
@@ -131,9 +141,14 @@ def load_fv_abl(path: str | Path) -> FiniteVolumeCase:
     )
     physical = load_abl(path)
     options = FiniteVolumeOptions(
+        upstream_mode_sponge_end_fraction=(_positive_number(table, "upstream_mode_sponge_end_fraction") if "upstream_mode_sponge_end_fraction" in table else None),
+        upstream_mode_sponge_timescale_seconds=(_positive_number(table, "upstream_mode_sponge_timescale_seconds") if "upstream_mode_sponge_timescale_seconds" in table else 1.0),
+        outlet_sponge_start_fraction=(_positive_number(table, "outlet_sponge_start_fraction") if "outlet_sponge_start_fraction" in table else None),
+        outlet_sponge_timescale_seconds=(_positive_number(table, "outlet_sponge_timescale_seconds") if "outlet_sponge_timescale_seconds" in table else 5.0),
+        outlet_backflow=_choice(table.get("outlet_backflow", "none"), {"none", "energy"}, "outlet_backflow"),
         momentum_advection_scheme=_choice(
             table.get("momentum_advection_scheme", "muscl-mc" if physical.physical_grid.is_uniform else "central"),
-            {"central", "muscl-mc"},
+            {"central", "muscl-mc", "central-open-upwind", "central-open-filter"},
             "momentum_advection_scheme",
         ),
         pressure_backend=pressure_backend,
@@ -200,10 +215,16 @@ def load_fv_abl(path: str | Path) -> FiniteVolumeCase:
         ),
         gmg_anisotropy_aware=table.get("gmg_anisotropy_aware", True),
     )
+    if options.upstream_mode_sponge_end_fraction is not None and options.upstream_mode_sponge_end_fraction >= 1.:
+        raise ValueError("upstream_mode_sponge_end_fraction must be less than 1")
+    if options.outlet_sponge_start_fraction is not None and options.outlet_sponge_start_fraction >= 1.:
+        raise ValueError("outlet_sponge_start_fraction must be less than 1")
     if not isinstance(options.gmg_anisotropy_aware, bool):
         raise ValueError("finite_volume.gmg_anisotropy_aware must be boolean")
-    if options.momentum_advection_scheme == "muscl-mc" and not physical.physical_grid.is_uniform:
+    if options.momentum_advection_scheme != "central" and not physical.physical_grid.is_uniform:
         raise ValueError("muscl-mc momentum advection requires a uniform grid")
+    if options.outlet_backflow == "energy" and options.time_integration != "rk3":
+        raise ValueError("energy outlet backflow requires rk3")
     return FiniteVolumeCase(physical, options, source)
 
 
