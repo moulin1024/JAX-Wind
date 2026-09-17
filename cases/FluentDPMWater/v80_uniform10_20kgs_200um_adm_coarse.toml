@@ -1,0 +1,64 @@
+schema_version = 1
+extends = "v80_coarse_smoke.toml"
+
+[case]
+name = "v80_uniform10_300K_RH80_spray20kgs_200um_290K_adm_coarse"
+
+[mesh]
+cells = [64, 64, 128]
+lengths_m = [1024.0, 1024.0, 512.0]
+
+[time]
+dt_seconds = 0.2
+steps = 300
+chunk_steps = 25
+
+[physics.turbine]
+x_m = 256.0
+y_m = 512.0
+hub_height_m = 70.0
+model = "thrust-only-adm"
+rotor_diameter_m = 80.0
+thrust_coefficient = 0.8
+prescribed_inflow_velocity_m_s = 10.0
+smoothing_width_m = 16.0
+
+[physics.moisture]
+ambient_relative_humidity = 0.8
+temperature_offset_k = 300.0
+reference_temperature_k = 300.0
+pressure_pa = 101325.0
+# The run driver evaluates the exact dry density from the same saturation law.
+dry_air_density_kg_m3 = 1.1437
+
+[physics.water_spray]
+mass_flow_rate_kg_s = 20.0
+streamwise_offset_m = 16.0
+ramp_time_s = 0.0
+
+[physics.water_spray.dpm]
+diameters_m = [0.0002]
+mass_fractions = [1.0]
+injection_velocity_m_s = [12.0, 0.0, 0.0]
+injection_temperature_k = 290.0
+capacity = 512
+tracking_substeps = 4
+
+[workflow]
+warmup_steps = 300
+precursor_steps = 300
+main_steps = 300
+chunk_steps = 25
+precursor_dt_seconds = 0.2
+main_dt_seconds = 0.2
+output_directory = "outputs/v80_uniform10_20kgs_200um_290K_adm_coarse"
+
+[output]
+directory = "outputs/v80_uniform10_20kgs_200um_290K_adm_coarse"
+
+[diagnostics]
+sample_start_step = 0
+sample_every_steps = 25
+reference_length_m = 512.0
+inversion_search_max_height_m = 512.0
+

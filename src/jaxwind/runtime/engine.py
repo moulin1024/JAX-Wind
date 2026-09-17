@@ -72,6 +72,7 @@ def run(case, *, output=None, max_steps=None, _resume=False, _simulation=None):
     invocation_start = int(state.step)
     elapsed_blocks = []
     advanced_blocks = []
+    reported_cfl = None
     tolerance = 8 * np.finfo(np.asarray(state.time).dtype).eps * max(1., metadata["target_time"])
 
     def finished():
@@ -86,6 +87,7 @@ def run(case, *, output=None, max_steps=None, _resume=False, _simulation=None):
                 count = min(count, max_steps - (int(state.step) - invocation_start))
             count, target = observer.next_block(state, count, metadata)
             before = int(state.step)
+            before_time = float(state.time)
             started = time.perf_counter()
             advanced = simulation.advance(state, RunControls(count, target))
             outputs = advanced.outputs if isinstance(advanced, AdvanceResult) else None
@@ -96,6 +98,7 @@ def run(case, *, output=None, max_steps=None, _resume=False, _simulation=None):
             if active <= 0 or not math.isfinite(float(state.time)):
                 raise RuntimeError("simulation made no finite forward progress")
             advanced_blocks.append(active)
+            block_dt = ((float(state.time) - before_time) / active if simulation.adaptive else None)
             if outputs is not None:
                 observer.consume(directory, {key: np.asarray(value)[:active] for key, value in outputs.items()})
             observer.sample(state, metadata)
@@ -112,7 +115,11 @@ def run(case, *, output=None, max_steps=None, _resume=False, _simulation=None):
                     metadata["checkpoint_time_index"] = checkpoint_index
                 save_checkpoint(checkpoint, state, metadata=metadata, observer=observer.snapshot())
             timestep = f" dt={float(state.last_dt):.6g}s" if hasattr(state, "last_dt") else ""
-            print(f"step={int(state.step)} time={float(state.time):.6g}s CFL={float(simulation.courant(state)):.4g}{timestep}", flush=True)
+            if block_dt is not None and simulation.courant_with_timestep is not None:
+                reported_cfl = float(simulation.courant_with_timestep(state, block_dt))
+            else:
+                reported_cfl = float(simulation.courant(state))
+            print(f"step={int(state.step)} time={float(state.time):.6g}s CFL={reported_cfl:.4g}{timestep}", flush=True)
         complete = finished()
         save_checkpoint(checkpoint, state, metadata=metadata, observer=observer.snapshot())
         observer.write(directory, state)
@@ -122,7 +129,7 @@ def run(case, *, output=None, max_steps=None, _resume=False, _simulation=None):
             "schema": "jaxwind.run.v1", "status": "complete" if complete else "paused",
             "formulation": case.formulation, "step": int(state.step), "time_seconds": float(state.time),
             "target_step": metadata["target_step"], "target_time_seconds": metadata["target_time"],
-            "final_cfl": float(simulation.courant(state)), "elapsed_seconds": sum(elapsed_blocks),
+            "final_cfl": reported_cfl if reported_cfl is not None else float(simulation.courant(state)), "elapsed_seconds": sum(elapsed_blocks),
             "steady_steps_per_second": sum(advanced_blocks[2:]) / steady_seconds if steady_seconds else None,
             "checkpoint": str(checkpoint),
         }

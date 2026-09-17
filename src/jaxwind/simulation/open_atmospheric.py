@@ -109,6 +109,18 @@ def build_open_components(workflow, warm, first, *, return_step=False):
         buoyancy = LinearBoussinesqBuoyancy(
             9.81 / workflow.moisture.reference_temperature_k
         )
+    dpm_enabled = workflow.water_spray is not None and workflow.water_spray.model == "fluent-dpm"
+    if dpm_enabled:
+        from jaxwind.sgs import FluentSmagorinsky
+        if case.dtype != "float64":
+            raise ValueError("Fluent DPM currently requires numerics.dtype=float64")
+        if surface is not None:
+            raise ValueError("Fluent DPM currently requires an uncoupled thermal surface")
+        options = workflow.water_spray.dpm
+        if options.les_model == "fluent-smagorinsky":
+            momentum = replace(momentum,subfilter=FluentSmagorinsky(options.smagorinsky_constant,options.von_karman))
+        # amd-inferred retains the carrier AMD model and declares a separate
+        # particle length assumption in the DPM configuration.
     step = build_open_atmospheric_step(
         grid,
         boundaries,
@@ -118,9 +130,19 @@ def build_open_components(workflow, warm, first, *, return_step=False):
         buoyancy,
         surface,
         scalar_source=scalar_source,
+        scalar_boundary="flux" if dpm_enabled else "cell",
+        transport_scalar=not dpm_enabled,
         scheme=workflow.case.options.time_integration,
     )
-    if workflow.moisture is not None:
+    if dpm_enabled:
+        from jaxwind.fluent_dpm_atmosphere import initialize_dpm, build_dpm_atmospheric_step
+        from jaxwind.numerics.poisson import project
+        solution = initialize_dpm(solution,workflow.moisture,workflow.water_spray)
+        center = (turbine.x_m+workflow.water_spray.streamwise_offset_m,turbine.y_m,turbine.hub_height_m)
+        project_feedback = lambda velocity,h,inflow: project(enforce_open_velocity(velocity,inflow,grid),poisson,h)[0]
+        step = build_dpm_atmospheric_step(step,grid,boundaries,momentum,scalar,
+            workflow.moisture,workflow.water_spray,center,solution.moisture.vapor[...,0],project_feedback)
+    elif workflow.moisture is not None:
         from jaxwind.moist_abl import build_moist_atmospheric_step, initialize_moisture
         from jaxwind.water_spray import build_water_injection
         source = None

@@ -1,0 +1,13 @@
+{
+  "status": "source-only term audit; no holdout assessment",
+  "primary_equation": "Pope 1978 equation (5), P=-<u_i u_j> dU_i/dx_j, with the Boussinesq stress of equation (1)",
+  "reason": "The declared shear-production boundary-layer reduction gives a stable source-rate deficit after refinement. Test omitted normal-strain production before changing any coefficient.",
+  "constants": {"c_mu": 0.09, "c1": 1.45, "c2": 1.90, "sigma_k": 1.0, "sigma_e": 1.3, "c3_values": [0.0, 0.79]},
+  "variants": {
+    "shear_only": "P=nu_t (dU/dr)^2; existing frozen candidate",
+    "normal_strain_added": "P=nu_t (dU/dr)^2 + 2 nu_t [(dU/dx|r)^2 + (dV/dr)^2 + (V/r)^2]"
+  },
+  "gradient_reconstruction": "psi=int r U dr; W=dU/dx|psi from momentum diffusion; V/r=-(U/r^2) int_0^psi W/U^2 dpsi; dU/dx|r=W-r^2(V/r)dU/dpsi; dV/dr=-dU/dx|r-V/r",
+  "limitations": "The added terms retain normal strain but still neglect dV/dx in shear/rotation, axial diffusion, and axial normal-stress transport in momentum. This is a diagnostic intermediate approximation, not the full Pope/RANS model or a production LES closure.",
+  "assessment": "Compare source spreading and positivity/conservation only; retain failures. No constants, coordinate scale, or held-out values are adjusted. Numerical and source-reproduction gates from kepsilon_profile_protocol.json remain in force for any later candidate."
+}

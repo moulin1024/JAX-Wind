@@ -1,0 +1,26 @@
+{
+  "status": "new independently documented coefficient convention; numerical and source gates required before separate holdout assessment",
+  "source": {
+    "authors": "C. G. Speziale, R. Raj, T. B. Gatski",
+    "title": "Modeling the Dissipation Rate in Rotating Turbulent Flows",
+    "date": "December 1990",
+    "report": "NASA CR-187485 / ICASE 90-88",
+    "url": "https://ntrs.nasa.gov/api/citations/19910006993/downloads/19910006993.pdf?attachment=true",
+    "sha256": "765111b1a24887f048d309f60b93ed70e55f5d4c21c0e41c4b79ce64eceaa105",
+    "definition": "Equation (11) and the following paragraph explicitly identify the Pope correction with C1=1.44, C2=1.92, C3=0.79. This differs from the 1.45/1.90 pair printed in Pope 1978. Both conventions are retained; no assertion is made about the undocumented details of the 1978 calculation."
+  },
+  "transport_constants_source": "Official OpenFOAM v2212 standard k-epsilon documentation: Cmu=0.09, sigma_k=1, sigma_e=1.3; same transport constants as printed in Pope 1978",
+  "constants": {"c_mu": 0.09, "c1": 1.44, "c2": 1.92, "sigma_k": 1.0, "sigma_e": 1.3, "c3": 0.79},
+  "candidates": ["shear_only_boundary_layer", "normal_strain_added_diagnostic"],
+  "selection": "Assess both previously frozen production approximations, not whichever looks better against the holdout. No new coefficients are searched, optimized or interpolated. The original 1978-printed candidates remain failed source reproductions.",
+  "numerical_gates": "All basic and refinement gates in solve_kepsilon_profile.py, with limits unchanged from kepsilon_profile_protocol.json. Include edge-tail, solver-tolerance and initial-mesh comparisons; positive finite states and inactive numerical safeguards are mandatory.",
+  "source_gate": {"half_width_slope": 0.086, "relative_tolerance": 0.02, "source": "Pope 1978 independently measured round-jet slope and corrected-model calibration. Passing is agreement with this source rate, not proof of a faithful reproduction of the undocumented 1978 implementation."},
+  "holdout": "Unchanged Hussein 1994 reference.json, all profile and integral criteria, 20% relative threshold, 201 radial points over eta in [0,0.2]; no width/coordinate rescaling or coefficient fit",
+  "momentum_convention": "Existing top-hat nozzle mean momentum: B=1/sqrt(8 I2), alpha=2 B I1. RANS normal-stress/pressure flux effects are omitted, reported as a limitation, and not fitted.",
+  "scope_limits": [
+    "The 1990 report finds that Pope's correction gives the same deficient predictions as the standard model for rotating isotropic turbulence and rotating homogeneous shear. It does not establish a general rotation/swirl closure.",
+    "This self-similar boundary-layer reduction omits axial diffusion, streamwise radial-velocity gradients in shear/rotation, and axial normal-stress transport. The normal-production diagnostic is not full RANS.",
+    "RANS k is not automatically unresolved LES energy. No production waterjet enablement or measured droplet-transport validation follows from a gas profile check."
+  ],
+  "production_default_change": false
+}

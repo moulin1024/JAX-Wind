@@ -1,0 +1,39 @@
+{
+  "scope": "Numerical well-mixed verification for stationary isotropic constant-density tracers; not finite-inertia spray validation",
+  "particles": 262144,
+  "seeds": [
+    21,
+    22
+  ],
+  "duration_s": 2.0,
+  "timesteps_s": [
+    0.01,
+    0.005,
+    0.0025
+  ],
+  "domain_length_m": 1.0,
+  "variance": "q(x)=1+0.8*cos(2*pi*x), m^2/s^2 per component",
+  "correlation_time_s": 0.05,
+  "bins": 32,
+  "initial_distribution": "uniform positions and independent normalized velocities N(0,I)",
+  "gates": {
+    "max_relative_bin_density_error": 0.07,
+    "max_abs_conditional_normalized_velocity_mean": 0.08,
+    "max_conditional_normalized_velocity_variance_error": 0.09,
+    "abs_first_position_fourier_moment": 0.012,
+    "negative_control_min_density_error": 0.15
+  },
+  "gate_rationale": "Original fixed Monte Carlo screens were selected for 131072 particles (4096 expected per bin). The refined count gives 8192 expected per bin; tolerances are unchanged. Numerical screens, not physical measurement uncertainty or the physical 20 percent criterion.",
+  "negative_control": "Physical-velocity local OU with q(x), without inhomogeneous drift, same particle count and finest timestep; no physical correction or particle resampling",
+  "exclusions": [
+    "finite particle inertia",
+    "mean shear",
+    "variable density",
+    "anisotropic stresses",
+    "q=0 turbulence interface",
+    "walls",
+    "LES energy feedback",
+    "waterjet accuracy"
+  ],
+  "refinement_reason": "Job 30272108: all corrected final-state screens passed, but seed 21 initial conditional variance error 0.09974 exceeded fixed 0.09 gate. Double particle count with the same seeds/timesteps/tolerances to reduce sampling error; preserve the original failure and both reports. No resampling or seed replacement."
+}

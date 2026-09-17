@@ -1,0 +1,18 @@
+{
+  "status": "source-state stress/pressure and realizability audit; no new holdout test or amplitude correction",
+  "inputs": "All eight numerically qualified profiles from the frozen coefficient/production matrix; preserve all results",
+  "primary_momentum_convention": {
+    "source": "Panchapakesan and Lumley 1993, equation (7), printed pp. 205-206",
+    "url": "https://doi.org/10.1017/S0022112093000096",
+    "formula": "J/(2 pi rho A^2)=int eta [F^2 + Rxx - (Rrr+Rtt)/2] d_eta",
+    "scope": "Thin-jet cross-stream pressure balance; does not include complete mean radial inertia, axial radial-stress transport, or finite-room effects."
+  },
+  "stress_convention": "R=(2/3) K identity - 2 N S, N=Cmu K^2/E. Compare the leading radial-shear gradient with the complete gradient of the same self-similar velocity; both have the same normal stresses.",
+  "pressure_convention": "Pi=-Rrr + int_eta^edge (Rrr-Rtt)/s ds, with zero stress and pressure at the idealized turbulence edge. Integrate pressure independently and compare with the primary normal-stress integral.",
+  "realizability": "Report eigenvalues without clipping or projection. A violation exceeds 1e-10 times peak K; report lambda_min/K only where K exceeds 1e-12 of its peak, and the fraction of integrated K in violating regions.",
+  "numerical_checks": ["Cartesian finite-difference verification of the axisymmetric gradient", "isotropic pressure cancellation", "analytic anisotropic pressure integral", "rotation covariance and known realizability violation", "radial quadrature and edge-truncation convergence"],
+  "edge_treatment": "Use the same leading F,K,E powers as the verified free-edge solver; retain the small appended tail and compare delta=0.01 and 0.005. No data-dependent profile renormalization.",
+  "interpretation": "The computed stress/pressure flux remainder is not SGS kinetic energy, a momentum sink, or a permission to rescale B. Nonzero full-momentum residuals require a consistently solved model and matching to ambient LES. Negative stress eigenvalues cannot seed a particle-velocity covariance.",
+  "holdout_accessed": false,
+  "production_default_change": false
+}

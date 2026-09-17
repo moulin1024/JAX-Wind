@@ -38,6 +38,9 @@ def build_turbine_definition(workflow: FiniteVolumeWorkflow):
     options = workflow.turbine
     if options is None:
         return None
+    if options.model == "thrust-only-adm":
+        from jaxwind.windfarm.actuator_disk import SimpleActuatorDisk
+        return SimpleActuatorDisk(x_m=options.x_m, y_m=options.y_m, hub_height_m=options.hub_height_m, rotor_diameter_m=options.rotor_diameter_m, thrust_coefficient_prime=options.thrust_coefficient, smoothing_width_m=options.smoothing_width_m, prescribed_inflow_velocity_m_s=options.prescribed_inflow_velocity_m_s, prescribed_thrust_coefficient=options.thrust_coefficient)
     from jaxwind.windfarm import (
         HITSZR9BladeElementDisk,
         RigidBladeElementDisk,
@@ -88,9 +91,11 @@ def build_turbine_forcing(workflow: FiniteVolumeWorkflow):
         return None
     from jaxwind.domain import ScaleSystem
     from jaxwind import build_adbem_forcing, build_actuator_line_forcing
-
     scales = ScaleSystem(1.0, 1.0)
     grid = workflow.case.physical.physical_grid
+    if workflow.turbine.model == "thrust-only-adm":
+        from jaxwind.turbine import build_thrust_only_adm_forcing
+        return build_thrust_only_adm_forcing(grid, turbine.to_actuator_disk(scales=scales), periodic_y=True)
     body = turbine.to_nacelle_tower(scales=scales)
     if body.nacelle_drag_coefficient == 0.0 and body.tower_drag_coefficient == 0.0:
         body = None

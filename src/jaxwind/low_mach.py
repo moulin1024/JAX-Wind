@@ -15,16 +15,20 @@ and keeps the FFT/GMG pressure backends available to mesoscale cases.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import math
-from typing import Sequence
+from collections.abc import Sequence
+from dataclasses import dataclass
 
 import jax.numpy as jnp
 
 from jaxwind.domain.grid import Grid
-
-from jaxwind.numerics.discretization import _cells_to_faces, divergence, pressure_gradient
+from jaxwind.numerics.discretization import (
+    _cells_to_faces,
+    divergence,
+    pressure_gradient,
+)
 from jaxwind.numerics.poisson import PressurePoisson
+
 from .scalar import PassiveScalar, scalar_tendency
 from .state import (
     StaggeredVelocity,
@@ -71,7 +75,9 @@ class IdealGasMixture:
     def gas_constant(self, mass_fractions: Sequence[jnp.ndarray] = ()) -> jnp.ndarray:
         """Return the local mixture gas constant from species mass fractions."""
         if len(mass_fractions) != len(self.species_gas_constants):
-            raise ValueError("one mass-fraction field is required per species gas constant")
+            raise ValueError(
+                "one mass-fraction field is required per species gas constant"
+            )
         if not mass_fractions:
             return jnp.asarray(self.background_gas_constant)
         fractions = tuple(jnp.asarray(value) for value in mass_fractions)
@@ -117,17 +123,17 @@ class IdealGasMixture:
         The remainder ``rho-sum(rho_k)`` is the background carrier.
         """
         if len(partial_densities) != len(self.species_gas_constants):
-            raise ValueError("one partial-density field is required per species gas constant")
+            raise ValueError(
+                "one partial-density field is required per species gas constant"
+            )
         temperature = jnp.asarray(temperature)
         floor = jnp.asarray(self.temperature_floor, temperature.dtype)
-        pressure_over_temperature = self.pressure_field(
-            temperature
-        ) / jnp.maximum(temperature, floor)
+        pressure_over_temperature = self.pressure_field(temperature) / jnp.maximum(
+            temperature, floor
+        )
         explicit = jnp.zeros_like(temperature)
         transported = jnp.zeros_like(temperature)
-        for partial, gas_constant in zip(
-            partial_densities, self.species_gas_constants
-        ):
+        for partial, gas_constant in zip(partial_densities, self.species_gas_constants):
             partial = jnp.maximum(jnp.asarray(partial, temperature.dtype), 0.0)
             if partial.shape != temperature.shape:
                 raise ValueError("partial densities must be cell centred")
@@ -135,9 +141,7 @@ class IdealGasMixture:
             explicit = explicit + partial * (
                 gas_constant - self.background_gas_constant
             )
-        density = (
-            pressure_over_temperature - explicit
-        ) / self.background_gas_constant
+        density = (pressure_over_temperature - explicit) / self.background_gas_constant
         lower = jnp.maximum(
             transported, jnp.asarray(self.density_floor, temperature.dtype)
         )
@@ -175,9 +179,7 @@ def cell_to_faces(
             periodic=spanwise_is_periodic(velocity, grid),
             boundary="copy",
         ),
-        _cells_to_faces(
-            density, grid, 0, periodic=False, boundary="copy"
-        ),
+        _cells_to_faces(density, grid, 0, periodic=False, boundary="copy"),
     )
 
 
@@ -263,20 +265,55 @@ def project_low_mach(
     periodic domain requires its integral to equal the domain-integrated
     density change; an open boundary can carry the imbalance out of the box.
     """
+    rho_face = face_density(density, velocity, poisson.grid)
+    flux, pressure = project_mass_flux(
+        _multiply(rho_face, velocity),
+        previous_density,
+        density,
+        poisson,
+        dt,
+        mass_source=mass_source,
+        initial_pressure=initial_pressure,
+        continuity_dt=continuity_dt,
+    )
+    return StaggeredVelocity(*(f / r for f, r in zip(flux, rho_face))), pressure
+
+
+def project_mass_flux(
+    predictor_flux: StaggeredVelocity,
+    previous_density: jnp.ndarray,
+    density: jnp.ndarray,
+    poisson: PressurePoisson,
+    dt: float,
+    *,
+    mass_source: jnp.ndarray | float = 0.0,
+    initial_pressure: jnp.ndarray | None = None,
+    continuity_dt: float | None = None,
+) -> tuple[StaggeredVelocity, jnp.ndarray]:
+    """Project an explicitly supplied advective mass flux per face area.
+
+    This separates thermodynamic donor face states from interpolated MAC
+    inertia. The caller must recover velocity using the SAME face density that
+    formed predictor_flux; substituting a cell-density interpolation can create
+    velocity errors at isobaric contacts despite conservative scalar transport.
+    """
     grid = poisson.grid
     density = jnp.asarray(density)
     if jnp.issubdtype(density.dtype, jnp.complexfloating):
         raise ValueError("density must be real")
+    previous_density = jnp.asarray(previous_density, density.dtype)
+    if previous_density.shape != density.shape:
+        raise ValueError("old and new density fields must have the same shape")
     mass_interval = dt if continuity_dt is None else continuity_dt
-    residual = continuity_residual(
-        velocity,
-        previous_density,
-        density,
-        grid,
-        mass_interval,
-        mass_source,
+    source = jnp.broadcast_to(jnp.asarray(mass_source, density.dtype), density.shape)
+    residual = (
+        (density - previous_density) / jnp.asarray(mass_interval, density.dtype)
+        + divergence(predictor_flux, grid)
+        - source
     )
-    pressure = poisson.solve(residual / jnp.asarray(dt, density.dtype), initial_pressure)
+    pressure = poisson.solve(
+        residual / jnp.asarray(dt, density.dtype), initial_pressure
+    )
     gradient = pressure_gradient(
         pressure,
         grid,
@@ -284,14 +321,10 @@ def project_low_mach(
         periodic_y=poisson.periodic_y,
         open_x_low=poisson.open_x_low,
     )
-    rho_face = face_density(density, velocity, grid)
     step = jnp.asarray(dt, density.dtype)
-    corrected = StaggeredVelocity(
-        velocity.x - step * gradient.x / rho_face.x,
-        velocity.y - step * gradient.y / rho_face.y,
-        velocity.z - step * gradient.z / rho_face.z,
-    )
-    return corrected, pressure
+    return StaggeredVelocity(
+        *(f - step * g for f, g in zip(predictor_flux, gradient))
+    ), pressure
 
 
 def conservative_specific_tendency(

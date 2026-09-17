@@ -108,11 +108,16 @@ def build_moist_atmospheric_step(
     reference_temperature,
     ambient_vapor,
     injection=None,
+    *,
+    scalar_transport_scheme=None,
 ):
     """Symmetric microphysics split with midpoint moist buoyancy.
 
     Moisture transport is first-order upwind/forward Euler (subcycled); the
     coupled scheme does not inherit the carrier solver's RK3 temporal order.
+    Optional scalar_transport_scheme advances heat and all moisture fields
+    together with conservative SSP-RK3 on the incoming projected velocity.
+    That option requires disabling scalar transport in flow_step.
     """
 
     def exchange(flow, water, h, time):
@@ -148,7 +153,29 @@ def build_moist_atmospheric_step(
             else eddy_viscosity(flow.velocity, grid, boundaries, momentum.subfilter)
         )
         diffusivity = config.vapor_diffusivity + viscosity / scalar.turbulent_prandtl
-        water = transport_moisture(water, flow.velocity, grid, dt, ambient, diffusivity)
+        if scalar_transport_scheme is None:
+            water = transport_moisture(water, flow.velocity, grid, dt, ambient, diffusivity)
+        else:
+            from .scalar_transport import transport_scalars
+
+            # Use absolute temperature so its positivity has the same meaning
+            # as that of water. Convert back only after conservative transport.
+            fields = jnp.stack((flow.scalar + temperature_offset, *water))
+            zero = jnp.zeros_like(ambient)
+            reservoirs = jnp.stack((inflow.scalar + temperature_offset, ambient, zero, zero, zero, zero))
+            transported = transport_scalars(
+                fields, flow.velocity, grid, dt, reservoirs, diffusivity,
+                scheme=scalar_transport_scheme,
+            )
+            # Fail visibly before microphysics can clip a transport violation.
+            # NaNs propagate through the compiled block to host validation.
+            valid = jnp.all(jnp.isfinite(transported)) & jnp.all(transported >= 0)
+            transported = jnp.where(valid, transported, jnp.nan)
+            flow = flow._replace(
+                scalar=transported[0] - temperature_offset,
+                scalar_tendency=jnp.zeros_like(flow.scalar_tendency),
+            )
+            water = MoistureState(*transported[1:])
         flow = flow_step(flow, dt, inflow, offset)
         flow, water = exchange(flow, water, dt / 2, state.time + 3 * dt / 4)
         return MoistAtmosphericSolution(*flow, water)

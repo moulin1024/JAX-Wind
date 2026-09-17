@@ -1,0 +1,57 @@
+schema_version = 1
+formulation = "boussinesq"
+
+[case]
+name = "hornsrev1_warmup_256x256x128_8192x8192x1024_10h"
+citation = "Neutral atmospheric boundary-layer warmup"
+initial_profile = "fv_initial_profile_128_lz1024.csv"
+reference_results = "fv_reference_results.json"
+seed = 2026
+
+[mesh]
+cells = [256, 256, 128]
+lengths_m = [8192.0, 8192.0, 1024.0]
+
+[time]
+# Adaptive timestep cap; 6000 * 6 s = 10 h.
+dt_seconds = 6.0
+steps = 6000
+cfl = 1.0
+chunk_steps = 50
+
+[numerics]
+dtype = "float32"
+pressure_backend = "gmg"
+gmg_tolerance = 1.0e-5
+gmg_presweeps = 1
+gmg_postsweeps = 1
+time_integration = "fast-rk3"
+turbulent_prandtl = 0.4
+spectrum_diagnostic = "none"
+
+[output]
+directory = "outputs/hornsrev1_warmup_256x256x128_8192x8192x1024_10h"
+
+[diagnostics]
+sample_start_step = 0
+sample_every_steps = 50
+reference_length_m = 1024.0
+reference_velocity_m_s = 0.38
+reference_scalar = 1.0
+inversion_search_max_height_m = 1024.0
+spectrum_heights_m = [70.0]
+
+[physics.flow]
+# Neutral warmup driven by a constant pressure gradient.
+# pressure_acceleration = u*^2 / lz = 0.38^2 / 1024.
+pressure_acceleration_m_s2 = [0.000141015625, 0.0]
+geostrophic_velocity_m_s = [0.0, 0.0]
+advection_frame_velocity_m_s = [0.0, 0.0]
+coriolis_s = [0.0, 0.0]
+roughness_length_m = 0.0002
+von_karman = 0.4
+
+[physics.scalar]
+reference_value = 0.0
+surface_flux = 0.0
+buoyancy_acceleration_per_unit = 0.0

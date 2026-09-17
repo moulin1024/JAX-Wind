@@ -1,0 +1,59 @@
+{
+  "scope": "canonical single-phase free round jet; not evaporating spray",
+  "calibration": {
+    "study": "Ricou and Spalding (1961)",
+    "doi": "10.1017/S0022112061000834",
+    "alpha_top_hat": 0.08,
+    "provenance": "Direct entrainment measurement; also explicitly reported by Hussein et al. (1994), section 3.3, printed page 47. Gaussian alpha = top-hat alpha / sqrt(2)."
+  },
+  "holdout": {
+    "study": "Hussein, Capp and George (1994), LDA/FHW",
+    "primary_pdf": "https://turbulence-online.com/Publications/Papers/HCG94.pdf",
+    "text_mirror": "https://www.scribd.com/document/1016308836/6-5-hussein1994",
+    "provenance": "Section 3.1, printed page 44: B_u=5.8, half-width slope=0.094. Section 3.3, printed page 47: equivalent top-hat alpha=0.081. Reported rounded fit summaries, not raw measurements or digitized points.",
+    "decay_coefficient": 5.8,
+    "half_width_slope": 0.094,
+    "alpha_top_hat": 0.081,
+    "measurement_uncertainty": null,
+    "normalized_velocity_profile": {
+      "provenance": "Hussein et al. (1994), Table 4, printed page 52, first LDA row and equation 2.6. A published fit to observations, not raw point samples.",
+      "coordinate": "eta = r/(x-x0)",
+      "form": "(c0 + c2*eta^2 + c4*eta^4) * exp(-A*eta^2)",
+      "c0": 1.0,
+      "c2": 12.12,
+      "c4": 2815.0,
+      "A": 111.0,
+      "eta_min": 0.0,
+      "eta_max": 0.2
+    }
+  },
+  "assessment": {
+    "relative_error_threshold": 0.2,
+    "threshold_type": "engineering screening tolerance, not an experimental confidence interval",
+    "independence": "Only Ricou-Spalding alpha is used as a closure input. No Hussein coefficient, virtual origin, or Montazeri temperature is fitted. This is a retrospective literature holdout, not a blind preregistered test. The three reported observables are correlated.",
+    "excluded_claims": [
+      "near-nozzle flow",
+      "finite-inertia droplet dispersion",
+      "evaporation",
+      "confined coflow",
+      "LES coupling",
+      "waterjet temperature accuracy"
+    ],
+    "acceptance_revision": {
+      "date": "2026-09-17",
+      "authorization": "User explicitly requested: Adjust the acceptance to 20%.",
+      "previous_relative_error_threshold": 0.1,
+      "scope": "Physical engineering acceptance only; measurements, predictions, source qualification and numerical/conservation gates unchanged."
+    }
+  },
+  "dispersion_candidate": {
+    "study": "Pozorski and Apte (2009)",
+    "doi": "10.1016/j.ijmultiphaseflow.2008.10.005",
+    "primary_pdf": "https://web.engr.oregonstate.edu/~sva/archive/pozorski_ijmf_fpt.pdf",
+    "equations": "4.1-4.6",
+    "time_constant": 1.0,
+    "crossing_ratio": 1.0,
+    "status": "homogeneous numerical verification only; independent implementation validation pending",
+    "limitations": "Author manuscript section 4.3 requires additional drift terms in inhomogeneous flows. Section 5 reports failure to recover small-inertia preferential concentration. No AMD-to-k_sgs conversion is validated."
+  }
+}

@@ -1,0 +1,77 @@
+{
+  "status": "Derived experimental Pope/Durbin hybrid; not a published validated model",
+  "constants": {
+    "c_mu": 0.09,
+    "c1": 1.44,
+    "c2": 1.92,
+    "sigma_k": 1.0,
+    "sigma_e": 1.3
+  },
+  "c3_cases": [
+    0.0,
+    0.79
+  ],
+  "coefficient_selection": "Previously documented 1990 constants; no coefficient search or empirical realizability multiplier",
+  "strain": "Radial shear plus all continuity-compatible normal strains, identical to previous normal-production diagnostic; dV/dx omitted",
+  "constraint": "Largest positive N <= Cmu K^2/E satisfying PSD(2K/3 identity - 2N S), with Fprime=-I F/(eta N) enforced simultaneously",
+  "time": "T=N/(Cmu K); use in viscosity/diffusion, epsilon production C1 P/T, epsilon destruction (C2-C3 chi)E/T, and signed chi=T^3 trace(Omega^2 S)",
+  "k_destruction": "E unchanged",
+  "active_edge_powers": {
+    "F": "1/sigma_k",
+    "K": 1,
+    "E": "sigma_e/sigma_k",
+    "N": 1
+  },
+  "edge_conditions": "N=I delta/[(1-delta) m], Qk=-I K, Qe=-I E, m=1/sigma_k; final edge must be constrained",
+  "deltas": [
+    0.001,
+    0.0005,
+    0.00025,
+    0.0001,
+    5e-05,
+    2.5e-05
+  ],
+  "refinements": "tol 1e-6 then 1e-8, 400 then 800 initial nodes; compare last edge pair, tolerances and meshes",
+  "numerical_gates": {
+    "max_residual": 1e-06,
+    "max_boundary_residual": 1e-09,
+    "max_profile_change_Uc": 0.0001,
+    "max_integral_or_width_relative_change": 0.002,
+    "minimum_stress_eigenvalue_over_K": -1e-10
+  },
+  "source_gate": "Half-width slope 0.125 for c3=0 or 0.086 for c3=0.79, within 2%; source consistency only, not proof of published hybrid provenance",
+  "holdout_access_allowed": false,
+  "production_default_changed": false,
+  "limitations": [
+    "Boundary-layer momentum, not full RANS",
+    "Positive-semidefinite modeled covariance alone does not establish a finite-inertia stochastic dispersion model",
+    "No automatic conversion of RANS K to LES SGS energy"
+  ],
+  "numerical_coordinate_amendment": {
+    "reason": "30273650 refinements failed; independent diagnostic 30273655 localized residual peaks to limiter transitions and mesh spacing 6.3e-15/3.7e-14 in z",
+    "coordinate": "t=-log(1-z), exact chain rule; internal tolerance one decade tighter",
+    "unchanged_gate": "Recompute the original z-coordinate Lobatto residual and require <=1e-6; no model coefficients, edge powers, or physical thresholds changed"
+  },
+  "transition_matching_amendment": {
+    "reason": "30273656 log-coordinate refinement also failed at sharp transition; use smooth inactive and active regions with unknown matching location",
+    "boundary_conditions": "Six continuous state components and Ncap/Nnatural=1 at unknown transition; unchanged axis and edge conditions",
+    "deltas": [
+      0.0001,
+      5e-05,
+      2.5e-05,
+      1.25e-05
+    ],
+    "refinements": "Same tolerances and 400/800 initial-node comparison; original spatial residual gate retained",
+    "initializer": "Use each accepted delta=0.000025, tol=1e-6 source-only state from 30273656; both meet original-coordinate residual gate. The former unconstrained initializer drove the control transition into a guarded boundary in 30273671; its failure is retained. No equation or coefficient changes.",
+    "initial_mesh": "Grade the inner-domain mesh toward its steep near-edge endpoint; use the same 400/800 nominal counts. Uniform initial meshes rejected the control in 30273671 and 30273672; the corrected candidate qualified in both.",
+    "physical_residual_evaluation": "Evaluate the unchanged original-z residual directly on native xi quadrature nodes in each affine region; affine Jacobians cancel in the interval-normalized RMS. Avoid subtracting nearly equal global z coordinates to invert the narrow outer map. Original 1e-6 gate retained.",
+    "final_initial_mesh": "Uniform 400/800 restored after graded meshes failed strict refinement; native-coordinate residual evaluation alone did not resolve those failures.",
+    "deeper_edge_sequence": [
+      2.5e-05,
+      1.25e-05,
+      6.25e-06,
+      3.125e-06
+    ],
+    "deeper_edge_reason": "Start further inside the active asymptotic edge region for both frozen cases. Control startup at delta=0.0001 failed; do not alter equations or numerical acceptance limits."
+  }
+}

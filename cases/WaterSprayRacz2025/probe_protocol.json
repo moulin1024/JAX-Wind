@@ -1,0 +1,24 @@
+{
+  "status": "source-only compatibility screen for a nominal hard probe; not calibrated measurement correction",
+  "source_z_m": 0.020,
+  "expected_stations": 34,
+  "apparatus_doi": "10.1016/j.expthermflusci.2018.11.006",
+  "apparatus_url": "https://dspace.vut.cz/bitstreams/e8d4e5e6-bf03-4fd0-a137-86870e8ca761/download",
+  "apparatus_pdf_sha256": "4b8a92ff0b5e4fa1eb5b3ba64e5d1f60c7d2ae3ed14a225d6c2a830c904fe2c3",
+  "nominal_probe_full_lengths_xyz_m": [0.00060, 0.000072, 0.000073],
+  "nominal_axial_extent_m": 0.000073,
+  "reported_diameter_uncertainty_m": 0.0000005,
+  "generous_axial_velocity_allowance_m_s": 1.92,
+  "diameter_bin_edges_um": [0, 0.5145, 2, 5, 10, 20, 40, 64.1, 1000000],
+  "scenarios": ["point_nominal", "finite_size_nominal", "point_velocity_allowance", "finite_size_velocity_diameter_allowance"],
+  "rules": [
+    "Verify all source-file hashes and reject holdout numerical loads.",
+    "The necessary axial support condition for constant-velocity transit through a hard volume is abs(u_axial)*TT <= L_axial. It does not require the missing third velocity.",
+    "A generous finite-sphere overlap condition expands the support by D. This is not the actual optical response or proof of a valid correction.",
+    "The velocity allowance is 1 percent of the largest stated 192 m/s span; it is an intentionally generous scenario, not an event-specific uncertainty calibration.",
+    "Do not infer an uncertainty for TT, a size-dependent detection volume, validation efficiency or processor dead time from the nominal dimensions.",
+    "Retain every event, flag all incompatible scenarios, and report station and size-bin counts without deleting records or refitting the geometry.",
+    "Passing a necessary support condition does not qualify a probe model; incompatibility does not establish corrupt raw data.",
+    "Do not change source/holdout roles or physical acceptance criteria."
+  ]
+}

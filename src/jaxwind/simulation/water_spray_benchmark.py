@@ -218,6 +218,14 @@ def build_simulation(case):
         dtype=dtype,
         config={"tolerance": 1.0e-7},
     )
+    scalar_scheme = doc["numerics"].get("scalar_advection_scheme", "upwind")
+    if scalar_scheme not in {"upwind", "upwind-ssprk3", "muscl-mc"}:
+        raise ValueError("benchmark scalar_advection_scheme must be upwind, upwind-ssprk3, or muscl-mc")
+    split_scalar_scheme = None if scalar_scheme == "upwind" else (
+        "upwind" if scalar_scheme == "upwind-ssprk3" else "muscl-mc"
+    )
+    if split_scalar_scheme is not None and doc["case"].get("scalar_boundary", "cell") != "flux":
+        raise ValueError("SSP scalar transport requires case.scalar_boundary=flux")
     carrier = build_open_atmospheric_step(
         grid,
         boundaries,
@@ -227,6 +235,7 @@ def build_simulation(case):
         LinearBoussinesqBuoyancy(9.81 / moist.reference_temperature_k),
         scheme="fast-rk3",
         scalar_boundary=doc["case"].get("scalar_boundary", "cell"),
+        transport_scalar=split_scalar_scheme is None,
     )
     injection = build_water_injection(
         grid,
@@ -249,6 +258,7 @@ def build_simulation(case):
         moist.reference_temperature_k,
         ambient,
         injection,
+        scalar_transport_scheme=split_scalar_scheme,
     )
     model = doc["case"].get("spray_model", "entrained")
     if model not in ("entrained", "inertial"):
@@ -291,6 +301,7 @@ def build_simulation(case):
             moist.temperature_offset_k,
             moist.reference_temperature_k,
             ambient,
+            scalar_transport_scheme=split_scalar_scheme,
         )
         project_feedback = doc["case"].get("project_parcel_feedback", False)
         if not isinstance(project_feedback, bool):
@@ -334,6 +345,10 @@ def build_simulation(case):
         value = float(cfl(result))
         if not np.isfinite(value) or value > 0.9:
             raise RuntimeError(f"benchmark CFL {value:g} exceeds .9; reduce dt")
+        if split_scalar_scheme is not None:
+            fields = jnp.stack((result.scalar + moist.temperature_offset_k, *result.moisture))
+            if not bool(jnp.all(jnp.isfinite(fields)) & jnp.all(fields >= 0)):
+                raise RuntimeError("bounded scalar transport produced nonfinite or negative temperature/water")
         if model == "inertial":
             if float(result.parcels.overflow_mass) > 0:
                 raise RuntimeError(

@@ -95,6 +95,8 @@ def build_stage(case, operation, inputs, options):
             planes = reader.read(first_sample, last_sample)
             planes = type(planes)(*(jnp.repeat(item, factor, axis=0)[start % factor:start % factor + controls.count] for item in planes))
             result = advance(state, dt, planes)
+            if hasattr(result,"accepted") and not bool(result.accepted):
+                raise RuntimeError("DPM transaction rejected: reduce dt or increase parcel/path/eddy capacity; no partial step committed")
             if farm:
                 import math
                 value = float(courant(result))
@@ -114,6 +116,13 @@ def build_stage(case, operation, inputs, options):
                     "outlet_backflow_pressure_min_m2_s2": jnp.min(backflow_outlet_pressure(state.velocity, grid)),
                     "open_x_net_volume_flux_m3_s": jnp.sum(area * (normal - state.velocity.x[..., 0])),
                 }
+        if hasattr(initial, "dpm_ledger"):
+            from jaxwind.fluent_dpm_atmosphere import dpm_diagnostics
+            previous_diagnostics = state_diagnostics
+            @jax.jit
+            def state_diagnostics(state):
+                result = {} if previous_diagnostics is None else previous_diagnostics(state)
+                return {**result, **dpm_diagnostics(state)}
         return Simulation(case, grid, initial, advance_open, courant,
                           turbine_diagnostics=turbine_diagnostics,
                           state_diagnostics=state_diagnostics)

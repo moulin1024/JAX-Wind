@@ -1,0 +1,17 @@
+{
+  "purpose": "Local feasibility of a momentum-compatible PSD stress; not a new closure or validation",
+  "source": "Durbin 1996, On the k-epsilon stagnation point anomaly, equations 11-15; exact eigenvalue bound only, no empirical multiplier",
+  "source_pdf_sha256": "f3862c55bd5b3fd81dd0fbb50a2202294eb07c76e0e9785f01d54b4667e8c676",
+  "input": "Four latest accepted 1990-coefficient edge states from kepsilon-edge-30273563; retain rejected finest shear-only solve",
+  "momentum_equation": "N Fprime = -I F / eta",
+  "viscosity_domain": "0 < N <= existing N; F,I,K fixed locally, velocity gradient recomputed",
+  "gradient_diagnostics": ["radial shear and all normal strains", "complete self-similar gradient"],
+  "feasibility": "minimum eigenvalue of R/K nonnegative; concave scalar search then bracketed upper root; near-zero maximum reported indeterminate",
+  "indeterminate_tolerance": 1e-12,
+  "violation_threshold_over_local_k": -1e-10,
+  "sampling": "8193 and 16385 edge-graded points; computed domain only, K > 1e-12 peak K",
+  "transport_equations_resolved": false,
+  "profile_modified": false,
+  "holdout_access_allowed": false,
+  "next_gate": "Any candidate must re-solve momentum and turbulence equations, establish new edge conditions and source/numerical gates before independent assessment"
+}

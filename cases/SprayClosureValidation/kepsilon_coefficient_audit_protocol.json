@@ -1,0 +1,14 @@
+{
+  "status": "source-only coefficient-convention audit, not holdout calibration or candidate replacement",
+  "pairs": [
+    {"name": "pope_printed_1978", "c1": 1.45, "c2": 1.90, "source": "https://tcg.mae.cornell.edu/pubs/Pope_AIAAJ_78.pdf", "evidence": "Printed page 279, high-resolution coefficient paragraph rechecked"},
+    {"name": "openfoam_2212_standard", "c1": 1.44, "c2": 1.92, "source": "https://doc.openfoam.com/2212/tools/processing/models/turbulence/ras/linear-evm/rtm/kEpsilon/", "evidence": "Official implementation documentation, Default model coefficients; attributes its standard model to Launder and Spalding 1974"}
+  ],
+  "other_constants": {"c_mu": 0.09, "sigma_k": 1.0, "sigma_e": 1.3},
+  "c3_values": [0.0, 0.79],
+  "production_variants": ["shear_only", "normal_strain_added_as_frozen_in_kepsilon_production_audit_protocol"],
+  "selection": "Only the two independently documented pairs are tested. No interpolated or optimized coefficients and no held-out profile errors are used.",
+  "interpretation": "A closer numerical match with the second pair would show sensitivity to independently published coefficient conventions. It would not prove which values Pope actually used, validate the combined variant, or authorize silently replacing the printed-paper candidate. The OpenFOAM standard model plus Pope correction is an explicitly combined research variant, not an asserted OpenFOAM implementation.",
+  "holdout_accessed": false,
+  "existing_gates_unchanged": true
+}

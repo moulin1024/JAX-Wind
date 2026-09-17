@@ -4,6 +4,7 @@ import math
 from dataclasses import dataclass, field, fields
 
 from jaxwind.physics.moisture import MoistureConfig
+from .fluent_dpm import DPMOptions, load_dpm
 
 
 @dataclass(frozen=True)
@@ -13,6 +14,8 @@ class WaterSprayOptions:
     standard_deviation_m: tuple[float, float, float]
     droplet_diameter_m: float = 50.0e-6
     ramp_time_s: float = 0.0
+    model: str = "entrained"
+    dpm: DPMOptions | None = None
 
 
 @dataclass(frozen=True)
@@ -69,10 +72,16 @@ def load_moisture(document):
     if not isinstance(spray_table, dict):
         raise ValueError("physics.water_spray must be a table")
     allowed = {f.name for f in fields(WaterSprayOptions)}
-    required = {"mass_flow_rate_kg_s", "streamwise_offset_m", "standard_deviation_m"}
+    model = spray_table.get("model", "entrained")
+    if model not in ("entrained", "fluent-dpm"):
+        raise ValueError("water_spray.model must be entrained or fluent-dpm")
+    required = {"mass_flow_rate_kg_s", "streamwise_offset_m"}
+    required |= {"dpm"} if model == "fluent-dpm" else {"standard_deviation_m"}
+    if model == "entrained" and "dpm" in spray_table:
+        raise ValueError("DPM options require model=fluent-dpm")
     if spray_table.keys() - allowed or required - spray_table.keys():
         raise ValueError("water_spray has unknown or missing settings")
-    widths = spray_table["standard_deviation_m"]
+    widths = spray_table.get("standard_deviation_m", (1.0, 1.0, 1.0))
     if not isinstance(widths, (list, tuple)) or len(widths) != 3:
         raise ValueError("water_spray.standard_deviation_m needs three positive widths")
     widths = tuple(number({"width": v}, "width") for v in widths)
@@ -82,6 +91,8 @@ def load_moisture(document):
         widths,
         number(spray_table, "droplet_diameter_m", 50.0e-6),
         number(spray_table, "ramp_time_s", 0.0),
+        model,
+        load_dpm(spray_table["dpm"]) if model == "fluent-dpm" else None,
     )
     if min(spray.streamwise_offset_m, spray.droplet_diameter_m, *widths) <= 0:
         raise ValueError("water spray offset, diameter and widths must be positive")

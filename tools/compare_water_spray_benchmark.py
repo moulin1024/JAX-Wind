@@ -10,6 +10,11 @@ import numpy as np
 
 
 def comparison(reference, directories, window):
+    acceptance_path = Path(__file__).resolve().parents[1] / "cases/WaterSprayMontazeri2015/acceptance.json"
+    acceptance = json.loads(acceptance_path.read_text())
+    threshold = 100 * float(acceptance["relative_tolerance"])
+    if not np.isfinite(threshold) or threshold <= 0:
+        raise ValueError("acceptance tolerance must be finite and positive")
     if "experimental_dbt_c" in reference:
         measured = np.asarray(reference["experimental_dbt_c"])
     else:
@@ -19,6 +24,7 @@ def comparison(reference, directories, window):
         measured = t0 + (pixels - x0) / (x1 - x0) * (t1 - t0)
     result = {
         "reference": reference,
+        "acceptance": acceptance,
         "experimental_dbt_c_sorted": sorted(measured.tolist()),
         "experimental_sensor_mean_c": float(measured.mean()),
         "experimental_range_c": [float(measured.min()), float(measured.max())],
@@ -77,6 +83,9 @@ def comparison(reference, directories, window):
         metrics["mean_temperature_within_10_percent_celsius"] = (
             metrics["mean_temperature_error_percent_celsius"] <= 10
         )
+        metrics["mean_temperature_within_acceptance"] = (
+            metrics["mean_temperature_error_percent_celsius"] <= threshold
+        )
         if reference.get("spatial_pairing_known", False):
             relative_errors = 100 * np.abs(predicted - measured) / np.abs(measured)
             metrics["sensor_temperature_errors_percent_celsius"] = (
@@ -91,6 +100,8 @@ def comparison(reference, directories, window):
             metrics["all_sensor_temperatures_within_10_percent_celsius"] = bool(
                 np.all(relative_errors <= 10)
             )
+            metrics["sensors_exceeding_acceptance"] = int(np.sum(relative_errors > threshold))
+            metrics["all_sensor_temperatures_within_acceptance"] = bool(np.all(relative_errors <= threshold))
             metrics["spatially_paired_rmse_k"] = float(
                 np.sqrt(np.mean((predicted - measured) ** 2))
             )
@@ -161,7 +172,8 @@ def comparison(reference, directories, window):
         "Model-adequacy challenge, not validated air-assisted atomization. "
         "Sorted-distribution error is not a spatially paired error. "
         "1 K is a declared engineering screening threshold, not experimental uncertainty. "
-        "10% metrics use the reported Celsius outlet temperatures, not Kelvin or temperature reduction; "
+        f"The active {threshold:g}% criterion uses reported Celsius outlet temperatures, not Kelvin or temperature reduction; "
+        "explicitly named 10-percent fields remain historical diagnostics. "
         "mean and individual-sensor acceptance are reported separately. "
         "No parameters fitted to the temperature targets."
     )

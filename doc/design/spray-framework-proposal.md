@@ -5,6 +5,13 @@ are implied. This proposal complements the direct finite-volume solver and
 packaged simulation contracts in ADR-0017 and ADR-0018; it does not supersede
 them. Implementation that changes those contracts must amend the active ADRs.
 
+Application clarification, 2026-09-17: the water-spray target has individual
+LES cells of **16 m × 16 m × 4 m**. The
+[coarse-cell application contract](coarse-cell-water-spray.md) takes precedence
+for this application, especially over treating the four-cell plume-width handoff
+below as a required destination. An unresolved plume may persist across many
+cells. The earlier nitrogen-specific assumptions are not water-nozzle inputs.
+
 ## 1. Decision and intended predictions
 
 Use one variable-density, low-Mach Eulerian gas solver coupled to finite-rate

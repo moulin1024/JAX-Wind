@@ -1,0 +1,45 @@
+{
+  "revision": 1,
+  "status": "Exploratory transfer of an independently measured gas-jet profile; not a qualified raw measurement set or production model.",
+  "calibration": {
+    "study": "Panchapakesan and Lumley (1993), JFM 246, 197-223, Part 1 Air jet",
+    "paper_doi": "10.1017/S0022112093000096",
+    "paper_sha256": "2af7862ab67a0b6be6e48b66d08523ca536dc6c084746d82e4da66c3312f6f40",
+    "primary_definition": "Figure 7, printed page 206: U/Uc vs r/x; x/d=60,70,80,90,100,110,120; solid curve is a least-squares spline through all stations. Section 4.1 reports half-width 0.096 and Gaussian coefficient 75.2. No virtual-origin correction is fitted here.",
+    "Re": 11000,
+    "reported_half_width": 0.096,
+    "published_gaussian_coefficient": 75.2,
+    "reported_decay_coefficient": 6.06,
+    "secondary_study": "Shin, Sandberg and Richardson (2017), DOI 10.1017/jfm.2017.304, Figure 2a",
+    "dataset_doi": "10.5258/SOTON/D0075",
+    "archive_sha256": "1dd92bacea14522ff683bb1fbea47dbebdfe48c1b965a0cd6d3c496eddc70216",
+    "file": "Figure_02_a_u0v0_vs_eta.txt",
+    "file_sha256": "dbb9c005fc85a6c9a35f32372665fd43633bc0a2aa3fd097715342454b2bc31a",
+    "expected_blocks": 55,
+    "axial_overlay_blocks": [26, 27],
+    "points_per_block": 40,
+    "selection": "Use block 26 once; require block 27 to be its exact duplicate. Original Figure 2a labels the solid axial/radial curves Panchapakesan and Lumley. The axial overlay begins near (0,1); exclude every DNS and radial-velocity block. Do not select by holdout agreement.",
+    "qualification": "Secondary author-archived numeric curve, consistent with the primary normalized mean profile. Extraction pathway and pointwise measurement/digitization uncertainty are undocumented; do not call these raw observations or independent realizations.",
+    "coordinate": "source r/x, compared as a self-similar shape to holdout r/(x-x0); source centreline law is reported without an offset, and no coordinate rescaling/origin is fitted",
+    "uncertainty": "Primary calibration RMS 0.01 m/s and 0.5 degree, and integral momentum agreement within 5%, are not a pointwise normalized-profile confidence interval.",
+    "source_half_width_relative_audit_tolerance": 0.05,
+    "license": "Secondary archive CC BY-NC-ND; primary article copyright CUP. Source tables, PDFs and fitted artifacts remain in ignored outputs."
+  },
+  "fit": {
+    "objective": "Fit all unique 40 overlay points over their entire reported radial support. Trapezoidal eta weights approximate an integrated squared error and prevent irregular point spacing from changing the weighting. No clipping, centre renormalization, station selection or holdout access.",
+    "single_start": 75.0,
+    "single_bounds": [1.0, 100000.0],
+    "mixture_definition": "a*exp(-c2*ratio*eta^2)+(1-a)*exp(-c2*eta^2)",
+    "bounds": {"a": [0.000001, 0.999999], "c2": [1.0, 1000.0], "ratio": [1.0, 100.0]},
+    "starts": [[0.5, 20.0, 4.0], [0.5, 50.0, 2.0], [0.8, 70.0, 2.0]],
+    "selection": "Minimum source-only objective among fixed starts; retain all results including active bounds. Families and controls fixed before fitting. Positive mixture is an empirical shape, not a Reynolds-stress closure."
+  },
+  "assessment": {
+    "candidates": ["published_gaussian", "single_gaussian_measured", "two_gaussian_measured", "two_gaussian_shape_ricou"],
+    "alpha_shape_ricou": 0.08,
+    "holdout": "Unchanged reference.json Hussein Table 4 profile, integral summaries and 20% engineering screen; retrospective independent-study transfer, not blind validation",
+    "conservation": "Same analytic Gaussian-mixture mass and mean-momentum integrals as the verified DNS assessment. Source-derived alpha=I1/sqrt(2*I2); Ricou candidate retains alpha=0.08. No independently incompatible centre speed or width imposed.",
+    "selection": "Report all candidates and secondary-source/holdout discrepancy. Never refit or choose source points after seeing the holdout."
+  },
+  "production_enabled": false
+}

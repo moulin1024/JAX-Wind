@@ -64,6 +64,9 @@ class TurbineOptions:
     tower_drag_coefficient: float
     minimum_normal_smoothing_width_m: float = 0.0
     momentum_stabilization_coefficient: float = 0.0
+    rotor_diameter_m: float = 0.0
+    thrust_coefficient: float = 0.0
+    prescribed_inflow_velocity_m_s: float = 0.0
 
 
 
@@ -318,6 +321,7 @@ def _load_turbine(document: dict[str, Any]) -> TurbineOptions | None:
     if not isinstance(table, dict):
         raise ValueError("[finite_volume_turbine] must be a table")
     models = (
+        "thrust-only-adm",
         "openfast-ad-bem",
         "hitsz-r9-ad-bem",
         "openfast-alm",
@@ -348,6 +352,10 @@ def _load_turbine(document: dict[str, Any]) -> TurbineOptions | None:
         "minimum_normal_smoothing_width_m",
         "momentum_stabilization_coefficient",
     }
+    if model == "thrust-only-adm":
+        required |= {"rotor_diameter_m", "thrust_coefficient", "prescribed_inflow_velocity_m_s"}
+        allowed |= required - {"model"}
+        allowed.add("openfast_model_environment")
     if model.startswith("openfast-"):
         required.add("openfast_model_environment")
         allowed.add("openfast_model_environment")
@@ -446,7 +454,14 @@ def _load_turbine(document: dict[str, Any]) -> TurbineOptions | None:
         tower_drag_coefficient=_finite_number(
             table, "tower_drag_coefficient"
         ),
+        rotor_diameter_m=float(table.get("rotor_diameter_m", 0.0)),
+        thrust_coefficient=float(table.get("thrust_coefficient", 0.0)),
+        prescribed_inflow_velocity_m_s=float(table.get("prescribed_inflow_velocity_m_s", 0.0)),
     )
+    if model == "thrust-only-adm":
+        if result.rotor_diameter_m <= 0 or result.thrust_coefficient < 0 or result.prescribed_inflow_velocity_m_s <= 0:
+            raise ValueError("thrust-only-adm requires positive diameter/inflow and nonnegative thrust coefficient")
+        return result
     if min(
         result.hub_height_m,
         result.rotor_speed_rpm,

@@ -1,0 +1,34 @@
+START {"domain_m": [1024.0, 1024.0, 512.0], "cells": [64, 64, 128], "cell_dimensions_m": [16.0, 16.0, 4.0], "source_position_m": [272.0, 512.0, 70.0], "dry_density_kg_m3": 1.1437680830233854}
+srun: Job step aborted: Waiting up to 32 seconds for job step to finish.
+srun: got SIGCONT
+[2026-09-17T10:17:48.781] error: *** STEP 30275239.0 ON ravg1002 CANCELLED AT 2026-09-17T10:17:48 DUE to SIGNAL Terminated ***
+[2026-09-17T10:17:48.782] error: *** JOB 30275239 ON ravg1002 CANCELLED AT 2026-09-17T10:17:48 DUE to SIGNAL Terminated ***
+srun: forcing job termination
+                                  
+================================= 
+Global information about the job: 
+================================= 
+  
+Job owner: limo(1954)
+Job name:  v80-spray-adm-coarse20
+Node list: ravg1002
+Job start: Thu Sep 17 10:17:10 CEST 2026
+Job end:   Thu Sep 17 10:17:48 CEST 2026
+Work dir:  /raven/u/limo/JAX-Wind
+Command:   /raven/u/limo/JAX-Wind/tools/run_v80_dpm_uniform_adm_coarse.sbatch
+  
+  
+  
+==========================================================================================
+Information on jobsteps (Note: MaxRSS/AveRSS is the maximum/average over all 
+tasks of the per-task memory high-water marks; cf. "man sacct"): 
+==========================================================================================
+  
+JobID            JobName NNodes NTasks  NCPUS       MaxRSS       AveRSS    Elapsed ExitCode
+------------- ---------- ------ ------ ------ ------------ ------------ ---------- --------
+30275239      v80-spray-      1             8                             00:00:38      0:0
+30275239.0        python      1      1      8     1530.24M     1530.24M   00:00:39     0:15
+  
+Maximum memory per node: 1.604575 GB (defined as MaxRSS*Ntasks/NNodes)
+CPU utilization: 46.7 %
+  

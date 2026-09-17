@@ -1,0 +1,12 @@
+{
+  "purpose": "Assess source-qualified constrained-timescale candidates against the unchanged independent Hussein profile",
+  "frozen_cases": [0.0, 0.79],
+  "eligibility": "Require numerical_pass and source-width pass separately for each case before reading the holdout. Retain every ineligible case with its rejection reason, without a held-out score.",
+  "source_widths": {"0.0": 0.125, "0.79": 0.086},
+  "source_relative_tolerance": 0.02,
+  "coefficients": {"c_mu": 0.09, "c1": 1.44, "c2": 1.92, "sigma_k": 1.0, "sigma_e": 1.3},
+  "holdout": "Unchanged reference.json; all 201 radial points over eta=0..0.2, decay coefficient, half-width slope, entrainment alpha; all must satisfy 20% relative screening criterion",
+  "baseline_comparison": "Also compare each new source-state profile with its original unconstrained normal-production state; no baseline fitting or profile rescaling",
+  "production_enabled": false,
+  "uncertainty": "Engineering screen, not measurement confidence interval"
+}

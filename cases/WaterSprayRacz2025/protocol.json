@@ -1,0 +1,19 @@
+{
+  "status": "data qualification; no physical validation claimed",
+  "dataset_doi": "10.5281/zenodo.17935932",
+  "condition": "air-blast_1.28kgh_W_0.3bar_25C_1",
+  "selection_reason": "Water at ambient injection temperature and lowest available atomizing pressure, chosen before simulation to limit thermal and compressibility complications.",
+  "source_z_m": 0.020,
+  "holdout_z_m": [0.040, 0.060],
+  "source_traverses": ["X", "Y"],
+  "constraints": [
+    "Never infer coordinates from file sequence; use the explicit header.",
+    "Retain repeated centre points from separate traverses.",
+    "LDA4 is radial along X and tangential along Y, in the signed instrument frame.",
+    "Preserve joint measured size and two-velocity records; do not manufacture an independently measured third component.",
+    "Do not use downstream records to prescribe inlet velocity, turbulence, size distribution, mass flux, or tune closure coefficients.",
+    "Raw event count and D32 are not automatically unbiased number density or inlet mass-flux distributions.",
+    "Freeze physical observables, probe corrections, uncertainty treatment and near-zero absolute criteria before simulations.",
+    "Use the existing per-observable 20 percent criterion for selected nonzero validation targets; report all selected targets and failures."
+  ]
+}

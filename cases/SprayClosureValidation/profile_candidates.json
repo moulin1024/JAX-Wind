@@ -1,0 +1,31 @@
+{
+  "status": "retrospective model comparison, not blind validation",
+  "selection": "Compare the existing Gaussian reconstruction with the constant-eddy-viscosity similarity solution and a separately measured Gaussian coefficient. No optimization against Hussein targets is permitted. Keep all candidates and the original threshold in the report.",
+  "candidates": [
+    {
+      "name": "gaussian_ricou",
+      "profile": "gaussian",
+      "alpha": 0.08,
+      "source": "Ricou-Spalding 1961 direct entrainment coefficient; existing baseline"
+    },
+    {
+      "name": "gaussian_huck",
+      "profile": "gaussian",
+      "gaussian_C": 75.0,
+      "source": "Huck et al. 2022, Table 3 and equation 3.5, DOI 10.1017/jfm.2021.992",
+      "primary_pdf": "https://www.legi.grenoble-inp.fr/people/Nathanael.Machicoane/huck_etal_JFM2021.pdf",
+      "derivation": "For this mean-flow Gaussian integral model, C=1/(2 alpha^2), hence alpha=1/sqrt(2 C). Only C is transferred; do not also impose independently incompatible decay/width constants.",
+      "limitations": "Gas proxy conditioned on roughly 1 micrometre droplets in an air-water spray, not an independent single-phase gas measurement. No reported uncertainty for this rounded C. Transferring it to the single-phase holdout is an explicit model assumption. It is not a nozzle prescription for the Montazeri case."
+    },
+    {
+      "name": "squared_lorentzian_ricou",
+      "profile": "squared_lorentzian",
+      "alpha": 0.08,
+      "source": "Constant-eddy-viscosity boundary-layer similarity solution; Ricou-Spalding entrainment sets dimensional growth",
+      "primary_reference": "https://doi.org/10.1017/jfm.2022.638",
+      "provenance": "Basset et al. 2022 equations 3.4 and 5.10; f=(1+A eta^2)^(-2), with constant radial turbulent viscosity. No measured width imposed."
+    }
+  ],
+  "holdout": "Unchanged Hussein et al. LDA profile and integral summaries in reference.json",
+  "production_default_change": false
+}

@@ -1,0 +1,21 @@
+{
+  "status": "source-only sampling sensitivity; no inlet qualification or physical validation",
+  "source_z_m": 0.020,
+  "expected_stations": 34,
+  "weighting": ["event", "transit_time"],
+  "equal_duration_blocks": [8, 16, 32, 64],
+  "bootstrap_replicates": 2048,
+  "seed": 20260916,
+  "percentiles": [2.5, 97.5],
+  "observables": ["axial_mean_m_s", "transverse_mean_m_s", "D10_m", "D32_m", "axial_std_m_s"],
+  "rules": [
+    "Read only source files and verify archived SHA256 before numerical loading.",
+    "Preserve all audited events and measured joint size/velocity/transit-time records; do not trim outliers.",
+    "Transit-time weighting is a sensitivity scenario, not a calibrated probe-volume, detection-efficiency or mass-flux correction.",
+    "Blocks partition the observed first-to-last arrival interval; acquisition start/end and processor dead time are not inferred.",
+    "Resample whole equal-duration blocks with replacement, preserving joint records through additive sufficient statistics.",
+    "Report every block-count result; do not choose the narrowest interval or infer independent sample size from weight concentration.",
+    "Percentile ranges are conditional stationary-block bootstrap diagnostics, not complete experimental confidence intervals. Serial dependence beyond a block, stopping-rule effects and instrument systematics remain unresolved.",
+    "Do not read downstream samples, tune model coefficients or change the 20 percent physical validation criterion."
+  ]
+}

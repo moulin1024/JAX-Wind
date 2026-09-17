@@ -1,8 +1,12 @@
 # Free air-assisted water-spray transport: candidate assessment
 
-This replaces the confined thermal benchmark as the active validation direction.
-See [the revised goal](../../doc/water-spray-validation-goal.md).
-No new transport benchmark has yet been claimed runnable or validated.
+This records the candidate search for measured transport validation within the
+[active coarse-grid spray and waterjet goal](../../doc/water-spray-validation-goal.md).
+The later [Rácz public PDA dataset](../WaterSprayRacz2025/README.md) now supplies
+90 numerical measurement stations with a frozen upstream/downstream split.
+Its data audit has passed; physical source qualification remains open. The
+historical candidates and their data gaps below remain useful alternatives.
+No measured-transport validation pass has been claimed.
 
 ## Initial candidate — not yet qualified
 
@@ -43,7 +47,7 @@ and measured spatial size/velocity distributions. Carrier air momentum must be
 represented explicitly or supplied from independent measured gas profiles.
 Exclude wall-film, collector and drift-plate closures from this benchmark.
 Thermal physics remains separate from transport acceptance. Carry forward the
-user's per-observable 10% requirement with predeclared handling of near-zero
+user-revised per-observable 20% requirement with predeclared handling of near-zero
 quantities, plus numerical and conservation checks.
 
 ## Source audit, 2026-09-16

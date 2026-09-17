@@ -66,6 +66,8 @@ def main():
     )
     directories = [Path("outputs/water_spray_montazeri2015") / n for n in RUN_NAMES]
     result = comparison(reference, directories, window=1.0)
+    relative_tolerance = result["acceptance"]["relative_tolerance"]
+    threshold = 100 * relative_tolerance
     energy = audit(directories[-1])
     # Fingerprint the saved numerical inputs, not just the reference data.
     result["input_sha256"] = {
@@ -102,7 +104,7 @@ def main():
                 "predicted_dbt_c",
                 "error_k",
                 "error_percent_celsius",
-                "pass_10_percent",
+                "pass_acceptance",
             ]
         )
         for i, label in enumerate(labels):
@@ -114,7 +116,7 @@ def main():
                     predicted[i],
                     predicted[i] - measured[i],
                     errors[i],
-                    errors[i] <= 10,
+                    errors[i] <= threshold,
                 ]
             )
 
@@ -127,10 +129,10 @@ def main():
     x = np.arange(9)
     ax.fill_between(
         x,
-        0.9 * measured,
-        1.1 * measured,
+        (1-relative_tolerance) * measured,
+        (1+relative_tolerance) * measured,
         color="0.9",
-        label="Recorded ±10% Celsius criterion",
+        label=f"Current ±{threshold:g}% Celsius criterion",
     )
     ax.errorbar(
         x,
@@ -163,7 +165,7 @@ def main():
             f"| {Path(run['directory']).name} | {run['sensor_mean_c']:.3f} | "
             f"{run['spatially_paired_rmse_k']:.3f} | "
             f"{run['maximum_sensor_error_percent_celsius']:.2f} | "
-            f"{run['sensors_exceeding_10_percent_celsius']}/9 |"
+            f"{run['sensors_exceeding_acceptance']}/9 |"
         )
     rows += [
         "",
@@ -173,7 +175,7 @@ def main():
     for i, label in enumerate(labels):
         rows.append(
             f"| {label} | {measured[i]:.1f} | {predicted[i]:.3f} | "
-            f"{errors[i]:.2f} | {'PASS' if errors[i] <= 10 else 'FAIL'} |"
+            f"{errors[i]:.2f} | {'PASS' if errors[i] <= threshold else 'FAIL'} |"
         )
     (args.output / "tables.md").write_text("\n".join(rows) + "\n")
     print("\n".join(rows))

@@ -1,0 +1,43 @@
+Traceback (most recent call last):
+  File "/raven/u/limo/JAX-Wind/tools/run_v80_dpm_uniform.py", line 270, in <module>
+    main()
+    ~~~~^^
+  File "/raven/u/limo/JAX-Wind/tools/run_v80_dpm_uniform.py", line 97, in main
+    state, step = build_open_components(workflow, warm, plane, return_step=True)
+                  ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/raven/u/limo/JAX-Wind/src/jaxwind/simulation/open_atmospheric.py", line 23, in build_open_components
+    forcing = build_turbine_forcing(workflow)
+  File "/raven/u/limo/JAX-Wind/src/jaxwind/simulation/turbines.py", line 96, in build_turbine_forcing
+    return build_thrust_only_adm_forcing(grid, turbine.to_actuator_disk(scales=ScaleSystem(1.0, 1.0)), periodic_y=True)
+                                         ^^^^
+UnboundLocalError: cannot access local variable 'grid' where it is not associated with a value
+srun: error: ravg1002: task 0: Exited with exit code 1
+srun: Terminating StepId=30274786.0
+                                  
+================================= 
+Global information about the job: 
+================================= 
+  
+Job owner: limo(1954)
+Job name:  v80-spray-adm
+Node list: ravg1002
+Job start: Thu Sep 17 09:37:12 CEST 2026
+Job end:   Thu Sep 17 09:37:23 CEST 2026
+Work dir:  /raven/u/limo/JAX-Wind
+Command:   /raven/u/limo/JAX-Wind/tools/run_v80_dpm_uniform_adm.sbatch
+  
+  
+  
+==========================================================================================
+Information on jobsteps (Note: MaxRSS/AveRSS is the maximum/average over all 
+tasks of the per-task memory high-water marks; cf. "man sacct"): 
+==========================================================================================
+  
+JobID            JobName NNodes NTasks  NCPUS       MaxRSS       AveRSS    Elapsed ExitCode
+------------- ---------- ------ ------ ------ ------------ ------------ ---------- --------
+30274786      v80-spray-      1             8                             00:00:11      1:0
+30274786.0        python      1      1      8      636.02M      636.02M   00:00:08      1:0
+  
+Maximum memory per node: 0.666915 GB (defined as MaxRSS*Ntasks/NNodes)
+CPU utilization: 6.8 %
+  

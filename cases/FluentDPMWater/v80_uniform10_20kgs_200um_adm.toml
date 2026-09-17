@@ -1,0 +1,22 @@
+schema_version = 1
+extends = "v80_uniform10_20kgs_200um.toml"
+
+[case]
+name = "v80_uniform10_300K_RH80_spray20kgs_200um_290K_adm"
+
+# Same domain and physical settings; eight times as many cells.
+[mesh]
+cells = [128, 128, 256]
+
+[workflow]
+output_directory = "outputs/v80_uniform10_20kgs_200um_290K_adm"
+
+[output]
+directory = "outputs/v80_uniform10_20kgs_200um_290K_adm"
+
+[physics.turbine]
+model = "thrust-only-adm"
+rotor_diameter_m = 80.0
+thrust_coefficient = 0.8
+prescribed_inflow_velocity_m_s = 10.0
+smoothing_width_m = 8.0

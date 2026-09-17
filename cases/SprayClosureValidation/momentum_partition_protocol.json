@@ -1,0 +1,25 @@
+{
+  "revision": 1,
+  "status": "Separate exploratory follow-up after measured-profile rejection; not a blind experiment or a turbulence-energy closure.",
+  "source": {
+    "study": "Panchapakesan and Lumley (1993), DOI 10.1017/S0022112093000096",
+    "decay_coefficient": 6.06,
+    "decay_provenance": "Primary Table 1 and section 4.1 centreline law Ujet/Uc=0.165*x/d, with reported B=6.06. Use reported rounded B, not a fitted virtual origin.",
+    "profile_calibration": "Frozen source-only measured_profile_protocol.json calibration; no changes to those fitted curves or source selection.",
+    "families": ["published_gaussian", "single_gaussian", "two_gaussian_mixture"],
+    "nozzle_assumption": "Uniform-density near-top-hat exit; unit nozzle speed, diameter and density imply conserved total momentum flux pi/4. Nozzle stress and finite-domain loss omitted in the accounting estimate.",
+    "formulas": "I1=int eta*f d_eta; I2=int eta*f^2 d_eta; chi=Jmean/Jnozzle=8*B_source^2*I2; alpha_source=2*B_source*I1.",
+    "meaning": "chi is an inferred mean momentum-flux fraction. Jtotal-Jmean is an explicit combined turbulent-normal-stress/pressure flux remainder, NOT a gas momentum sink or SGS kinetic energy.",
+    "uncertainty": "Profile extraction and source integral/decay uncertainty are not available as a joint statistical model. Primary measured total momentum was within 5% of nozzle input; this is not a confidence interval for chi."
+  },
+  "assessment": {
+    "entrainment_modes": ["source_integral", "ricou"],
+    "alpha_ricou": 0.08,
+    "geometry": "m(x)=2*alpha*sqrt(pi*rho*Jtotal)*x; reconstruct velocity using Jmean=chi*Jtotal. Retain Jtotal and its remainder explicitly.",
+    "calibration_identity": "Using alpha_source must recover B_source=6.06 and native similarity length slope 1 without imposing either after reconstruction.",
+    "holdout": "Unchanged Hussein reference.json and 20% local/integral engineering screen. No Hussein stress coefficient or profile fit used in calibration.",
+    "selection": "Report all three fixed profile families with both entrainment modes. No coefficient tuning or source selection after evaluating the holdout.",
+    "scope": "Integral flux accounting and retrospective profile transfer only. Assumes source chi transfers across Reynolds/nozzle conditions; this remains unvalidated. No stress distribution, pressure field, SGS k, anisotropy or turbulent source term follows from chi alone."
+  },
+  "production_enabled": false
+}

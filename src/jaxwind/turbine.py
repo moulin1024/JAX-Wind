@@ -15,6 +15,7 @@ from jaxwind._jax.wind import (
 from jaxwind.domain.grid import Grid
 from jaxwind.physics import (
     BladeElementActuatorDisk,
+    PureThrustActuatorDisk,
     BladeElementActuatorLine,
     NacelleTowerDrag,
 )
@@ -54,6 +55,32 @@ def _y_faces(values: jnp.ndarray, grid: Grid, *, periodic=True) -> jnp.ndarray:
         + values * upper_widths[None, :, None]
     ) / total[None, :, None]
 
+
+
+def build_thrust_only_adm_forcing(grid: Grid, disk: PureThrustActuatorDisk, *, periodic_y: bool = True):
+    """Prescribed freestream thrust-only ADM with discretely normalized Gaussian smearing."""
+    if disk.prescribed_inflow_velocity <= 0.0 or disk.prescribed_thrust_coefficient <= 0.0:
+        raise ValueError("thrust-only ADM requires prescribed inflow and thrust coefficient")
+    x = jnp.asarray(grid.x_centers); y = jnp.asarray(grid.y_centers); z = jnp.asarray(grid.z_centers)
+    zz, yy, xx = jnp.meshgrid(z, y, x, indexing="ij")
+    epsn = disk.normal_smoothing_width; epst = disk.transverse_smoothing_width
+    dx = xx - disk.x
+    dy = yy - disk.y
+    if periodic_y:
+        dy = (dy + 0.5 * grid.ly) % grid.ly - 0.5 * grid.ly
+    dz = zz - disk.z
+    radial = jnp.sqrt(dy * dy + dz * dz)
+    # Geometric disk convolved with a Gaussian transverse kernel.
+    smooth_indicator = 0.5 * (1.0 - jnp.tanh((radial - 0.5 * disk.diameter) / (0.5 * epst)))
+    weights = jnp.exp(-(dx / epsn) ** 2) * smooth_indicator
+    volumes = (jnp.asarray(grid.z_widths)[:, None, None] * jnp.asarray(grid.y_widths)[None, :, None] * jnp.asarray(grid.x_widths)[None, None, :])
+    weights = weights / jnp.sum(weights * volumes)
+    integrated = 0.5 * disk.prescribed_thrust_coefficient * disk.prescribed_inflow_velocity ** 2 * jnp.pi * (0.5 * disk.diameter) ** 2
+    cell_source = -integrated * weights
+    def forcing(velocity, _time):
+        source_x = _x_faces(cell_source, grid, periodic=False)
+        return StaggeredVelocity(source_x, jnp.zeros_like(velocity.y), jnp.zeros_like(velocity.z))
+    return forcing
 
 def build_adbem_forcing(
     grid: Grid,
@@ -301,4 +328,4 @@ def build_actuator_line_forcing(
     return forcing
 
 
-__all__ = ["build_adbem_forcing", "build_actuator_line_forcing"]
+__all__ = ["build_adbem_forcing", "build_actuator_line_forcing", "build_thrust_only_adm_forcing"]

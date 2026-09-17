@@ -1,0 +1,11 @@
+extends = "inertial_projected_central.toml"
+
+[case]
+name = "montazeri2015-case3-central-momentum-muscl-scalars"
+
+[numerics]
+# Shared conservative, MC-limited SSP-RK3 transport for temperature and water.
+scalar_advection_scheme = "muscl-mc"
+
+[output]
+directory = "outputs/water_spray_montazeri2015/inertial_projected_muscl_scalars"

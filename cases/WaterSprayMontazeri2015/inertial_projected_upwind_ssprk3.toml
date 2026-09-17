@@ -1,0 +1,11 @@
+extends = "inertial_projected_central.toml"
+
+[case]
+name = "montazeri2015-case3-central-momentum-upwind-ssprk3"
+
+[numerics]
+# Matched time integration/coupling control for the MUSCL scalar experiment.
+scalar_advection_scheme = "upwind-ssprk3"
+
+[output]
+directory = "outputs/water_spray_montazeri2015/inertial_projected_upwind_ssprk3"

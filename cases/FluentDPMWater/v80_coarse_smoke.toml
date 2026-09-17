@@ -1,0 +1,65 @@
+schema_version = 1
+extends = "../HornsRev1/fv_workflow_v80.toml"
+
+[case]
+name = "v80_coarse_dpm_smoke"
+
+# Short integration check; these are cell counts and domain lengths.
+# The individual cell dimensions are exactly 16 x 16 x 4 m.
+[mesh]
+cells = [16, 8, 32]
+lengths_m = [256.0, 128.0, 128.0]
+
+[numerics]
+dtype = "float64"
+time_integration = "fast-rk3"
+momentum_advection_scheme = "muscl-mc"
+
+[physics.flow]
+pressure_acceleration_m_s2 = [0.0, 0.0]
+
+[physics.turbine]
+x_m = 64.0
+y_m = 64.0
+hub_height_m = 70.0
+
+[physics.moisture]
+ambient_relative_humidity = 0.3
+temperature_offset_k = 310.0
+reference_temperature_k = 310.0
+pressure_pa = 101325.0
+dry_air_density_kg_m3 = 1.14
+
+[physics.water_spray]
+model = "fluent-dpm"
+mass_flow_rate_kg_s = 0.1
+streamwise_offset_m = 16.0
+ramp_time_s = 0.0
+
+[physics.water_spray.dpm]
+diameters_m = [0.0001, 0.0002]
+mass_fractions = [0.5, 0.5]
+injection_velocity_m_s = [12.0, 0.0, 0.0]
+injection_temperature_k = 300.0
+capacity = 64
+tracking_substeps = 4
+dispersion = "drw"
+les_model = "amd-inferred"
+# Explicit illustrative assumption, NOT calibrated to wake/spray measurements.
+amd_length_scale_m = 1.0
+
+[workflow]
+warmup_steps = 20
+precursor_steps = 20
+main_steps = 20
+record_plane = 2
+chunk_steps = 1
+precursor_dt_seconds = 0.2
+main_dt_seconds = 0.2
+precursor_frame_count = 0
+main_frame_count = 0
+evolve_scalar = true
+output_directory = "outputs/fluent_dpm_v80"
+
+[output]
+directory = "outputs/fluent_dpm_v80"

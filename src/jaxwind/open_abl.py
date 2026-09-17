@@ -42,6 +42,7 @@ def build_open_atmospheric_step(
     scalar_source: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
     scheme: str = "ab2",
     scalar_boundary: str = "cell",
+    transport_scalar: bool = True,
 ) -> Callable[[AtmosphericSolution, float, InflowPlane], AtmosphericSolution]:
     """Build an open-boundary AB2, RK3, or single-projection fast-RK3 step.
 
@@ -54,7 +55,8 @@ def build_open_atmospheric_step(
     It requires full RK3 and a prescribed low-x inlet. Open lateral outlets
     use perturbation energy relative to the ambient streamwise inflow; active
     scalar transport with open lateral boundaries is not yet supported.
-    Outlet pressure is explicit in each stage.
+    Outlet pressure is explicit in each stage. Set transport_scalar=False for
+    externally split scalar transport; the scalar still supplies buoyancy.
     """
     if scalar_boundary not in ("cell", "flux"):
         raise ValueError("scalar_boundary must be cell or flux")
@@ -85,6 +87,8 @@ def build_open_atmospheric_step(
         raise ValueError("energy lateral backflow currently requires an inactive scalar")
     if backflow and scalar is not None:
         scalar_boundary = "flux"
+    if not transport_scalar and (scalar_boundary != "flux" or scalar_source is not None or surface_transfer is not None):
+        raise ValueError("external scalar transport requires flux boundaries and no carrier scalar sources")
     momentum_rhs = build_tendency(grid, boundaries, momentum)
     sponge = None
     if momentum.outlet_sponge_start_fraction is not None:
@@ -152,7 +156,7 @@ def build_open_atmospheric_step(
                 current_momentum.y + source.y,
                 current_momentum.z + source.z,
             )
-        if scalar is None:
+        if scalar is None or not transport_scalar:
             current_scalar = jnp.zeros_like(current_scalar_field)
         else:
             subfilter_viscosity = (
@@ -235,7 +239,7 @@ def build_open_atmospheric_step(
         velocity, pressure = project(
             candidate, poisson, dt, solution.pressure
         )
-        if scalar is None:
+        if scalar is None or not transport_scalar:
             next_scalar = current_scalar_field
         else:
             next_scalar = current_scalar_field + step_size * (
@@ -294,7 +298,7 @@ def build_open_atmospheric_step(
                 previous_boundary_pressure = current_boundary_pressure
             velocity, pressure = project(candidate, poisson, substep,
                                          outlet_pressure=boundary_pressure)
-            if scalar is not None:
+            if scalar is not None and transport_scalar:
                 next_scalar = current_scalar_field + step_size * (
                     current_weight * current_scalar + previous_weight * previous_scalar
                 )

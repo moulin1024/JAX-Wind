@@ -1,5 +1,10 @@
 # Water-spray cooling benchmark: Montazeri (2015), case 3
 
+Current per-sensor acceptance is **20%**. The four recent inertial transport
+runs pass 9/9 temperature sensors under this revised criterion; full validation
+remains open. See the [re-assessment](../SprayClosureValidation/acceptance-20-percent.md).
+Earlier 10% results below remain historical.
+
 This reproducible benchmark challenges the current subgrid, entrained-mist model against measured evaporative cooling. **The initial entrained-mist implementation fails this comparison and exceeds its dilute-loading assumptions.** See [results](comparison/report.md) and [comparison plot](comparison/comparison.svg).
 
 The subsequent [inertial-droplet investigation](investigation/README.md) preserves this baseline and adds finite slip, droplet temperature and conservative carrier feedback. Its validation is ongoing.

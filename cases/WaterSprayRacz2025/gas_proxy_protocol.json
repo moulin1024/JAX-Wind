@@ -1,0 +1,29 @@
+{
+  "status": "source qualification only; no measured carrier-field claim",
+  "method_doi": "10.1016/j.ijmultiphaseflow.2022.104260",
+  "source_z_m": 0.02,
+  "length_scale_m": 0.012,
+  "length_provenance": "Author filtering_v2.m uses dh=0.4 mm and l=30 dh; method definition is the liquid bore, not the gas annulus.",
+  "density_kg_m3": 997.0,
+  "density_provenance": "Nominal water density assumed for the 25 C qualification subset, not a measured dataset field.",
+  "viscosity_Pa_s": 0.000018691,
+  "viscosity_provenance": "Air dynamic viscosity parameter from author's sample script, reused for the 25 C qualification condition.",
+  "minimum_diameter_m": 0.0000005145,
+  "stokes_limits": [0.05, 0.1, 0.2],
+  "nominal_stokes_limit": 0.1,
+  "prefilter": "Three scaled median absolute deviations in diameter, after finite/positive and laser-wavelength checks. Applied only to the gas proxy, never to the full liquid source.",
+  "minimum_count_screen": 1000,
+  "count_screen_meaning": "Preliminary sample-count flag only, not statistical independence or sufficient accuracy.",
+  "time_blocks": 10,
+  "time_block_method": "Leave one equal-duration arrival-time block out and re-estimate the nominal proxy. Report ranges as sensitivity, not a confidence interval.",
+  "cumulative_diagnostic": "Rice-rule diameter bins; cumulative speed standard deviation peak restricted to populations >= minimum_count_screen.",
+  "constraints": [
+    "Source-only loader must reject downstream bodies before reading them.",
+    "No tuning against downstream data.",
+    "Preserve original selected-record masks and all iteration histories.",
+    "Speed is the magnitude of two measured channels, not a full three-component speed.",
+    "Report signed component statistics separately; Y traverse second channel is tangential.",
+    "No probe-volume, sampling-velocity or detection-efficiency correction is implied.",
+    "No isotropic third component or SGS energy is inferred from these statistics."
+  ]
+}

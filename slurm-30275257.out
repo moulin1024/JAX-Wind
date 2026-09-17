@@ -1,0 +1,52 @@
+Traceback (most recent call last):
+  File "/raven/u/limo/JAX-Wind/tools/run_v80_dpm_uniform.py", line 270, in <module>
+    main()
+    ~~~~^^
+  File "/raven/u/limo/JAX-Wind/tools/run_v80_dpm_uniform.py", line 62, in main
+    workflow = load_workflow(args.case)
+  File "/raven/u/limo/JAX-Wind/src/jaxwind/config/stages.py", line 619, in load_workflow
+    document = native_document(path)
+  File "/raven/u/limo/JAX-Wind/src/jaxwind/config/document.py", line 192, in native_document
+    case = load_case(path)
+  File "/raven/u/limo/JAX-Wind/src/jaxwind/config/document.py", line 179, in load_case
+    document = _load(source)
+  File "/raven/u/limo/JAX-Wind/src/jaxwind/config/document.py", line 44, in _load
+    document = tomllib.load(stream)
+  File "/mpcdf/soft/SLE_15/packages/x86_64/python-waterboa/2025.06/lib/python3.13/tomllib/_parser.py", line 66, in load
+    return loads(s, parse_float=parse_float)
+  File "/mpcdf/soft/SLE_15/packages/x86_64/python-waterboa/2025.06/lib/python3.13/tomllib/_parser.py", line 113, in loads
+    pos, header = create_dict_rule(src, pos, out)
+                  ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^
+  File "/mpcdf/soft/SLE_15/packages/x86_64/python-waterboa/2025.06/lib/python3.13/tomllib/_parser.py", line 290, in create_dict_rule
+    raise suffixed_err(src, pos, f"Cannot declare {key} twice")
+tomllib.TOMLDecodeError: Cannot declare ('physics', 'turbine') twice (at line 60, column 17)
+srun: error: ravg1002: task 0: Exited with exit code 1
+srun: Terminating StepId=30275257.0
+                                  
+================================= 
+Global information about the job: 
+================================= 
+  
+Job owner: limo(1954)
+Job name:  v80-spray-adm-coarse20
+Node list: ravg1002
+Job start: Thu Sep 17 10:18:01 CEST 2026
+Job end:   Thu Sep 17 10:18:05 CEST 2026
+Work dir:  /raven/u/limo/JAX-Wind
+Command:   /raven/u/limo/JAX-Wind/tools/run_v80_dpm_uniform_adm_coarse.sbatch
+  
+  
+  
+==========================================================================================
+Information on jobsteps (Note: MaxRSS/AveRSS is the maximum/average over all 
+tasks of the per-task memory high-water marks; cf. "man sacct"): 
+==========================================================================================
+  
+JobID            JobName NNodes NTasks  NCPUS       MaxRSS       AveRSS    Elapsed ExitCode
+------------- ---------- ------ ------ ------ ------------ ------------ ---------- --------
+30275257      v80-spray-      1             8                             00:00:04      1:0
+30275257.0        python      1      1      8      335.96M      335.96M   00:00:02      1:0
+  
+Maximum memory per node: 0.352276 GB (defined as MaxRSS*Ntasks/NNodes)
+CPU utilization: 6.2 %
+  

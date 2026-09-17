@@ -1,0 +1,15 @@
+schema_version = 1
+extends = "v80_uniform10_20kgs_200um.toml"
+
+[case]
+name = "v80_uniform10_300K_RH80_spray20kgs_200um_290K_refined"
+
+# Same domain and physical settings; eight times as many cells.
+[mesh]
+cells = [128, 128, 256]
+
+[workflow]
+output_directory = "outputs/v80_uniform10_20kgs_200um_290K_refined"
+
+[output]
+directory = "outputs/v80_uniform10_20kgs_200um_290K_refined"

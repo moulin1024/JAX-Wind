@@ -1,0 +1,9 @@
+{
+  "status": "follow-up to distinguish solved-domain covariance from appended-tail artifacts",
+  "trigger": "Initial source-state stress audit found negative eigenvalues only inside the appended leading-power tail of corrected models. Those observations alone do not prove a violation inside the numerically solved profile.",
+  "selection": "Both 1990-convention corrected production variants and their two uncorrected controls; no new coefficients, holdout values or profile normalization",
+  "method": "Continue the same free-edge boundary-value equations to delta=0.0025,0.001,0.0005,0.00025,0.0001 at tolerance 1e-8 and 800 initial nodes. Verify existing numerical gates, record solved-domain and appended-tail eigenvalues separately. Use an edge-graded diagnostic grid and repeat its quadrature with twice as many samples.",
+  "thresholds": "Unchanged from kepsilon_momentum_audit_protocol.json; no clipping, covariance projection or physical-model adjustment",
+  "interpretation": "Even a very small integrated violating region cannot be used as a particle covariance without a justified treatment. Its presence does not establish that it causes the much larger observed mean-profile error.",
+  "holdout_accessed": false
+}

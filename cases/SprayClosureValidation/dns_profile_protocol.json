@@ -1,0 +1,108 @@
+{
+  "status": "Exploratory independent-DNS calibration; retrospective Hussein holdout. Not production qualified.",
+  "calibration": {
+    "study": "Shin, Sandberg and Richardson (2017), JFM 823, 1-25",
+    "paper_doi": "10.1017/jfm.2017.304",
+    "dataset_doi": "10.5258/SOTON/D0075",
+    "landing_url": "https://eprints.soton.ac.uk/407939/",
+    "archive_url": "https://eprints.soton.ac.uk/407939/1/JFM_MWSA_statistics_paper_all.zip",
+    "archive_sha256": "1dd92bacea14522ff683bb1fbea47dbebdfe48c1b965a0cd6d3c496eddc70216",
+    "file": "Figure_02_a_u0v0_vs_eta.txt",
+    "file_sha256": "dbb9c005fc85a6c9a35f32372665fd43633bc0a2aa3fd097715342454b2bc31a",
+    "block_indices": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16,
+      17,
+      18,
+      19,
+      20,
+      21,
+      22,
+      23,
+      24,
+      25
+    ],
+    "points_per_block": 834,
+    "coordinate": "eta=r/(x-x0); velocity=U/Uc",
+    "selection": "First 26 axial-DNS blocks in Figure 2a, collectively labeled x/D=15..40. Deduplicate identical blocks and use all remaining curves equally; individual block-to-station mapping is not asserted. Exclude the short experimental overlays and all radial-velocity curves. Source file has blank-separated numeric blocks, despite README mentioning headings.",
+    "Re": 7290,
+    "Mach": 0.304,
+    "license_notice": "Source landing page and README specify CC BY-NC-ND 4.0; retain raw data only in ignored research outputs. No source tables are redistributed.",
+    "deduplication": "Remove exact duplicate numeric arrays among selected blocks before interpolation; keep the first occurrence. This is a source-export correction, not a profile/holdout selection."
+  },
+  "fit": {
+    "eta_min": 0.0,
+    "eta_max": 0.3,
+    "points": 601,
+    "objective": "Equal-weight squared error in U/Uc on the common eta grid, averaged across all unique selected DNS curves; do not clip negative/noisy source values. No Hussein/waterjet data are opened by calibration.",
+    "families": [
+      "single_gaussian",
+      "two_gaussian_mixture"
+    ],
+    "mixture_definition": "f(eta)=a exp(-c2*ratio*eta^2)+(1-a) exp(-c2*eta^2)",
+    "bounds": {
+      "a": [
+        1e-06,
+        0.999999
+      ],
+      "c2": [
+        1.0,
+        1000.0
+      ],
+      "ratio": [
+        1.0,
+        100.0
+      ]
+    },
+    "starts": [
+      [
+        0.5,
+        20.0,
+        4.0
+      ],
+      [
+        0.5,
+        50.0,
+        2.0
+      ],
+      [
+        0.8,
+        70.0,
+        2.0
+      ]
+    ],
+    "selection": "Minimum DNS objective among these fixed starts; retain every optimizer result. Mixture is a positive empirical shape representation, not a derived Reynolds-stress closure."
+  },
+  "assessment": {
+    "candidates": [
+      "single_gaussian_dns",
+      "two_gaussian_dns",
+      "two_gaussian_shape_ricou"
+    ],
+    "alpha_shape_ricou": 0.08,
+    "holdout": "Unchanged reference.json Hussein targets and 20% local-relative engineering screen",
+    "integrals": "I1=integral eta*f d_eta; I2=integral eta*f^2 d_eta. DNS alpha=I1/sqrt(2 I2); retain the derived integral normalization, not an independently imposed Uc or width.",
+    "report": "All candidates, source-fit residuals, finite-plane/conservation tests and applicability limits. No selection based on holdout results."
+  },
+  "production_enabled": false,
+  "revision": 2,
+  "revision_history": [
+    "Revision 1: job 30272238, all 26 exported axial blocks used. It passed numerical tests but failed every holdout screen.",
+    "Revision 2: remove exact duplicate block 1 (identical to block 0). Selection, fit families, bounds, initial guesses and holdout criteria unchanged. Report the source-versus-holdout spread without refitting."
+  ]
+}

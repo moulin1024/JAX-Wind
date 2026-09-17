@@ -1,0 +1,58 @@
+{
+  "status": "source-frozen candidate equations; numerical qualification required before holdout assessment",
+  "source": {
+    "title": "An explanation of the turbulent round-jet/plane-jet anomaly",
+    "author": "S. B. Pope",
+    "year": 1978,
+    "journal": "AIAA Journal 16(3), 279-281",
+    "url": "https://tcg.mae.cornell.edu/pubs/Pope_AIAAJ_78.pdf",
+    "pdf_sha256": "914cefaf69594beda0f2df10a7ea2a44428fad9dda1b1a2a9233c1aac860063e"
+  },
+  "constants": {
+    "c_mu": 0.09,
+    "c1": 1.45,
+    "c2": 1.9,
+    "sigma_k": 1.0,
+    "sigma_e": 1.3
+  },
+  "candidates": [
+    {
+      "name": "pope_original_standard",
+      "c3": 0.0,
+      "published_half_width_slope": 0.125
+    },
+    {
+      "name": "pope_original_corrected",
+      "c3": 0.79,
+      "published_half_width_slope": 0.086
+    }
+  ],
+  "model": "Steady incompressible high-Re axisymmetric boundary-layer k-epsilon similarity with radial turbulent diffusion, shear production, and signed Pope vortex-stretching correction. Molecular viscosity, axial turbulent diffusion and axial normal-stress gradients are omitted. No turbulent Schmidt number or droplet model is inferred.",
+  "normalization": "eta=r/(x-x0), U=A F/(x-x0), F(0)=1; no measured width or entrainment coefficient imposed",
+  "invariant": "chi=(K/E)^3 F_prime^2 (F-I/eta^2)/4; retain its sign",
+  "qualification": {
+    "source_spreading_relative_tolerance": 0.02,
+    "required": [
+      "positive finite K and E",
+      "nonnegative monotone F",
+      "small equation and boundary residuals",
+      "mesh and solver-tolerance convergence",
+      "far-boundary and turbulence-floor convergence",
+      "independent analytic and tensor equation checks"
+    ],
+    "maximum_refinement_profile_change_over_Uc": 0.0001,
+    "maximum_refinement_integral_or_width_relative_change": 0.002,
+    "profile_comparison_eta_interval": [
+      0.0,
+      0.2
+    ],
+    "point_count": 201,
+    "note": "These are numerical/source-reproduction checks, not experimental uncertainty intervals. Unqualified solutions cannot be assessed as physical predictions. Numerical initialization may be improved without changing these coefficients or consulting holdout errors.",
+    "maximum_relative_collocation_residual": 1e-06,
+    "maximum_dimensionless_boundary_residual": 1e-09,
+    "maximum_scaled_least_squares_residual": 1e-08
+  },
+  "holdout": "Unchanged Hussein 1994 reference.json, 20% gate. Assess only after numerical qualification; do not fit coefficients or normalization to it.",
+  "energy_ownership": "RANS k represents total modeled turbulence. It cannot be assigned to unresolved LES energy without a separate filter/ownership model.",
+  "production_default_change": false
+}

@@ -76,6 +76,27 @@ class StaticSmagorinsky:
             raise ValueError("the Smagorinsky coefficient must lie in [0, 1)")
 
 
+@dataclass(frozen=True, slots=True)
+class FluentSmagorinsky(StaticSmagorinsky):
+    """Fluent 2026 R1 static model: l=min(kappa*ground_distance,Cs*V^(1/3)).
+
+    The atmospheric upper boundary is a symmetry lid, not a second ground wall.
+    Defaults follow the documented Cs=0.1. Existing SGS choices are unchanged.
+    """
+
+    coefficient: float = 0.1
+    von_karman: float = 0.41
+
+    def __post_init__(self):
+        if not 0 < self.coefficient < 1 or not 0 < self.von_karman < 1:
+            raise ValueError("positive finite Fluent LES constants required")
+
+    def length_scale(self, grid, dtype):
+        distance = jnp.asarray(grid.z_centers, dtype)[:, None, None]
+        return jnp.minimum(self.von_karman*distance,
+                           self.coefficient*cell_volumes(grid, dtype)**(1/3))
+
+
 # Velocity gradients held where the staggered mesh defines them, keyed by the
 # component and the direction of differentiation.
 EdgeGradients = dict[str, jnp.ndarray]
@@ -298,6 +319,9 @@ def eddy_viscosity(
                 strain_magnitude_squared = (
                     strain_magnitude_squared + 2.0 * strain[i][j] ** 2
                 )
+        if isinstance(model, FluentSmagorinsky):
+            return model.length_scale(grid, tensor[0][0].dtype)**2 * jnp.sqrt(
+                strain_magnitude_squared)
         filter_width = cell_volumes(grid, tensor[0][0].dtype) ** (1.0 / 3.0)
         return (
             model.coefficient * filter_width

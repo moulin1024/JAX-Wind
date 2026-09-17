@@ -80,3 +80,27 @@ def test_sources_in_physical_end_cells_survive_carrier_step(scheme):
         0.01 * jnp.sum(sink * grid.cell_volumes),
         atol=1e-14,
     )
+
+
+@pytest.mark.parametrize("scheme", ["ab2", "fast-rk3", "rk3"])
+def test_external_scalar_transport_is_not_applied_twice_or_from_cached_rhs(scheme):
+    grid = UniformGrid(8, 4, 4, 2.0, 1.0, 1.0)
+    velocity = StaggeredVelocity(
+        jnp.ones((4, 4, 9)), jnp.zeros((4, 5, 8)), jnp.zeros((5, 4, 8))
+    )
+    plane = InflowPlane(*(a[..., 0] for a in velocity), jnp.zeros((4, 4)))
+    boundaries = Boundaries(Wall(FREE_SLIP), Wall(FREE_SLIP),
+                            streamwise=OPEN, spanwise=FREE_SLIP)
+    poisson = build_pressure_poisson(grid, backend="gmg", periodic_x=False,
+                                     periodic_y=False, dtype="float64")
+    initial = initial_atmospheric_solution(grid, velocity, dtype="float64")
+    initial = initial._replace(
+        scalar=jnp.arange(128, dtype=jnp.float64).reshape(4, 4, 8),
+        scalar_tendency=jnp.ones((4, 4, 8)), step=jnp.asarray(1),
+    )
+    step = build_open_atmospheric_step(
+        grid, boundaries, poisson, FlowModel(), PassiveScalar(),
+        scheme=scheme, scalar_boundary="flux", transport_scalar=False,
+    )
+    result = jax.jit(step)(initial, 0.01, plane)
+    np.testing.assert_array_equal(result.scalar, initial.scalar)

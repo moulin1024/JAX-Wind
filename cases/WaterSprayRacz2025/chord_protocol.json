@@ -1,0 +1,58 @@
+{
+  "status": "source-only conditional observation-model assessment; not measured transport validation",
+  "source_z_m": 0.02,
+  "expected_stations": 34,
+  "diameter_range_um": [
+    0.5145,
+    64.1
+  ],
+  "diameter_bin_edges_um": [
+    0.5145,
+    1,
+    2,
+    3,
+    5,
+    7.5,
+    10,
+    15,
+    20,
+    30,
+    40,
+    64.1
+  ],
+  "time_blocks": [
+    8,
+    16,
+    32
+  ],
+  "training_blocks": "even zero-based indices; odd indices are internal source check; right-boundary ties within eight floating-point ulps of absolute time scale",
+  "minimum_bin_events": 100,
+  "angle_diagnostic_degrees": 5,
+  "model": "point droplets, locally homogeneous axial straight tracks, cylinder truncated by a constant receiver slit, uniform transverse impact coordinate, complete threshold detection and actual residence TT",
+  "radius_squared_um2": "a*log(D_um)+b",
+  "fit": "ordinary least squares of (3/8)*(abs(u_axial)*TT in micrometres)^2 against log(D_um), training events only",
+  "physical_admissibility": "a>0 and positive predicted radius squared throughout the declared diameter range",
+  "evaluation": [
+    "held-source normalized chord CDF distance",
+    "held-source radius support exceedance",
+    "normalized first and second moments",
+    "held-source diameter-bin second-moment errors",
+    "fit sensitivity to temporal block resolution"
+  ],
+  "rules": [
+    "Freeze this conditional hypothesis before reading its numerical results. It is an independently derived chord specialization, not an implementation of an unread Saffman equation.",
+    "Hash-check all source files; reject downstream numerical loads. Retain all raw events; excluded diameters remain counted, and this fit subset is not a physical-validity filter.",
+    "No fit to downstream observations, nozzle mass flow, jet profile holdout or waterjet temperatures.",
+    "No observation correction is applied. Nonpositive fits and support violations remain explicit; do not clip radius or normalize the model to force compatibility.",
+    "Temporal splits assess stability, not independent physical validation or IID significance. Report all 34 stations and all block resolutions without selecting a favorable one.",
+    "Measured transverse/axial velocity gives only a lower bound on angle because the third joint component is absent.",
+    "No formal confidence interval or pass threshold is supplied for this unqualified optical model; retain the separate unchanged 20 percent physical transport screen.",
+    "Even a compatible radius model cannot identify rejected-signal efficiency, calibrated projected slit height, live acquisition time, missing third velocity or cross-plane spatial flux."
+  ],
+  "followup_nonnegative_fit": {
+    "motivation": "All 102 unconstrained fits in 30273030 were inadmissible. This explicitly recorded follow-up tests whether enforcing nonnegative radii resolves that failure; no downstream values are used.",
+    "fit": "Exact two-parameter nonnegative least squares of (3/8)*ell_um^2 = a*log(D/D_lower)+c, a,c>=0; fit training blocks only.",
+    "support": "R^2 may approach zero at the declared lower endpoint, but must be strictly positive for every included observed diameter; no clipping or data removal.",
+    "reporting": "Retain original unconstrained fits and all check results. This adaptive follow-up is not a blind physical validation."
+  }
+}
