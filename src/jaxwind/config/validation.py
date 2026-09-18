@@ -7,7 +7,14 @@ from .document import load_case
 
 def check_case(case):
     case = load_case(case)
-    if case.formulation == "boussinesq":
+    if case.document["case"].get("benchmark") == "montazeri2015-water-spray":
+        from .spray_mesh import build_spray_grid
+        from .moisture import load_moisture
+        grid = build_spray_grid(case.document["mesh"], spray_model=case.document["case"].get("spray_model", "entrained"))
+        if not grid.is_uniform and case.document["numerics"].get("momentum_advection_scheme", "muscl-mc") != "central":
+            raise ValueError("stretched spray grids require explicit momentum_advection_scheme=central")
+        load_moisture(case.document["physics"])
+    elif case.formulation == "boussinesq":
         from .abl import load_fv_abl
         configured = load_fv_abl(case)
         if "wind_farm" in case.document.get("physics", {}):

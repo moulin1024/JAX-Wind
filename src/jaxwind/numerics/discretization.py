@@ -97,8 +97,22 @@ def pressure_gradient(
     periodic_y: bool = True,
     open_x_low: bool = False,
     open_y: bool = False,
+    physical_transverse_inlet: bool = False,
 ) -> StaggeredVelocity:
-    """Face-normal gradient of a cell-centred field."""
+    """Face-normal pressure gradient with optional physical transverse inlet.
+
+    The opt-in uniform open-x mode releases transverse gradients in the first
+    x-cell column. Inlet normal correction stays zero; the last-column
+    transverse constraint remains unchanged. The matching Poisson operator
+    must use the same option.
+    """
+    if physical_transverse_inlet and (
+        periodic_x or open_x_low or open_y or not grid.is_uniform
+    ):
+        raise ValueError(
+            "physical transverse inlet requires a uniform fixed-flux x inlet "
+            "without lateral pressure outlets"
+        )
     if periodic_x:
         x_gradient = (pressure - jnp.roll(pressure, 1, axis=2)) / (
             shaped_center_distances(grid, 2, periodic=True, dtype=pressure.dtype)
@@ -138,8 +152,12 @@ def pressure_gradient(
         axis=0,
     )
     if not periodic_x:
-        y_gradient = y_gradient.at[..., 0].set(0.0).at[..., -1].set(0.0)
-        z_gradient = z_gradient.at[..., 0].set(0.0).at[..., -1].set(0.0)
+        if not physical_transverse_inlet:
+            y_gradient = y_gradient.at[..., 0].set(0.0)
+            z_gradient = z_gradient.at[..., 0].set(0.0)
+        # On a one-column coarse grid the retained outlet constraint wins.
+        y_gradient = y_gradient.at[..., -1].set(0.0)
+        z_gradient = z_gradient.at[..., -1].set(0.0)
     return StaggeredVelocity(x_gradient, y_gradient, z_gradient)
 
 

@@ -27,10 +27,10 @@ from jaxwind import (
     initial_atmospheric_solution,
 )
 from jaxwind.config.moisture import load_moisture
-from jaxwind.domain import UniformGrid
+from jaxwind.config.spray_mesh import build_spray_grid
 from jaxwind.moist_abl import build_moist_atmospheric_step, initialize_moisture
 from jaxwind.physics.moisture import saturation_vapor_pressure_water
-from jaxwind.sgs import AnisotropicMinimumDissipation
+from jaxwind.sgs import AnisotropicMinimumDissipation, StaticSmagorinsky
 from jaxwind.water_spray import build_water_injection
 
 from .api import Simulation
@@ -68,12 +68,18 @@ def inlet_mixing_ratio(reference, config):
     )
 
 
-def inlet_kinetic_energy(plane, mean_speed):
+def inlet_kinetic_energy(plane, mean_speed, area=None):
     """Cell-centered plane TKE after staggered interpolation."""
     u = plane.x_velocity - mean_speed
     v = 0.5 * (plane.y_velocity[:, :-1] + plane.y_velocity[:, 1:])
     w = 0.5 * (plane.z_velocity[:-1] + plane.z_velocity[1:])
-    return 0.5 * jnp.asarray([jnp.mean(u * u), jnp.mean(v * v), jnp.mean(w * w)])
+
+    def mean(values):
+        return (
+            jnp.mean(values) if area is None else jnp.sum(values * area) / jnp.sum(area)
+        )
+
+    return 0.5 * jnp.asarray([mean(u * u), mean(v * v), mean(w * w)])
 
 
 def build_benchmark_inlet(grid, mean_speed, uniform_plane, turbulence, duration):
@@ -119,10 +125,22 @@ def build_benchmark_inlet(grid, mean_speed, uniform_plane, turbulence, duration)
         ),
     )
 
+    area = (
+        None
+        if grid.is_uniform
+        else jnp.asarray(grid.z_widths[:, None] * grid.y_widths[None, :])
+    )
+
     def corrected(time):
         plane = sampled(time)
         return plane._replace(
-            x_velocity=plane.x_velocity - jnp.mean(plane.x_velocity) + mean_speed
+            x_velocity=plane.x_velocity
+            - (
+                jnp.mean(plane.x_velocity)
+                if area is None
+                else jnp.sum(plane.x_velocity * area) / jnp.sum(area)
+            )
+            + mean_speed
         )
 
     if normalization == "streamwise_rms":
@@ -132,7 +150,7 @@ def build_benchmark_inlet(grid, mean_speed, uniform_plane, turbulence, duration)
     nodes = jnp.asarray([0.5 - 0.5 / np.sqrt(3), 0.5 + 0.5 / np.sqrt(3)])
     times = ((jnp.arange(nx)[:, None] + nodes) * period / nx).reshape(-1)
     energies = jax.jit(
-        jax.vmap(lambda t: inlet_kinetic_energy(corrected(t), mean_speed))
+        jax.vmap(lambda t: inlet_kinetic_energy(corrected(t), mean_speed, area))
     )
     normal_energy = jnp.mean(energies(times)[:, 0])
     tangential_energy = jnp.sum(
@@ -158,9 +176,63 @@ def build_benchmark_inlet(grid, mean_speed, uniform_plane, turbulence, duration)
 def build_simulation(case):
     doc = case.document
     jax.config.update("jax_enable_x64", doc["numerics"]["dtype"] == "float64")
-    grid = UniformGrid(*doc["mesh"]["cells"], *doc["mesh"]["lengths_m"])
+    grid = build_spray_grid(
+        doc["mesh"], spray_model=doc["case"].get("spray_model", "entrained")
+    )
+    if (
+        not grid.is_uniform
+        and doc["numerics"].get("momentum_advection_scheme", "muscl-mc") != "central"
+    ):
+        raise ValueError(
+            "stretched spray grids require explicit momentum_advection_scheme=central"
+        )
     moist, spray = load_moisture(doc["physics"])
     config = moist.thermodynamics
+    model = doc["case"].get("spray_model", "entrained")
+    if model not in ("entrained", "inertial", "fluent-dpm"):
+        raise ValueError(
+            "benchmark spray_model must be entrained, inertial or fluent-dpm"
+        )
+    if (model == "fluent-dpm") != (spray.model == "fluent-dpm"):
+        raise ValueError("case.spray_model and physics.water_spray.model disagree")
+    carrier_turbulence = doc["case"].get("carrier_turbulence_model", "les")
+    if carrier_turbulence not in ("les", "standard-k-epsilon", "realizable-k-epsilon"):
+        raise ValueError(
+            "carrier_turbulence_model must be les, standard-k-epsilon, or realizable-k-epsilon"
+        )
+    rans = carrier_turbulence != "les"
+    physical_inlet = doc["case"].get("physical_transverse_inlet", False)
+    if not isinstance(physical_inlet, bool):
+        raise ValueError("physical_transverse_inlet must be boolean")
+    if physical_inlet and (
+        model != "inertial" or not grid.is_uniform
+        or doc["case"].get("carrier_sgs_model", "amd") != "amd"
+        or doc["numerics"].get("momentum_advection_scheme", "muscl-mc") != "muscl-mc"
+        or not doc["case"].get("project_parcel_feedback", False)
+    ):
+        raise ValueError("physical_transverse_inlet requires uniform projected inertial MUSCL with AMD or transported RANS")
+    scalar_closure = doc["case"].get("carrier_scalar_transport", "shared-diffusivity")
+    if scalar_closure not in ("shared-diffusivity", "fluent-rans-defaults"):
+        raise ValueError("unknown carrier_scalar_transport")
+    fluent_scalar = scalar_closure == "fluent-rans-defaults"
+    if fluent_scalar and (
+        not rans or doc["numerics"].get("scalar_advection_scheme")
+        not in ("muscl-mc", "upwind-ssprk3")
+    ):
+        raise ValueError("fluent-rans-defaults requires RANS with shared SSP scalar transport")
+    if not rans and "turbulence_advection_scheme" in doc["numerics"]:
+        raise ValueError("turbulence_advection_scheme requires a transported RANS model")
+    if rans and (
+        model != "inertial"
+        or doc["case"].get("carrier_sgs_model", "amd") != "amd"
+        or doc["case"].get("scalar_boundary") != "flux"
+        or doc["case"].get("gas_wall_model") != "smooth-spalding"
+        or not doc["case"].get("project_parcel_feedback", False)
+        or doc["case"].get("inlet_turbulence") is None
+    ):
+        raise ValueError(
+            "RANS control requires projected inertial flux baseline, wall model, inlet turbulence; no SGS override"
+        )
     reference = doc["case"]["reference"]
     dtype = doc["numerics"]["dtype"]
     u = doc["physics"]["flow"]["streamwise_velocity_m_s"]
@@ -197,17 +269,68 @@ def build_simulation(case):
         wall_force = lambda velocity, time: smooth_duct_tendency(
             velocity, grid, viscosity
         )
+    subfilter = AnisotropicMinimumDissipation()
+    carrier_sgs = doc["case"].get("carrier_sgs_model", "amd")
+    if carrier_sgs not in (
+        "amd",
+        "smagorinsky",
+        "wall-limited-smagorinsky",
+        "frozen-inlet-rans",
+    ):
+        raise ValueError(
+            "carrier_sgs_model must be amd, smagorinsky, wall-limited-smagorinsky, or frozen-inlet-rans"
+        )
+    if carrier_sgs != "amd":
+        if model != "inertial":
+            raise ValueError(
+                "carrier_sgs_model override is only supported for inertial parcels"
+            )
+        from jaxwind.sgs import FluentSmagorinsky
+
+        # Fixed existing static-model preset, selected before outlet comparison.
+        # This is a closure control, not an outlet-calibrated diffusivity.
+        subfilter = (
+            StaticSmagorinsky()
+            if carrier_sgs == "smagorinsky"
+            else FluentSmagorinsky(coefficient=0.16, tunnel_walls=True)
+        )
+    if carrier_sgs == "frozen-inlet-rans":
+        from jaxwind.sgs import ConstantEddyViscosity
+
+        # Mechanism test only: paper Eqs. 1–2 and nu_t=C_mu*k^2/epsilon.
+        # The inlet-derived value is frozen throughout the domain; no RANS
+        # turbulence equations are solved and this is not a production closure.
+        turbulence = doc["case"].get("inlet_turbulence")
+        if turbulence is None:
+            raise ValueError("frozen-inlet-rans requires prescribed inlet turbulence")
+        nu_t = 0.09**0.25 * u * turbulence["intensity"] * turbulence["length_scale_m"]
+        subfilter = ConstantEddyViscosity(nu_t)
+    if model == "fluent-dpm" and spray.dpm.les_model == "fluent-smagorinsky":
+        from jaxwind.sgs import FluentSmagorinsky
+
+        subfilter = FluentSmagorinsky(
+            coefficient=spray.dpm.smagorinsky_constant,
+            von_karman=spray.dpm.von_karman,
+            tunnel_walls=True,
+        )
     momentum = FlowModel(
         forcing=wall_force,
         viscosity=doc["physics"]["flow"]["kinematic_viscosity_m2_s"],
-        subfilter=AnisotropicMinimumDissipation(),
+        subfilter=subfilter,
         momentum_advection_scheme=doc["numerics"].get(
             "momentum_advection_scheme", "muscl-mc"
         ),
     )
+    # Fluent12 defaults Pr_t=.85, Sc_t=.7 (Theory Guide 4.4.7).
+    # Explicit comparison option: paper does not disclose these settings.
+    from jaxwind.physics.moisture import WaterDropletProperties
+
+    heat_diffusivity = WaterDropletProperties().air_thermal_conductivity / (
+        config.dry_air_density * config.dry_air_heat_capacity
+    )
     scalar = PassiveScalar(
-        diffusivity=config.vapor_diffusivity,
-        turbulent_prandtl=0.7,
+        diffusivity=heat_diffusivity if fluent_scalar else config.vapor_diffusivity,
+        turbulent_prandtl=0.85 if fluent_scalar else 0.7,
         advection_scheme="upwind",
     )
     pressure = build_pressure_poisson(
@@ -217,14 +340,28 @@ def build_simulation(case):
         periodic_y=False,
         dtype=dtype,
         config={"tolerance": 1.0e-7},
+        physical_transverse_inlet=physical_inlet,
     )
+    inlet_eddy = None
+    if physical_inlet:
+        from jaxwind.inlet_momentum import physical_inlet_eddy_viscosity
+        inlet_eddy = lambda velocity, inflow: physical_inlet_eddy_viscosity(
+            velocity, inflow, grid, boundaries, momentum.subfilter
+        )
     scalar_scheme = doc["numerics"].get("scalar_advection_scheme", "upwind")
     if scalar_scheme not in {"upwind", "upwind-ssprk3", "muscl-mc"}:
-        raise ValueError("benchmark scalar_advection_scheme must be upwind, upwind-ssprk3, or muscl-mc")
-    split_scalar_scheme = None if scalar_scheme == "upwind" else (
-        "upwind" if scalar_scheme == "upwind-ssprk3" else "muscl-mc"
+        raise ValueError(
+            "benchmark scalar_advection_scheme must be upwind, upwind-ssprk3, or muscl-mc"
+        )
+    split_scalar_scheme = (
+        None
+        if scalar_scheme == "upwind"
+        else ("upwind" if scalar_scheme == "upwind-ssprk3" else "muscl-mc")
     )
-    if split_scalar_scheme is not None and doc["case"].get("scalar_boundary", "cell") != "flux":
+    if (
+        split_scalar_scheme is not None
+        and doc["case"].get("scalar_boundary", "cell") != "flux"
+    ):
         raise ValueError("SSP scalar transport requires case.scalar_boundary=flux")
     carrier = build_open_atmospheric_step(
         grid,
@@ -235,7 +372,7 @@ def build_simulation(case):
         LinearBoussinesqBuoyancy(9.81 / moist.reference_temperature_k),
         scheme="fast-rk3",
         scalar_boundary=doc["case"].get("scalar_boundary", "cell"),
-        transport_scalar=split_scalar_scheme is None,
+        transport_scalar=split_scalar_scheme is None and model != "fluent-dpm",
     )
     injection = build_water_injection(
         grid,
@@ -259,10 +396,52 @@ def build_simulation(case):
         ambient,
         injection,
         scalar_transport_scheme=split_scalar_scheme,
+        eddy_viscosity_override=inlet_eddy,
     )
-    model = doc["case"].get("spray_model", "entrained")
-    if model not in ("entrained", "inertial"):
-        raise ValueError("benchmark spray_model must be entrained or inertial")
+    if model == "fluent-dpm":
+        from jaxwind.fluent_dpm_atmosphere import (
+            build_dpm_atmospheric_step,
+            initialize_dpm,
+            specific_enthalpy,
+        )
+        from jaxwind.numerics.poisson import project
+        from jaxwind.open_boundary import enforce_open_velocity
+        from jaxwind.physics.fluent_dpm import DPMWaterMaterial
+        from jaxwind.waterjet_observation import WaterjetObservation
+
+        if scalar_scheme != "muscl-mc" or doc["case"].get("scalar_boundary") != "flux":
+            raise ValueError(
+                "DPM benchmark requires muscl-mc scalar transport and flux boundaries"
+            )
+        observation = WaterjetObservation.from_table(
+            doc["case"].get("observation"), grid, spray.dpm
+        )
+        material = DPMWaterMaterial()
+        initial = initialize_dpm(flow, moist, spray, material)
+        initial = initial._replace(
+            moisture=initial.moisture._replace(vapor=jnp.full(shape, qv, dtype)),
+            enthalpy=jnp.full(
+                shape,
+                specific_enthalpy(moist.temperature_offset_k, qv, material),
+                dtype,
+            ),
+        )
+        project_velocity = lambda velocity, h, inflow: project(
+            enforce_open_velocity(velocity, inflow, grid), pressure, h
+        )[0]
+        step = build_dpm_atmospheric_step(
+            carrier,
+            grid,
+            boundaries,
+            momentum,
+            scalar,
+            moist,
+            spray,
+            (spray.streamwise_offset_m, grid.ly / 2, grid.lz / 2),
+            ambient,
+            project_velocity,
+            material=material,
+        )
     if model == "inertial":
         from jaxwind.water_parcels import (
             InertialMoistAtmosphericSolution,
@@ -302,6 +481,7 @@ def build_simulation(case):
             moist.reference_temperature_k,
             ambient,
             scalar_transport_scheme=split_scalar_scheme,
+            eddy_viscosity_override=inlet_eddy,
         )
         project_feedback = doc["case"].get("project_parcel_feedback", False)
         if not isinstance(project_feedback, bool):
@@ -314,20 +494,48 @@ def build_simulation(case):
             # Split off the divergence-free impulse before transporting scalars.
             # Do not reuse this impulse pressure as the carrier's lagged pressure.
             project_velocity = lambda velocity, h, inflow: project(
-                enforce_open_velocity(velocity, inflow, grid), pressure, h
+                enforce_open_velocity(velocity, inflow, grid, physical_transverse_inlet=physical_inlet), pressure, h
             )[0]
         step = build_inertial_water_step(
-            moist_step, grid, source, config, moist.temperature_offset_k,
+            moist_step,
+            grid,
+            source,
+            config,
+            moist.temperature_offset_k,
             project_velocity=project_velocity,
         )
         initial = InertialMoistAtmosphericSolution(
             *initial, initial_water_parcels(source, dtype)
         )
+    if rans:
+        from .water_spray_rans import build_rans_control
+
+        initial, step = build_rans_control(
+            initial,
+            grid,
+            boundaries,
+            pressure,
+            momentum,
+            scalar,
+            config,
+            moist,
+            ambient,
+            source,
+            project_velocity,
+            doc["case"]["inlet_turbulence"],
+            u,
+            scalar_transport_scheme=split_scalar_scheme,
+            vapor_turbulent_schmidt=0.7 if fluent_scalar else None,
+            turbulence_model=carrier_turbulence,
+            turbulence_transport_scheme=doc["numerics"].get(
+                "turbulence_advection_scheme", "upwind"
+            ),
+        )
     inlet = build_benchmark_inlet(
         grid,
         u,
         plane,
-        doc["case"].get("inlet_turbulence"),
+        None if rans else doc["case"].get("inlet_turbulence"),
         doc["time"]["steps"] * doc["time"]["dt_seconds"],
     )
     dt = doc["time"]["dt_seconds"]
@@ -346,9 +554,21 @@ def build_simulation(case):
         if not np.isfinite(value) or value > 0.9:
             raise RuntimeError(f"benchmark CFL {value:g} exceeds .9; reduce dt")
         if split_scalar_scheme is not None:
-            fields = jnp.stack((result.scalar + moist.temperature_offset_k, *result.moisture))
+            fields = jnp.stack(
+                (result.scalar + moist.temperature_offset_k, *result.moisture)
+            )
             if not bool(jnp.all(jnp.isfinite(fields)) & jnp.all(fields >= 0)):
-                raise RuntimeError("bounded scalar transport produced nonfinite or negative temperature/water")
+                raise RuntimeError(
+                    "bounded scalar transport produced nonfinite or negative temperature/water"
+                )
+        if rans and not bool(jnp.all(jnp.isfinite(jnp.stack(result.turbulence)))):
+            raise RuntimeError(
+                "RANS state invalid or explicit diffusion number exceeded 0.5; reduce dt"
+            )
+        if model == "fluent-dpm" and not bool(result.accepted):
+            raise RuntimeError(
+                "DPM step rejected atomically; inspect capacity, path/event limits and thermal timestep"
+            )
         if model == "inertial":
             if float(result.parcels.overflow_mass) > 0:
                 raise RuntimeError(
@@ -368,6 +588,10 @@ def build_simulation(case):
     z = jnp.asarray(grid.z_centers)
     area = jnp.asarray(grid.z_widths)[:, None] * jnp.asarray(grid.y_widths)[None, :]
     volumes = jnp.asarray(grid.cell_volumes)
+    inlet_area = None if grid.is_uniform else area
+    diffusion_metric = sum(
+        float(np.min(getattr(grid, a + "_widths"))) ** -2 for a in "xyz"
+    )
 
     @jax.jit
     def diagnostic(state):
@@ -375,17 +599,27 @@ def build_simulation(case):
         readings = jnp.stack(
             [
                 jnp.interp(
-                    zp, z, jax.vmap(lambda row: jnp.interp(yp, y, row))(temperature)
+                    zp,
+                    z,
+                    jax.vmap(lambda row, yp=yp: jnp.interp(yp, y, row))(temperature),
                 )
                 for zp in sensor_positions
                 for yp in sensor_positions
             ]
         )
-        vapor_readings = jnp.stack([
-            jnp.interp(zp, z, jax.vmap(lambda row: jnp.interp(yp, y, row))(
-                state.moisture.vapor[..., -1]))
-            for zp in sensor_positions for yp in sensor_positions
-        ])
+        vapor_readings = jnp.stack(
+            [
+                jnp.interp(
+                    zp,
+                    z,
+                    jax.vmap(lambda row, yp=yp: jnp.interp(yp, y, row))(
+                        state.moisture.vapor[..., -1]
+                    ),
+                )
+                for zp in sensor_positions
+                for yp in sensor_positions
+            ]
+        )
         outflow = state.velocity.x[..., -1]
         vapor_out = config.dry_air_density * jnp.sum(
             outflow * state.moisture.vapor[..., -1] * area
@@ -401,9 +635,98 @@ def build_simulation(case):
         inlet_w = 0.5 * (current_inlet.z_velocity[:-1] + current_inlet.z_velocity[1:])
         parcel_metrics = {
             "inlet_resolved_k_m2_s2": 0.5
-            * jnp.mean(inlet_u**2 + inlet_v**2 + inlet_w**2),
-            "inlet_bulk_u_m_s": jnp.mean(current_inlet.x_velocity),
+            * (
+                jnp.mean(inlet_u**2 + inlet_v**2 + inlet_w**2)
+                if inlet_area is None
+                else jnp.sum((inlet_u**2 + inlet_v**2 + inlet_w**2) * area)
+                / jnp.sum(area)
+            ),
+            "inlet_bulk_u_m_s": (
+                jnp.mean(current_inlet.x_velocity)
+                if inlet_area is None
+                else jnp.sum(current_inlet.x_velocity * area) / jnp.sum(area)
+            ),
         }
+        if rans:
+            from jaxwind.rans_kepsilon import turbulent_viscosity
+
+            if carrier_turbulence == "realizable-k-epsilon":
+                from jaxwind.rans_realizable import (
+                    turbulent_viscosity as realizable_viscosity,
+                )
+
+                diagnostic_gradients = None
+                if physical_inlet:
+                    from jaxwind.inlet_momentum import physical_inlet_gradients
+                    diagnostic_gradients = physical_inlet_gradients(
+                        state.velocity, inlet(state.time), grid, boundaries
+                    )
+                nut = realizable_viscosity(
+                    state.turbulence, state.velocity, grid, boundaries,
+                    gradients=diagnostic_gradients,
+                )
+            else:
+                nut = turbulent_viscosity(state.turbulence)
+            parcel_metrics.update(
+                {
+                    "rans_k_min": jnp.min(state.turbulence.kinetic_energy),
+                    "rans_k_max": jnp.max(state.turbulence.kinetic_energy),
+                    "rans_epsilon_min": jnp.min(state.turbulence.dissipation),
+                    "rans_epsilon_max": jnp.max(state.turbulence.dissipation),
+                    "rans_nut_max": jnp.max(nut),
+                    "rans_diffusion_number": 2
+                    * dt
+                    * jnp.max(nut + viscosity)
+                    * diffusion_metric,
+                }
+            )
+        if model == "fluent-dpm":
+            from jaxwind.fluent_dpm_atmosphere import dpm_diagnostics
+            from jaxwind.waterjet_observation import sample_plane, wet_bulb_c
+
+            readings = sample_plane(
+                state.scalar + moist.temperature_offset_k - 273.15, grid, observation
+            )
+            vapor_readings = sample_plane(state.moisture.vapor, grid, observation)
+            wet = wet_bulb_c(
+                readings,
+                vapor_readings,
+                config.pressure,
+                config.dry_air_gas_constant / config.water_vapor_gas_constant,
+            )
+            collected = state.dpm_ledger.collected
+            drained = collected + state.dpm_ledger.trapped
+
+            def drain_temperature(inventory):
+                return jnp.where(
+                    inventory[0] > 0,
+                    material.reference_temperature
+                    - 273.15
+                    + inventory[4]
+                    / (
+                        material.liquid_cp
+                        * jnp.where(inventory[0] > 0, inventory[0], 1)
+                    ),
+                    0.0,
+                )
+
+            parcel_metrics.update(dpm_diagnostics(state))
+            parcel_metrics.update(
+                {
+                    **{f"sensor_{i}_wbt_c": wet[i] for i in range(9)},
+                    "sensor_plane_x_m": jnp.asarray(observation.sensor_x_m),
+                    "dpm_carrier_vapor_balance_error_kg": config.dry_air_density
+                    * jnp.sum((state.moisture.vapor - qv) * volumes)
+                    - state.transport_water
+                    - state.dpm_ledger.evaporated_mass,
+                    "dpm_carrier_enthalpy_J": config.dry_air_density
+                    * jnp.sum(state.enthalpy * volumes),
+                    "separator_collection_temperature_c": drain_temperature(collected),
+                    "separator_collection_temperature_valid": collected[0] > 0,
+                    "combined_drain_temperature_c": drain_temperature(drained),
+                    "combined_drain_temperature_valid": drained[0] > 0,
+                }
+            )
         if model == "inertial":
             from jaxwind.cryogenic import _cic_coordinates, _cic_deposit_many
 
@@ -486,13 +809,22 @@ def build_simulation(case):
             **{f"sensor_{i}_dbt_c": readings[i] for i in range(9)},
             **{f"sensor_{i}_vapor_kg_kg": vapor_readings[i] for i in range(9)},
             "sensor_mean_dbt_c": jnp.mean(readings),
-            "effective_droplet_diameter_m": jnp.asarray(equivalent_diameter(reference)),
+            "effective_droplet_diameter_m": jnp.asarray(
+                1
+                / sum(
+                    f / d
+                    for f, d in zip(spray.dpm.mass_fractions, spray.dpm.diameters_m)
+                )
+                if model == "fluent-dpm"
+                else equivalent_diameter(reference)
+            ),
             "inlet_vapor_mixing_ratio": jnp.asarray(qv),
             "cooling_power_w": -config.dry_air_density
             * config.dry_air_heat_capacity
             * jnp.sum(outflow * state.scalar[..., -1] * area),
             "gas_sensible_anomaly_j": config.dry_air_density
-            * config.dry_air_heat_capacity * jnp.sum(state.scalar * volumes),
+            * config.dry_air_heat_capacity
+            * jnp.sum(state.scalar * volumes),
             "water_inventory_kg": config.dry_air_density
             * jnp.sum(sum(state.moisture[:4]) * volumes),
             "maximum_spray_mixing_ratio": jnp.max(state.moisture.spray_liquid),

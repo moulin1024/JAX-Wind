@@ -81,7 +81,6 @@ class WaterParcelSource:
             self.radius,
             self.speed,
             self.temperature,
-            self.mass_flow,
             self.diameter_scale,
             self.diameter_spread,
             self.diameter_minimum,
@@ -91,6 +90,8 @@ class WaterParcelSource:
             raise ValueError(
                 "water parcel source properties must be finite and positive"
             )
+        if not math.isfinite(self.mass_flow) or self.mass_flow < 0:
+            raise ValueError("water parcel mass flow must be finite and nonnegative")
         if not 0 < self.inner_outer_radius_ratio <= 1:
             raise ValueError("annular inner/outer radius ratio must be in (0, 1]")
         if self.diameter_minimum >= self.diameter_maximum:
@@ -182,6 +183,8 @@ def inject_water_parcels(
     Independent irrational sequences cover azimuth and size without runtime
     random state. Overflow is recorded and must be rejected by the runtime.
     """
+    if source.mass_flow == 0:
+        return parcels
     count = source.count_per_step
     slots = jnp.argsort(parcels.active.astype(jnp.int32), stable=True)[:count]
     valid = jnp.arange(count) < jnp.sum(~parcels.active)

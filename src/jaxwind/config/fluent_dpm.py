@@ -23,7 +23,66 @@ class DPMOptions:
     von_karman: float = 0.41
     vaporization: str = "diffusion-controlled"
 
+    injection_geometry: str = "point"
+    cone_inner_half_angle_degrees: float = 0.0
+    cone_outer_half_angle_degrees: float = 0.0
+    cone_azimuthal_points: int = 8
+    cone_polar_points: int = 1
+    # Perfect, adiabatic separator. None preserves the atmospheric baseline.
+    eliminator_x_m: float | None = None
+    execution: str = "serial"
+
+    @property
+    def rays_per_bin(self):
+        return (
+            self.cone_azimuthal_points * self.cone_polar_points
+            if self.injection_geometry == "hollow-cone"
+            else 1
+        )
+
+    @property
+    def injection_batch_size(self):
+        return len(self.diameters_m) * self.rays_per_bin
+
     def __post_init__(self):
+        if self.execution not in ("serial", "batched"):
+            raise ValueError("DPM execution must be serial or batched")
+        if self.injection_geometry not in ("point", "hollow-cone"):
+            raise ValueError("DPM injection_geometry must be point or hollow-cone")
+        angles = (
+            self.cone_inner_half_angle_degrees,
+            self.cone_outer_half_angle_degrees,
+        )
+        if any(
+            isinstance(a, bool)
+            or not isinstance(a, (int, float))
+            or not math.isfinite(a)
+            for a in angles
+        ):
+            raise ValueError("DPM cone angles must be finite numbers")
+        if not 0 <= angles[0] <= angles[1] < 90:
+            raise ValueError("DPM cone angles require 0 <= inner <= outer < 90")
+        if self.injection_geometry == "point" and angles != (0.0, 0.0):
+            raise ValueError("cone angles require hollow-cone injection")
+        if self.injection_geometry == "hollow-cone" and angles[1] == 0:
+            raise ValueError("hollow-cone injection requires a positive outer angle")
+        if (
+            type(self.cone_azimuthal_points) is not int
+            or self.cone_azimuthal_points < 4
+            or self.cone_azimuthal_points % 2
+            or type(self.cone_polar_points) is not int
+            or self.cone_polar_points < 1
+        ):
+            raise ValueError(
+                "cone quadrature needs even azimuthal count >= 4 and positive polar count"
+            )
+        if self.eliminator_x_m is not None and (
+            isinstance(self.eliminator_x_m, bool)
+            or not isinstance(self.eliminator_x_m, (int, float))
+            or not math.isfinite(self.eliminator_x_m)
+            or self.eliminator_x_m <= 0
+        ):
+            raise ValueError("eliminator_x_m must be finite and positive")
         if not self.diameters_m or len(self.diameters_m) != len(self.mass_fractions):
             raise ValueError(
                 "DPM diameters and mass fractions must have equal nonzero length"
@@ -41,6 +100,10 @@ class DPMOptions:
             math.isfinite(v) for v in self.injection_velocity_m_s
         ):
             raise ValueError("DPM injection velocity needs three finite components")
+        if self.injection_geometry == "hollow-cone" and not any(
+            self.injection_velocity_m_s
+        ):
+            raise ValueError("hollow-cone injection needs a nonzero axis/speed vector")
         if not 273.15 <= self.injection_temperature_k < 373.15:
             raise ValueError("DPM currently supports warm, nonboiling water")
         for name in (
@@ -51,7 +114,7 @@ class DPMOptions:
         ):
             if type(getattr(self, name)) is not int or getattr(self, name) < 1:
                 raise ValueError(f"DPM {name} must be a positive integer")
-        if self.capacity < len(self.diameters_m):
+        if self.capacity < self.injection_batch_size:
             raise ValueError("DPM capacity must fit an injection batch")
         if type(self.seed) is not int or not 0 <= self.seed < 2**31:
             raise ValueError("DPM seed must be a nonnegative 31-bit integer")

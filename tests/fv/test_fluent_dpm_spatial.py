@@ -340,10 +340,10 @@ def test_coarse_carrier_evaporates_cools_and_restarts_exactly(tmp_path):
     )
 
 
-@pytest.mark.parametrize("change", ["walls", "lower_flux", "upper_flux", "no_scalar"])
+@pytest.mark.parametrize("change", ["open_sides", "lower_flux", "upper_flux", "no_scalar"])
 def test_unsupported_atmospheric_boundaries_fail_before_compilation(change):
     grid, _gas, _u, source = setup()
-    boundary = replace(B, spanwise=FREE_SLIP) if change == "walls" else B
+    boundary = replace(B, spanwise=OPEN) if change == "open_sides" else B
     scalar = PassiveScalar(
         lower_flux=1.0 if change == "lower_flux" else 0.0,
         upper_flux=1.0 if change == "upper_flux" else 0.0,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from functools import partial
 
 import jax
 import jax.numpy as jnp
@@ -89,6 +90,14 @@ def build_open_atmospheric_step(
         scalar_boundary = "flux"
     if not transport_scalar and (scalar_boundary != "flux" or scalar_source is not None or surface_transfer is not None):
         raise ValueError("external scalar transport requires flux boundaries and no carrier scalar sources")
+    physical_inlet = poisson.physical_transverse_inlet
+    boundary_velocity = partial(
+        enforce_open_velocity, physical_transverse_inlet=physical_inlet
+    )
+    inlet_correction = None
+    if physical_inlet:
+        from .inlet_momentum import build_physical_inlet_momentum_correction
+        inlet_correction = build_physical_inlet_momentum_correction(grid, boundaries, momentum)
     momentum_rhs = build_tendency(grid, boundaries, momentum)
     sponge = None
     if momentum.outlet_sponge_start_fraction is not None:
@@ -109,7 +118,7 @@ def build_open_atmospheric_step(
         return enforce_open_scalar(field, inflow, grid)
 
     def tendencies(velocity, scalar_field, execution_time, inflow, buoyancy_offset):
-        current_velocity = enforce_open_velocity(
+        current_velocity = boundary_velocity(
             velocity, inflow, grid, open_y=poisson.open_y,
             extrapolate_normal_outflow=not backflow,
         )
@@ -119,6 +128,9 @@ def build_open_atmospheric_step(
             else apply_scalar_boundary(scalar_field, inflow)
         )
         current_momentum = momentum_rhs(current_velocity, execution_time)
+        if inlet_correction is not None:
+            correction = inlet_correction(current_velocity, inflow)
+            current_momentum = StaggeredVelocity(*(a+b for a,b in zip(current_momentum, correction)))
         if sponge is not None:
             damping = sponge(current_velocity, inflow)
             current_momentum = StaggeredVelocity(*(a+b for a,b in zip(current_momentum,damping)))
@@ -169,6 +181,11 @@ def build_open_atmospheric_step(
                     momentum.subfilter,
                 )
             )
+            if physical_inlet and momentum.subfilter is not None:
+                from .inlet_momentum import physical_inlet_eddy_viscosity
+                subfilter_viscosity = physical_inlet_eddy_viscosity(
+                    current_velocity, inflow, grid, boundaries, momentum.subfilter
+                )
             scalar_rhs = (
                 open_scalar_tendency if scalar_boundary == "flux" else scalar_tendency
             )
@@ -235,7 +252,7 @@ def build_open_atmospheric_step(
                 + previous_weight * solution.momentum_tendency.z
             ),
         )
-        candidate = enforce_open_velocity(candidate, inflow, grid, open_y=poisson.open_y)
+        candidate = boundary_velocity(candidate, inflow, grid, open_y=poisson.open_y)
         velocity, pressure = project(
             candidate, poisson, dt, solution.pressure
         )
@@ -281,7 +298,7 @@ def build_open_atmospheric_step(
                 field + step_size * (current_weight * current + previous_weight * previous)
                 for field, current, previous in zip(current_velocity, current_momentum, previous_momentum)
             ))
-            candidate = enforce_open_velocity(candidate, inflow, grid, open_y=poisson.open_y)
+            candidate = boundary_velocity(candidate, inflow, grid, open_y=poisson.open_y)
             substep = step_size * (current_weight + previous_weight)
             # Evaluate backflow from the incoming stage's projected normal flux.
             # Predictor extrapolation must not erase a pressure-driven reversal.
@@ -325,7 +342,7 @@ def build_open_atmospheric_step(
         previous_scalar = solution.scalar_tendency
         pressure = solution.pressure
         step_size = jnp.asarray(dt, velocity.x.dtype)
-        lagged = pressure_gradient(pressure, grid, periodic_x=False, periodic_y=poisson.periodic_y, open_y=poisson.open_y)
+        lagged = pressure_gradient(pressure, grid, periodic_x=False, periodic_y=poisson.periodic_y, open_y=poisson.open_y, physical_transverse_inlet=physical_inlet)
         last = len(current_weights) - 1
 
         for stage, (current_weight, previous_weight) in enumerate(
@@ -363,7 +380,7 @@ def build_open_atmospheric_step(
             )
             substep = dt * (current_weight + previous_weight)
             scale = jnp.asarray(substep, velocity.x.dtype)
-            candidate = enforce_open_velocity(
+            candidate = boundary_velocity(
                 StaggeredVelocity(
                     candidate.x - scale * lagged.x,
                     candidate.y - scale * lagged.y,

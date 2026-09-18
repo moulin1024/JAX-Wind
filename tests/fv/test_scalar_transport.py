@@ -177,3 +177,18 @@ def test_split_moist_transport_conserves_total_water_and_enthalpy(scheme):
         jnp.sum(jnp.stack(initial.moisture[:4])),
         rtol=2e-14,
     )
+
+
+def test_distinct_scalar_diffusivities_follow_independent_heat_equations():
+    grid = UniformGrid(64, 2, 2, 1., 1., 1.)
+    x = jnp.asarray(grid.x_centers)
+    mode = jnp.cos(2 * jnp.pi * x)
+    fields = jnp.broadcast_to(1 + .2 * mode, (2, 2, 2, 64))
+    coefficients = jnp.asarray([.01, .03])[:, None, None, None]
+    result = jax.jit(lambda q: transport_scalars(
+        q, periodic_velocity(grid, 0.), grid, .2,
+        jnp.ones((2, 2, 2)), coefficients))(fields)
+    exact = 1 + .2 * jnp.exp(-coefficients * (2*jnp.pi)**2 * .2) * mode
+    np.testing.assert_allclose(result, jnp.broadcast_to(exact, fields.shape), atol=4e-5, rtol=0)
+    np.testing.assert_allclose(result.sum(axis=(1,2,3)), fields.sum(axis=(1,2,3)), atol=1e-10, rtol=0)
+    assert float(jnp.max(result[0])-jnp.max(result[1])) > .02

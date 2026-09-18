@@ -110,6 +110,8 @@ def build_moist_atmospheric_step(
     injection=None,
     *,
     scalar_transport_scheme=None,
+    vapor_turbulent_schmidt=None,
+    eddy_viscosity_override=None,
 ):
     """Symmetric microphysics split with midpoint moist buoyancy.
 
@@ -118,6 +120,10 @@ def build_moist_atmospheric_step(
     Optional scalar_transport_scheme advances heat and all moisture fields
     together with conservative SSP-RK3 on the incoming projected velocity.
     That option requires disabling scalar transport in flow_step.
+    An explicit vapor_turbulent_schmidt separates moisture diffusion from
+    scalar thermal diffusivity/Prandtl; None preserves shared coefficients.
+    eddy_viscosity_override(velocity, inflow) supplies a boundary-consistent
+    coefficient when momentum uses physical-face inlet gradients.
     """
 
     def exchange(flow, water, h, time):
@@ -152,7 +158,13 @@ def build_moist_atmospheric_step(
             if momentum.subfilter is None
             else eddy_viscosity(flow.velocity, grid, boundaries, momentum.subfilter)
         )
-        diffusivity = config.vapor_diffusivity + viscosity / scalar.turbulent_prandtl
+        if eddy_viscosity_override is not None:
+            viscosity = eddy_viscosity_override(flow.velocity, inflow)
+        schmidt = (
+            scalar.turbulent_prandtl
+            if vapor_turbulent_schmidt is None else vapor_turbulent_schmidt
+        )
+        diffusivity = config.vapor_diffusivity + viscosity / schmidt
         if scalar_transport_scheme is None:
             water = transport_moisture(water, flow.velocity, grid, dt, ambient, diffusivity)
         else:
@@ -163,8 +175,14 @@ def build_moist_atmospheric_step(
             fields = jnp.stack((flow.scalar + temperature_offset, *water))
             zero = jnp.zeros_like(ambient)
             reservoirs = jnp.stack((inflow.scalar + temperature_offset, ambient, zero, zero, zero, zero))
+            coefficients = diffusivity
+            if vapor_turbulent_schmidt is not None:
+                coefficients = jnp.broadcast_to(diffusivity, fields.shape)
+                coefficients = coefficients.at[0].set(
+                    scalar.diffusivity + viscosity / scalar.turbulent_prandtl
+                )
             transported = transport_scalars(
-                fields, flow.velocity, grid, dt, reservoirs, diffusivity,
+                fields, flow.velocity, grid, dt, reservoirs, coefficients,
                 scheme=scalar_transport_scheme,
             )
             # Fail visibly before microphysics can clip a transport violation.

@@ -1,7 +1,11 @@
 """Frame sampling geometry shared by simulations and postprocessing."""
+
 from __future__ import annotations
+
 from typing import Any
+
 import numpy as np
+
 
 def frame_steps(steps: int, count: int) -> tuple[int, ...]:
     """Return unique, evenly spaced one-based capture steps."""
@@ -32,29 +36,27 @@ def build_frame_capture(grid, *, y_m: float, z_m: float):
         z_weight = (z_m - z_centers[z_lower]) / (
             z_centers[z_upper] - z_centers[z_lower]
         )
-    y_index = y_m / grid.dy - 0.5
-    y_floor = np.floor(y_index)
-    y_lower = int(y_floor) % grid.ny
-    y_upper = (y_lower + 1) % grid.ny
-    y_weight = y_index - y_floor
+    # Preserve the historical periodic-y sampling, using physical centre
+    # distances rather than nominal dy. Interior planes also apply to walls.
+    y_centers = np.asarray(grid.y_centers, dtype=np.float64)
+    y_sample = y_m % grid.ly
+    insertion = int(np.searchsorted(y_centers, y_sample, side="right"))
+    y_lower, y_upper = (insertion - 1) % grid.ny, insertion % grid.ny
+    lower_coordinate = y_centers[y_lower] - (grid.ly if insertion == 0 else 0.0)
+    upper_coordinate = y_centers[y_upper] + (grid.ly if insertion == grid.ny else 0.0)
+    y_weight = (y_sample - lower_coordinate) / (upper_coordinate - lower_coordinate)
 
     def capture(x_faces, scalar_field):
-        hub_faces = (
-            (1.0 - z_weight) * x_faces[z_lower]
-            + z_weight * x_faces[z_upper]
-        )
-        centre_faces = (
-            (1.0 - y_weight) * x_faces[:, y_lower]
-            + y_weight * x_faces[:, y_upper]
-        )
-        scalar_hub = (
-            (1.0 - z_weight) * scalar_field[z_lower]
-            + z_weight * scalar_field[z_upper]
-        )
-        scalar_centre = (
-            (1.0 - y_weight) * scalar_field[:, y_lower]
-            + y_weight * scalar_field[:, y_upper]
-        )
+        hub_faces = (1.0 - z_weight) * x_faces[z_lower] + z_weight * x_faces[z_upper]
+        centre_faces = (1.0 - y_weight) * x_faces[:, y_lower] + y_weight * x_faces[
+            :, y_upper
+        ]
+        scalar_hub = (1.0 - z_weight) * scalar_field[z_lower] + z_weight * scalar_field[
+            z_upper
+        ]
+        scalar_centre = (1.0 - y_weight) * scalar_field[
+            :, y_lower
+        ] + y_weight * scalar_field[:, y_upper]
 
         def cell_centered(values):
             if values.shape[-1] == grid.nx + 1:
@@ -96,7 +98,9 @@ def capture_frame(
     }
     if hasattr(solution, "moisture"):
         for name in solution.moisture._fields:
-            _, _, hub, centre = capture(solution.velocity.x, getattr(solution.moisture, name))
+            _, _, hub, centre = capture(
+                solution.velocity.x, getattr(solution.moisture, name)
+            )
             result[f"{name}_hub_yx"] = np.asarray(hub)
             result[f"{name}_center_zx"] = np.asarray(centre)
     return result

@@ -36,11 +36,9 @@ import jax.numpy as jnp
 import numpy as np
 
 from jaxwind.domain.grid import AnalyticalGrid, Grid, UniformGrid
-
 from jaxwind.metrics import cell_volumes
 from jaxwind.numerics.discretization import divergence, pressure_gradient
 from jaxwind.state import StaggeredVelocity
-
 
 # Preconditioned conjugate gradients around a classical algebraic multigrid
 # V-cycle.  The matrix is symmetric positive definite once the gauge cell is
@@ -860,6 +858,7 @@ def _apply_laplacian(
     periodic_y: bool = True,
     open_x_low: bool = False,
     open_y: bool = False,
+    physical_transverse_inlet: bool = False,
     volume_integrated: bool | None = None,
 ) -> jnp.ndarray:
     """Apply the matrix-free negative pressure Laplacian."""
@@ -870,6 +869,7 @@ def _apply_laplacian(
             periodic_x=periodic_x,
             periodic_y=periodic_y,
             open_x_low=open_x_low, open_y=open_y,
+            physical_transverse_inlet=physical_transverse_inlet,
         ),
         grid,
     )
@@ -955,9 +955,17 @@ def _diagonal_stencil(
     periodic_y: bool = True,
     open_x_low: bool = False,
     open_y: bool = False,
+    physical_transverse_inlet: bool = False,
     volume_integrated: bool | None = None,
 ) -> jnp.ndarray:
     """Diagonal of the periodic or mixed-boundary negative Laplacian."""
+    if physical_transverse_inlet and (
+        periodic_x or open_x_low or open_y or not grid.is_uniform
+    ):
+        raise ValueError(
+            "physical transverse inlet requires a uniform fixed-flux x inlet "
+            "without lateral pressure outlets"
+        )
     integrated = (
         not grid.is_uniform
         if volume_integrated is None
@@ -992,6 +1000,11 @@ def _diagonal_stencil(
         if periodic_x
         else ((np.arange(grid.nx) > 0) & (np.arange(grid.nx) < grid.nx - 1))
     )
+    if physical_transverse_inlet:
+        transverse = np.arange(grid.nx) < grid.nx - 1
+        if grid.nx == 1:
+            # Only the high-x half-cell Dirichlet face contributes.
+            horizontal_x[0] = 2.0 * inverse_dx2
     horizontal_y = (
         np.full(grid.ny, 2.0 * inverse_dy2)
         if periodic_y
@@ -1001,6 +1014,8 @@ def _diagonal_stencil(
             + (np.arange(grid.ny) < grid.ny - 1).astype(np.float64)
         )
     )
+    if physical_transverse_inlet and periodic_y and grid.ny == 1:
+        horizontal_y[0] = 0.0
     if open_y:
         horizontal_y[0] += 2.0 * inverse_dy2
         horizontal_y[-1] += 2.0 * inverse_dy2
@@ -1387,6 +1402,7 @@ def build_gmg_solver(
     periodic_y: bool = True,
     open_x_low: bool = False,
     open_y: bool = False,
+    physical_transverse_inlet: bool = False,
     tolerance: float | None = None,
     max_iterations: int = 200,
     presweeps: int = 2,
@@ -1419,6 +1435,13 @@ def build_gmg_solver(
     compatible (zero-mean) right-hand side keeps every PCG residual zero-mean
     automatically, with no explicit projection needed inside the iteration.
     """
+    if physical_transverse_inlet and (
+        periodic_x or open_x_low or open_y or not grid.is_uniform
+    ):
+        raise ValueError(
+            "physical transverse inlet requires a uniform fixed-flux x inlet "
+            "without lateral pressure outlets"
+        )
     if open_x_low and periodic_x:
         raise ValueError("an upstream pressure outlet requires nonperiodic x")
     if open_y and (periodic_x or periodic_y or not grid.is_uniform):
@@ -1442,6 +1465,7 @@ def build_gmg_solver(
             periodic_x=periodic_x,
             periodic_y=periodic_y,
             open_x_low=open_x_low, open_y=open_y,
+            physical_transverse_inlet=physical_transverse_inlet,
             volume_integrated=volume_integrated,
         )
         for level in levels[:-1]
@@ -1470,6 +1494,7 @@ def build_gmg_solver(
                 periodic_x=periodic_x,
                 periodic_y=periodic_y,
                 open_x_low=open_x_low, open_y=open_y,
+                physical_transverse_inlet=physical_transverse_inlet,
                 volume_integrated=volume_integrated,
             ).reshape(-1)
 
@@ -1512,6 +1537,7 @@ def build_gmg_solver(
                 periodic_x=periodic_x,
                 periodic_y=periodic_y,
                 open_x_low=open_x_low, open_y=open_y,
+                physical_transverse_inlet=physical_transverse_inlet,
                 volume_integrated=volume_integrated,
             )
             pressure = pressure + omega * residual / diagonals[level]
@@ -1527,6 +1553,7 @@ def build_gmg_solver(
             periodic_x=periodic_x,
             periodic_y=periodic_y,
             open_x_low=open_x_low, open_y=open_y,
+            physical_transverse_inlet=physical_transverse_inlet,
             volume_integrated=volume_integrated,
         )
         coarse_rhs = _restrict(
@@ -1562,6 +1589,7 @@ def build_gmg_solver(
                 periodic_x=periodic_x,
                 periodic_y=periodic_y,
                 open_x_low=open_x_low, open_y=open_y,
+                physical_transverse_inlet=physical_transverse_inlet,
                 volume_integrated=volume_integrated,
             )
             pressure = pressure + v_cycle(residual, 0)
@@ -1580,6 +1608,7 @@ def build_gmg_solver(
                 periodic_x=periodic_x,
                 periodic_y=periodic_y,
                 open_x_low=open_x_low, open_y=open_y,
+                physical_transverse_inlet=physical_transverse_inlet,
                 volume_integrated=volume_integrated,
             ).reshape(-1)
 
@@ -1608,6 +1637,7 @@ class PressurePoisson:
     periodic_y: bool = True
     open_x_low: bool = False
     open_y: bool = False
+    physical_transverse_inlet: bool = False
 
     def solve(
         self,
@@ -1644,6 +1674,7 @@ class PressurePoisson:
         applied = divergence(pressure_gradient(
             pressure, self.grid, periodic_x=self.periodic_x, periodic_y=self.periodic_y,
             open_x_low=self.open_x_low, open_y=self.open_y,
+            physical_transverse_inlet=self.physical_transverse_inlet,
         ), self.grid)
         error = applied - right_hand_side
         if self.periodic_x:
@@ -1677,11 +1708,27 @@ def build_pressure_poisson(
     periodic_y: bool = True,
     open_x_low: bool = False,
     open_y: bool = False,
+    physical_transverse_inlet: bool = False,
     dtype: str = "float64",
     reference_cell: int | None = 0,
     config: Mapping[str, Any] | None = None,
 ) -> PressurePoisson:
-    """Assemble the pressure operator and attach the requested solver."""
+    """Assemble the pressure operator and attach the requested solver.
+
+    ``physical_transverse_inlet`` releases first-column transverse pressure
+    gradients while retaining the fixed normal inlet and the legacy outlet
+    constraint. It currently requires uniform-grid GMG without lateral
+    pressure outlets; the default retains the archived boundary operator.
+    """
+    if physical_transverse_inlet and backend != "gmg":
+        raise ValueError("physical transverse inlet requires the GMG pressure backend")
+    if physical_transverse_inlet and (
+        periodic_x or open_x_low or open_y or not grid.is_uniform
+    ):
+        raise ValueError(
+            "physical transverse inlet requires a uniform fixed-flux x inlet "
+            "without lateral pressure outlets"
+        )
     if open_x_low and (periodic_x or backend != "gmg"):
         raise ValueError("two pressure outlets require nonperiodic x and GMG")
     if open_y and (backend != "gmg" or periodic_x or periodic_y or not grid.is_uniform):
@@ -1728,9 +1775,13 @@ def build_pressure_poisson(
                 periodic_x=periodic_x,
                 periodic_y=periodic_y,
                 open_x_low=open_x_low, open_y=open_y,
+                physical_transverse_inlet=physical_transverse_inlet,
                 **dict(config or {}),
             )
-        return PressurePoisson(grid, matrix, solver, periodic_x, periodic_y, open_x_low, open_y)
+        return PressurePoisson(
+            grid, matrix, solver, periodic_x, periodic_y, open_x_low, open_y,
+            physical_transverse_inlet,
+        )
     matrix = assemble_pressure_matrix(
         grid,
         dtype=dtype,
@@ -1801,6 +1852,7 @@ def project(
     gradient = pressure_gradient(
         pressure, grid, periodic_x=poisson.periodic_x, periodic_y=poisson.periodic_y,
         open_x_low=poisson.open_x_low, open_y=poisson.open_y,
+        physical_transverse_inlet=poisson.physical_transverse_inlet,
     )
     corrected = StaggeredVelocity(
         velocity.x - dt * gradient.x,

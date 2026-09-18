@@ -37,6 +37,14 @@ def _restore(node, arrays, template=None):
             return jnp.asarray(array)
         return array
     if "record" in node:
+        # Historical DPM checkpoints predate separators: collection is zero.
+        if (node["record"] == "DPMLedger" and template is not None
+            and set(template._fields) - node["fields"].keys() == {"collected"}
+            and not node["fields"].keys() - set(template._fields)):
+            return type(template)(*(
+                getattr(template, key) * 0 if key == "collected"
+                else _restore(node["fields"][key], arrays, getattr(template, key))
+                for key in template._fields))
         if template is None or type(template).__name__ != node["record"] or set(template._fields) != node["fields"].keys():
             raise ValueError("checkpoint state type does not match formulation")
         return type(template)(*(_restore(node["fields"][key], arrays, getattr(template, key)) for key in template._fields))

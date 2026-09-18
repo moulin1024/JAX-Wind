@@ -200,6 +200,8 @@ def build_step(
     """
     if scheme not in ("rk3", "fast-rk3", "ab2"):
         raise ValueError(f"unsupported time scheme: {scheme!r}")
+    if poisson.physical_transverse_inlet:
+        raise ValueError("physical transverse inlet requires build_open_atmospheric_step and inlet fluxes")
     tendency = build_tendency(grid, boundaries, model)
 
     def rk3_step(solution: Solution, dt: float) -> Solution:

@@ -58,6 +58,7 @@ def transport_scalars(
     periodic or impermeable and z is impermeable. No wall scalar flux/source
     is supported here. ``ambient`` has shape (field,z,y). ``upwind`` selects a
     donor-cell control with exactly the same SSP-RK3/subcycling/coupling path.
+    Diffusivity may be shared or broadcastable to (field,z,y,x).
     Full coupled temporal order is not implied by the SSP-RK3 scalar substep.
     """
     if not grid.is_uniform:
@@ -90,14 +91,16 @@ def transport_scalars(
     h = dt / count
     model = PassiveScalar(advection_scheme="upwind")
 
-    def rhs_one(field, reservoir):
+    coefficients = jnp.broadcast_to(jnp.asarray(diffusivity), fields.shape)
+
+    def rhs_one(field, reservoir, coefficient):
         if periodic_x:
             rhs = scalar_tendency(
-                field, velocity, grid, model, eddy_viscosity=diffusivity
+                field, velocity, grid, model, eddy_viscosity=coefficient
             )
         else:
             rhs = open_scalar_tendency(
-                field, velocity, grid, model, reservoir, eddy_viscosity=diffusivity
+                field, velocity, grid, model, reservoir, eddy_viscosity=coefficient
             )
         if scheme == "muscl-mc":
             rhs = rhs + _correction(field, velocity, grid)
@@ -106,8 +109,8 @@ def transport_scalars(
     rhs = jax.vmap(rhs_one)
 
     def substep(_, q):
-        q1 = q + h * rhs(q, ambient)
-        q2 = 0.75 * q + 0.25 * (q1 + h * rhs(q1, ambient))
-        return q / 3 + (2 / 3) * (q2 + h * rhs(q2, ambient))
+        q1 = q + h * rhs(q, ambient, coefficients)
+        q2 = 0.75 * q + 0.25 * (q1 + h * rhs(q1, ambient, coefficients))
+        return q / 3 + (2 / 3) * (q2 + h * rhs(q2, ambient, coefficients))
 
     return jax.lax.fori_loop(0, count, substep, fields)

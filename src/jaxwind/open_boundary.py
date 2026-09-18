@@ -94,8 +94,14 @@ def enforce_open_velocity(
     *,
     extrapolate_normal_outflow: bool = True,
     open_y: bool = False,
+    physical_transverse_inlet: bool = False,
 ) -> StaggeredVelocity:
-    """Overwrite one inlet layer and apply second-order outlet extrapolation."""
+    """Impose inlet data and apply second-order outlet extrapolation.
+
+    physical_transverse_inlet preserves the v/w unknowns at x=dx/2; callers
+    must supply physical-face transport/stress fluxes and a compatible pressure
+    operator. The default retains the prescribed first-cell transverse layer.
+    """
     wall_y = not spanwise_is_periodic(velocity, grid)
     validate_inflow_plane(plane, grid, wall_y=wall_y)
     spanwise = OPEN if open_y else (FREE_SLIP if wall_y else PERIODIC)
@@ -114,8 +120,10 @@ def enforce_open_velocity(
             sides(velocity.z),
         )
     x_velocity = velocity.x.at[..., 0].set(plane.x_velocity)
-    y_velocity = velocity.y.at[..., 0].set(plane.y_velocity)
-    z_velocity = velocity.z.at[..., 0].set(plane.z_velocity)
+    # Transverse MAC unknowns lie half a cell inside the inlet. The physical
+    # option prescribes their boundary fluxes instead of overwriting them.
+    y_velocity = velocity.y if physical_transverse_inlet else velocity.y.at[..., 0].set(plane.y_velocity)
+    z_velocity = velocity.z if physical_transverse_inlet else velocity.z.at[..., 0].set(plane.z_velocity)
     result = StaggeredVelocity(
         _second_order_outflow(x_velocity)
         if extrapolate_normal_outflow

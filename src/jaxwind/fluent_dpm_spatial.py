@@ -1,6 +1,8 @@
 """Transient spatial DPM parcels with residence-based conservative sources.
 
-Uniform MAC grid, open x, periodic y or escape sides, ground trap/top escape.
+Uniform MAC grid, open x, periodic y or physical sides. Atmospheric particles
+trap at the ground and escape at the lid/sides; tunnel mode traps on all four
+walls. An optional ideal separator records a separate liquid collection ledger.
 Motion uses frozen-velocity residence paths with split forces: first order in
 tracking timestep, requiring refinement. It does not claim Fluent's trajectory
 interpolator. Every phase source is assigned to its traversed cell. Persistent
@@ -13,10 +15,16 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 
-from .fluent_dpm_source import build_dpm_cell_exchange, gas_temperature, material_config
+from .fluent_dpm_source import (
+    _admissible,
+    build_dpm_cell_exchange,
+    gas_temperature,
+    material_config,
+)
 from .physics.fluent_dpm import gas_properties, liquid_enthalpy, sample_drw_eddy
 from .spray_core import WaterCoreBins
-from .spray_paths import build_parcel_path
+from .spray_low_mach import MoistGasFields
+from .spray_paths import ParcelPath, build_parcel_path
 from .water_spray import water_droplet_drag_rate
 
 
@@ -38,6 +46,7 @@ class DPMLedger(NamedTuple):
     injected: object
     escaped: object
     trapped: object
+    collected: object  # perfect separator inventory; disjoint from wall trapping
     gravity_impulse: object
     gravity_work: object
     stochastic_work: object
@@ -81,6 +90,7 @@ def initial_ledger(dtype):
         jnp.zeros(6, dtype),
         jnp.zeros(6, dtype),
         jnp.zeros(6, dtype),
+        jnp.zeros(6, dtype),
         jnp.zeros(3, dtype),
         z,
         z,
@@ -103,9 +113,49 @@ def liquid_inventory(mass, number, velocity, temperature, material):
     )
 
 
+def injection_velocities(options, dtype):
+    """Fixed quadrature, uniform in solid angle in the declared annular cone.
+
+    The input vector specifies axis and speed, not axial speed. Each polar
+    ring has paired opposite azimuths so transverse injected momentum cancels.
+    All size bins receive the same quadrature; no size/velocity correlation is
+    invented. Refining quadrature changes parcel count, not physical mass flow.
+    """
+    axis_velocity = jnp.asarray(options.injection_velocity_m_s, dtype)
+    if options.injection_geometry == "point":
+        return axis_velocity[:, None]
+    speed = jnp.linalg.norm(axis_velocity)
+    axis = axis_velocity / speed
+    helper = jnp.eye(3, dtype=dtype)[jnp.argmin(jnp.abs(axis))]
+    e1 = jnp.cross(axis, helper)
+    e1 /= jnp.linalg.norm(e1)
+    e2 = jnp.cross(axis, e1)
+    lo = jnp.cos(jnp.deg2rad(options.cone_outer_half_angle_degrees))
+    hi = jnp.cos(jnp.deg2rad(options.cone_inner_half_angle_degrees))
+    mu = (
+        lo
+        + (hi - lo)
+        * (jnp.arange(options.cone_polar_points, dtype=dtype) + 0.5)
+        / options.cone_polar_points
+    )
+    phi = (
+        2
+        * jnp.pi
+        * jnp.arange(options.cone_azimuthal_points, dtype=dtype)
+        / options.cone_azimuthal_points
+    )
+    radial = e1[:, None] * jnp.cos(phi) + e2[:, None] * jnp.sin(phi)
+    directions = (
+        axis[:, None, None] * mu[None, :, None]
+        + radial[:, None, :] * jnp.sqrt(1 - mu**2)[None, :, None]
+    )
+    return speed * directions.reshape(3, -1)
+
+
 def inject_parcels(parcels, ledger, source, center, time, dt, material):
     options = source.dpm
-    count = len(options.diameters_m)
+    count = options.injection_batch_size
+    rays = options.rays_per_bin
     free = (parcels.mass * parcels.multiplicity) == 0
     slots = jnp.argsort(~free, stable=True)[:count]
     ok = jnp.sum(free) >= count
@@ -117,11 +167,13 @@ def inject_parcels(parcels, ledger, source, center, time, dt, material):
     masses = (
         jnp.pi / 6 * material.liquid_density * jnp.asarray(options.diameters_m) ** 3
     )
+    masses = jnp.repeat(masses, rays)
+    amount = jnp.repeat(amount / rays, rays)
     number = amount / masses
     dtype = parcels.mass.dtype
     positions = jnp.broadcast_to(jnp.asarray(center, dtype)[:, None], (3, count))
-    velocities = jnp.broadcast_to(
-        jnp.asarray(options.injection_velocity_m_s, dtype)[:, None], (3, count)
+    velocities = jnp.tile(
+        injection_velocities(options, dtype), (1, len(options.diameters_m))
     )
     keys = jax.vmap(lambda i: jax.random.fold_in(jax.random.PRNGKey(options.seed), i))(
         parcels.next_id + jnp.arange(count, dtype=jnp.int32)
@@ -156,9 +208,33 @@ def inject_parcels(parcels, ledger, source, center, time, dt, material):
 
 
 def build_spatial_step(
-    grid, source, material, pressure, *, periodic_y=True, gravity=(0.0, 0.0, -9.81)
+    grid,
+    source,
+    material,
+    pressure,
+    *,
+    periodic_y=True,
+    gravity=(0.0, 0.0, -9.81),
+    tunnel_walls=False,
 ):
     options = source.dpm
+    if options.execution == "batched":
+        from .fluent_dpm_batched import build_batched_spatial_step
+
+        return build_batched_spatial_step(
+            grid,
+            source,
+            material,
+            pressure,
+            periodic_y=periodic_y,
+            gravity=gravity,
+            tunnel_walls=tunnel_walls,
+        )
+    if tunnel_walls and periodic_y:
+        raise ValueError("tunnel walls require nonperiodic y")
+    separator = options.eliminator_x_m
+    if separator is not None and not 0 < separator < grid.lx:
+        raise ValueError("eliminator must lie inside the domain")
     config = material_config(material, pressure)
     props = SimpleNamespace(
         liquid_heat_capacity=material.liquid_cp,
@@ -173,6 +249,7 @@ def build_spatial_step(
         periodic_y=periodic_y,
         drag_heat_fraction=1.0,
         vaporization=options.vaporization,
+        prevalidated_fields=True,
     )
     trace = build_parcel_path(
         grid,
@@ -191,7 +268,34 @@ def build_spatial_step(
 
             def active(state):
                 gas, velocity, parcels, ledger, accepted = state
-                path = trace(parcels.position[:, i], parcels.velocity[:, i], dt)
+                position, speed = parcels.position[:, i], parcels.velocity[:, i]
+                if separator is None:
+                    hit_separator = jnp.asarray(False)
+                    travel_dt = dt
+                else:
+                    # Capture from either side (including backflow) at the exact
+                    # frozen-path crossing time, before any downstream exchange.
+                    crossing = (separator - position[0]) / jnp.where(
+                        speed[0] != 0, speed[0], 1
+                    )
+                    hit_separator = (speed[0] != 0) & (crossing >= 0) & (crossing <= dt)
+                    travel_dt = jnp.where(hit_separator, crossing, dt)
+                # Starting exactly on the separator needs no residence exchange.
+                path = jax.lax.cond(
+                    travel_dt != 0,
+                    lambda _: trace(position, speed, travel_dt),
+                    lambda _: ParcelPath(
+                        cells=jnp.zeros((options.max_path_segments, 3), jnp.int32),
+                        durations=jnp.zeros(options.max_path_segments, position.dtype),
+                        position=position,
+                        exited=jnp.asarray(False),
+                        accepted=hit_separator & jnp.isfinite(dt) & (dt > 0),
+                        segments=jnp.asarray(0, jnp.int32),
+                        elapsed=jnp.asarray(0.0, position.dtype),
+                        trapped=jnp.asarray(False),
+                    ),
+                    operand=None,
+                )
                 accepted &= path.accepted
                 p = WaterCoreBins(
                     jnp.atleast_1d(parcels.mass[i]),
@@ -230,7 +334,9 @@ def build_spatial_step(
                             ]
                         )
                         density, _ = gas_properties(
-                            gas_temperature(gas, config)[address],
+                            gas_temperature(
+                                MoistGasFields(*(a[address] for a in gas)), config
+                            ),
                             gas.vapor_density[address]
                             / (gas.dry_density[address] + gas.vapor_density[address]),
                             pressure,
@@ -394,13 +500,17 @@ def build_spatial_step(
                     p.temperature[0],
                     material,
                 )
-                trapped = path.trapped & (path.position[2] <= 0)
+                trapped = path.trapped & (tunnel_walls | (path.position[2] <= 0))
+                # A wall reached before (or simultaneously with) the separator
+                # owns that liquid. Never count the same parcel twice.
+                collected = hit_separator & ~path.exited & path.accepted
                 escape = path.exited & ~trapped
                 ledger = ledger._replace(
                     trapped=ledger.trapped + jnp.where(trapped, inventory, 0),
                     escaped=ledger.escaped + jnp.where(escape, inventory, 0),
+                    collected=ledger.collected + jnp.where(collected, inventory, 0),
                 )
-                alive = ~path.exited & (p.mass[0] > 0)
+                alive = ~path.exited & ~collected & (p.mass[0] > 0)
                 parcels = parcels._replace(
                     position=parcels.position.at[:, i].set(path.position),
                     velocity=parcels.velocity.at[:, i].set(p.velocity[:, 0]),
@@ -419,11 +529,25 @@ def build_spatial_step(
             live = (parcels.mass[i] * parcels.multiplicity[i] > 0) & accepted
             return jax.lax.cond(live, active, lambda s: s, state)
 
+        # No births occur during a tracking substep. Traverse the live slots
+        # in their original ascending order, without scanning every empty slot
+        # through the heavy loop body. This does not reorder parcel exchanges.
+        live_slots = parcels.mass * parcels.multiplicity > 0
+        active_indices = jnp.nonzero(live_slots, size=options.capacity, fill_value=0)[0]
         gas, velocity, parcels, ledger, ok = jax.lax.fori_loop(
             0,
-            options.capacity,
-            advance_one,
-            (gas, velocity, parcels, ledger, jnp.isfinite(dt) & (dt > 0)),
+            jnp.sum(live_slots),
+            lambda index, values: advance_one(active_indices[index], values),
+            (
+                gas,
+                velocity,
+                parcels,
+                ledger,
+                jnp.isfinite(dt)
+                & (dt > 0)
+                & _admissible(gas, config)
+                & jnp.all(jnp.stack([jnp.all(jnp.isfinite(a)) for a in velocity])),
+            ),
         )
         choose = lambda new, old: jnp.where(ok, new, old)
         gas, velocity, parcels, ledger = jax.tree.map(

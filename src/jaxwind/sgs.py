@@ -22,11 +22,13 @@ gradients come from the same closure as the viscous flux.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import jax.numpy as jnp
 
 from jaxwind.domain.grid import Grid
+from jaxwind.numerics.discretization import tangential_z_gradient
 
 from .metrics import (
     cell_volumes,
@@ -34,7 +36,6 @@ from .metrics import (
     shaped_center_distances,
     shaped_widths,
 )
-from jaxwind.numerics.discretization import tangential_z_gradient
 from .state import (
     Boundaries,
     StaggeredVelocity,
@@ -61,6 +62,28 @@ class AnisotropicMinimumDissipation:
 
 
 @dataclass(frozen=True, slots=True)
+class TransportedEddyViscosity:
+    """Cell field owned and checked by a transported turbulence closure."""
+
+    viscosity: object
+
+
+@dataclass(frozen=True, slots=True)
+class ConstantEddyViscosity:
+    """Prescribed nonnegative momentum diffusivity for controlled diagnostics.
+
+    This supplies no turbulence evolution or physical SGS closure. Scalars use
+    the same coefficient through the ordinary turbulent-Prandtl coupling.
+    """
+
+    viscosity: float
+
+    def __post_init__(self):
+        if not math.isfinite(self.viscosity) or self.viscosity < 0:
+            raise ValueError("prescribed eddy viscosity must be finite and nonnegative")
+
+
+@dataclass(frozen=True, slots=True)
 class StaticSmagorinsky:
     """Classical static Smagorinsky closure.
 
@@ -81,20 +104,31 @@ class FluentSmagorinsky(StaticSmagorinsky):
     """Fluent 2026 R1 static model: l=min(kappa*ground_distance,Cs*V^(1/3)).
 
     The atmospheric upper boundary is a symmetry lid, not a second ground wall.
+    With tunnel_walls=True, distance is to the nearest y/z wall instead.
     Defaults follow the documented Cs=0.1. Existing SGS choices are unchanged.
     """
 
     coefficient: float = 0.1
     von_karman: float = 0.41
+    tunnel_walls: bool = False
 
     def __post_init__(self):
+        if type(self.tunnel_walls) is not bool:
+            raise ValueError("tunnel_walls must be boolean")
         if not 0 < self.coefficient < 1 or not 0 < self.von_karman < 1:
             raise ValueError("positive finite Fluent LES constants required")
 
     def length_scale(self, grid, dtype):
         distance = jnp.asarray(grid.z_centers, dtype)[:, None, None]
-        return jnp.minimum(self.von_karman*distance,
-                           self.coefficient*cell_volumes(grid, dtype)**(1/3))
+        if self.tunnel_walls:
+            y = jnp.asarray(grid.y_centers, dtype)[None, :, None]
+            distance = jnp.minimum(
+                jnp.minimum(distance, grid.lz - distance), jnp.minimum(y, grid.ly - y)
+            )
+        return jnp.minimum(
+            self.von_karman * distance,
+            self.coefficient * cell_volumes(grid, dtype) ** (1 / 3),
+        )
 
 
 # Velocity gradients held where the staggered mesh defines them, keyed by the
@@ -152,7 +186,11 @@ def _to_xy_edge_from_cell(
     open_x: bool = False,
     wall_y: bool = False,
 ) -> jnp.ndarray:
-    x_faces = _cells_to_open_x_faces(field) if open_x else 0.5 * (field + jnp.roll(field, 1, axis=2))
+    x_faces = (
+        _cells_to_open_x_faces(field)
+        if open_x
+        else 0.5 * (field + jnp.roll(field, 1, axis=2))
+    )
     if not wall_y:
         return 0.5 * (x_faces + jnp.roll(x_faces, 1, axis=1))
     interior = 0.5 * (x_faces[:, :-1] + x_faces[:, 1:])
@@ -191,9 +229,7 @@ def _to_yz_edge_from_cell(field: jnp.ndarray, *, wall_y: bool = False) -> jnp.nd
 
 def _cell_x_derivative_to_open_faces(field: jnp.ndarray, grid: Grid) -> jnp.ndarray:
     distance = center_distances(grid, 2, periodic=False, dtype=field.dtype)
-    interior = (field[..., 1:] - field[..., :-1]) / distance[
-        None, None, 1:-1
-    ]
+    interior = (field[..., 1:] - field[..., :-1]) / distance[None, None, 1:-1]
     zero = jnp.zeros_like(field[..., :1])
     return jnp.concatenate((zero, interior, zero), axis=2)
 
@@ -235,9 +271,9 @@ def edge_gradients(
         yy = (y_velocity[:, 1:] - y_velocity[:, :-1]) / shaped_widths(
             grid, 1, y_velocity.dtype
         )
-        y_distance = center_distances(
-            grid, 1, periodic=False, dtype=x_velocity.dtype
-        )[None, 1:-1, None]
+        y_distance = center_distances(grid, 1, periodic=False, dtype=x_velocity.dtype)[
+            None, 1:-1, None
+        ]
         side_x = jnp.zeros_like(x_velocity[:, :1])
         xy = jnp.concatenate(
             (
@@ -263,13 +299,9 @@ def edge_gradients(
         / shaped_widths(grid, 0, z_velocity.dtype),
         xy=xy,
         yx=yx,
-        xz=tangential_z_gradient(
-            x_velocity, grid, boundaries, "x_velocity"
-        ),
+        xz=tangential_z_gradient(x_velocity, grid, boundaries, "x_velocity"),
         zx=zx,
-        yz=tangential_z_gradient(
-            y_velocity, grid, boundaries, "y_velocity"
-        ),
+        yz=tangential_z_gradient(y_velocity, grid, boundaries, "y_velocity"),
         zy=zy,
     )
 
@@ -301,17 +333,22 @@ def eddy_viscosity(
     velocity: StaggeredVelocity,
     grid: Grid,
     boundaries: Boundaries,
-    model: AnisotropicMinimumDissipation | StaticSmagorinsky,
+    model: AnisotropicMinimumDissipation
+    | StaticSmagorinsky
+    | ConstantEddyViscosity
+    | TransportedEddyViscosity,
     *,
     gradients: EdgeGradients | None = None,
 ) -> jnp.ndarray:
     """Return the selected cell-centred, non-negative eddy viscosity."""
+    if isinstance(model, TransportedEddyViscosity):
+        return jnp.broadcast_to(model.viscosity, (grid.nz, grid.ny, grid.nx))
+    if isinstance(model, ConstantEddyViscosity):
+        return jnp.full((grid.nz, grid.ny, grid.nx), model.viscosity, velocity.x.dtype)
     if gradients is None:
         gradients = edge_gradients(velocity, grid, boundaries)
     tensor = cell_gradients(gradients)
-    strain = [
-        [0.5 * (tensor[i][k] + tensor[k][i]) for k in range(3)] for i in range(3)
-    ]
+    strain = [[0.5 * (tensor[i][k] + tensor[k][i]) for k in range(3)] for i in range(3)]
     if isinstance(model, StaticSmagorinsky):
         strain_magnitude_squared = jnp.zeros_like(tensor[0][0])
         for i in range(3):
@@ -320,15 +357,15 @@ def eddy_viscosity(
                     strain_magnitude_squared + 2.0 * strain[i][j] ** 2
                 )
         if isinstance(model, FluentSmagorinsky):
-            return model.length_scale(grid, tensor[0][0].dtype)**2 * jnp.sqrt(
-                strain_magnitude_squared)
+            return model.length_scale(grid, tensor[0][0].dtype) ** 2 * jnp.sqrt(
+                strain_magnitude_squared
+            )
         filter_width = cell_volumes(grid, tensor[0][0].dtype) ** (1.0 / 3.0)
-        return (
-            model.coefficient * filter_width
-        ) ** 2 * jnp.sqrt(strain_magnitude_squared + 1.0e-20)
+        return (model.coefficient * filter_width) ** 2 * jnp.sqrt(
+            strain_magnitude_squared + 1.0e-20
+        )
     widths = [
-        model.poincare_constant
-        * shaped_widths(grid, axis, tensor[0][0].dtype) ** 2
+        model.poincare_constant * shaped_widths(grid, axis, tensor[0][0].dtype) ** 2
         for axis in (2, 1, 0)
     ]
     numerator = jnp.zeros_like(tensor[0][0])
@@ -382,31 +419,26 @@ def stress_divergence(
     )
     if open_x:
         edge = jnp.zeros_like(velocity.x[..., :1])
-        x_distance = center_distances(
-            grid, 2, periodic=False, dtype=normal_x.dtype
-        )
+        x_distance = center_distances(grid, 2, periodic=False, dtype=normal_x.dtype)
         normal_x_divergence = jnp.concatenate(
             (
                 edge,
-                (normal_x[..., 1:] - normal_x[..., :-1])
-                / x_distance[None, None, 1:-1],
+                (normal_x[..., 1:] - normal_x[..., :-1]) / x_distance[None, None, 1:-1],
                 edge,
             ),
             axis=2,
         )
-        shear_xy_divergence = (
-            shear_xy[..., 1:] - shear_xy[..., :-1]
-        ) / shaped_widths(grid, 2, shear_xy.dtype)
-        shear_xz_divergence = (
-            shear_xz[..., 1:] - shear_xz[..., :-1]
-        ) / shaped_widths(grid, 2, shear_xz.dtype)
+        shear_xy_divergence = (shear_xy[..., 1:] - shear_xy[..., :-1]) / shaped_widths(
+            grid, 2, shear_xy.dtype
+        )
+        shear_xz_divergence = (shear_xz[..., 1:] - shear_xz[..., :-1]) / shaped_widths(
+            grid, 2, shear_xz.dtype
+        )
     else:
         x_distance = shaped_center_distances(
             grid, 2, periodic=True, dtype=normal_x.dtype
         )
-        normal_x_divergence = (
-            normal_x - jnp.roll(normal_x, 1, axis=2)
-        ) / x_distance
+        normal_x_divergence = (normal_x - jnp.roll(normal_x, 1, axis=2)) / x_distance
         shear_xy_divergence = (
             jnp.roll(shear_xy, -1, axis=2) - shear_xy
         ) / shaped_widths(grid, 2, shear_xy.dtype)
@@ -414,25 +446,22 @@ def stress_divergence(
             jnp.roll(shear_xz, -1, axis=2) - shear_xz
         ) / shaped_widths(grid, 2, shear_xz.dtype)
     if wall_y:
-        shear_xy_y_divergence = (
-            shear_xy[:, 1:] - shear_xy[:, :-1]
-        ) / shaped_widths(grid, 1, shear_xy.dtype)
-        side = jnp.zeros_like(velocity.y[:, :1])
-        y_distance = center_distances(
-            grid, 1, periodic=False, dtype=normal_y.dtype
+        shear_xy_y_divergence = (shear_xy[:, 1:] - shear_xy[:, :-1]) / shaped_widths(
+            grid, 1, shear_xy.dtype
         )
+        side = jnp.zeros_like(velocity.y[:, :1])
+        y_distance = center_distances(grid, 1, periodic=False, dtype=normal_y.dtype)
         normal_y_y_divergence = jnp.concatenate(
             (
                 side,
-                (normal_y[:, 1:] - normal_y[:, :-1])
-                / y_distance[None, 1:-1, None],
+                (normal_y[:, 1:] - normal_y[:, :-1]) / y_distance[None, 1:-1, None],
                 side,
             ),
             axis=1,
         )
-        shear_yz_y_divergence = (
-            shear_yz[:, 1:] - shear_yz[:, :-1]
-        ) / shaped_widths(grid, 1, shear_yz.dtype)
+        shear_yz_y_divergence = (shear_yz[:, 1:] - shear_yz[:, :-1]) / shaped_widths(
+            grid, 1, shear_yz.dtype
+        )
     else:
         y_distance = shaped_center_distances(
             grid, 1, periodic=True, dtype=normal_y.dtype
@@ -440,9 +469,7 @@ def stress_divergence(
         shear_xy_y_divergence = (
             jnp.roll(shear_xy, -1, axis=1) - shear_xy
         ) / shaped_widths(grid, 1, shear_xy.dtype)
-        normal_y_y_divergence = (
-            normal_y - jnp.roll(normal_y, 1, axis=1)
-        ) / y_distance
+        normal_y_y_divergence = (normal_y - jnp.roll(normal_y, 1, axis=1)) / y_distance
         shear_yz_y_divergence = (
             jnp.roll(shear_yz, -1, axis=1) - shear_yz
         ) / shaped_widths(grid, 1, shear_yz.dtype)
@@ -457,9 +484,9 @@ def stress_divergence(
         + normal_y_y_divergence
         + (shear_yz[1:] - shear_yz[:-1]) / z_width
     )
-    z_distance = center_distances(
-        grid, 0, periodic=False, dtype=normal_z.dtype
-    )[1:-1, None, None]
+    z_distance = center_distances(grid, 0, periodic=False, dtype=normal_z.dtype)[
+        1:-1, None, None
+    ]
     z_interior = (
         shear_xz_divergence[1:-1]
         + shear_yz_y_divergence[1:-1]
@@ -479,7 +506,10 @@ def subfilter_tendency(
     velocity: StaggeredVelocity,
     grid: Grid,
     boundaries: Boundaries,
-    model: AnisotropicMinimumDissipation | StaticSmagorinsky,
+    model: AnisotropicMinimumDissipation
+    | StaticSmagorinsky
+    | ConstantEddyViscosity
+    | TransportedEddyViscosity,
     *,
     surface=None,
     mesh_stability=0.0,
@@ -517,8 +547,10 @@ def subfilter_tendency(
 
 __all__ = [
     "AnisotropicMinimumDissipation",
-    "StaticSmagorinsky",
+    "ConstantEddyViscosity",
     "EdgeGradients",
+    "StaticSmagorinsky",
+    "TransportedEddyViscosity",
     "cell_gradients",
     "eddy_viscosity",
     "edge_gradients",

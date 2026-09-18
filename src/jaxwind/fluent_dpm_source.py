@@ -78,6 +78,7 @@ def build_dpm_cell_exchange(
     drag_heat_fraction,
     energy_tolerance=1e-10,
     vaporization="diffusion-controlled",
+    prevalidated_fields=False,
 ):
     """Actual MAC face-inventory exchange with Fluent thermal properties.
 
@@ -85,6 +86,9 @@ def build_dpm_cell_exchange(
     as the verified spray_cell_exchange. Near walls, normal face momentum and
     KE are exported to explicit wall ledgers. A prescribed stochastic velocity
     drives drag; its work is reported, never hidden as energy conservation.
+    ``prevalidated_fields`` is internal to the serial spatial transaction: the
+    caller checks all gas/velocity/unresolved fields once, and each exchange
+    checks its touched cell/faces. Untouched entries cannot change validity.
     """
     periodic = (False, periodic_y, periodic_x)
     shape = (grid.nz, grid.ny, grid.nx)
@@ -119,17 +123,53 @@ def build_dpm_cell_exchange(
                 high[c] %= shape[c]
             indices.append((tuple(low), tuple(high)))
         rho = gas.dry_density + gas.vapor_density
-        inertia = StaggeredVelocity(
-            *(dual_average(rho, c, periodic[c]) for c in (2, 1, 0))
-        )
         face_mass = []
         face_velocity = []
-        for c, r, u, (lo, hi) in zip((2, 1, 0), inertia, velocity, indices):
-            volumes = jnp.broadcast_to(
-                dual_volumes(grid, c, periodic[c], rho.dtype), r.shape
+        if prevalidated_fields:
+            # Gather just the neighbouring primary inventories rather than
+            # constructing three whole dual-density fields per parcel.
+            for c, u, (lo, hi) in zip((2, 1, 0), velocity, indices):
+                masses = []
+                for face in (lo, hi):
+                    left, right = list(face), list(face)
+                    left[c] -= 1
+                    if periodic[c]:
+                        left[c] %= shape[c]
+                        right[c] %= shape[c]
+                    else:
+                        left[c] = jnp.clip(left[c], 0, shape[c] - 1)
+                        right[c] = jnp.clip(right[c], 0, shape[c] - 1)
+                    left_rho = (
+                        gas.dry_density[tuple(left)] + gas.vapor_density[tuple(left)]
+                    )
+                    right_rho = (
+                        gas.dry_density[tuple(right)] + gas.vapor_density[tuple(right)]
+                    )
+                    boundary = (
+                        jnp.asarray(False)
+                        if periodic[c]
+                        else ((face[c] == 0) | (face[c] == shape[c]))
+                    )
+                    density = jnp.where(
+                        boundary, right_rho, 0.5 * (left_rho + right_rho)
+                    )
+                    width = (grid.dz, grid.dy, grid.dx)[c]
+                    dual_volume = jnp.where(boundary, 0.5 * width, width) * (
+                        volume / width
+                    )
+                    masses.append(density * dual_volume)
+                face_mass.append(jnp.stack(masses))
+                face_velocity.append(jnp.stack((u[lo], u[hi])))
+        else:
+            inertia = StaggeredVelocity(
+                *(dual_average(rho, c, periodic[c]) for c in (2, 1, 0))
             )
-            face_mass.append(jnp.stack((r[lo] * volumes[lo], r[hi] * volumes[hi])))
-            face_velocity.append(jnp.stack((u[lo], u[hi])))
+            for c, r, u, (lo, hi) in zip((2, 1, 0), inertia, velocity, indices):
+                volumes = jnp.broadcast_to(
+                    dual_volumes(grid, c, periodic[c], rho.dtype), r.shape
+                )
+                face_mass.append(jnp.stack((r[lo] * volumes[lo], r[hi] * volumes[hi])))
+                face_velocity.append(jnp.stack((u[lo], u[hi])))
         face_mass = jnp.stack(face_mass)
         face_velocity = jnp.stack(face_velocity)
         dry = gas.dry_density[cell] * volume
@@ -137,7 +177,9 @@ def build_dpm_cell_exchange(
         enthalpy = gas.enthalpy_density[cell] * volume
         fluctuation = jnp.zeros(3, rho.dtype) if fluctuation is None else fluctuation
         mean_velocity = jnp.mean(face_velocity, axis=1) + fluctuation
-        local_temperature = gas_temperature(gas, config)[cell]
+        local_temperature = gas_temperature(
+            MoistGasFields(*(a[cell] for a in gas)), config
+        )
         local_density, _ = gas_properties(
             local_temperature, vapor / (dry + vapor), config.pressure, config.material
         )
@@ -239,7 +281,14 @@ def build_dpm_cell_exchange(
             .set(dp / volume)
         )
         unresolved_increment = zeros.at[cell].set(du / volume)
-        staged = jax.tree.map(lambda a, b: a + b, gas, increments)
+        if prevalidated_fields:
+            staged = MoistGasFields(
+                gas.dry_density,
+                gas.vapor_density.at[cell].add(dm / volume),
+                gas.enthalpy_density.at[cell].add(dh / volume),
+            )
+        else:
+            staged = jax.tree.map(lambda a, b: a + b, gas, increments)
         staged_unresolved = unresolved + unresolved_increment
         staged_velocity = []
         for k, (u, (lo, hi)) in enumerate(zip(velocity, indices)):
@@ -281,11 +330,24 @@ def build_dpm_cell_exchange(
             jnp.finfo(rho.dtype).tiny,
         )
         relative = jnp.abs(error) / scale
+        if prevalidated_fields:
+            checked_gas = MoistGasFields(*(a[cell] for a in gas))
+            checked_staged = MoistGasFields(*(a[cell] for a in staged))
+            checked_unresolved = unresolved[cell]
+            checked_staged_unresolved = staged_unresolved[cell]
+            checked_velocity = face_velocity
+        else:
+            checked_gas, checked_staged = gas, staged
+            checked_unresolved, checked_staged_unresolved = (
+                unresolved,
+                staged_unresolved,
+            )
+            checked_velocity = velocity
         input_valid = (
             cell_valid
-            & _admissible(gas, config)
-            & jnp.all(jnp.isfinite(unresolved))
-            & jnp.all(unresolved >= 0)
+            & _admissible(checked_gas, config)
+            & jnp.all(jnp.isfinite(checked_unresolved))
+            & jnp.all(checked_unresolved >= 0)
             & (dt > 0)
         )
         input_valid &= (
@@ -294,12 +356,12 @@ def build_dpm_cell_exchange(
             & jnp.all(liquid.temperature >= config.freezing_temperature)
         )
         input_valid &= (
-            all_finite(liquid) & all_finite(velocity) & jnp.all(face_mass > 0)
+            all_finite(liquid) & all_finite(checked_velocity) & jnp.all(face_mass > 0)
         )
         input_valid &= jnp.isfinite(dt)
         valid = (
             input_valid
-            & _admissible(staged, config)
+            & _admissible(checked_staged, config)
             & jnp.isfinite(relative)
             & (relative <= energy_tolerance)
         )
@@ -308,8 +370,8 @@ def build_dpm_cell_exchange(
             & jnp.all(staged_liquid.mass >= 0)
             & jnp.all(jnp.isfinite(staged_liquid.temperature))
         )
-        valid &= jnp.all(jnp.isfinite(staged_unresolved)) & jnp.all(
-            staged_unresolved >= 0
+        valid &= jnp.all(jnp.isfinite(checked_staged_unresolved)) & jnp.all(
+            checked_staged_unresolved >= 0
         )
         choose = lambda a, b: jnp.where(valid, a, b)
         commit = lambda x: jax.tree.map(lambda q: choose(q, jnp.zeros_like(q)), x)
@@ -320,10 +382,34 @@ def build_dpm_cell_exchange(
             config.dry_air_heat_capacity * staged.dry_density[cell]
             + config.vapor_cp * staged.vapor_density[cell]
         )
+        if prevalidated_fields:
+            # Only one gas cell and six MAC faces can change. Avoid selecting
+            # every untouched grid entry for every parcel transaction.
+            committed_gas = jax.tree.map(
+                lambda old, new: old.at[cell].set(choose(new[cell], old[cell])),
+                gas,
+                staged,
+            )
+            committed_velocity = StaggeredVelocity(
+                *(
+                    old.at[lo]
+                    .set(choose(new[lo], old[lo]))
+                    .at[hi]
+                    .set(choose(new[hi], old[hi]))
+                    for old, new, (lo, hi) in zip(velocity, staged_velocity, indices)
+                )
+            )
+            committed_unresolved = unresolved.at[cell].set(
+                choose(staged_unresolved[cell], unresolved[cell])
+            )
+        else:
+            committed_gas = jax.tree.map(choose, staged, gas)
+            committed_velocity = jax.tree.map(choose, staged_velocity, velocity)
+            committed_unresolved = choose(staged_unresolved, unresolved)
         return DPMSourceExchange(
-            jax.tree.map(choose, staged, gas),
-            jax.tree.map(choose, staged_velocity, velocity),
-            choose(staged_unresolved, unresolved),
+            committed_gas,
+            committed_velocity,
+            committed_unresolved,
             jax.tree.map(choose, staged_liquid, liquid),
             commit(increments),
             commit(momentum),

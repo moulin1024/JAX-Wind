@@ -23,7 +23,7 @@ from .physics.fluent_dpm import DPMWaterMaterial
 from .physics.moisture import MoistureState, saturation_vapor_pressure_water
 from .scalar_transport import transport_scalars
 from .spray_low_mach import MoistGasFields
-from .state import OPEN, PERIODIC
+from .state import FREE_SLIP, OPEN, PERIODIC
 
 
 class DPMAtmosphericSolution(NamedTuple):
@@ -96,8 +96,14 @@ def build_dpm_atmospheric_step(
     material = DPMWaterMaterial() if material is None else material
     if not grid.is_uniform:
         raise ValueError("Fluent DPM spatial coupling requires a uniform grid")
-    if boundaries.streamwise != OPEN or boundaries.spanwise != PERIODIC:
-        raise ValueError("DPM atmosphere requires open x and periodic y boundaries")
+    if boundaries.streamwise != OPEN or boundaries.spanwise not in (
+        PERIODIC,
+        FREE_SLIP,
+    ):
+        raise ValueError(
+            "DPM atmosphere requires open x and periodic y or impermeable side walls"
+        )
+    periodic_y = boundaries.spanwise == PERIODIC
     if scalar is None or scalar.lower_flux != 0 or scalar.upper_flux != 0:
         raise ValueError(
             "DPM enthalpy transport currently requires zero imposed boundary heat flux"
@@ -106,10 +112,23 @@ def build_dpm_atmospheric_step(
         0 < x < length for x, length in zip(center, (grid.lx, grid.ly, grid.lz))
     ):
         raise ValueError("DPM injection must lie inside the domain")
+    if (
+        source.dpm.eliminator_x_m is not None
+        and not center[0] < source.dpm.eliminator_x_m < grid.lx
+    ):
+        raise ValueError(
+            "DPM eliminator must lie downstream of injection and inside the domain"
+        )
     pressure = moisture.thermodynamics.pressure
     rho_d = moisture.thermodynamics.dry_air_density
     spatial = build_spatial_step(
-        grid, source, material, pressure, periodic_y=True, gravity=gravity
+        grid,
+        source,
+        material,
+        pressure,
+        periodic_y=periodic_y,
+        gravity=gravity,
+        tunnel_walls=not periodic_y,
     )
     shape = (grid.nz, grid.ny, grid.nx)
     dry = jnp.full(shape, rho_d)
@@ -240,10 +259,19 @@ def dpm_diagnostics(state):
         "dpm_liquid_mass_kg": jnp.sum(p.mass * p.multiplicity),
         "dpm_escaped_mass_kg": l.escaped[0],
         "dpm_trapped_mass_kg": l.trapped[0],
+        "dpm_collected_mass_kg": l.collected[0],
+        "dpm_collected_enthalpy_J": l.collected[4],
+        "dpm_collected_kinetic_energy_J": l.collected[5],
+        **{
+            f"dpm_collected_p{axis}_kg_m_s": l.collected[i + 1]
+            for i, axis in enumerate("xyz")
+        },
+        "dpm_trapped_enthalpy_J": l.trapped[4],
         "dpm_evaporated_mass_kg": l.evaporated_mass,
         "dpm_water_budget_error_kg": jnp.sum(p.mass * p.multiplicity)
         + l.escaped[0]
         + l.trapped[0]
+        + l.collected[0]
         + l.evaporated_mass
         - l.injected[0],
         "dpm_stochastic_work_J": l.stochastic_work,

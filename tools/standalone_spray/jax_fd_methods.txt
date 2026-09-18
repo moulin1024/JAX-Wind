@@ -1,0 +1,78 @@
+    def ghosts(self, a, component, axis):
+        lo, hi = a[plane(a, axis, slice(0, 1))], a[plane(a, axis, slice(-1, None))]
+        if axis == component:
+            low = 2*lo-a[plane(a, axis, slice(1, 2))]
+            high = 2*hi-a[plane(a, axis, slice(-2, -1))]
+            if axis == 0:
+                high = a[plane(a, axis, slice(-2, -1))]  # du/dx=0 predictor
+        else:
+            low = -lo  # no slip side walls; v=w=0 at physical inlet
+            high = hi if axis == 0 else -hi
+        return pad(a, axis, low, high)
+
+    def strain(self, velocity):
+        normal = [np.diff(v, axis=i)/self.h[i] for i, v in enumerate(velocity)]
+        shear = {}
+        magnitude2 = 2*sum(s*s for s in normal)
+        for i, j in ((0, 1), (0, 2), (1, 2)):
+            s = (np.diff(self.ghosts(velocity[i], i, j), axis=j)/self.h[j]
+                 + np.diff(self.ghosts(velocity[j], j, i), axis=i)/self.h[i])
+            shear[i, j] = s
+            centered = average(average(s, i), j)
+            magnitude2 += centered**2
+        nut = (self.cs*self.volume**(1/3))**2 * np.sqrt(magnitude2)
+        return normal, shear, nut
+
+    def momentum_rhs(self, velocity):
+        normal, shear, nut = self.strain(velocity)
+        viscosity = MU/RHO + nut
+        centered = [average(v, i) for i, v in enumerate(velocity)]
+        rhs = []
+        for i, v in enumerate(velocity):
+            out = np.zeros_like(v)
+            for j in range(3):
+                # Interpolate advecting component onto the transported component.
+                advector = v if j == i else to_faces(centered[j], i)
+                vp = self.ghosts(v, i, j)
+                # Transverse advector on a component grid: use physical wall parity.
+                ap = self.ghosts(advector, j, j) if j == i else pad(advector, j)
+                if j != i:
+                    # At a tangential wall the normal advector changes sign.
+                    lo = -advector[plane(advector, j, slice(0, 1))]
+                    hi = (advector[plane(advector, j, slice(-1, None))] if j == 0
+                          else -advector[plane(advector, j, slice(-1, None))])
+                    if j == 0:
+                        lo = 2*UIN-advector[plane(advector, j, slice(0, 1))]
+                    ap = pad(advector, j, lo, hi)
+                slp, slm = plane(vp, j, slice(2, None)), plane(vp, j, slice(None, -2))
+                # Skew form 1/2 [a_j D_j u_i + D_j(a_j u_i)].
+                out -= .25/self.h[j]*(advector*(vp[slp]-vp[slm])
+                                                  +(ap*vp)[slp]-(ap*vp)[slm])
+            stress = 2*viscosity*normal[i]
+            diff = np.diff(pad(stress, i), axis=i)/self.h[i]
+            if i == 0:
+                diff = diff.at[-1].set(-2*stress[-1]/self.h[i])
+            out += diff
+            for j in range(3):
+                if j != i:
+                    a, b = sorted((i, j))
+                    stress = to_faces(to_faces(viscosity, a), b)*shear[a, b]
+                    out += np.diff(stress, axis=j)/self.h[j]
+            rhs.append(out)
+        rhs[0] = rhs[0].at[0].set(0.)
+        rhs[1] = rhs[1].at[:, 0, :].set(0.).at[:, -1, :].set(0.)
+        rhs[2] = rhs[2].at[:, :, 0].set(0.).at[:, :, -1].set(0.)
+        return rhs, nut
+
+    def scalar_rhs(self, scalar, velocity, diffusivity, inlet):
+        out = np.zeros_like(scalar)
+        for i in range(3):
+            sf = to_faces(scalar, i)
+            grad = np.diff(pad(scalar, i), axis=i)/self.h[i]
+            if i == 0:
+                sf = sf.at[0].set(inlet)
+                grad = grad.at[0].set(2*(scalar[0]-inlet)/self.h[0])
+            flux = velocity[i]*sf-to_faces(diffusivity, i)*grad
+            out -= np.diff(flux, axis=i)/self.h[i]
+        return out
+

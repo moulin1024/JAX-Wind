@@ -220,11 +220,17 @@ def build_mann_inflow(
                 (iz + 1) % nz, :, :, 0
             ]
             section = (1 - fy) * section[iy % ny] + fy * section[(iy + 1) % ny]
-            shift[level] = section.mean()
+
+            def section_mean(values):
+                if grid.is_uniform:
+                    return np.mean(values)
+                return np.average(np.mean(values, axis=1), weights=grid.y_widths)
+
+            shift[level] = section_mean(section)
             centered = section - shift[level]
             variance = (
-                2 * np.mean(centered**2)
-                + np.mean(centered * np.roll(centered, 1, axis=1))
+                2 * section_mean(centered**2)
+                + section_mean(centered * np.roll(centered, 1, axis=1))
             ) / 3
             if variance <= 0:
                 raise ValueError("cannot calibrate a zero-variance Mann box")
