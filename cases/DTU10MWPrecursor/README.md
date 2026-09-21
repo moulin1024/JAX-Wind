@@ -4,6 +4,20 @@
 > This case uses schema version 1. Historical outputs cannot be resumed;
 > regenerate inputs in the new format. See [verification](../../doc/verification.md).
 
+## Bundled OpenFAST data
+
+The [DTU10MW dataset](turbines/DTU10MW/README.md) includes the AeroDyn15
+rotor, airfoil and structural data, upstream license, and pinned provenance.
+Set the model path from the repository root:
+
+```bash
+export JAXWIND_DTU10MW_FAST="$PWD/cases/DTU10MWPrecursor/turbines/DTU10MW/upstream/DTU_10MW_NAUTILUS_GoM_A15.fst"
+```
+
+The imported tip radius is **89.2 m**, while the fixed-step ALM runner below
+assumes 89.15 m. Its tip-sweep preflight requires a recalculated timestep
+before running this deck; see the dataset notes.
+
 ## ALM runner: prepare and main
 
 [`tools/run_dtu10mw.py`](../../tools/run_dtu10mw.py) uses the requested
@@ -61,7 +75,7 @@ python tools/run_dtu10mw.py main \
 Use `--backend rocm` on AMD hardware. Preparation needs no turbine deck.
 Main accepts `JAXWIND_DTU10MW_FAST` instead of `--openfast-model`; without a
 deck, `--configure-only` validates declarations but cannot validate the rotor.
-The OpenFAST deck is external and is not supplied by this repository.
+A pinned AeroDyn15 deck is bundled above; external decks may also be supplied.
 
 For Slurm on the ROCm cluster:
 
@@ -144,8 +158,8 @@ supplies the existing turbine loader's required workflow metadata; use
 `run` below to execute the direct turbine-active smoke case.
 
 Supply an AeroDyn15-compatible DTU10MW OpenFAST deck, including its
-referenced blade, airfoil, and structural input files. The deck is external
-and is not bundled or validated by the configuration-only check:
+referenced blade, airfoil, and structural input files. The bundled deck is described above. The configuration-only check does not
+validate imported rotor data:
 
 ```bash
 export JAXWIND_DTU10MW_FAST=/path/to/DTU_10MW_AeroDyn15.fst
