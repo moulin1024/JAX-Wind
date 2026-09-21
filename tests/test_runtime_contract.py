@@ -234,3 +234,24 @@ def test_adaptive_stage_reports_actual_cfl_and_lands_on_samples(tmp_path, operat
         meta = json.loads((result.output / "inflow/metadata.json").read_text())
         assert meta["duration_seconds"] == pytest.approx(200., abs=1.e-4)
         assert meta["samples"] > 2
+
+
+@pytest.mark.parametrize("adaptive", [False, True])
+def test_abl_cfl_callback_is_separate_from_state_diagnostics(tmp_path, adaptive):
+    from jaxwind.simulation.api import build_simulation
+    from jaxwind.runtime.observers import Observer
+
+    case = tiny_case(tmp_path, adaptive=adaptive)
+    simulation = build_simulation(case)
+    state = simulation.initialize()
+    assert simulation.state_diagnostics is None
+    if adaptive:
+        cfl = simulation.courant_with_timestep
+        assert cfl is not None
+        np.testing.assert_allclose(cfl(state, .02), 2 * cfl(state, .01))
+    else:
+        assert simulation.courant_with_timestep is None
+    observer = Observer(simulation)
+    observer.sample(state, {"initial_step": 0, "initial_time": 0., "target_time": .06})
+    assert len(observer.history) == 1
+    assert np.isfinite(observer.history[0]["maximum_cfl"])

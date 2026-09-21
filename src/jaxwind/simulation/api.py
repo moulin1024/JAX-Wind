@@ -80,9 +80,13 @@ def _build(case) -> Simulation:
             active_dt = (state.controller_dt if farm is not None and timestep is None else dt if timestep is None else timestep)
             return courant_number(state.velocity, components.grid, active_dt)
         courant = jax.jit(courant)
-        return Simulation(case, components.grid, components.initial, advance, courant, components.adaptive, components,
-                          jax.jit(farm.diagnostics) if farm is not None else None,
-                          courant if components.adaptive else None)
+        return Simulation(
+            case, components.grid, components.initial, advance, courant,
+            adaptive=components.adaptive,
+            diagnostics=components,
+            turbine_diagnostics=jax.jit(farm.diagnostics) if farm is not None else None,
+            courant_with_timestep=courant if components.adaptive else None,
+        )
     if case.formulation == "low-mach-abl":
         from jaxwind.config.low_mach import load_case as load_native
         from jaxwind.simulation.low_mach import build_simulation as build_native
